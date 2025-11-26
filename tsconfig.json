@@ -43,6 +43,7 @@
   "exclude": [
     "node_modules",
     ".next",
-    "prisma/scripts"
+    "prisma/scripts",
+    "prisma/**/*.ts"
   ]
 }
