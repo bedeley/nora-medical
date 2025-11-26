@@ -161,7 +161,14 @@ export async function GET() {
       };
     }
 
-    const allRows = users.map((u) => ({
+    const allRows = users.map((u: {
+      id: string;
+      email: string | null;
+      name: string | null;
+      phone: string | null;
+      role: string;
+      phoneVerifiedAt: Date | null;
+    }) => ({
       user: u,
       ordersTotal: sumsByUser[u.id]?.ordersTotal ?? 0,
       paidTotal: sumsByUser[u.id]?.paidTotal ?? 0,
