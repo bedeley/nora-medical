@@ -3,6 +3,17 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+type MomoPending = {
+  id: string;
+  amount: number;
+  createdAt: string;
+  status: string;
+  provider: string;
+  providerRef: string;
+  user: { id: string; name: string | null; email: string | null } | null;
+  order: { id: string; status: string | null } | null;
+};
+
 export async function GET() {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -17,14 +28,7 @@ export async function GET() {
       include: { user: { select: { id: true, name: true, email: true } }, order: { select: { id: true, status: true } } },
     });
     const momo = payments
-      .map((p: {
-        id: string;
-        amount: unknown;
-        createdAt: Date;
-        note: string | null;
-        user: { id: string; name: string | null; email: string | null } | null;
-        order: { id: string; status: string | null } | null;
-      }) => {
+      .map((p) => {
         let meta: Record<string, unknown> | null = null;
         if (p.note) {
           try {
@@ -35,7 +39,7 @@ export async function GET() {
         }
         if (!meta || meta.method !== "momo") return null;
         const status = String((meta.status as string | undefined) ?? "pending");
-        return {
+        const item: MomoPending = {
           id: p.id,
           amount: Number(p.amount || 0),
           createdAt: p.createdAt.toISOString(),
@@ -45,8 +49,9 @@ export async function GET() {
           user: p.user,
           order: p.order,
         };
+        return item;
       })
-      .filter((item): item is NonNullable<typeof item> => item !== null);
+      .filter((item): item is MomoPending => item !== null);
 
     return NextResponse.json({ items: momo });
   } catch {
