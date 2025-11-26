@@ -110,7 +110,7 @@ export async function GET(request: Request) {
 
     // Rank by selected metric (default: profit)
     const sortMetric = (searchParams.get("sort") as "profit" | "revenue" | "qty" | "margin" | null) || "profit";
-    rows.sort((a, b) => {
+    rows.sort((a: Row, b: Row) => {
       const getValue = (r: Row) => {
         if (sortMetric === "qty") return r.qty;
         if (sortMetric === "revenue") return r.revenue;
@@ -119,7 +119,7 @@ export async function GET(request: Request) {
       };
       return getValue(b) - getValue(a);
     });
-    const withRank = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
+    const withRank = rows.map((r: Row, idx: number) => ({ ...r, rank: idx + 1 }));
 
     // Sort order for UI – best to worst (desc) or reverse
     const finalRows = orderDir === "asc" ? [...withRank].reverse() : withRank;
@@ -140,7 +140,7 @@ export async function GET(request: Request) {
         "Margin %",
         "Profit / Loss",
       ];
-      const lines = finalRows.map((r) => {
+      const lines = finalRows.map((r: Row & { rank: number }) => {
         const weightedSold = r.qty > 0 ? r.revenue / r.qty : 0;
         return [
           r.rank,

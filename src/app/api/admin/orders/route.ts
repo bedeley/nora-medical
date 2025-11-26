@@ -55,7 +55,9 @@ export async function POST(req: Request) {
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
     });
-    const productMap = new Map(products.map((p) => [p.id, p]));
+    const productMap = new Map(
+      products.map((p: { id: string; price: unknown; cost: unknown; stock: number; name: string; archived: boolean }) => [p.id, p])
+    );
 
     for (const it of items) {
       const p = productMap.get(it.productId);
