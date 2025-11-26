@@ -4,6 +4,45 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 
+type UserSummary = {
+  id: string;
+  email: string | null;
+  name: string | null;
+  phone: string | null;
+  role: string;
+  phoneVerifiedAt: Date | null;
+};
+
+type CartItemSummary = {
+  id: string;
+  productId: string;
+  productName: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+};
+
+type CartSummary = {
+  id: string;
+  items: CartItemSummary[];
+  total: number;
+  totalItems: number;
+  updatedAt: string | null;
+};
+
+type CustomerRow = {
+  user: UserSummary;
+  ordersTotal: number;
+  paidTotal: number;
+  paymentsTotal: number;
+  delivery: { delivered: number; partial: number; pending: number };
+  refundedCash: number;
+  lastOrderAt: string | null;
+  whatsappReady: boolean;
+  phoneVerified: boolean;
+  cart: CartSummary | null;
+};
+
 export async function GET() {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -63,7 +102,8 @@ export async function GET() {
     const lastRes = results[5];
     const cartsRes = results[6];
 
-    const users = usersRes.status === "fulfilled" ? usersRes.value : [];
+    const users: UserSummary[] =
+      usersRes.status === "fulfilled" ? (usersRes.value as UserSummary[]) : [];
     const orderSums = ordersRes.status === "fulfilled" ? ordersRes.value : [];
     const paymentSums = paymentsRes.status === "fulfilled" ? paymentsRes.value : [];
     const deliveryGroups = deliveryRes.status === "fulfilled" ? deliveryRes.value : [];
@@ -116,23 +156,14 @@ export async function GET() {
       lastOrderByUser[userId] = d ? d.toISOString() : null;
     }
 
-    const cartByUser: Record<
-      string,
-      {
-        id: string;
-        items: { id: string; productId: string; productName: string; quantity: number; unitPrice: number; subtotal: number }[];
-        total: number;
-        totalItems: number;
-        updatedAt: string | null;
-      }
-    > = {};
+    const cartByUser: Record<string, CartSummary> = {};
     for (const cart of carts) {
       const items = (cart.items || []).map((item: {
         id: string;
         productId: string;
         quantity: number;
         product?: { name?: string | null; price?: unknown } | null;
-      }) => {
+      }): CartItemSummary => {
         const price = Number(item.product?.price ?? 0);
         const subtotal = price * item.quantity;
         return {
@@ -161,14 +192,7 @@ export async function GET() {
       };
     }
 
-    const allRows = users.map((u: {
-      id: string;
-      email: string | null;
-      name: string | null;
-      phone: string | null;
-      role: string;
-      phoneVerifiedAt: Date | null;
-    }) => ({
+    const allRows: CustomerRow[] = users.map((u: UserSummary) => ({
       user: u,
       ordersTotal: sumsByUser[u.id]?.ordersTotal ?? 0,
       paidTotal: sumsByUser[u.id]?.paidTotal ?? 0,
@@ -182,7 +206,7 @@ export async function GET() {
     }));
 
     // Only include ADMIN users if they have any activity
-    const rows = allRows.filter((r) => {
+    const rows = allRows.filter((r: CustomerRow) => {
       if (r.user.role !== "ADMIN") return true;
       return r.ordersTotal > 0 || r.paidTotal > 0 || r.paymentsTotal > 0;
     });
