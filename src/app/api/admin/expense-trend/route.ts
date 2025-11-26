@@ -24,11 +24,14 @@ export async function GET() {
     });
 
     // Normalize by date string (YYYY-MM-DD)
-    const daily = results.reduce((acc: Record<string, number>, row) => {
-      const dateKey = new Date(row.createdAt).toISOString().slice(0, 10);
-      acc[dateKey] = (acc[dateKey] ?? 0) + Number(row._sum.amount ?? 0);
-      return acc;
-    }, {});
+    const daily = results.reduce(
+      (acc: Record<string, number>, row: { createdAt: Date; _sum: { amount: unknown } }) => {
+        const dateKey = new Date(row.createdAt).toISOString().slice(0, 10);
+        acc[dateKey] = (acc[dateKey] ?? 0) + Number(row._sum.amount ?? 0);
+        return acc;
+      },
+      {}
+    );
 
     // Fill in missing dates with 0
     const now = new Date();
