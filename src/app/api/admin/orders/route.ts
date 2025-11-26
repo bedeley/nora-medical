@@ -64,7 +64,7 @@ export async function POST(req: Request) {
       archived: boolean;
     };
     const productMap = new Map<string, ProductLookup>(
-      products.map((p) => [p.id, p as unknown as ProductLookup])
+      products.map((p: ProductLookup) => [p.id, p as unknown as ProductLookup])
     );
 
     for (const it of items) {
