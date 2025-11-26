@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
 
 async function main() {
-  const items = await prisma.orderItem.findMany({ select: { id: true, productId: true, costAtSale: true } });
-  const toUpdate = items.filter((i) => i.costAtSale === null);
+  const items: Array<{ id: string; productId: string; costAtSale: number | null }> =
+    await prisma.orderItem.findMany({ select: { id: true, productId: true, costAtSale: true } });
+  const toUpdate = items.filter((it) => it.costAtSale === null);
   for (const chunk of Array.from({ length: Math.ceil(toUpdate.length / 200) }, (_, i) => toUpdate.slice(i * 200, (i + 1) * 200))) {
     await Promise.all(
       chunk.map(async (it) => {
