@@ -25,7 +25,7 @@ export async function GET() {
       },
     },
   });
-  const rows = products.map((p) => {
+  const rows = products.map((p: (typeof products)[number]) => {
     const purchases = (p.purchases || []) as unknown as InventoryPurchase[];
     // Ignore zero/negative or invalid unit costs when computing averages
     const validPurchases = purchases.filter((pu) => {
