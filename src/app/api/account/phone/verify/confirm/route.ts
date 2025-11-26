@@ -25,7 +25,7 @@ export async function POST(req: Request) {
     if (!otp) return NextResponse.json({ error: "No valid code found" }, { status: 400 });
     const ok = await bcrypt.compare(String(code), otp.codeHash);
     if (!ok) return NextResponse.json({ error: "Incorrect code" }, { status: 400 });
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: typeof prisma) => {
       await tx.user.update({
         where: { id: userId },
         data: { phoneVerifiedAt: new Date() },
