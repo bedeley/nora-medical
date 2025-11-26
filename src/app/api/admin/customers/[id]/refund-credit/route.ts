@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { PaymentStatus, RefundDestination } from "@prisma/client";
 import { z } from "zod";
 
 const refundSchema = z.object({
@@ -81,8 +80,8 @@ export async function POST(
         userId,
         amount: -amount,
         note: JSON.stringify(meta),
-        status: PaymentStatus.REFUND,
-        refundDisposition: RefundDestination.CASH,
+        status: "REFUND",
+        refundDisposition: "CASH",
       },
     });
 
