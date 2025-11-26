@@ -144,8 +144,14 @@ export async function GET() {
           subtotal,
         };
       });
-      const total = items.reduce((sum, item) => sum + item.subtotal, 0);
-      const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
+      const total = items.reduce(
+        (sum: number, item: { subtotal: number }) => sum + item.subtotal,
+        0
+      );
+      const totalItems = items.reduce(
+        (sum: number, item: { quantity: number }) => sum + item.quantity,
+        0
+      );
       cartByUser[cart.userId] = {
         id: cart.id,
         items,
