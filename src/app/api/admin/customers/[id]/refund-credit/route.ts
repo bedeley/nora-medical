@@ -46,8 +46,14 @@ export async function POST(
       }),
     ]);
 
-    const totalPaid = orders.reduce((sum: number, o) => sum + Number(o.amountPaid || 0), 0);
-    const paymentsTotal = payments.reduce((sum: number, p) => sum + Number(p.amount || 0), 0);
+    const totalPaid = orders.reduce(
+      (sum: number, o: { amountPaid: unknown }) => sum + Number(o.amountPaid || 0),
+      0
+    );
+    const paymentsTotal = payments.reduce(
+      (sum: number, p: { amount: unknown }) => sum + Number(p.amount || 0),
+      0
+    );
     const creditAvailable = Math.max(0, paymentsTotal - totalPaid);
 
     if (amount > creditAvailable + 0.0001) {
