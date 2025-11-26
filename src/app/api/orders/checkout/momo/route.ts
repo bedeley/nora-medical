@@ -49,15 +49,17 @@ export async function POST(req: Request) {
         data: { userId, total, amountPaid: 0, balance: total, status: "UNPAID" },
       });
       await tx.orderItem.createMany({
-        data: cart.items.map((ci) => ({
-          orderId: o.id,
-          productId: ci.productId,
-          price: Number(ci.product.price),
-          costAtSale: Number(ci.product.cost ?? 0),
-          quantity: ci.quantity,
-        })),
+        data: cart.items.map(
+          (ci: { productId: string; product: { price: unknown; cost: unknown }; quantity: number }) => ({
+            orderId: o.id,
+            productId: ci.productId,
+            price: Number(ci.product.price),
+            costAtSale: Number(ci.product.cost ?? 0),
+            quantity: ci.quantity,
+          })
+        ),
       });
-      for (const ci of cart.items) {
+      for (const ci of cart.items as Array<{ productId: string; quantity: number }>) {
         await tx.product.update({ where: { id: ci.productId }, data: { stock: { decrement: ci.quantity } } });
         await tx.inventoryMovement.create({ data: { productId: ci.productId, delta: -ci.quantity, reason: "SALE" } });
       }
