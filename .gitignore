@@ -45,3 +45,6 @@ readme.text
 next-env.d.ts
 
 /src/generated/prisma
+
+.vercel
+.env*.local

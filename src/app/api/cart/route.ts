@@ -185,7 +185,9 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "Cart not found" }, { status: 404 });
     }
 
-    const item = cart.items.find((i) => i.productId === productId);
+    const item = cart.items.find(
+      (i: { id: string; productId: string; quantity: number }) => i.productId === productId
+    );
     if (!item) {
       return NextResponse.json({ error: "Item not in cart" }, { status: 404 });
     }

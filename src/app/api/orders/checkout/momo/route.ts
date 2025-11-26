@@ -6,7 +6,7 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo, isValidPhone, normalizePhoneGH } from "@/lib/momo";
 
-type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 const schema = z.object({
   phone: z.string().min(7),

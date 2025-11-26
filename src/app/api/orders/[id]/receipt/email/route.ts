@@ -37,7 +37,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const balance = Math.max(0, total - paid);
 
     const rows = (order.items || [])
-      .map((i) => `<tr><td>${i.product?.name || "Item"}</td><td align="right">${i.quantity}</td><td align="right">${Number(i.price).toFixed(2)}</td><td align="right">${(Number(i.price) * i.quantity).toFixed(2)}</td></tr>`) 
+      .map((i: { product?: { name?: string | null } | null; quantity: number; price: unknown }) => `<tr><td>${i.product?.name || "Item"}</td><td align="right">${i.quantity}</td><td align="right">${Number(i.price).toFixed(2)}</td><td align="right">${(Number(i.price) * i.quantity).toFixed(2)}</td></tr>`)
       .join("");
     const html = `
       <div style="font-family: system-ui, sans-serif; line-height: 1.4;">

@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-
-type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo } from "@/lib/momo";
 import { rateLimit } from "@/lib/rate-limit";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 const schema = z.object({
   orderId: z.string().cuid(),
