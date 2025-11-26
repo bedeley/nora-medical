@@ -25,7 +25,7 @@ export async function POST(
       return NextResponse.json({ success: true, message: "Cart already empty" });
     }
 
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: any) => {
       await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
       // Optionally delete the cart record as well to keep things tidy
       await tx.cart.delete({ where: { id: cart.id } });
