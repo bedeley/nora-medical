@@ -1,0 +1,162 @@
+"use client";
+
+import Image from "next/image";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
+import { useParams, useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
+import { toast } from "sonner";
+import { useEffect, useState } from "react";
+import { formatCurrency } from "@/lib/currency";
+
+interface Product {
+  id: string;
+  name: string;
+  description: string;
+  imageUrl: string | null;
+  price: number;
+  stock: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export default function ProductPage() {
+  const { data: session } = useSession();
+  const router = useRouter();
+  const params = useParams();
+  const id = String((params as { id?: string }).id || "");
+  const [loading, setLoading] = useState(false);
+  // Keep image state hook stable across renders
+  const [imgSrc, setImgSrc] = useState<string>("/placeholder.png");
+  const queryClient = useQueryClient();
+
+  // ✅ Fetch product from API
+  const { data, error, isLoading } = useQuery<Product>({
+    queryKey: ["product", id],
+    queryFn: () => fetch(`/api/products/${id}`).then((r) => r.json()),
+    enabled: !!id,
+    staleTime: 60000,
+  });
+
+  // Update image when data arrives/changes
+  useEffect(() => {
+    setImgSrc(data?.imageUrl || "/placeholder.png");
+  }, [data]);
+
+  // ✅ Early return for loading/error states
+  if (isLoading)
+    return (
+      <section className="container mx-auto py-20 text-center text-muted-foreground">
+        Loading product...
+      </section>
+    );
+
+  if (error || !data)
+    return (
+      <section className="container mx-auto py-20 text-center text-red-500">
+        Failed to load product.
+      </section>
+    );
+
+  const product = data; // ✅ Now fully defined (TypeScript knows this)
+
+  const numericPrice = Number(product.price) || 0;
+  const formattedPrice = formatCurrency(numericPrice);
+
+  async function addToCart() {
+    if (!session) {
+      toast.info("Please sign in to add items to your cart.");
+      router.push("/account");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await fetch("/api/cart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: product.id, quantity: 1 }),
+      });
+
+      if (!res.ok) {
+        toast.error("Could not add item to cart.");
+        return;
+      }
+
+      queryClient.invalidateQueries({ queryKey: ["cart"] });
+      toast.success(`${product.name} added to cart.`, {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            await fetch(`/api/cart/item/${product.id}`, { method: "DELETE" });
+            queryClient.invalidateQueries({ queryKey: ["cart"] });
+            toast("Item removed from cart");
+          },
+        },
+      });
+    } catch (err) {
+      console.error(err);
+      toast.error("An unexpected error occurred.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="container mx-auto py-10">
+      <div className="grid md:grid-cols-2 gap-10 items-start">
+        {/* ✅ Product Image */}
+        <div className="relative aspect-square w-full bg-muted overflow-hidden">
+          <Image
+            src={imgSrc}
+            alt={product.name}
+            fill
+            sizes="(max-width: 768px) 80vw, 40vw"
+            className="object-cover"
+            onError={() => setImgSrc("/placeholder.png")}
+          />
+        </div>
+
+        {/* ✅ Product Info */}
+        <div className="flex flex-col gap-4">
+          <h1 className="text-3xl font-semibold">{product.name}</h1>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            {product.description}
+          </p>
+
+          <div className="flex items-center gap-3 mt-2">
+            <p className="text-2xl font-bold">{formattedPrice}</p>
+            {product.stock > 0 ? (
+              <span className="text-green-600 text-sm font-medium">
+                In Stock
+              </span>
+            ) : (
+              <span className="text-red-500 text-sm font-medium">
+                Out of Stock
+              </span>
+            )}
+          </div>
+
+          <Button
+            onClick={addToCart}
+            disabled={product.stock === 0 || loading}
+            className="w-full sm:w-auto mt-6"
+          >
+            {loading ? "Adding..." : "Add to Cart"}
+          </Button>
+
+          <div className="border-t mt-6 pt-4 text-sm text-muted-foreground">
+            <p>
+              For inquiries or bulk orders, call{" "}
+              <a href={ADMIN_PHONE_TEL} className="text-primary font-medium hover:underline">
+                {ADMIN_PHONE}
+              </a>
+              .
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

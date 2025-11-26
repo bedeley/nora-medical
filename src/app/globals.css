@@ -1,0 +1,206 @@
+@import "tailwindcss";
+
+/* Theme tokens (Tailwind v4 @theme) */
+@theme {
+  --font-sans: "Inter", sans-serif;
+
+  /* Core roles */
+  --color-background: #F8FAFC; /* light bg */
+  --color-foreground: #0F172A; /* light text */
+
+  --color-card: #FFFFFF;
+  --color-card-foreground: #0F172A;
+
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #0F172A;
+
+  /* Brand */
+  --color-primary: #0D9488;          /* teal */
+  --color-primary-foreground: #FFFFFF;
+
+  /* Secondary / neutral */
+  --color-secondary: #F1F5F9; /* slate-100 */
+  --color-secondary-foreground: #0F172A;
+
+  /* Muted content */
+  --color-muted: #F1F5F9; /* slate-100 */
+  --color-muted-foreground: #475569; /* slate-600 */
+
+  /* Accent (subtle highlight/hover) */
+  --color-accent: #DBEAFE; /* blue-100 */
+  --color-accent-foreground: #1E40AF; /* blue-800 */
+
+  /* Link colors (teal) */
+  --color-link: #0D9488; /* teal-600 */
+  --color-link-hover: #0F766E; /* teal-700 */
+
+  /* Feedback */
+  --color-destructive: #E11D48; /* rose-600 */
+  --color-destructive-foreground: #FFFFFF;
+
+  /* UI chrome */
+  --color-border: #E2E8F0; /* slate-200 */
+  --color-input: #E2E8F0;  /* same as border */
+  --color-ring: #3B82F6;   /* blue-500 */
+}
+
+/* Base element colors tied to tokens */
+body {
+  color-scheme: light;
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}
+
+/* Dark mode token overrides (via next-themes `.dark` class) */
+.dark {
+  color-scheme: dark;
+
+  --color-background: #0F172A; /* slate-900 */
+  --color-foreground: #E5E7EB; /* gray-200 */
+
+  --color-card: #1F2937; /* gray-800 */
+  --color-card-foreground: #E5E7EB;
+
+  --color-popover: #1F2937;
+  --color-popover-foreground: #E5E7EB;
+
+  --color-primary: #0D9488; /* keep brand */
+  --color-primary-foreground: #FFFFFF;
+
+  --color-secondary: #334155; /* slate-700 */
+  --color-secondary-foreground: #E5E7EB;
+
+  --color-muted: #1F2937; /* gray-800 */
+  --color-muted-foreground: #94A3B8; /* slate-400 */
+
+  --color-accent: #1E3A8A; /* blue-900 */
+  --color-accent-foreground: #E5E7EB;
+
+  /* Link colors (teal) */
+  --color-link: #14B8A6; /* teal-500 */
+  --color-link-hover: #2DD4BF; /* teal-400 */
+
+  --color-destructive: #F43F5E; /* rose-500 */
+  --color-destructive-foreground: #FFFFFF;
+
+  --color-border: #334155; /* slate-700 */
+  --color-input: #334155;
+  --color-ring: #3B82F6; /* blue-500 */
+}
+
+/* Make all links show a pointer cursor */
+/* Show pointer cursor on hover for any link-like element */
+a:hover,
+a[href]:hover,
+[role="link"]:hover,
+[data-radix-collection-item][role="menuitem"]:hover,
+.dropdown-menu a:hover {
+  cursor: pointer !important;
+}
+
+/* Ensure buttons also show pointer on hover (e.g., Login/Register buttons) */
+button:hover,
+[type="button"]:hover,
+[role="button"]:hover {
+  cursor: pointer !important;
+}
+
+/* Global link colors */
+a[href] {
+  color: var(--color-link);
+  text-decoration-color: currentColor;
+  text-underline-offset: 4px;
+}
+
+a[href]:hover {
+  color: var(--color-link-hover);
+  text-decoration: underline;
+}
+
+/* Hide app chrome when body has hide-chrome (used by receipt page) */
+body.hide-chrome [data-chrome-nav],
+body.hide-chrome [data-chrome-footer],
+body.hide-chrome [data-chrome-toaster] {
+  display: none !important;
+}
+
+/* Orders page card sizing + style */
+.orders-page [data-slot="card"] {
+  border: none;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  padding: 0.75rem 1rem;
+  gap: 0.75rem;
+}
+
+.orders-page [data-slot="card-header"],
+.orders-page [data-slot="card-content"] {
+  padding-inline: 1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* Account balance page card look (match orders) */
+.account-balance-page [data-slot="card"] {
+  border: none !important;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12) !important;
+}
+
+.account-balance-page [data-slot="card-header"],
+.account-balance-page [data-slot="card-content"] {
+  padding-inline: 1rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* Account balance recent orders table: use column-style separators */
+.account-balance-page .account-balance-table [data-slot="table-row"] {
+  border-bottom: none;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.08);
+}
+
+.account-balance-page .account-balance-table [data-slot="table-header"] tr {
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.16);
+}
+
+/* Admin products table: match account/balance table styling, remove row borders */
+/* Admin tables: match account/balance table styling, remove row borders */
+[data-slot="admin-page"] [data-slot="table-row"] {
+  border-bottom: none;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.08);
+}
+
+[data-slot="admin-page"] [data-slot="table-header"] tr {
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.16);
+}
+
+/* Admin cards: borderless with slightly stronger shadow */
+[data-slot="admin-page"] [data-slot="card"] {
+  border: none !important;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.10);
+}
+
+[data-slot="admin-page"] [data-slot="card-header"],
+[data-slot="admin-page"] [data-slot="card-content"] {
+  padding-inline: 1rem;
+  padding-top: 0.6rem;
+  padding-bottom: 0.6rem;
+}
+
+/* Global table border cleanup: remove table and column borders everywhere */
+[data-slot="table-container"],
+[data-slot="table"],
+[data-slot="table-header"],
+[data-slot="table-body"],
+[data-slot="table-footer"],
+[data-slot="table-row"],
+[data-slot="table-head"],
+[data-slot="table-cell"] {
+  border: none !important;
+}
+
+[data-slot="table-head"],
+[data-slot="table-cell"] {
+  border-left: none !important;
+  border-right: none !important;
+}

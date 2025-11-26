@@ -1,0 +1,803 @@
+"use client";
+
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
+import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { formatCurrency, formatDateGH } from "@/lib/currency";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { ChevronDown, ChevronUp } from "lucide-react";
+import { useClientQuery } from "@/hooks/use-client-query";
+
+type PaymentMeta = {
+  method?: string;
+  status?: string;
+  providerRef?: string;
+};
+
+type OrderItem = {
+  id: string;
+  quantity: number;
+  price: number | string;
+  product: {
+    id: string;
+    name: string;
+    imageUrl: string | null;
+  } | null;
+};
+
+type Payment = {
+  id: string;
+  amount: number | string;
+  note: string | null;
+  createdAt: string | Date;
+};
+
+type Order = {
+  id: string;
+  status: string;
+  createdAt: string | Date;
+  total: number | string;
+  amountPaid?: number | string;
+  balance?: number | string;
+  items: OrderItem[];
+  payments: Payment[];
+};
+
+const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+function OrdersContent() {
+  const queryClient = useQueryClient();
+  const { data: session } = useSession();
+
+  const { data, error, isLoading } = useClientQuery({
+    queryKey: ["orders", "history"],
+    queryFn: () => fetcher("/api/orders/history"),
+    enabled: !!session,
+    refetchInterval: 10000,
+  });
+  const { data: me } = useClientQuery({
+    queryKey: ["account", "me"],
+    queryFn: () => fetcher("/api/account/me"),
+    enabled: !!session,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: balanceData } = useClientQuery({
+    queryKey: ["balance", "self"],
+    queryFn: () => fetcher("/api/balance?self=1"),
+    enabled: !!session,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+  });
+
+  const [status, setStatus] = useState<string>("ALL");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const searchParams = useSearchParams();
+  const justPlaced = searchParams?.get("placed") === "1";
+
+  const orders: Array<Order & { totalPaid: number; balance: number }> = useMemo(() => {
+    const source = (data?.orders || []) as Order[];
+    return source.map((o) => {
+      const totalPaid = Number(o.amountPaid ?? 0);
+      const balance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+      return { ...o, totalPaid, balance };
+    });
+  }, [data]);
+
+  const filtered = useMemo(() => {
+    if (status === "ALL") return orders;
+    if (status === "PAID") return orders.filter((o) => o.balance <= 0);
+    if (status === "PENDING") return orders.filter((o) => o.balance > 0);
+    return orders;
+  }, [orders, status]);
+
+  const summary = useMemo(() => {
+    const active = orders.filter((o) => o.status !== "CANCELLED");
+    const totalOrders = active.length;
+    const totalSpent = active.reduce((s, o) => s + Number(o.total), 0);
+    const totalPaid = active.reduce((s, o) => s + Number(o.totalPaid), 0);
+    const outstanding = Math.max(0, totalSpent - totalPaid);
+    return { totalOrders, totalSpent, totalPaid, outstanding };
+  }, [orders]);
+
+  const hasOutstanding = useMemo(
+    () => orders.some((o) => o.status !== "CANCELLED" && Number(o.balance) > 0),
+    [orders]
+  );
+
+  if (!session)
+    return (
+      <div className="text-center py-20">
+        <p className="text-muted-foreground">
+          Please sign in to view your order history.
+        </p>
+      </div>
+    );
+
+  // Gate orders access for unverified accounts so they must complete
+  // verification first.
+  if (me && !me.phoneVerifiedAt) {
+    return (
+      <section className="container mx-auto py-12">
+        <h1 className="text-2xl font-semibold mb-2">Verify Your Account</h1>
+        <p className="text-sm text-muted-foreground mb-4">
+          Your account is not fully verified yet. Please request a verification code
+          on the Account page and enter it there before viewing your orders.
+        </p>
+        <Link href="/account?verify=1" className="underline text-sm">
+          Go to verification page
+        </Link>
+      </section>
+    );
+  }
+
+  if (isLoading)
+    return (
+      <div className="text-center py-20 text-muted-foreground">
+        Loading your orders...
+      </div>
+    );
+
+  if (error) {
+    toast.error("Could not load order history");
+    return (
+      <div className="text-center py-20 text-red-500">
+        Error loading orders.
+      </div>
+    );
+  }
+
+  if (!orders.length)
+    return (
+      <div className="text-center py-20 text-muted-foreground">
+        You haven’t placed any orders yet.
+      </div>
+    );
+
+  const creditAvailable = Math.max(0, Number(balanceData?.unappliedFunds ?? 0));
+  const cashRefunds = Math.max(0, Number(balanceData?.cashRefunds ?? 0));
+
+  return (
+    <section className="space-y-4 orders-page">
+      {(justPlaced || hasOutstanding) && (
+        <div className="rounded-md border border-primary/20 bg-primary/10 text-primary p-3 text-sm">
+          {justPlaced ? (
+            <>Order placed successfully. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to confirm and complete payment.</>
+          ) : (
+            <>You have unpaid orders. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to complete payment.</>
+          )}
+        </div>
+      )}
+      {(creditAvailable > 0 || cashRefunds > 0) && (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 p-3 text-sm space-y-1">
+          {creditAvailable > 0 && (
+            <p>
+              Store credit available: <span className="font-semibold">{formatCurrency(creditAvailable)}</span>. You can ask us to apply it to a balance or use it on your next order.
+            </p>
+          )}
+          {cashRefunds > 0 && (
+            <p>
+              Cash refunds issued so far: <span className="font-semibold">{formatCurrency(cashRefunds)}</span>.
+            </p>
+          )}
+        </div>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Order History</h1>
+          <p className="text-sm text-muted-foreground">
+            View your past orders and payment activity
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={status} onValueChange={setStatus}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Filter status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All</SelectItem>
+              <SelectItem value="PENDING">Pending</SelectItem>
+              <SelectItem value="PAID">Paid</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+          <CardContent className="!py-2">
+            <p className="text-[11px] text-muted-foreground">Orders</p>
+            <p className="text-lg font-semibold">{summary.totalOrders}</p>
+          </CardContent>
+        </Card>
+        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+          <CardContent className="!py-2">
+            <p className="text-[11px] text-muted-foreground">Total Spent</p>
+            <p className="text-lg font-semibold">{formatCurrency(summary.totalSpent)}</p>
+          </CardContent>
+        </Card>
+        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+          <CardContent className="!py-2">
+            <p className="text-[11px] text-muted-foreground">Total Paid</p>
+            <p className="text-lg font-semibold text-green-700">{formatCurrency(summary.totalPaid)}</p>
+          </CardContent>
+        </Card>
+        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+          <CardContent className="!py-2">
+            <p className="text-[11px] text-muted-foreground">Outstanding</p>
+            <p className={`text-lg font-semibold ${summary.outstanding > 0 ? "text-red-600" : "text-green-700"}`}>
+              {formatCurrency(summary.outstanding)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {filtered.map((order) => {
+        const items = Array.isArray(order.items) ? order.items : [];
+        const nonNullItems = items.filter((it) => it?.product);
+        const uniqueProducts = nonNullItems.reduce(
+          (acc: Array<{ product: NonNullable<OrderItem["product"]>; quantity: number }>, it) => {
+          if (!it.product) return acc;
+          const existing = acc.find((x) => x.product.id === it.product!.id);
+          if (existing) {
+            existing.quantity += it.quantity;
+          } else {
+            acc.push({
+              product: it.product as NonNullable<OrderItem["product"]>,
+              quantity: it.quantity,
+            });
+          }
+          return acc;
+        }, []);
+
+        return (
+          <Card
+            key={order.id}
+            className="text-xs !py-2 !border-none !shadow-md !rounded-none"
+          >
+            <CardHeader className="!py-2 !px-3">
+              <CardTitle className="flex justify-between items-center text-[13px]">
+                <span className="flex items-center gap-2">
+                  <span>Order #{order.id.slice(0, 8)}</span>
+                  {(() => {
+                    try {
+                      const pending = (order.payments || []).some((p) => {
+                        if (!p?.note) return false;
+                        try { const m = JSON.parse(p.note); return m?.method === 'momo' && m?.status === 'pending'; } catch { return false; }
+                      });
+                      if (pending) {
+                        return (
+                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                            MoMo Pending
+                          </span>
+                        );
+                      }
+                    } catch {}
+                    return null;
+                  })()}
+                </span>
+                {(() => {
+                  const sc =
+                    order.status === "PAID"
+                      ? "bg-green-100 text-green-700"
+                      : order.status === "PARTIALLY_PAID"
+                      ? "bg-yellow-100 text-yellow-800"
+                      : order.status === "CANCELLED"
+                      ? "bg-gray-200 text-gray-700"
+                      : "bg-red-100 text-red-700";
+                  return (
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
+                      {order.status}
+                    </span>
+                  );
+                })()}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-1.5 !px-3 !py-2">
+              {uniqueProducts.length > 0 && (
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className="flex gap-2">
+                    {uniqueProducts.slice(0, 3).map((it) => (
+                      <div
+                        key={it.product.id}
+                        className="relative h-7 w-7 rounded-md bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center"
+                      >
+                        {it.product.imageUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={it.product.imageUrl}
+                            alt={it.product.name}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <span className="text-[9px] px-1 text-slate-500 text-center line-clamp-2">
+                            {it.product.name}
+                          </span>
+                        )}
+                        <span className="absolute bottom-[1px] right-[1px] bg-slate-900/80 text-white text-[9px] leading-none px-0.5 rounded">
+                          x{it.quantity}
+                        </span>
+                      </div>
+                    ))}
+                    {uniqueProducts.length > 3 && (
+                      <div className="h-7 w-7 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-600">
+                        +{uniqueProducts.length - 3}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[11px] text-muted-foreground">
+                    {uniqueProducts.length === 1
+                      ? `${uniqueProducts[0].quantity} item`
+                      : `${uniqueProducts.reduce((s, it) => s + Number(it.quantity || 0), 0)} items`}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span>Date:</span>
+                <span>{formatDateGH(order.createdAt)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Total Amount:</span>
+                <span>{formatCurrency(Number(order.total))}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Amount Paid:</span>
+                <span>{formatCurrency(Number(order.totalPaid))}</span>
+              </div>
+              <div className="flex justify-between font-semibold">
+                <span>Balance:</span>
+                <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
+                  {formatCurrency(Number(order.balance))}
+                </span>
+              </div>
+
+              {Number(order.balance) > 0 && order.status !== "CANCELLED" && (
+                <div className="mt-2 grid gap-2">
+                  <p className="text-xs text-primary bg-primary/10 border border-primary/20 rounded px-2 py-1">
+                    You can pay your outstanding balance via Mobile Money (MoMo)
+                    or call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to arrange payment.
+                  </p>
+                  <MomoPayInline
+                    orderId={order.id}
+                    maxAmount={Number(order.balance)}
+                    defaultPhone={String(me?.phone || "")}
+                    onSuccess={() => queryClient.invalidateQueries({ queryKey: ["orders","history"] })}
+                  />
+                    <MomoPendingList
+                      payments={order.payments}
+                      onSettled={() =>
+                        queryClient.invalidateQueries({ queryKey: ["orders", "history"] })
+                      }
+                    />
+                </div>
+              )}
+
+              <div className="mt-3 flex justify-end">
+                <Button asChild size="sm" variant="outline" title="View printable receipt">
+                  <Link href={`/orders/${order.id}/receipt`}>View Receipt</Link>
+                </Button>
+              </div>
+
+              {order.payments.length > 0 && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-sm">Payments</h3>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setExpanded((e) => ({ ...e, [order.id]: !e[order.id] }))
+                      }
+                    >
+                      {expanded[order.id] ? (
+                        <>
+                          <ChevronUp className="w-4 h-4 mr-1" /> Hide
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="w-4 h-4 mr-1" /> View
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  {expanded[order.id] && (
+                    <div className="mt-2 overflow-x-auto max-w-full">
+                      <Table className="text-xs min-w-full">
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="py-1 px-2 whitespace-nowrap">Date</TableHead>
+                            <TableHead className="py-1 px-2 whitespace-nowrap">Type</TableHead>
+                            <TableHead className="py-1 px-2 whitespace-nowrap">Amount</TableHead>
+                            <TableHead className="py-1 px-2 whitespace-nowrap">Note</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {order.payments.map((p) => (
+                            <TableRow key={p.id}>
+                              <TableCell className="py-1 px-2 whitespace-nowrap">
+                                {new Date(p.createdAt).toLocaleDateString()}
+                              </TableCell>
+                              <TableCell className="py-1 px-2 whitespace-nowrap">
+                                {formatPaymentLabel(p)}
+                              </TableCell>
+                              <TableCell className="py-1 px-2 whitespace-nowrap">
+                                {formatCurrency(Number(p.amount))}
+                              </TableCell>
+                              <TableCell className="py-1 px-2 break-words max-w-[200px]">
+                                {formatPaymentNote(p)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })}
+    </section>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense
+      fallback={
+        <section className="space-y-4">
+          <h1 className="text-2xl font-semibold">Order History</h1>
+          <p className="text-sm text-muted-foreground">Loading your orders…</p>
+        </section>
+      }
+    >
+      <OrdersContent />
+    </Suspense>
+  );
+}
+
+type OrderPayment = {
+  id: string;
+  amount: number | string;
+  status?: string | null;
+  refundDisposition?: string | null;
+  note?: string | null;
+  meta?: {
+    status?: string;
+    refundDisposition?: string;
+  } | null;
+};
+
+function formatPaymentLabel(p: OrderPayment) {
+  const status = String(p.status || p.meta?.status || "").toUpperCase();
+  const disposition = String(p.refundDisposition || p.meta?.refundDisposition || "").toUpperCase();
+  if (status === "REFUND" && disposition === "CASH") return "Refund (cash)";
+  if (status === "REFUND" && disposition === "CREDIT") return "Refund (credit)";
+  if (status === "REFUND") return "Refund";
+  if (status === "VOID") return "Void";
+  return "Payment";
+}
+
+function formatPaymentNote(p: OrderPayment) {
+  const raw = p?.note;
+  if (!raw) return "-";
+  try {
+    const meta = JSON.parse(raw);
+
+    // Customer-friendly MoMo messages
+    if (meta?.method === "momo") {
+      const provider = String(meta.provider || "mtn").toUpperCase();
+      const status = String(meta.status || p.status || "").toUpperCase();
+
+      if (status === "PENDING") return `Mobile Money payment pending (${provider})`;
+      if (status === "SUCCESS" || status === "SUCCESSFUL")
+        return `Mobile Money payment confirmed (${provider})`;
+      if (status === "FAILED") return `Mobile Money payment failed (${provider})`;
+
+      return `Mobile Money payment (${provider})`;
+    }
+
+    // Admin-entered note text, if present
+    if (typeof meta?.note === "string" && meta.note.trim()) {
+      return meta.note.trim();
+    }
+
+    // Refund/credit notes
+    if (typeof meta?.reason === "string" && meta.reason.trim()) {
+      return meta.reason.trim();
+    }
+
+    // Generic fallback using method/status if available
+    const parts: string[] = [];
+    if (meta?.method) parts.push(String(meta.method));
+    if (meta?.status) parts.push(String(meta.status));
+    if (parts.length) return parts.join(" - ");
+  } catch {
+    // not JSON, fall through to raw
+  }
+  return raw;
+}
+
+function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderId: string; maxAmount: number; defaultPhone?: string; onSuccess?: () => void }) {
+  const [phone, setPhone] = useState<string>(defaultPhone || "");
+  const [normalized, setNormalized] = useState<string>("");
+  const [amtStr, setAmtStr] = useState<string>(() => (Number(maxAmount) > 0 ? String(Number(maxAmount).toFixed(2)) : ""));
+  const [loading, setLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const normalizePhone = (input: string) => {
+    const s = (input || "").trim().replace(/[^\d+]/g, "");
+    if (/^0\d{9}$/.test(s)) return "+233" + s.slice(1);
+    return s;
+  };
+  const isValidPhone = (input: string) => /^\+?\d{10,15}$/.test(normalizePhone(input));
+
+ 
+  const parsedAmount = (() => {
+    const n = Number((amtStr || "").replace(/,/g, ""));
+    if (!isFinite(n)) return NaN;
+    return Math.max(0, Math.min(Number(maxAmount) || 0, n));
+  })();
+  const amountInvalid = !(parsedAmount > 0) || parsedAmount > (Number(maxAmount) || 0);
+
+  const resetFields = () => {
+    setPhone("");
+    setAmtStr("");
+    setNormalized("");
+  };
+
+  async function onPay() {
+    try {
+      setLoading(true);
+      const phoneToUse = normalizePhone(phone);
+      if (!isValidPhone(phoneToUse)) {
+        toast.error("Enter a valid phone number");
+        return;
+      }
+      const amt = parsedAmount;
+      if (!(amt > 0)) {
+        toast.error("Enter a valid amount");
+        return;
+      }
+      const res = await fetch("/api/payments/momo/initiate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId, phone: phoneToUse, provider: "mtn", amount: amt }),
+      });
+      const j = (await res.json().catch(() => ({} as { error?: string; paymentId?: string; applied?: boolean; simulated?: boolean })));
+      if (!res.ok) {
+        throw new Error(j?.error || "Failed to initiate MoMo");
+      }
+      const paymentId = j?.paymentId as string | undefined;
+      if (j?.applied) {
+        toast.success(`Payment confirmed. Thank you!${j?.simulated ? ' (simulated)' : ''}`);
+        resetFields();
+        if (onSuccess) onSuccess();
+        return;
+      }
+      toast.success("MoMo payment initiated. Approve the prompt on your phone.");
+      if (paymentId) startPolling(paymentId);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Failed to initiate MoMo";
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function pollOnce(paymentId: string) {
+    const r = await fetch(`/api/payments/momo/status/${paymentId}`);
+    const j = (await r.json().catch(() => ({}))) as {
+      status?: string;
+      error?: string;
+    };
+    if (!r.ok) return { done: true, ok: false, error: j?.error };
+    const status = String(j?.status || "").toUpperCase();
+    if (status === "SUCCESSFUL") {
+      toast.success("Payment confirmed. Thank you!");
+      resetFields();
+      if (onSuccess) onSuccess();
+      return { done: true, ok: true };
+    }
+    if (status === "FAILED") {
+      toast.error("MoMo payment failed.");
+      return { done: true, ok: false };
+    }
+    return { done: false, ok: true };
+  }
+
+  function startPolling(paymentId: string) {
+    let attempts = 0;
+    const maxAttempts = 24; // ~2 minutes at 5s interval
+    const tick = async () => {
+      attempts += 1;
+      const res = await pollOnce(paymentId);
+      if (res.done || attempts >= maxAttempts) {
+        const current = pollRef.current;
+        if (current) {
+          try { clearInterval(current); } catch {}
+        }
+        pollRef.current = null;
+        return;
+      }
+    };
+    const current = pollRef.current;
+    if (current) {
+      try { clearInterval(current); } catch {}
+    }
+    pollRef.current = setInterval(tick, 5000);
+    tick();
+  }
+
+  const savedPhoneNormalized = defaultPhone ? normalizePhone(defaultPhone) : "";
+  const showSavedPhoneChoice = Boolean(savedPhoneNormalized);
+
+  return (
+    <div className="grid gap-2 sm:flex sm:items-end sm:gap-2">
+      <div className="grid gap-1">
+        <Input
+          type="tel"
+          inputMode="tel"
+          placeholder="MoMo number (e.g., 0241234567 or +23324...)"
+          value={phone}
+          onChange={(e) => { setPhone(e.target.value); }}
+          onBlur={() => setNormalized(normalizePhone(phone))}
+          className="max-w-xs"
+        />
+        {(phone || normalized || showSavedPhoneChoice) && (
+          <div className="flex flex-wrap gap-2 text-xs">
+            {isValidPhone(phone) ? (
+              <button
+                type="button"
+                className="text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => setPhone(normalizePhone(phone))}
+              >
+                Will use: {normalizePhone(phone)}
+              </button>
+            ) : (
+              phone && <span className="text-red-600">Enter a valid phone number</span>
+            )}
+            {showSavedPhoneChoice && phone !== savedPhoneNormalized && (
+              <button
+                type="button"
+                className="text-primary underline-offset-2 hover:underline"
+                onClick={() => setPhone(savedPhoneNormalized)}
+              >
+                Use saved number ({savedPhoneNormalized})
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="grid gap-1">
+        <Input
+          type="text"
+          inputMode="decimal"
+          pattern="[0-9]*[.,]?[0-9]*"
+          placeholder={`Amount (max ${formatCurrency(Number(maxAmount) || 0)})`}
+          value={amtStr}
+          onChange={(e) => {
+            const raw = e.target.value || "";
+            const cleaned = raw.replace(/[^0-9.,]/g, "");
+            setAmtStr(cleaned);
+          }}
+          className="w-40"
+        />
+        <span className={`text-xs ${amountInvalid ? 'text-red-600' : 'text-muted-foreground'}`}>
+          {amountInvalid ? `Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}` : `Outstanding: ${formatCurrency(Number(maxAmount) || 0)}`}
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onPay} disabled={loading || !isValidPhone(phone) || amountInvalid}>
+          {loading ? 'Processing...' : 'Pay with MoMo'}
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={async () => {
+            const full = Number(maxAmount) || 0;
+            setAmtStr(String(full.toFixed(2)));
+            if (isValidPhone(phone) && full > 0) {
+              await onPay();
+            }
+          }}
+          disabled={loading || !(Number(maxAmount) > 0)}
+          title="Pay your full outstanding balance"
+        >
+          Pay full balance
+        </Button>
+      </div>
+    </div>
+  );
+}function MomoPendingList({ payments, onSettled }: { payments: Array<{ id: string; note: string | null }>; onSettled?: () => void }) {
+  const pending = (payments || [])
+    .map((p) => {
+      try {
+        const meta = p.note ? (JSON.parse(p.note) as PaymentMeta) : null;
+        return meta && meta.method === "momo" && meta.status === "pending" && meta.providerRef
+          ? { id: p.id, providerRef: meta.providerRef }
+          : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is { id: string; providerRef: string } => Boolean(x));
+  if (!pending.length) return null;
+  return (
+    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+      MoMo payment pending confirmation...
+      {pending.map((p) => (
+        <MomoPendingWatcher key={p.id} paymentId={p.id} onSettled={onSettled} />
+      ))}
+    </div>
+  );
+}
+
+function MomoPendingWatcher({ paymentId, onSettled }: { paymentId: string; onSettled?: () => void }) {
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const attempts = useRef(0);
+  useEffect(() => {
+    const run = async () => {
+      attempts.current += 1;
+      try {
+        const r = await fetch(`/api/payments/momo/status/${paymentId}`);
+        const j = await r.json().catch(() => ({}));
+        if (r.ok) {
+          const status = String(j?.status || '').toUpperCase();
+          if (status === 'SUCCESSFUL') {
+            if (onSettled) onSettled();
+            const current = timer.current;
+            if (current) {
+              clearInterval(current);
+            }
+          }
+          if (status === 'FAILED') {
+            const current = timer.current;
+            if (current) {
+              clearInterval(current);
+            }
+          }
+        }
+      } catch {}
+      if (attempts.current >= 48) { // stop after ~4 minutes
+        const current = timer.current;
+        if (current) {
+          clearInterval(current);
+        }
+      }
+    };
+    timer.current = setInterval(run, 5000);
+    run();
+    return () => {
+      const current = timer.current;
+      if (current) {
+        try { clearInterval(current); } catch {}
+      }
+    };
+  }, [paymentId, onSettled]);
+  return null;
+}

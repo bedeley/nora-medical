@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum PaymentStatus {
+  NORMAL
+  REFUND
+  VOID
+}
+
+enum RefundDestination {
+  CASH
+  CREDIT
+}
+
+model User {
+  id               String    @id @default(cuid())
+  name             String?
+  email            String?   @unique
+  username         String?   @unique
+  password         String
+  role             Role      @default(CUSTOMER)
+  phone            String?
+  phoneVerifiedAt  DateTime?
+  twoFactorEnabled Boolean   @default(false)
+  twoFactorSecret  String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  sessions         Session[]
+  accounts         Account[]
+  cart             Cart?
+  // One-to-many relation to OTPs (backrelation for UserOtp.user)
+  otps             UserOtp[]
+  // Orders where this user is the customer
+  orders           Order[]   @relation("OrderCustomer")
+  // Orders placed by this admin on behalf of others (including guests)
+  placedOrders     Order[]   @relation("OrderPlacedBy")
+  payments         Payment[]
+  balance          Balance?
+}
+
+model UserOtp {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  purpose   String
+  codeHash  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([purpose])
+  @@index([expiresAt])
+}
+
+model Product {
+  id          String              @id @default(cuid())
+  name        String
+  description String
+  imageUrl    String
+  price       Decimal             @db.Decimal(10, 2)
+  cost        Decimal             @default(0) @db.Decimal(10, 2)
+  stock       Int                 @default(0)
+  archived    Boolean             @default(false)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  orderItems  OrderItem[]
+  cartItems   CartItem[]
+  purchases   Purchase[]
+  movements   InventoryMovement[]
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  user      User       @relation(fields: [userId], references: [id])
+  userId    String     @unique
+  items     CartItem[]
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cart      Cart     @relation(fields: [cartId], references: [id])
+  cartId    String
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, productId])
+}
+
+model Order {
+  id             String      @id @default(cuid())
+  userId         String?
+  user           User?       @relation("OrderCustomer", fields: [userId], references: [id])
+  placedBy       User?       @relation("OrderPlacedBy", fields: [placedById], references: [id])
+  placedById     String?
+  adminNote      String?
+  total          Decimal
+  amountPaid     Decimal     @default(0) // ✅ how much the customer has paid
+  balance        Decimal     @default(0) // ✅ computed field (total - amountPaid)
+  status         String      @default("UNPAID")
+  // Delivery tracking
+  deliveryStatus String      @default("NOT_DELIVERED") // NOT_DELIVERED | PARTIALLY_DELIVERED | DELIVERED
+  deliveredAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  payments       Payment[]
+  items          OrderItem[]
+}
+
+model OrderItem {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    String
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  price      Decimal  @db.Decimal(10, 2)
+  // Snapshot of unit cost at the time of sale for accurate COGS
+  costAtSale Decimal? @db.Decimal(10, 2)
+  quantity   Int
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    String?
+  order     Order?   @relation(fields: [orderId], references: [id])
+  orderId   String?
+  amount    Decimal  @db.Decimal(10, 2)
+  note      String?
+  status    PaymentStatus   @default(NORMAL)
+  refundDisposition RefundDestination?
+  createdAt DateTime @default(now())
+}
+
+model Balance {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String   @unique
+  totalDue  Float    @default(0)
+  totalPaid Float    @default(0)
+  balance   Float    @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Expense {
+  id        String   @id @default(cuid())
+  category  String
+  amount    Decimal  @db.Decimal(10, 2)
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Purchase {
+  id        String             @id @default(cuid())
+  product   Product            @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int
+  unitCost  Decimal            @db.Decimal(10, 2)
+  supplier  String?
+  note      String?
+  createdAt DateTime           @default(now())
+  movement  InventoryMovement?
+
+  @@index([productId])
+  @@index([createdAt])
+}
+
+model InventoryMovement {
+  id         String    @id @default(cuid())
+  product    Product   @relation(fields: [productId], references: [id])
+  productId  String
+  delta      Int
+  reason     String
+  purchase   Purchase? @relation(fields: [purchaseId], references: [id])
+  purchaseId String?   @unique
+  createdAt  DateTime  @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+}
+
+// GuestCustomer model removed
