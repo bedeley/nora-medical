@@ -28,7 +28,22 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
     });
 
-    const safeOrders = orders.map((o) => {
+    const safeOrders = orders.map((o: {
+      id: string;
+      total: unknown;
+      amountPaid: unknown;
+      status: string;
+      deliveryStatus: string | null;
+      deliveredAt: Date | null;
+      createdAt: Date;
+      user: { name: string | null; email: string | null } | null;
+      items: Array<{
+        id: string;
+        quantity: number;
+        price: unknown;
+        product: { id: string; name: string; imageUrl: string | null };
+      }>;
+    }) => {
       const total = Number(o.total);
       let amountPaid = Number(o.amountPaid ?? 0);
       const epsilon = 0.01;
@@ -59,7 +74,12 @@ export async function GET() {
         balance,
         createdAt: o.createdAt.toISOString(),
         user: o.user,
-        items: o.items.map((i) => ({
+        items: o.items.map((i: {
+          id: string;
+          quantity: number;
+          price: unknown;
+          product: { id: string; name: string; imageUrl: string | null };
+        }) => ({
           id: i.id,
           quantity: i.quantity,
           price: Number(i.price),
@@ -123,7 +143,8 @@ export async function POST(req: Request) {
     }
 
     const total = cart.items.reduce(
-      (sum, it) => sum + Number(it.product.price) * it.quantity,
+      (sum: number, it: { quantity: number; product: { price: unknown } }) =>
+        sum + Number(it.product.price) * it.quantity,
       0
     );
 
@@ -140,7 +161,11 @@ export async function POST(req: Request) {
       });
 
       await tx.orderItem.createMany({
-        data: cart.items.map((ci) => ({
+        data: cart.items.map((ci: {
+          productId: string;
+          product: { price: unknown; cost: unknown };
+          quantity: number;
+        }) => ({
           orderId: newOrder.id,
           productId: ci.productId,
           price: Number(ci.product.price),
@@ -150,7 +175,7 @@ export async function POST(req: Request) {
       });
 
       // Decrement stock
-      for (const ci of cart.items) {
+      for (const ci of cart.items as Array<{ productId: string; quantity: number }>) {
         await tx.product.update({
           where: { id: ci.productId },
           data: { stock: { decrement: ci.quantity } },

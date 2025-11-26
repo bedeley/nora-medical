@@ -111,8 +111,14 @@ export async function GET(
           where: { userId, NOT: { status: "CANCELLED" } },
           select: { total: true, amountPaid: true },
         });
-        const totalDueAfter = afterOrders.reduce((s, o) => s + Number(o.total || 0), 0);
-        const totalPaidAfter = afterOrders.reduce((s, o) => s + Number(o.amountPaid || 0), 0);
+        const totalDueAfter = afterOrders.reduce(
+          (s: number, o: { total: unknown }) => s + Number(o.total || 0),
+          0
+        );
+        const totalPaidAfter = afterOrders.reduce(
+          (s: number, o: { amountPaid: unknown }) => s + Number(o.amountPaid || 0),
+          0
+        );
         const balanceAfter = Math.max(0, totalDueAfter - totalPaidAfter);
         const newMeta = {
           ...(currentMeta ?? {}),

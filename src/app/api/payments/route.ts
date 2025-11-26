@@ -96,9 +96,12 @@ export async function POST(req: Request) {
         where: { userId, NOT: { status: "CANCELLED" } },
         select: { total: true, amountPaid: true },
       });
-      const totalDueBefore = beforeOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+      const totalDueBefore = beforeOrders.reduce(
+        (s: number, o: { total: unknown }) => s + Number(o.total || 0),
+        0
+      );
       const totalPaidBefore = beforeOrders.reduce(
-        (s, o) => s + Number(o.amountPaid || 0),
+        (s: number, o: { amountPaid: unknown }) => s + Number(o.amountPaid || 0),
         0,
       );
       const balanceBefore = Math.max(0, totalDueBefore - totalPaidBefore);
@@ -213,9 +216,12 @@ export async function POST(req: Request) {
         where: { userId, NOT: { status: "CANCELLED" } },
         select: { total: true, amountPaid: true },
       });
-      const totalDueAfter = afterOrders.reduce((s, o) => s + Number(o.total || 0), 0);
+      const totalDueAfter = afterOrders.reduce(
+        (s: number, o: { total: unknown }) => s + Number(o.total || 0),
+        0
+      );
       const totalPaidAfter = afterOrders.reduce(
-        (s, o) => s + Number(o.amountPaid || 0),
+        (s: number, o: { amountPaid: unknown }) => s + Number(o.amountPaid || 0),
         0,
       );
       const balanceAfter = Math.max(0, totalDueAfter - totalPaidAfter);

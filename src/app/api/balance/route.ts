@@ -83,9 +83,13 @@ export async function GET(req: Request) {
     const balance = Math.max(0, totalDue - totalPaid);
     const cashRefunds = payments
       .filter(
-        (p) => p.status === PaymentStatus.REFUND && p.refundDisposition === RefundDestination.CASH
+        (p: { status: unknown; refundDisposition: unknown; amount: unknown }) =>
+          p.status === PaymentStatus.REFUND && p.refundDisposition === RefundDestination.CASH
       )
-      .reduce((sum, p) => sum + Math.abs(Number(p.amount || 0)), 0);
+      .reduce(
+        (sum: number, p: { amount: unknown }) => sum + Math.abs(Number(p.amount || 0)),
+        0
+      );
     const unappliedFunds = Math.max(0, paymentsTotal - totalPaid);
 
     return NextResponse.json({

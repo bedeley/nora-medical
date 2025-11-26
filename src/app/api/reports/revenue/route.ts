@@ -75,7 +75,7 @@ export async function GET(req: Request) {
     });
 
     const rows = deliveryFiltered.flatMap((order) =>
-      order.items.map((item) => {
+      order.items.map((item: typeof order.items[number]) => {
         const price = Number(item.price);
         const total = price * item.quantity;
         const profit = total * 0.25; // Example: 25% profit margin
@@ -99,9 +99,18 @@ export async function GET(req: Request) {
       })
     );
 
-    const totalRevenue = rows.reduce((sum, r) => sum + Number(r.total), 0);
-    const totalProfit = rows.reduce((sum, r) => sum + Number(r.profit), 0);
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+    const totalRevenue = rows.reduce(
+      (sum: number, r: { total: string | number }) => sum + Number(r.total),
+      0
+    );
+    const totalProfit = rows.reduce(
+      (sum: number, r: { profit: string | number }) => sum + Number(r.profit),
+      0
+    );
+    const totalExpenses = expenses.reduce(
+      (sum: number, e: { amount: number }) => sum + e.amount,
+      0
+    );
     const netBalance = totalProfit - totalExpenses;
 
     /**
@@ -176,7 +185,7 @@ export async function GET(req: Request) {
       // Delivery summary (based on filtered orders)
       try {
         const deliveryCounts = (deliveryFiltered || []).reduce(
-          (acc, o) => {
+          (acc: { delivered: number; partial: number; pending: number }, o: { deliveryStatus: string | null }) => {
             const ds = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
             if (ds === "DELIVERED") acc.delivered += 1;
             else if (ds === "PARTIALLY_DELIVERED") acc.partial += 1;

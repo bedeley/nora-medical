@@ -20,7 +20,7 @@ export async function GET() {
   });
 
   // Normalize numeric fields and include computed balance consistently
-  const data = orders.map((o) => {
+  const data = orders.map((o: typeof orders[number]) => {
     const total = Number(o.total);
     const amountPaid = Number(o.amountPaid ?? 0);
     const rawBalance = Number(o.balance ?? 0);
@@ -33,7 +33,7 @@ export async function GET() {
       total,
       amountPaid,
       balance,
-      payments: (o.payments || []).map((p) => ({
+      payments: (o.payments || []).map((p: typeof o.payments[number]) => ({
         id: p.id,
         amount: Number(p.amount),
         note: p.note,
@@ -41,7 +41,7 @@ export async function GET() {
         refundDisposition: p.refundDisposition || null,
         createdAt: p.createdAt.toISOString(),
       })),
-      items: (o.items || []).map((it) => ({
+      items: (o.items || []).map((it: typeof o.items[number]) => ({
         id: it.id,
         quantity: it.quantity,
         price: Number(it.price),

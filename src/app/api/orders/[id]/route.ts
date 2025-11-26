@@ -55,7 +55,7 @@ function serializeOrder(o: OrderWithRelations) {
     user: o.user,
     placedById: o.placedById || null,
     adminNote: o.adminNote || null,
-    items: (o.items || []).map((i) => ({
+    items: (o.items || []).map((i: OrderWithRelations["items"][number]) => ({
       id: i.id,
       quantity: i.quantity,
       price: Number(i.price),

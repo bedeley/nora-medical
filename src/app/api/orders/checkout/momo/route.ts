@@ -37,7 +37,10 @@ export async function POST(req: Request) {
     if (!cart || cart.items.length === 0) return NextResponse.json({ error: "Empty cart" }, { status: 400 });
 
     // Compute total
-    const total = cart.items.reduce((s, it) => s + Number(it.product.price) * it.quantity, 0);
+    const total = cart.items.reduce(
+      (s: number, it: { quantity: number; product: { price: unknown } }) => s + Number(it.product.price) * it.quantity,
+      0
+    );
     if (!(total > 0)) return NextResponse.json({ error: "Invalid total" }, { status: 400 });
 
     // Create order, items, update stock, clear cart

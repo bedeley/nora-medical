@@ -45,7 +45,12 @@ export async function GET() {
 
     if (!cart) return NextResponse.json({ items: [], total: 0 });
 
-    const items = cart.items.map((item) => {
+    const items = cart.items.map((item: {
+      id: string;
+      quantity: number;
+      product: { id: string; name: string; imageUrl: string | null; price: unknown; stock: number };
+      updatedAt?: unknown;
+    }) => {
       const updatedAtRaw = (item as { updatedAt?: unknown }).updatedAt;
       const updatedAt =
         typeof updatedAtRaw === "string"
@@ -69,7 +74,7 @@ export async function GET() {
     });
 
     const total = items.reduce(
-      (sum, item) => sum + item.quantity * item.product.price,
+      (sum: number, item: { quantity: number; product: { price: number } }) => sum + item.quantity * item.product.price,
       0
     );
 

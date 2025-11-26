@@ -98,7 +98,7 @@ export async function GET(request: Request) {
     ]);
 
     // ✅ Normalize Prisma Decimal/Date
-    const safeItems = items.map((p) => ({
+    const safeItems = items.map((p: typeof items[number]) => ({
       ...p,
       price: Number(p.price),
       createdAt: p.createdAt.toISOString(),
