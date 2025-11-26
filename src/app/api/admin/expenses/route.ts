@@ -106,7 +106,9 @@ export async function GET(req: Request) {
         Number(e.amount).toFixed(2),
         (e.note ?? "").replaceAll("\"", "'")
       ]);
-      const csv = [header, ...rows].map(r => r.map(v => `"${String(v)}"`).join(",")).join("\n");
+      const csv = [header, ...rows]
+        .map((r: Array<string | number>) => r.map((v: string | number) => `"${String(v)}"`).join(","))
+        .join("\n");
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",

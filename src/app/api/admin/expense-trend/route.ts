@@ -35,7 +35,7 @@ export async function GET() {
 
     // Fill in missing dates with 0
     const now = new Date();
-    const data = Array.from({ length: 30 }).map((_, i) => {
+    const data = Array.from({ length: 30 }).map((_, i: number) => {
       const d = new Date();
       d.setDate(now.getDate() - (29 - i));
       const dateKey = d.toISOString().slice(0, 10);

@@ -42,7 +42,7 @@ export async function GET(
         meta = undefined;
       }
       let applied: Array<{ orderId: string; applied: number }> = (meta?.applied || []).map(
-        (a) => ({
+        (a: { orderId?: unknown; applied?: unknown }) => ({
           orderId: String(a?.orderId || ""),
           applied: Number(a?.applied || 0),
         })
