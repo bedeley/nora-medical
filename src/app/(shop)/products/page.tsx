@@ -63,7 +63,7 @@ export default async function ProductsPage({
   ]);
 
   // ✅ Transform Prisma output for serialization
-  const plainItems = items.map((p) => ({
+  const plainItems = items.map((p: (typeof items)[number]) => ({
     id: p.id,
     name: p.name,
     description: p.description,
