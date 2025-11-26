@@ -93,7 +93,10 @@ export async function GET(req: Request) {
     });
 
     // Prepare totals
-    const totalAmount = items.reduce((sum, e) => sum + Number(e.amount), 0);
+    const totalAmount = items.reduce(
+      (sum: number, e: { amount: unknown }) => sum + Number(e.amount),
+      0
+    );
 
     if (format === "csv") {
       const header = ["Date", "Category", "Amount", "Note"]; 
