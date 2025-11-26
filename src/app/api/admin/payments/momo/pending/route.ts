@@ -28,7 +28,7 @@ export async function GET() {
       include: { user: { select: { id: true, name: true, email: true } }, order: { select: { id: true, status: true } } },
     });
     const momo = payments
-      .map((p) => {
+      .map((p: (typeof payments)[number]) => {
         let meta: Record<string, unknown> | null = null;
         if (p.note) {
           try {

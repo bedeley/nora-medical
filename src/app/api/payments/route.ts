@@ -7,7 +7,7 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 
-type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
