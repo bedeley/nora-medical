@@ -52,7 +52,7 @@ export async function GET(req: Request) {
 
     try {
       const expenseData = await prisma.expense.findMany();
-      expenses = expenseData.map((e) => ({
+      expenses = expenseData.map((e: typeof expenseData[number]) => ({
         id: e.id,
         category: e.category,
         note: e.note,
