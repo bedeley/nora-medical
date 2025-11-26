@@ -40,15 +40,14 @@ export default async function ProductsPage({
   const pageSize = 12;
 
   // ✅ Dynamic Prisma filter
-  const where =
-    q
-      ? {
-          OR: [
-            { name: { contains: q, mode: "insensitive" } },
-            { description: { contains: q, mode: "insensitive" } },
-          ],
-        }
-      : ({} as const);
+  const where: NonNullable<Parameters<typeof prisma.product.findMany>[0]>["where"] = q
+    ? {
+        OR: [
+          { name: { contains: q, mode: "insensitive" as const } },
+          { description: { contains: q, mode: "insensitive" as const } },
+        ],
+      }
+    : {};
 
   // ✅ Query products and count in parallel
   const [items, total] = await Promise.all([
