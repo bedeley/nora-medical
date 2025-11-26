@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { PaymentStatus } from "@prisma/client";
+import { PaymentStatus } from "@/lib/prisma-enums";
 
 function parseMonth(m?: string) {
   if (!m) return null;

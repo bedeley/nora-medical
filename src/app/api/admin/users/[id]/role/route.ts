@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { Role } from "@prisma/client";
+import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 
 export async function PATCH(

@@ -5,7 +5,7 @@ import { z } from "zod";
 import bcrypt from "bcrypt";
 import type { AuthOptions } from "next-auth";
 import type { JWT } from "next-auth/jwt";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/prisma-enums";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
 import { decode as defaultJwtDecode, encode as defaultJwtEncode } from "next-auth/jwt";
 

@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { registerSchema } from "@/lib/validation";
 import bcrypt from "bcrypt";
-import { Role } from "@prisma/client";
+import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { sendEmail } from "@/lib/email";

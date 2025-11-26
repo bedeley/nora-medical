@@ -5,7 +5,7 @@ import { paymentSchema } from "@/lib/validation";
 import { NextResponse } from "next/server";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
-import { PaymentStatus, RefundDestination } from "@prisma/client";
+import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
