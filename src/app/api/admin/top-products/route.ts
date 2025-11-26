@@ -23,7 +23,7 @@ export async function GET(request: Request) {
     });
 
     const products = await Promise.all(
-      grouped.map(async (g) => {
+      grouped.map(async (g: { productId: string; _sum: { quantity: number | null } }) => {
         const product = await prisma.product.findUnique({
           where: { id: g.productId },
           select: { name: true, price: true },

@@ -19,9 +19,12 @@ export async function GET(
       where: { userId, status: { not: "CANCELLED" } },
       select: { total: true, amountPaid: true },
     });
-    const ordersTotal = orders.reduce((s, o) => s + Number(o.total || 0), 0);
+    const ordersTotal = orders.reduce(
+      (s: number, o: { total: unknown }) => s + Number(o.total || 0),
+      0
+    );
     const paidTotal = orders.reduce(
-      (s, o) => s + Number(o.amountPaid || 0),
+      (s: number, o: { amountPaid: unknown }) => s + Number(o.amountPaid || 0),
       0,
     );
     const balance = Math.max(0, ordersTotal - paidTotal);

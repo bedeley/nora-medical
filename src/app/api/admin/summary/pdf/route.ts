@@ -48,11 +48,11 @@ export async function GET(req: Request) {
 
     // 📊 Totals
     const totalRevenue = payments.reduce(
-      (s, p) => s + Number(p.amount || 0),
+      (s: number, p: { amount: unknown }) => s + Number(p.amount || 0),
       0
     );
     const totalExpense = expenses.reduce(
-      (s, e) => s + Number(e.amount || 0),
+      (s: number, e: { amount: unknown }) => s + Number(e.amount || 0),
       0
     );
     const profit = totalRevenue - totalExpense;

@@ -65,22 +65,25 @@ export async function GET(req: Request) {
 
     // 🧾 Merge + normalize
     const records = [
-      ...payments.map((p) => ({
+      ...payments.map((p: { id: string; createdAt: Date; amount: unknown; user?: { name?: string | null } | null }) => ({
         id: p.id,
         createdAt: p.createdAt,
-        type: "payment",
+        type: "payment" as const,
         name: p.user?.name || "Unknown",
         amount: Number(p.amount),
       })),
-      ...expenses.map((e) => ({
+      ...expenses.map((e: { id: string; createdAt: Date; category: string; amount: unknown }) => ({
         id: e.id,
         createdAt: e.createdAt,
-        type: "expense",
+        type: "expense" as const,
         category: e.category,
         amount: Number(e.amount),
       })),
     ].sort(
-      (a, b) =>
+      (
+        a: { createdAt: Date },
+        b: { createdAt: Date },
+      ) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
 

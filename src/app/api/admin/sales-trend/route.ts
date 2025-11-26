@@ -27,7 +27,7 @@ export async function GET(request: Request) {
     const days = eachDayOfInterval({ start: startDate, end: endDate });
 
     const results = await Promise.all(
-      days.map(async (day) => {
+      days.map(async (day: Date) => {
         const nextDay = new Date(day);
         nextDay.setDate(day.getDate() + 1);
         const total = await prisma.order.aggregate({

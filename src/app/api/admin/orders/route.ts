@@ -73,10 +73,13 @@ export async function POST(req: Request) {
       }
     }
 
-    const total = items.reduce((sum, it) => {
-      const p = productMap.get(it.productId)!;
-      return sum + Number(p.price) * it.quantity;
-    }, 0);
+    const total = items.reduce(
+      (sum: number, it: { productId: string; quantity: number }) => {
+        const p = productMap.get(it.productId)!;
+        return sum + Number(p.price) * it.quantity;
+      },
+      0
+    );
 
     const amountPaid = Math.min(initialPayment, total);
     const balance = Math.max(0, total - amountPaid);

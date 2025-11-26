@@ -47,7 +47,16 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" },
     });
 
-    const items = rows.map((r) => ({
+    const items = rows.map((r: {
+      id: string;
+      productId: string;
+      quantity: number;
+      unitCost: unknown;
+      supplier?: string | null;
+      note?: string | null;
+      createdAt: Date;
+      product?: { name?: string | null } | null;
+    }) => ({
       id: r.id,
       productId: r.productId,
       productName: r.product?.name ?? "",
@@ -73,8 +82,8 @@ export async function GET(req: Request) {
           JSON.stringify(r.note || ""),
         ].join(","));
       }
-      const totalQty = items.reduce((s, r) => s + r.quantity, 0);
-      const totalVal = items.reduce((s, r) => s + r.total, 0);
+      const totalQty = items.reduce((s: number, r: { quantity: number }) => s + r.quantity, 0);
+      const totalVal = items.reduce((s: number, r: { total: number }) => s + r.total, 0);
       lines.push(["Totals", "", String(totalQty), "", totalVal.toFixed(2), "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {

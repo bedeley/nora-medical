@@ -48,7 +48,15 @@ export async function GET(req: Request) {
       orderBy: { createdAt: "desc" },
     });
 
-    const items = rows.map((r) => ({
+    const items = rows.map((r: {
+      id: string;
+      productId: string;
+      delta: number;
+      reason: string;
+      createdAt: Date;
+      product?: { name?: string | null } | null;
+      purchase?: { supplier?: string | null; unitCost?: unknown } | null;
+    }) => ({
       id: r.id,
       productId: r.productId,
       productName: r.product?.name ?? "",
@@ -73,7 +81,10 @@ export async function GET(req: Request) {
           r.unitCost == null ? "" : r.unitCost.toFixed(2),
         ].join(","));
       }
-      const net = items.reduce((s, r) => s + Number(r.delta || 0), 0);
+      const net = items.reduce(
+        (s: number, r: { delta: unknown }) => s + Number(r.delta || 0),
+        0
+      );
       lines.push(["Net", "", String(net), "", "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {

@@ -100,7 +100,7 @@ export async function GET(req: Request) {
 
     if (format === "csv") {
       const header = ["Date", "Category", "Amount", "Note"]; 
-      const rows = items.map((e) => [
+      const rows = items.map((e: { createdAt: Date; category: string; amount: unknown; note?: string | null }) => [
         new Date(e.createdAt).toISOString(),
         e.category.replaceAll("\"", "'"),
         Number(e.amount).toFixed(2),

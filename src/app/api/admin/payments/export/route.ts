@@ -66,7 +66,15 @@ export async function GET(req: Request) {
     note?: string;
   };
 
-  const filtered = rows.filter((r) => {
+  const filtered = rows.filter((r: {
+    id: string;
+    userId: string | null;
+    user?: { email?: string | null } | null;
+    orderId: string | null;
+    amount: unknown;
+    note: string | null;
+    order?: { deliveryStatus?: string | null; deliveredAt?: Date | string | null } | null;
+  }) => {
     let meta: PaymentMeta | null = null;
     if (r.note) {
       try {
@@ -131,7 +139,10 @@ export async function GET(req: Request) {
   }
 
   // Totals row
-  const totalAmount = filtered.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  const totalAmount = filtered.reduce(
+    (sum: number, r: { amount: unknown }) => sum + Number(r.amount || 0),
+    0
+  );
   const totals = [
     "TOTAL",
     "",

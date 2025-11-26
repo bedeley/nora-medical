@@ -17,7 +17,14 @@ export async function GET() {
       include: { user: { select: { id: true, name: true, email: true } }, order: { select: { id: true, status: true } } },
     });
     const momo = payments
-      .map((p) => {
+      .map((p: {
+        id: string;
+        amount: unknown;
+        createdAt: Date;
+        note: string | null;
+        user: { id: string; name: string | null; email: string | null } | null;
+        order: { id: string; status: string | null } | null;
+      }) => {
         let meta: Record<string, unknown> | null = null;
         if (p.note) {
           try {

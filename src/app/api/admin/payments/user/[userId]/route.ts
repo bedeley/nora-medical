@@ -26,7 +26,15 @@ export async function GET(
       orderBy: { createdAt: "desc" },
     });
 
-    const rows = payments.map((p) => {
+    const rows = payments.map((p: {
+      id: string;
+      amount: unknown;
+      orderId: string | null;
+      createdAt: Date;
+      note: string | null;
+      status: string | null;
+      refundDisposition: string | null;
+    }) => {
       let meta: PaymentMeta | undefined;
       try {
         meta = p.note ? (JSON.parse(p.note) as PaymentMeta) : undefined;
@@ -59,7 +67,10 @@ export async function GET(
       };
     });
 
-    const total = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+    const total = rows.reduce(
+      (s: number, r: { amount: unknown }) => s + Number(r.amount || 0),
+      0
+    );
     return NextResponse.json({ payments: rows, total });
   } catch (e) {
     console.error("List user payments error:", e);

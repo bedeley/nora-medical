@@ -73,7 +73,10 @@ export async function GET(request: Request) {
         totalCOGS += unitCost * qty;
       }
     }
-    const totalExpense = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const totalExpense = expenses.reduce(
+      (sum: number, e: { amount: unknown }) => sum + Number(e.amount || 0),
+      0
+    );
     const profit = totalRevenue - totalCOGS - totalExpense;
     const margin = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
 

@@ -31,7 +31,7 @@ export async function POST(
 
   await prisma.$transaction(async (tx) => {
     const carts = await tx.cart.findMany({ where: { userId }, select: { id: true } });
-    const cartIds = carts.map((c) => c.id);
+    const cartIds = carts.map((c: { id: string }) => c.id);
     if (cartIds.length > 0) {
       await tx.cartItem.deleteMany({ where: { cartId: { in: cartIds } } });
       await tx.cart.deleteMany({ where: { id: { in: cartIds } } });
