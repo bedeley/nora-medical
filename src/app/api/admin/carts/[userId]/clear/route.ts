@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 
 // POST /api/admin/carts/[userId]/clear — clear a specific user's cart (admin only)
 export async function POST(
@@ -26,11 +25,11 @@ export async function POST(
       return NextResponse.json({ success: true, message: "Cart already empty" });
     }
 
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+    await prisma.$transaction([
+      prisma.cartItem.deleteMany({ where: { cartId: cart.id } }),
       // Optionally delete the cart record as well to keep things tidy
-      await tx.cart.delete({ where: { id: cart.id } });
-    });
+      prisma.cart.delete({ where: { id: cart.id } }),
+    ]);
 
     return NextResponse.json({ success: true, message: "Cart cleared" });
   } catch (error) {
