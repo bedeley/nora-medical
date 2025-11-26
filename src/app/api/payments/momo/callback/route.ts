@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { parseMomoCallback } from "@/lib/momo";
 
 export async function POST(req: Request) {
@@ -39,7 +41,7 @@ export async function POST(req: Request) {
     }
 
     // Apply to order balances, similar to admin payments route
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: TxClient) => {
       const fresh = await tx.payment.findUnique({ where: { id: payment.id } });
       if (!fresh) throw new Error("Payment disappeared");
 

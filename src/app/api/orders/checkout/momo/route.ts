@@ -6,6 +6,8 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo, isValidPhone, normalizePhoneGH } from "@/lib/momo";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 const schema = z.object({
   phone: z.string().min(7),
   provider: z.enum(["mtn", "vodafone", "airteltigo"]).default("mtn"),
@@ -39,7 +41,7 @@ export async function POST(req: Request) {
     if (!(total > 0)) return NextResponse.json({ error: "Invalid total" }, { status: 400 });
 
     // Create order, items, update stock, clear cart
-    const order = await prisma.$transaction(async (tx) => {
+    const order = await prisma.$transaction(async (tx: TxClient) => {
       const o = await tx.order.create({
         data: { userId, total, amountPaid: 0, balance: total, status: "UNPAID" },
       });
@@ -90,7 +92,7 @@ export async function POST(req: Request) {
     // Local/dev: TEST- reference means apply immediately
     const isTestRef = String(init.reference || "").startsWith("TEST-");
     if (isTestRef) {
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: TxClient) => {
         const o = await tx.order.findUnique({ where: { id: order.id } });
         if (!o) throw new Error("Order not found");
         const total2 = Number(o.total || 0);

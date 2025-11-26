@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { getMomoStatus, type MomoProvider } from "@/lib/momo";
 
 export async function GET(
@@ -38,7 +40,7 @@ export async function GET(
 
     if (String(status.status).toUpperCase() === "SUCCESSFUL") {
       // Apply to order balances if not already applied (idempotent)
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: TxClient) => {
         const fresh = await tx.payment.findUnique({ where: { id: payment.id } });
         if (!fresh) throw new Error("Payment disappeared");
         let currentMeta: Record<string, unknown> | null = null;

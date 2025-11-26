@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { productSchema } from "../route";
 import { z } from "zod";
 
@@ -152,7 +154,7 @@ export async function DELETE(
     }
 
     // Clean up any cart items referencing this product, then delete product
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: TxClient) => {
       await tx.cartItem.deleteMany({ where: { productId: params.id } });
       await tx.product.delete({ where: { id: params.id } });
     });

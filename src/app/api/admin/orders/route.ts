@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 const createSchema = z.object({
   userId: z.string().min(1),
   items: z
@@ -95,7 +97,7 @@ export async function POST(req: Request) {
     const balance = Math.max(0, total - amountPaid);
     const status = amountPaid <= 0 ? "UNPAID" : balance <= 0 ? "PAID" : "PARTIALLY_PAID";
 
-    const order = await prisma.$transaction(async (tx) => {
+    const order = await prisma.$transaction(async (tx: TxClient) => {
       const created = await tx.order.create({
         data: {
           userId,

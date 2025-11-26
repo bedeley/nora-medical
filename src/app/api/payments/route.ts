@@ -7,6 +7,8 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -88,7 +90,7 @@ export async function POST(req: Request) {
 
     const normalizedAmount = isRefund ? -Math.abs(baseAmount) : baseAmount;
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: TxClient) => {
       // Snapshot totals BEFORE applying payment
       const beforeOrders = await tx.order.findMany({
         where: { userId, NOT: { status: "CANCELLED" } },

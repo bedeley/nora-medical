@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import bcrypt from "bcrypt";
@@ -106,7 +108,7 @@ export async function POST(req: Request) {
     }
 
     const hashed = await bcrypt.hash(password, 10);
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: TxClient) => {
       await tx.user.update({ where: { id: user.id }, data: { password: hashed } });
       await tx.userOtp.deleteMany({ where: { userId: user.id, purpose: "password_reset" } });
     });

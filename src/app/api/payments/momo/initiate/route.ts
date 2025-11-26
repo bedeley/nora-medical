@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo } from "@/lib/momo";
@@ -79,7 +81,7 @@ export async function POST(req: Request) {
     // customer flow works without polling.
     const isTestRef = String(init.reference || "").startsWith("TEST-");
     if (isTestRef) {
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: TxClient) => {
         const fresh = await tx.payment.findUnique({ where: { id: payment.id } });
         if (!fresh) throw new Error('Payment disappeared');
         const userId2 = fresh.userId || undefined;

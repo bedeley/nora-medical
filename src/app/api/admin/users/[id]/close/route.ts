@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { assertSameOrigin } from "@/lib/origin";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 export async function POST(
   req: Request,
   { params }: { params: { id: string } }
@@ -29,7 +31,7 @@ export async function POST(
     );
   }
 
-  await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx: TxClient) => {
     const carts = await tx.cart.findMany({ where: { userId }, select: { id: true } });
     const cartIds = carts.map((c: { id: string }) => c.id);
     if (cartIds.length > 0) {

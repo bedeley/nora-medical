@@ -4,6 +4,8 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 /**
  * ✅ GET /api/orders
  * Fetch user orders (or all orders if admin)
@@ -126,7 +128,7 @@ export async function POST(req: Request) {
     );
 
     // ✅ All actions in one safe transaction
-    const order = await prisma.$transaction(async (tx) => {
+    const order = await prisma.$transaction(async (tx: TxClient) => {
       const newOrder = await tx.order.create({
         data: {
           userId,

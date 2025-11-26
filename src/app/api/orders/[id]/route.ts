@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 import { z } from "zod";
 
 type OrderWithRelations = {
@@ -214,7 +216,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Only undelivered, unpaid orders can be deleted" }, { status: 400 });
     }
 
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: TxClient) => {
       await tx.payment.updateMany({ where: { orderId: params.id }, data: { orderId: null } });
       await tx.orderItem.deleteMany({ where: { orderId: params.id } });
       await tx.order.delete({ where: { id: params.id } });

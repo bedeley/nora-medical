@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
+
 type PurchasesWhere = {
   productId?: string;
   supplier?: { contains: string; mode: "insensitive" };
@@ -121,7 +123,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid input" }, { status: 400 });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: TxClient) => {
       const product = await tx.product.findUnique({ where: { id: productId }, select: { stock: true, cost: true } });
       if (!product) throw new Error("Product not found");
       const oldStock = Number(product.stock || 0);

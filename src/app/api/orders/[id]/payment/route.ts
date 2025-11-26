@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+import { prisma } from "@/lib/prisma";
+
+type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => any ? A : never;
 
 const paymentSchema = z.object({
   amount: z.number().positive("Amount must be greater than 0"),
@@ -33,7 +35,7 @@ export async function PATCH(
 
     const { amount, note } = parsed.data;
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: TxClient) => {
       const order = await tx.order.findUnique({ where: { id: params.id } });
       if (!order) throw new Error("Order not found");
       if (order.status === "CANCELLED") throw new Error("Cannot record payment for cancelled order");
