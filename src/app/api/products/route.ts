@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 /**
@@ -64,16 +63,19 @@ export async function GET(request: Request) {
   try {
     const includeArchived = searchParams.get("includeArchived") === "1";
     const startsWith = searchParams.get("startsWith") === "1";
-    const nameFilter: Prisma.ProductWhereInput = startsWith
-      ? { name: { startsWith: q, mode: "insensitive" as const } }
-      : { name: { contains: q, mode: "insensitive" as const } };
-    const where: Prisma.ProductWhereInput = {
+    const nameFilter =
+      q && startsWith
+        ? { name: { startsWith: q, mode: "insensitive" as const } }
+        : q
+        ? { name: { contains: q, mode: "insensitive" as const } }
+        : null;
+
+    const where = {
       AND: [
-        q
+        nameFilter
           ? {
               OR: [
                 nameFilter,
-                // still allow description match for non-prefix queries
                 ...(startsWith
                   ? []
                   : [{ description: { contains: q, mode: "insensitive" as const } }]),
@@ -82,7 +84,7 @@ export async function GET(request: Request) {
           : {},
         includeArchived ? {} : { archived: false },
       ],
-    };
+    } satisfies NonNullable<Parameters<typeof prisma.product.findMany>[0]>["where"];
 
     const [items, total] = await Promise.all([
       prisma.product.findMany({

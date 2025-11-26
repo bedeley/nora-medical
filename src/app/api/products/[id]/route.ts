@@ -4,7 +4,6 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { productSchema } from "../route";
 import { z } from "zod";
-import type { Prisma } from "@prisma/client";
 
 /**
  * ✅ GET /api/products/[id]
@@ -96,9 +95,10 @@ export async function PATCH(
       );
     }
 
+    const updateData = parsed.data as Parameters<typeof prisma.product.update>[0]["data"];
     const updated = await prisma.product.update({
       where: { id: params.id },
-      data: parsed.data as Prisma.ProductUpdateInput,
+      data: updateData,
     });
 
     const safeProduct = {

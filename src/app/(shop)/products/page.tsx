@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@prisma/client";
 import ProductCard from "./ProductCard";
 import ProductFilters from "./ProductFilters";
 import Pagination from "./Pagination";
@@ -41,14 +40,15 @@ export default async function ProductsPage({
   const pageSize = 12;
 
   // ✅ Dynamic Prisma filter
-  const where: Prisma.ProductWhereInput = q
-    ? {
-        OR: [
-          { name: { contains: q, mode: "insensitive" } },
-          { description: { contains: q, mode: "insensitive" } },
-        ],
-      }
-    : {};
+  const where =
+    q
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { description: { contains: q, mode: "insensitive" } },
+          ],
+        }
+      : ({} as const);
 
   // ✅ Query products and count in parallel
   const [items, total] = await Promise.all([

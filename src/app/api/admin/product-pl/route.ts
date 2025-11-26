@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 import { parseISO, isValid, startOfDay, endOfDay, startOfWeek, startOfMonth, startOfYear } from "date-fns";
 import PDFDocument from "pdfkit";
 
@@ -50,7 +49,7 @@ export async function GET(request: Request) {
       lte = endOfDay(now);
     }
 
-    const where: Prisma.OrderItemWhereInput = {
+    const where = {
       order: {
         NOT: { status: "CANCELED" },
         ...(gte || lte ? { createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } } : {}),
@@ -62,7 +61,7 @@ export async function GET(request: Request) {
             },
           }
         : {}),
-    };
+    } satisfies NonNullable<Parameters<typeof prisma.orderItem.findMany>[0]>["where"];
 
     // Pull order items within the window with related product + order date
     const items = await prisma.orderItem.findMany({
