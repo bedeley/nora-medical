@@ -84,7 +84,7 @@ export default async function ProductsPage({
         <>
           <div className="mt-8 max-w-5xl mx-auto">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {plainItems.map((p) => (
+            {plainItems.map((p: (typeof plainItems)[number]) => (
               <ProductCard
                 key={p.id}
                 id={p.id}
