@@ -65,7 +65,7 @@ export async function GET(req: Request) {
 
     // 🧮 Build rows
     // Optional delivery filter
-    const deliveryFiltered = orders.filter((o) => {
+    const deliveryFiltered = orders.filter((o: typeof orders[number]) => {
       if (!delivery) return true;
       const ds = String(o.deliveryStatus || "").toUpperCase();
       if (delivery === "not-delivered") return ds === "NOT_DELIVERED";
