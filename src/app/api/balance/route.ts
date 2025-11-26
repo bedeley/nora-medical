@@ -68,9 +68,18 @@ export async function GET(req: Request) {
       }),
     ]);
 
-    const totalDue = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
-    const totalPaid = orders.reduce((sum, o) => sum + Number(o.amountPaid || 0), 0);
-    const paymentsTotal = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const totalDue = orders.reduce(
+      (sum: number, o: { total: unknown }) => sum + Number(o.total || 0),
+      0
+    );
+    const totalPaid = orders.reduce(
+      (sum: number, o: { amountPaid: unknown }) => sum + Number(o.amountPaid || 0),
+      0
+    );
+    const paymentsTotal = payments.reduce(
+      (sum: number, p: { amount: unknown }) => sum + Number(p.amount || 0),
+      0
+    );
     const balance = Math.max(0, totalDue - totalPaid);
     const cashRefunds = payments
       .filter(
