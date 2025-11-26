@@ -51,7 +51,7 @@ export async function GET() {
         };
         return item;
       })
-      .filter((item): item is MomoPending => item !== null);
+      .filter((item: MomoPending | null): item is MomoPending => item !== null);
 
     return NextResponse.json({ items: momo });
   } catch {
