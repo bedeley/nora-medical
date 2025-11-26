@@ -3,6 +3,13 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+type ProductSummary = {
+  id: string;
+  name: string;
+  totalSold: number;
+  revenue: number;
+};
+
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -22,7 +29,7 @@ export async function GET(request: Request) {
       take: 10,
     });
 
-    const products = await Promise.all(
+    const products: ProductSummary[] = await Promise.all(
       grouped.map(async (g: { productId: string; _sum: { quantity: number | null } }) => {
         const product = await prisma.product.findUnique({
           where: { id: g.productId },
@@ -41,8 +48,8 @@ export async function GET(request: Request) {
 
     const sorted =
       mode === "revenue"
-        ? products.sort((a, b) => b.revenue - a.revenue)
-        : products.sort((a, b) => b.totalSold - a.totalSold);
+        ? products.sort((a: ProductSummary, b: ProductSummary) => b.revenue - a.revenue)
+        : products.sort((a: ProductSummary, b: ProductSummary) => b.totalSold - a.totalSold);
 
     return NextResponse.json(sorted);
   } catch (error) {
