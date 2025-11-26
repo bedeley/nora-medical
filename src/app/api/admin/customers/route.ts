@@ -127,7 +127,12 @@ export async function GET() {
       }
     > = {};
     for (const cart of carts) {
-      const items = (cart.items || []).map((item) => {
+      const items = (cart.items || []).map((item: {
+        id: string;
+        productId: string;
+        quantity: number;
+        product?: { name?: string | null; price?: unknown } | null;
+      }) => {
         const price = Number(item.product?.price ?? 0);
         const subtotal = price * item.quantity;
         return {
