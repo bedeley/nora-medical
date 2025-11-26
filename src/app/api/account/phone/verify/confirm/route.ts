@@ -6,6 +6,8 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import bcrypt from "bcrypt";
 
+type TxClient = Omit<typeof prisma, "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends">;
+
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
     if (!otp) return NextResponse.json({ error: "No valid code found" }, { status: 400 });
     const ok = await bcrypt.compare(String(code), otp.codeHash);
     if (!ok) return NextResponse.json({ error: "Incorrect code" }, { status: 400 });
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: TxClient) => {
       await tx.user.update({
         where: { id: userId },
         data: { phoneVerifiedAt: new Date() },
