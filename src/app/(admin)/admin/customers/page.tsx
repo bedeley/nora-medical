@@ -139,6 +139,7 @@ export default function AdminCustomers() {
   const [refundSubmitting, setRefundSubmitting] = useState(false);
   const orderListId = useId();
   const [viewCart, setViewCart] = useState<{ user: CustomerRow["user"]; cart: CustomerRow["cart"] } | null>(null);
+  const [confirmPaymentOpen, setConfirmPaymentOpen] = useState(false);
 
   // Payments summary for current export filters
   const summaryParams = new URLSearchParams({ month: exportMonth });
@@ -946,15 +947,43 @@ export default function AdminCustomers() {
               />
               Auto-text receipt to customer
             </label>
-            <Input
-              placeholder="Customer phone (optional override)"
-              value={smsPhone}
-              onChange={(e) => setSmsPhone(e.target.value)}
-            />
+          <Input
+            placeholder="Customer phone (optional override)"
+            value={smsPhone}
+            onChange={(e) => setSmsPhone(e.target.value)}
+          />
           </div>
-          <Button onClick={submitPayment} disabled={disableSubmit}>
-            Add Payment
-          </Button>
+          <Dialog open={confirmPaymentOpen} onOpenChange={setConfirmPaymentOpen}>
+            <DialogTrigger asChild>
+              <Button disabled={disableSubmit}>
+                Add Payment
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Confirm payment entry</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                You are about to record a payment for this customer. Please confirm that the amount,
+                method, and related order or user are correct before continuing.
+              </p>
+              <div className="flex justify-end gap-2 mt-4">
+                <DialogClose asChild>
+                  <Button variant="secondary">Cancel</Button>
+                </DialogClose>
+                <DialogClose asChild>
+                  <Button
+                    onClick={() => {
+                      void submitPayment();
+                    }}
+                    disabled={disableSubmit}
+                  >
+                    Confirm &amp; Save
+                  </Button>
+                </DialogClose>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
         <div className="hidden md:block overflow-x-auto">
           <Table className="w-full table-auto min-w-[1120px] admin-customers-table">

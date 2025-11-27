@@ -48,6 +48,8 @@ export default function CartPage() {
   const [momoPhone, setMomoPhone] = useState("");
   const [momoAmount, setMomoAmount] = useState("");
   const [momoProcessing, setMomoProcessing] = useState(false);
+  const [confirmPlaceOrderOpen, setConfirmPlaceOrderOpen] = useState(false);
+  const [confirmMomoOpen, setConfirmMomoOpen] = useState(false);
   const qtyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
   const { data, error } = useQuery({
     queryKey: ["cart"],
@@ -391,7 +393,190 @@ export default function CartPage() {
         </Dialog>
       </header>
 
-      <div className="overflow-x-auto">
+      {/* Mobile: stacked card layout to avoid horizontal scrolling */}
+      <div className="grid gap-3 md:hidden">
+        {itemsSorted.map((it) => (
+          <div key={it.id} className="flex gap-3 border-t pt-3 first:border-t-0">
+            <Image
+              src={it.product.imageUrl || "/placeholder.png"}
+              alt={it.product.name}
+              width={64}
+              height={64}
+              unoptimized
+              onError={(e) => {
+                const target = e.currentTarget;
+                target.src = "/placeholder.png";
+              }}
+              className="rounded-md object-cover flex-shrink-0"
+            />
+            <div className="flex-1 space-y-2">
+              <div>
+                <div className="font-medium">{it.product.name}</div>
+                <div className="text-sm text-muted-foreground">
+                  {formatCurrency(Number(it.product.price))} each
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Qty</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        className="w-20 cursor-pointer"
+                        value={tempQty[it.id] ?? String(it.quantity)}
+                        onFocus={(e) => {
+                          try {
+                            (e.target as HTMLInputElement).select();
+                          } catch {}
+                          setTempQty((prev) => ({
+                            ...prev,
+                            [it.id]: String(it.quantity),
+                          }));
+                        }}
+                        onClick={(e) => {
+                          try {
+                            (e.target as HTMLInputElement).select();
+                          } catch {}
+                        }}
+                        onChange={(e) => {
+                          const raw = e.target.value || "";
+                          let digits = raw.replace(/\D+/g, "").slice(0, 3);
+                          if (digits) {
+                            const capped = Math.min(100, Number(digits));
+                            digits = String(capped);
+                          }
+                          setTempQty((prev) => ({ ...prev, [it.id]: digits }));
+                          const next = Number(digits);
+                          if (
+                            digits &&
+                            Number.isFinite(next) &&
+                            next >= 1 &&
+                            next <= 100
+                          ) {
+                            scheduleQtyUpdate(it.id, next);
+                          }
+                        }}
+                        onBlur={async () => {
+                          const cur = tempQty[it.id];
+                          if (cur) {
+                            const existing = qtyTimers.current[it.id];
+                            if (existing) {
+                              try {
+                                clearTimeout(existing);
+                              } catch {}
+                            }
+                            const v = Math.min(
+                              100,
+                              Math.max(1, Number(cur))
+                            );
+                            await updateQty(it.id, v);
+                            queryClient.invalidateQueries({
+                              queryKey: ["cart"],
+                            });
+                          }
+                          setTempQty((prev) => {
+                            const n = { ...prev };
+                            delete n[it.id];
+                            return n;
+                          });
+                        }}
+                        disabled={
+                          updatingIds.has(it.id) || removingIds.has(it.id)
+                        }
+                      />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      side="bottom"
+                      className="max-h-60 overflow-y-auto"
+                    >
+                      {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                        <DropdownMenuItem
+                          key={n}
+                          onClick={async () => {
+                            setTempQty((prev) => ({
+                              ...prev,
+                              [it.id]: String(n),
+                            }));
+                            const existing = qtyTimers.current[it.id];
+                            if (existing) {
+                              try {
+                                clearTimeout(existing);
+                              } catch {}
+                            }
+                            await updateQty(it.id, n);
+                            queryClient.invalidateQueries({
+                              queryKey: ["cart"],
+                            });
+                            setTempQty((prev) => {
+                              const x = { ...prev };
+                              delete x[it.id];
+                              return x;
+                            });
+                          }}
+                        >
+                          {n}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <div className="text-sm font-semibold">
+                  {formatCurrency(Number(it.product.price) * it.quantity)}
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={removingIds.has(it.id)}
+                    >
+                      Remove
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Remove item?</DialogTitle>
+                    </DialogHeader>
+                    <p className="text-sm text-muted-foreground">
+                      Are you sure you want to remove{" "}
+                      <strong>{it.product.name}</strong> from your cart?
+                    </p>
+                    <div className="flex gap-2 justify-end mt-4">
+                      <DialogClose asChild>
+                        <Button variant="secondary">Cancel</Button>
+                      </DialogClose>
+                      <DialogClose asChild>
+                        <Button
+                          variant="destructive"
+                          onClick={() =>
+                            removeItem(
+                              it.id,
+                              it.product.id,
+                              it.product.name
+                            )
+                          }
+                          disabled={removingIds.has(it.id)}
+                        >
+                          Confirm
+                        </Button>
+                      </DialogClose>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Desktop: tabular layout */}
+      <div className="hidden md:block overflow-x-auto">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="text-left border-b">
@@ -548,15 +733,64 @@ export default function CartPage() {
             <span>{formatCurrency(subtotal)}</span>
           </div>
           <div className="mt-3 grid gap-2">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-muted-foreground">
                 Call <strong>{ADMIN_PHONE}</strong> to arrange payment or pay now with MoMo.
               </p>
-              <Button onClick={placeOrder} disabled={!items.length || placing}>
-                Place Order
-              </Button>
+              <Dialog open={confirmPlaceOrderOpen} onOpenChange={setConfirmPlaceOrderOpen}>
+                <DialogTrigger asChild>
+                  <Button disabled={!items.length || placing}>
+                    Place Order
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Review and confirm order</DialogTitle>
+                  </DialogHeader>
+                  <div className="text-sm space-y-3">
+                    <p className="text-muted-foreground">
+                      Please review your order details before placing it and arranging payment with admin.
+                    </p>
+                    <div className="rounded-md border p-3 bg-muted/40 space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">Items</span>
+                        <span className="font-medium">{items.length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">Order total</span>
+                        <span className="font-semibold">{formatCurrency(subtotal)}</span>
+                      </div>
+                    </div>
+                    {itemsSorted.length > 0 && (
+                      <div className="text-xs text-muted-foreground">
+                        <span className="font-medium">Includes:</span>{" "}
+                        {itemsSorted
+                          .slice(0, 3)
+                          .map((it) => it.product.name)
+                          .join(", ")}
+                        {itemsSorted.length > 3 ? "…" : ""}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex justify-end gap-2 mt-4">
+                    <DialogClose asChild>
+                      <Button variant="secondary">Cancel</Button>
+                    </DialogClose>
+                    <DialogClose asChild>
+                      <Button
+                        onClick={() => {
+                          void placeOrder();
+                        }}
+                        disabled={placing}
+                      >
+                        Confirm
+                      </Button>
+                    </DialogClose>
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end">
               <Input
                 placeholder="MoMo number"
                 value={momoPhone}
@@ -570,9 +804,63 @@ export default function CartPage() {
                 onChange={(e) => setMomoAmount(e.target.value)}
                 className="w-36"
               />
-              <Button onClick={placeOrderAndPayMomo} disabled={!items.length || momoProcessing}>
-                {momoProcessing ? 'Processing…' : 'Place Order + Pay with MoMo'}
-              </Button>
+              <Dialog open={confirmMomoOpen} onOpenChange={setConfirmMomoOpen}>
+                <DialogTrigger asChild>
+                  <Button disabled={!items.length || momoProcessing}>
+                    {momoProcessing ? 'Processing…' : 'Place Order + Pay with MoMo'}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Confirm MoMo payment</DialogTitle>
+                  </DialogHeader>
+                  <div className="text-sm space-y-3">
+                    <p className="text-muted-foreground">
+                      You are about to place this order and initiate a Mobile Money (MoMo) payment.
+                      Please review the key details below before continuing.
+                    </p>
+                    <div className="rounded-md border p-3 bg-muted/40 space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">Items</span>
+                        <span className="font-medium">{items.length}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">Cart total</span>
+                        <span className="font-semibold">{formatCurrency(subtotal)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">MoMo number</span>
+                        <span className="font-medium break-all">
+                          {momoPhone || me?.phone || "Not provided"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-xs text-muted-foreground">Payment amount</span>
+                        <span className="font-medium">
+                          {momoAmount
+                            ? momoAmount
+                            : formatCurrency(subtotal)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2 mt-4">
+                    <DialogClose asChild>
+                      <Button variant="secondary">Cancel</Button>
+                    </DialogClose>
+                    <DialogClose asChild>
+                      <Button
+                        onClick={() => {
+                          void placeOrderAndPayMomo();
+                        }}
+                        disabled={momoProcessing}
+                      >
+                        Confirm &amp; Pay
+                      </Button>
+                    </DialogClose>
+                  </div>
+                </DialogContent>
+              </Dialog>
             </div>
           </div>
         </div>

@@ -23,6 +23,14 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { formatCurrency, formatDateGH } from "@/lib/currency";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -547,6 +555,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
   const [amtStr, setAmtStr] = useState<string>(() => (Number(maxAmount) > 0 ? String(Number(maxAmount).toFixed(2)) : ""));
   const [loading, setLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const normalizePhone = (input: string) => {
     const s = (input || "").trim().replace(/[^\d+]/g, "");
@@ -712,9 +721,62 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
         </span>
       </div>
       <div className="flex gap-2">
-        <Button size="sm" onClick={onPay} disabled={loading || !isValidPhone(phone) || amountInvalid}>
-          {loading ? 'Processing...' : 'Pay with MoMo'}
-        </Button>
+        <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <DialogTrigger asChild>
+            <Button
+              size="sm"
+              disabled={loading || !isValidPhone(phone) || amountInvalid}
+            >
+              {loading ? 'Processing...' : 'Pay with MoMo'}
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Confirm MoMo payment</DialogTitle>
+            </DialogHeader>
+            <div className="text-sm space-y-3">
+              <p className="text-muted-foreground">
+                You are about to pay your outstanding balance via Mobile Money (MoMo).
+                Please review the payment details below before continuing.
+              </p>
+              <div className="rounded-md border p-3 bg-muted/40 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-xs text-muted-foreground">MoMo number</span>
+                  <span className="font-medium break-all">
+                    {phone || defaultPhone || "Not provided"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-xs text-muted-foreground">Amount to pay</span>
+                  <span className="font-semibold">
+                    {formatCurrency(parsedAmount || 0)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-xs text-muted-foreground">Outstanding balance</span>
+                  <span className="text-xs font-medium">
+                    {formatCurrency(Number(maxAmount) || 0)}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <DialogClose asChild>
+                <Button variant="secondary">Cancel</Button>
+              </DialogClose>
+              <DialogClose asChild>
+                <Button
+                  onClick={() => {
+                    void onPay();
+                  }}
+                  disabled={loading}
+                >
+                  Confirm &amp; Pay
+                </Button>
+              </DialogClose>
+            </div>
+          </DialogContent>
+        </Dialog>
         <Button
           size="sm"
           variant="secondary"
@@ -733,7 +795,8 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
       </div>
     </div>
   );
-}function MomoPendingList({ payments, onSettled }: { payments: Array<{ id: string; note: string | null }>; onSettled?: () => void }) {
+}
+function MomoPendingList({ payments, onSettled }: { payments: Array<{ id: string; note: string | null }>; onSettled?: () => void }) {
   const pending = (payments || [])
     .map((p) => {
       try {
