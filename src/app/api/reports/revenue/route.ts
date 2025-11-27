@@ -222,7 +222,7 @@ export async function GET(req: Request) {
         .moveDown(0.5);
       doc.font("Helvetica").fontSize(9);
 
-      rows.slice(0, 25).forEach((r) => {
+      rows.slice(0, 25).forEach((r: (typeof rows)[number]) => {
         doc.text(
           `${r.date.slice(0, 10)} | ${r.userName} | ${r.product} × ${
             r.quantity
