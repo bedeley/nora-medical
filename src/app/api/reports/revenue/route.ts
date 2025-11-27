@@ -327,7 +327,7 @@ export async function GET(req: Request) {
 
     // Delivery summary for CSV footer
     const deliveryCounts = (deliveryFiltered || []).reduce(
-      (acc, o) => {
+      (acc: { delivered: number; partial: number; pending: number }, o: { deliveryStatus: string | null }) => {
         const ds = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
         if (ds === "DELIVERED") acc.delivered += 1;
         else if (ds === "PARTIALLY_DELIVERED") acc.partial += 1;
