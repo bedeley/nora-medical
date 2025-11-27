@@ -1,5 +1,5 @@
 import { PrismaClient as RuntimePrismaClient } from "@prisma/client";
-import type { PrismaClient as GeneratedPrismaClient } from "../generated/prisma";
+import type { PrismaClient as GeneratedPrismaClient } from "@/generated/prisma";
 
 type PrismaClient = GeneratedPrismaClient;
 
