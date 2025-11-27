@@ -52,7 +52,7 @@ export async function GET(req: Request) {
 
     try {
       const expenseData = await prisma.expense.findMany();
-      expenses = expenseData.map((e: typeof expenseData[number]) => ({
+      expenses = expenseData.map((e: (typeof expenseData)[number]) => ({
         id: e.id,
         category: e.category,
         note: e.note,
@@ -65,7 +65,7 @@ export async function GET(req: Request) {
 
     // 🧮 Build rows
     // Optional delivery filter
-    const deliveryFiltered = orders.filter((o: typeof orders[number]) => {
+    const deliveryFiltered = orders.filter((o: (typeof orders)[number]) => {
       if (!delivery) return true;
       const ds = String(o.deliveryStatus || "").toUpperCase();
       if (delivery === "not-delivered") return ds === "NOT_DELIVERED";
@@ -75,7 +75,7 @@ export async function GET(req: Request) {
     });
 
     const rows = deliveryFiltered.flatMap((order: (typeof orders)[number]) =>
-      order.items.map((item: typeof order.items[number]) => {
+      order.items.map((item: (typeof order.items)[number]) => {
         const price = Number(item.price);
         const total = price * item.quantity;
         const profit = total * 0.25; // Example: 25% profit margin
@@ -91,9 +91,7 @@ export async function GET(req: Request) {
           profit: profit.toFixed(2),
           status: order.status,
           deliveryStatus: order.deliveryStatus || "",
-          deliveredAt: order.deliveredAt
-            ? order.deliveredAt.toISOString()
-            : "",
+          deliveredAt: order.deliveredAt ? order.deliveredAt.toISOString() : "",
           date: order.createdAt.toISOString(),
         };
       })
@@ -185,14 +183,19 @@ export async function GET(req: Request) {
       // Delivery summary (based on filtered orders)
       try {
         const deliveryCounts = (deliveryFiltered || []).reduce(
-          (acc: { delivered: number; partial: number; pending: number }, o: { deliveryStatus: string | null }) => {
-            const ds = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+          (
+            acc: { delivered: number; partial: number; pending: number },
+            o: { deliveryStatus: string | null }
+          ) => {
+            const ds = String(
+              o.deliveryStatus || "NOT_DELIVERED"
+            ).toUpperCase();
             if (ds === "DELIVERED") acc.delivered += 1;
             else if (ds === "PARTIALLY_DELIVERED") acc.partial += 1;
             else acc.pending += 1;
             return acc;
           },
-          { delivered: 0, partial: 0, pending: 0 },
+          { delivered: 0, partial: 0, pending: 0 }
         );
         doc
           .font("Helvetica-Bold")
@@ -200,17 +203,45 @@ export async function GET(req: Request) {
           .text("Delivery Summary", { underline: true })
           .moveDown(0.5);
         doc.font("Helvetica").fontSize(11);
-        const totalDeliveries = deliveryCounts.delivered + deliveryCounts.partial + deliveryCounts.pending;
-        const pct = (n: number) => (totalDeliveries > 0 ? `${((n / totalDeliveries) * 100).toFixed(1)}%` : "0.0%");
+        const totalDeliveries =
+          deliveryCounts.delivered +
+          deliveryCounts.partial +
+          deliveryCounts.pending;
+        const pct = (n: number) =>
+          totalDeliveries > 0
+            ? `${((n / totalDeliveries) * 100).toFixed(1)}%`
+            : "0.0%";
         // Counts with percentages
-        doc.text(`Delivered: ${deliveryCounts.delivered} (${pct(deliveryCounts.delivered)})`);
-        doc.text(`Partially Delivered: ${deliveryCounts.partial} (${pct(deliveryCounts.partial)})`);
-        doc.text(`Not Delivered: ${deliveryCounts.pending} (${pct(deliveryCounts.pending)})`);
+        doc.text(
+          `Delivered: ${deliveryCounts.delivered} (${pct(
+            deliveryCounts.delivered
+          )})`
+        );
+        doc.text(
+          `Partially Delivered: ${deliveryCounts.partial} (${pct(
+            deliveryCounts.partial
+          )})`
+        );
+        doc.text(
+          `Not Delivered: ${deliveryCounts.pending} (${pct(
+            deliveryCounts.pending
+          )})`
+        );
         // Compact one-line summary
         doc.moveDown(0.3);
-        doc.font("Helvetica-Oblique").fontSize(10).fillColor("gray").text(
-          `Summary: Delivered ${deliveryCounts.delivered} (${pct(deliveryCounts.delivered)}) • Partial ${deliveryCounts.partial} (${pct(deliveryCounts.partial)}) • Not Delivered ${deliveryCounts.pending} (${pct(deliveryCounts.pending)})`
-        );
+        doc
+          .font("Helvetica-Oblique")
+          .fontSize(10)
+          .fillColor("gray")
+          .text(
+            `Summary: Delivered ${deliveryCounts.delivered} (${pct(
+              deliveryCounts.delivered
+            )}) • Partial ${deliveryCounts.partial} (${pct(
+              deliveryCounts.partial
+            )}) • Not Delivered ${deliveryCounts.pending} (${pct(
+              deliveryCounts.pending
+            )})`
+          );
         doc.fillColor("black").font("Helvetica").fontSize(11).moveDown(1);
       } catch {}
 
@@ -229,8 +260,14 @@ export async function GET(req: Request) {
           } | ${formatCurrency(Number(r.total))} (${r.status})`
         );
         {
-          const delivered = r.deliveredAt ? new Date(r.deliveredAt).toISOString().slice(0, 10) : "";
-          doc.text(`Delivery: ${r.deliveryStatus || ""}${delivered ? ` on ${delivered}` : ""}`);
+          const delivered = r.deliveredAt
+            ? new Date(r.deliveredAt).toISOString().slice(0, 10)
+            : "";
+          doc.text(
+            `Delivery: ${r.deliveryStatus || ""}${
+              delivered ? ` on ${delivered}` : ""
+            }`
+          );
         }
       });
 
@@ -254,7 +291,9 @@ export async function GET(req: Request) {
           doc.text(
             `${e.createdAt.toISOString().slice(0, 10)} | ${
               e.category
-            } | ${formatCurrency(Number(e.amount))} ${e.note ? `(${e.note})` : ""}`
+            } | ${formatCurrency(Number(e.amount))} ${
+              e.note ? `(${e.note})` : ""
+            }`
           );
         });
         if (expenses.length > 10) {
@@ -327,17 +366,26 @@ export async function GET(req: Request) {
 
     // Delivery summary for CSV footer
     const deliveryCounts = (deliveryFiltered || []).reduce(
-      (acc: { delivered: number; partial: number; pending: number }, o: { deliveryStatus: string | null }) => {
+      (
+        acc: { delivered: number; partial: number; pending: number },
+        o: { deliveryStatus: string | null }
+      ) => {
         const ds = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
         if (ds === "DELIVERED") acc.delivered += 1;
         else if (ds === "PARTIALLY_DELIVERED") acc.partial += 1;
         else acc.pending += 1;
         return acc;
       },
-      { delivered: 0, partial: 0, pending: 0 },
+      { delivered: 0, partial: 0, pending: 0 }
     );
-    const totalDeliveries = deliveryCounts.delivered + deliveryCounts.partial + deliveryCounts.pending;
-    const pct = (n: number) => (totalDeliveries > 0 ? `${((n / totalDeliveries) * 100).toFixed(1)}%` : "0.0%");
+    const totalDeliveries =
+      deliveryCounts.delivered +
+      deliveryCounts.partial +
+      deliveryCounts.pending;
+    const pct = (n: number) =>
+      totalDeliveries > 0
+        ? `${((n / totalDeliveries) * 100).toFixed(1)}%`
+        : "0.0%";
 
     const csvRows = [
       csvHeader.join(","),
@@ -364,7 +412,13 @@ export async function GET(req: Request) {
       `Total Expenses,,,${formatCurrency(totalExpenses)}`,
       `Net Balance,,,${formatCurrency(netBalance)}`,
       "",
-      `Delivery Summary,,,"Delivered ${deliveryCounts.delivered} (${pct(deliveryCounts.delivered)}) • Partial ${deliveryCounts.partial} (${pct(deliveryCounts.partial)}) • Not Delivered ${deliveryCounts.pending} (${pct(deliveryCounts.pending)})"`,
+      `Delivery Summary,,,"Delivered ${deliveryCounts.delivered} (${pct(
+        deliveryCounts.delivered
+      )}) • Partial ${deliveryCounts.partial} (${pct(
+        deliveryCounts.partial
+      )}) • Not Delivered ${deliveryCounts.pending} (${pct(
+        deliveryCounts.pending
+      )})"`,
     ].join("\n");
 
     return new NextResponse(csvRows, {
