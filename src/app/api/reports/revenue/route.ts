@@ -74,7 +74,7 @@ export async function GET(req: Request) {
       return true;
     });
 
-    const rows = deliveryFiltered.flatMap((order) =>
+    const rows = deliveryFiltered.flatMap((order: (typeof orders)[number]) =>
       order.items.map((item: typeof order.items[number]) => {
         const price = Number(item.price);
         const total = price * item.quantity;
