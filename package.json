@@ -6,6 +6,7 @@
     "scripts": {
         "fix:orders": "tsx prisma/scripts/normalize-orders.ts",
         "dev": "next dev --turbopack",
+        "prebuild": "prisma generate",
         "build": "next build --turbopack",
         "start": "next start",
         "lint": "eslint",
