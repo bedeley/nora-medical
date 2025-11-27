@@ -389,7 +389,7 @@ export async function GET(req: Request) {
 
     const csvRows = [
       csvHeader.join(","),
-      ...rows.map((r) =>
+      ...rows.map((r: (typeof rows)[number]) =>
         [
           r.orderId,
           `"${r.userName}"`,
