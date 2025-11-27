@@ -245,7 +245,7 @@ export default function NavBar() {
                 </Button>
               </div>
               <nav className="space-y-4 text-lg font-medium">
-                {mobileLinks.map((link) => (
+                {mobileLinks.map((link: (typeof mobileLinks)[number]) => (
                   <Link key={link.href} href={link.href} className="block" onClick={() => setMobileOpen(false)}>
                     {link.label}
                   </Link>

@@ -18,7 +18,7 @@ export default async function HomePage() {
     take: 8,
   });
 
-  const safeFeatured = featured.map((p) => ({
+  const safeFeatured = featured.map((p: (typeof featured)[number]) => ({
     id: p.id,
     name: p.name,
     description: p.description,
@@ -74,7 +74,7 @@ export default async function HomePage() {
         <section className="mt-12">
           <h2 className="text-2xl font-semibold mb-4">Featured Products</h2>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {safeFeatured.map((p) => (
+            {safeFeatured.map((p: (typeof safeFeatured)[number]) => (
               <ProductCard
                 key={p.id}
                 id={p.id}
