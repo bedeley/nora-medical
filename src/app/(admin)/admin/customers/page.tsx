@@ -3,7 +3,7 @@
 export const dynamic = "force-dynamic";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { useEffect, useRef, useState, useId, useMemo } from "react";
+import { useEffect, useState, useId, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +13,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -101,11 +100,10 @@ export default function AdminCustomers() {
   const queryClient = useQueryClient();
   const [confirmClear, setConfirmClear] = useState<{ id: string; email?: string|null } | null>(null);
   const [deliveryFilter, setDeliveryFilter] = useState<string>("all");
-  const [editing, setEditing] = useState(false);
   const { data, error, isFetching: isValidating } = useClientQuery({
-    queryKey: ["admin", "customers", { editing }],
+    queryKey: ["admin", "customers"],
     queryFn: () => fetcher("/api/admin/customers"),
-    refetchInterval: editing ? false : 8000,
+    refetchInterval: 8000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
@@ -118,13 +116,6 @@ export default function AdminCustomers() {
   });
   const [exportMethod, setExportMethod] = useState<string>("");
   const [exportStatus, setExportStatus] = useState<string>("");
-  const [autoText] = useState<boolean>(true);
-  const [smsPhone] = useState<string>("");
-  const [orderRemaining] = useState<number | null>(null);
-  const [orderPaid] = useState<number | null>(null);
-  const [orderOptions] = useState<OrderOption[]>([]);
-  const [ordersLoading] = useState(false);
-  const [ordersError] = useState<string | null>(null);
   const [refundCredit, setRefundCredit] = useState<{ userId: string; email: string; credit: number } | null>(null);
   const [refundAmount, setRefundAmount] = useState<string>("");
   const [refundAll, setRefundAll] = useState<boolean>(true);
@@ -132,9 +123,7 @@ export default function AdminCustomers() {
   const [refundRef, setRefundRef] = useState("");
   const [refundNote, setRefundNote] = useState("");
   const [refundSubmitting, setRefundSubmitting] = useState(false);
-  const orderListId = useId();
   const [viewCart, setViewCart] = useState<{ user: CustomerRow["user"]; cart: CustomerRow["cart"] } | null>(null);
-  const [confirmPaymentOpen] = useState(false);
   const [addPaymentFor, setAddPaymentFor] = useState<{ userId: string; email: string | null } | null>(null);
   const [addPaymentAmount, setAddPaymentAmount] = useState<string>("");
   const [addPaymentMethod, setAddPaymentMethod] = useState<"cash" | "transfer">("cash");
@@ -1177,7 +1166,7 @@ export default function AdminCustomers() {
                 onChange={(e) => setAdjustNote(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Positive adjustments reduce the customer's outstanding balance and
+                Positive adjustments reduce the customer&apos;s outstanding balance and
                 are applied automatically to the oldest unpaid or partially‑paid
                 orders first (same logic as Add Payment).
               </p>
@@ -1486,10 +1475,6 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
       </div>
     </div>
   );
-}
-
-function formatOrderStatus(status?: string) {
-  return String(status || "UNKNOWN").replace(/_/g, " ").toUpperCase();
 }
 
 function formatOrderId(orderId: string) {

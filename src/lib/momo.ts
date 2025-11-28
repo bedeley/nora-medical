@@ -76,11 +76,14 @@ export type PayoutParams = {
 };
 
 export async function initiateMomoPayout(
-  _params: PayoutParams,
+  params: PayoutParams,
 ): Promise<InitiateResult> {
   // This helper is a stub. When MOMO_PAYOUTS_ENABLED is set and a provider
   // payout API is available, replace this implementation with a real call.
-  return { ok: false, error: "MoMo payout integration not configured" };
+  return {
+    ok: false,
+    error: `MoMo payout integration not configured for provider ${params.provider}`,
+  };
 }
 
 /**

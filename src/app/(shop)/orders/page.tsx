@@ -406,9 +406,9 @@ function OrdersContent() {
                   </div>
                   <Button
                     asChild
-                    size="xs"
+                    size="sm"
                     variant="outline"
-                    className="px-3 py-1"
+                    className="px-3 py-1 text-[11px]"
                     title="View printable receipt"
                   >
                     <Link href={`/orders/${order.id}/receipt`}>View Receipt</Link>
@@ -615,20 +615,8 @@ export default function OrdersPage() {
   );
 }
 
-type OrderPayment = {
-  id: string;
-  amount: number | string;
-  status?: string | null;
-  refundDisposition?: string | null;
-  note?: string | null;
-  meta?: {
-    status?: string;
-    refundDisposition?: string;
-  } | null;
-};
-
-// Legacy payment formatting helpers no longer used on this page have been
-// removed to keep lint clean.
+// Legacy payment formatting helpers and payment row typing have been removed
+// to keep this page focused on high-level order summaries.
 
 function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderId: string; maxAmount: number; defaultPhone?: string; onSuccess?: () => void }) {
   const [phone, setPhone] = useState<string>(defaultPhone || "");

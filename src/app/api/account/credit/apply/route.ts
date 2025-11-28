@@ -10,7 +10,7 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (
   ? A
   : never;
 
-export async function POST(_req: Request) {
+export async function POST() {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
