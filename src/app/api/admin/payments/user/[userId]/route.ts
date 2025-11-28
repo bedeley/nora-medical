@@ -67,9 +67,19 @@ export async function GET(
       };
     });
 
-    const total = rows.reduce(
-      (s: number, r: { amount: unknown }) => s + Number(r.amount || 0),
-      0
+    // Match the same semantics used on /admin/customers for "Store Credit":
+    // exclude internal auto-apply adjustment entries (reference: "AUTO_APPLY")
+    // from the aggregate payment total used for balances/credit.
+    const total = payments.reduce(
+      (
+        s: number,
+        p: { amount: unknown; note: string | null },
+      ) => {
+        const note = p.note || "";
+        if (note.includes("\"reference\":\"AUTO_APPLY\"")) return s;
+        return s + Number(p.amount || 0);
+      },
+      0,
     );
     return NextResponse.json({ payments: rows, total });
   } catch (e) {

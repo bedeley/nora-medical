@@ -20,7 +20,7 @@ const createSchema = z.object({
   initialPayment: z.number().min(0).optional(),
   note: z.string().max(200).optional(),
   deliveryStatus: z
-    .enum(["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED"]) 
+    .enum(["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED", "RETURNED"])
     .optional(),
 });
 

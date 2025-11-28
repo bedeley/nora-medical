@@ -94,7 +94,13 @@ function AdminOrdersContent() {
     if (typeof q === "string") setQuery(q);
     if (sk && ["total", "amountPaid", "balance", "createdAt", "customer"].includes(sk)) setSortKey(sk);
     if (sd && ["asc", "desc"].includes(sd)) setSortDir(sd);
-    if (df && ["ALL", "NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED"].includes(df)) setDeliveryFilter(df);
+    if (
+      df &&
+      ["ALL", "NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED", "RETURNED"].includes(
+        df,
+      )
+    )
+      setDeliveryFilter(df);
     initialized.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -342,6 +348,7 @@ function AdminOrdersContent() {
             <SelectItem value="NOT_DELIVERED">Not Delivered</SelectItem>
             <SelectItem value="PARTIALLY_DELIVERED">Partially Delivered</SelectItem>
             <SelectItem value="DELIVERED">Delivered</SelectItem>
+            <SelectItem value="RETURNED">Returned</SelectItem>
           </SelectContent>
         </Select>
         </div>
@@ -454,6 +461,8 @@ function AdminOrdersContent() {
                   ? "bg-green-100 text-green-700"
                   : delivery === "PARTIALLY_DELIVERED"
                   ? "bg-yellow-100 text-yellow-800"
+                  : delivery === "RETURNED"
+                  ? "bg-red-100 text-red-700"
                   : "bg-gray-100 text-gray-700";
               return (
                 <TableRow key={order.id}>
@@ -494,6 +503,8 @@ function AdminOrdersContent() {
                         ? "Delivered"
                         : delivery === "PARTIALLY_DELIVERED"
                         ? "Partial"
+                        : delivery === "RETURNED"
+                        ? "Returned"
                         : "Not Delivered"}
                     </span>
                   </TableCell>
@@ -538,6 +549,8 @@ function AdminOrdersContent() {
                 ? "bg-green-100 text-green-700"
                 : delivery === "PARTIALLY_DELIVERED"
                 ? "bg-yellow-100 text-yellow-800"
+                : delivery === "RETURNED"
+                ? "bg-red-100 text-red-700"
                 : "bg-gray-100 text-gray-700";
 
             return (
@@ -565,6 +578,8 @@ function AdminOrdersContent() {
                         ? "Delivered"
                         : delivery === "PARTIALLY_DELIVERED"
                         ? "Partial"
+                        : delivery === "RETURNED"
+                        ? "Returned"
                         : "Not Delivered"}
                     </span>
                   </div>

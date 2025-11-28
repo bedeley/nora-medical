@@ -109,20 +109,6 @@ export default function AdminCustomers() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const [pay, setPay] = useState({
-    userId: "",
-    orderId: "",
-    amount: "",
-    note: "",
-    method: "cash" as "cash" | "card" | "transfer" | "adjustment",
-    reference: "",
-    receivedBy: "",
-    location: "",
-    status: "normal" as "normal" | "refund" | "void",
-    refundDisposition: undefined as "cash" | "credit" | undefined,
-  });
-  const amountInputRef = useRef<HTMLInputElement | null>(null);
-  const formRef = useRef<HTMLDivElement | null>(null);
   const [explain, setExplain] = useState<{ userId: string; email: string; paymentsTotal: number; paidTotal: number } | null>(null);
   const [exportMonth, setExportMonth] = useState(() => {
     const now = new Date();
@@ -132,22 +118,32 @@ export default function AdminCustomers() {
   });
   const [exportMethod, setExportMethod] = useState<string>("");
   const [exportStatus, setExportStatus] = useState<string>("");
-  const [autoText, setAutoText] = useState<boolean>(true);
-  const [smsPhone, setSmsPhone] = useState<string>("");
-  const [orderRemaining, setOrderRemaining] = useState<number | null>(null);
-  const [orderPaid, setOrderPaid] = useState<number | null>(null);
-  const [orderOptions, setOrderOptions] = useState<OrderOption[]>([]);
-  const [ordersLoading, setOrdersLoading] = useState(false);
-  const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [autoText] = useState<boolean>(true);
+  const [smsPhone] = useState<string>("");
+  const [orderRemaining] = useState<number | null>(null);
+  const [orderPaid] = useState<number | null>(null);
+  const [orderOptions] = useState<OrderOption[]>([]);
+  const [ordersLoading] = useState(false);
+  const [ordersError] = useState<string | null>(null);
   const [refundCredit, setRefundCredit] = useState<{ userId: string; email: string; credit: number } | null>(null);
   const [refundAmount, setRefundAmount] = useState<string>("");
+  const [refundAll, setRefundAll] = useState<boolean>(true);
   const [refundMethod, setRefundMethod] = useState<"cash" | "transfer">("cash");
   const [refundRef, setRefundRef] = useState("");
   const [refundNote, setRefundNote] = useState("");
   const [refundSubmitting, setRefundSubmitting] = useState(false);
   const orderListId = useId();
   const [viewCart, setViewCart] = useState<{ user: CustomerRow["user"]; cart: CustomerRow["cart"] } | null>(null);
-  const [confirmPaymentOpen, setConfirmPaymentOpen] = useState(false);
+  const [confirmPaymentOpen] = useState(false);
+  const [addPaymentFor, setAddPaymentFor] = useState<{ userId: string; email: string | null } | null>(null);
+  const [addPaymentAmount, setAddPaymentAmount] = useState<string>("");
+  const [addPaymentMethod, setAddPaymentMethod] = useState<"cash" | "transfer">("cash");
+  const [addPaymentNote, setAddPaymentNote] = useState<string>("");
+  const [addPaymentSubmitting, setAddPaymentSubmitting] = useState(false);
+  const [adjustFor, setAdjustFor] = useState<{ userId: string; email: string | null } | null>(null);
+  const [adjustAmount, setAdjustAmount] = useState<string>("");
+  const [adjustNote, setAdjustNote] = useState<string>("");
+  const [adjustSubmitting, setAdjustSubmitting] = useState(false);
 
   // Payments summary for current export filters
   const summaryParams = new URLSearchParams({ month: exportMonth });
@@ -180,6 +176,38 @@ export default function AdminCustomers() {
     });
   }, [rows, deliveryFilter]);
 
+  async function createUserPayment(params: {
+    userId: string;
+    amount: number;
+    method: "cash" | "transfer" | "adjustment";
+    note?: string;
+    location: string;
+  }) {
+    const { userId, amount, method, note, location } = params;
+    const res = await fetch("/api/payments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId,
+        amount,
+        method,
+        status: "normal",
+        note: note || undefined,
+        location,
+      }),
+    });
+    if (!res.ok) {
+      const msg =
+        (
+          await res.json().catch(async () => ({
+            error: await res.text().catch(() => ""),
+          }))
+        ).error || "Failed to record payment";
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
   const renderActionsMenu = (r: CustomerRow, buttonClass = "") => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -190,13 +218,16 @@ export default function AdminCustomers() {
       <DropdownMenuContent align="end">
         <DropdownMenuItem
           onClick={() => {
-            setPay((v) => ({ ...v, userId: r.user.id, orderId: "", amount: "", note: "" }));
-            setSmsPhone((r as CustomerRow & { user: CustomerRow["user"] & { phone?: string | null } }).user.phone || "");
-            setAutoText(true);
-            setTimeout(() => {
-              formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-              amountInputRef.current?.focus();
-            }, 0);
+            const outstanding = Math.max(
+              0,
+              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+            );
+            setAddPaymentFor({ userId: r.user.id, email: r.user.email });
+            setAddPaymentAmount(
+              outstanding > 0 ? outstanding.toFixed(2) : "",
+            );
+            setAddPaymentMethod("cash");
+            setAddPaymentNote("");
           }}
         >
           Add Payment
@@ -259,6 +290,19 @@ export default function AdminCustomers() {
             Apply to Balance
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem
+          onClick={() => {
+            const outstanding = Math.max(
+              0,
+              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+            );
+            setAdjustFor({ userId: r.user.id, email: r.user.email });
+            setAdjustAmount(outstanding > 0 ? outstanding.toFixed(2) : "");
+            setAdjustNote("");
+          }}
+        >
+          Adjustment
+        </DropdownMenuItem>
         {(() => {
           const credit = Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0));
           if (credit <= 0.005) return null;
@@ -267,6 +311,7 @@ export default function AdminCustomers() {
               onClick={() => {
                 setRefundCredit({ userId: r.user.id, email: r.user.email, credit });
                 setRefundAmount(credit.toFixed(2));
+                setRefundAll(true);
                 setRefundMethod("cash");
                 setRefundRef("");
                 setRefundNote("");
@@ -342,289 +387,7 @@ export default function AdminCustomers() {
     </DropdownMenu>
   );
 
-  // Fetch order remaining when an Order ID is entered to show accurate max for order-scoped payments
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      if (!pay.orderId) {
-        if (active) {
-          setOrderRemaining(null);
-          setOrderPaid(null);
-        }
-        return;
-      }
-      try {
-        const res = await fetch(`/api/orders/${pay.orderId}`);
-        if (res.ok) {
-          const payload = await res.json();
-          const ord = payload?.data;
-          if (!ord) {
-            if (active) {
-              setOrderRemaining(null);
-              setOrderPaid(null);
-            }
-            return;
-          }
-          const total = Number(ord.total);
-          const alreadyPaid = Number(ord.amountPaid ?? 0);
-          const remaining = Math.max(0, total - alreadyPaid);
-          if (active) {
-            setOrderRemaining(remaining);
-            setOrderPaid(alreadyPaid);
-          }
-        } else if (active) {
-          setOrderRemaining(null);
-          setOrderPaid(null);
-        }
-      } catch {
-        if (active) {
-          setOrderRemaining(null);
-          setOrderPaid(null);
-        }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [pay.orderId]);
-
-  useEffect(() => {
-    let active = true;
-    if (!pay.userId) {
-      setOrderOptions([]);
-      setOrdersError(null);
-      setOrdersLoading(false);
-      return;
-    }
-    setOrdersLoading(true);
-    setOrdersError(null);
-    (async () => {
-      try {
-        const res = await fetch(`/api/admin/orders/user/${pay.userId}/list`);
-        if (!active) return;
-        let body: unknown = null;
-        try {
-          body = await res.json();
-        } catch {
-          body = null;
-        }
-        if (!res.ok) {
-          const msg =
-            (body as { error?: string } | null | undefined)?.error ||
-            `Failed to load orders (${res.status})`;
-          setOrdersError(msg);
-          setOrderOptions([]);
-          return;
-        }
-        const orders = Array.isArray((body as { orders?: unknown })?.orders)
-          ? ((body as { orders: Array<{ id: string; total?: number; amountPaid?: number; balance?: number; status: string }> }).orders)
-          : [];
-        const mapped: OrderOption[] = orders.map((o) => {
-          const balance = Math.max(
-            0,
-            Number(o.balance ?? Number(o.total ?? 0) - Number(o.amountPaid ?? 0))
-          );
-          const label = `${formatOrderId(o.id)} | ${formatOrderStatus(o.status)} | Balance ${formatCurrency(
-            balance
-          )}`;
-          return { id: o.id, label, status: formatOrderStatus(o.status), balance };
-        });
-        setOrderOptions(mapped);
-      } catch (err: unknown) {
-        if (!active) return;
-        const message =
-          err instanceof Error ? err.message : "Failed to load orders";
-        setOrdersError(message);
-        setOrderOptions([]);
-      } finally {
-        if (active) setOrdersLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [pay.userId]);
-
-  // Compute max allowed payment based on order or user outstanding
-  const userOutstanding = (() => {
-    if (!pay.userId || !data?.rows) return null;
-    const row = data.rows.find(
-      (r: CustomerRow) => r.user.id === pay.userId,
-    ) as CustomerRow | undefined;
-    if (!row) return null;
-    return Math.max(0, Number(row.ordersTotal || 0) - Number(row.paidTotal || 0));
-  })();
-  const isRefund = pay.status === "refund";
-  const amountNumber = Math.abs(Number(pay.amount || 0));
-  const maxAllowed: number | null = isRefund ? null : pay.orderId ? (orderRemaining ?? null) : userOutstanding;
-  const invalidOverpay = !isRefund && !!maxAllowed && amountNumber > maxAllowed;
-  const disableSubmit =
-    !pay.amount ||
-    (!pay.orderId && !pay.userId) ||
-    invalidOverpay ||
-    (isRefund && (!pay.orderId || !pay.refundDisposition));
-
-  async function submitPayment() {
-    const amountRaw = Math.abs(Number(pay.amount || 0));
-    const note = pay.note || undefined;
-    if (isRefund && !pay.orderId) {
-      toast.error("Select an order when recording a refund.");
-      return;
-    }
-    if (isRefund && !pay.refundDisposition) {
-      toast.error("Choose how the refund should be handled.");
-      return;
-    }
-    if (!amountRaw || isNaN(amountRaw) || amountRaw <= 0) {
-      toast.error("Enter a valid amount greater than 0.");
-      return;
-    }
-    const amount = isRefund ? -Math.abs(amountRaw) : amountRaw;
-    try {
-      if (!pay.userId && !pay.orderId) {
-        toast.error("Provide a User ID or an Order ID.");
-        return;
-      }
-      // Prevent over/under payment by validating amounts
-      try {
-        if (pay.orderId) {
-          const check = await fetch(`/api/orders/${pay.orderId}`);
-          if (check.ok) {
-            const payload = await check.json();
-            const ord = payload?.data as {
-              total: number;
-              amountPaid?: number;
-            } | null;
-            if (ord) {
-              const total = Number(ord.total);
-              const alreadyPaid = Number(ord.amountPaid ?? 0);
-              const remaining = Math.max(0, total - alreadyPaid);
-              if (!isRefund && amount > remaining) {
-                toast.error(
-                  `Amount exceeds order remaining: ${formatCurrency(remaining)}`,
-                );
-                return;
-              }
-              if (isRefund && amountRaw > alreadyPaid + 0.0001) {
-                toast.error(
-                  `Refund exceeds what has been paid: ${formatCurrency(
-                    alreadyPaid,
-                  )}`,
-                );
-                return;
-              }
-            }
-          }
-        } else if (!isRefund && pay.userId && data?.rows) {
-          const row = data.rows.find(
-            (r: CustomerRow) => r.user.id === pay.userId,
-          );
-          if (row) {
-            const outstanding = Math.max(
-              0,
-              Number(row.ordersTotal || 0) - Number(row.paidTotal || 0),
-            );
-            if (amount > outstanding) {
-              toast.error(
-                `Amount exceeds customer's outstanding balance: ${formatCurrency(
-                  outstanding,
-                )}`,
-              );
-              return;
-            }
-          }
-        }
-      } catch {}
-      const res = await fetch(`/api/payments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: pay.userId,
-          orderId: pay.orderId || undefined,
-          amount,
-          note,
-          method: pay.method,
-          reference: pay.reference || undefined,
-          receivedBy: pay.receivedBy || undefined,
-          location: pay.location || undefined,
-          status: pay.status,
-          refundDisposition: isRefund ? pay.refundDisposition : undefined,
-        }),
-      });
-      if (!res.ok) {
-        const msg =
-          (
-            await res.json().catch(async () => ({
-              error: await res.text().catch(() => ""),
-            }))
-          ).error || "Failed to record payment";
-        throw new Error(msg);
-      }
-      const result = await res.json();
-      toast.success("Payment recorded successfully.");
-      // If recorded against a specific order, redirect to its details for delivery updates
-      if (pay.orderId) {
-        window.location.href = `/admin/orders/${pay.orderId}`;
-        return;
-      }
-      if (result?.payment?.id) {
-        const receiptId = result.payment.id as string;
-        // Open printable receipt in new tab
-        window.open(`/admin/payments/receipt/${receiptId}`, "_blank");
-        // Optionally auto-send receipt via SMS; if it fails, notify admin
-        if (autoText) {
-          try {
-            const payload: { to?: string } = {};
-            if (smsPhone) payload.to = smsPhone;
-            const smsRes = await fetch(
-              `/api/admin/payments/receipt/${receiptId}/text`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-              },
-            );
-            if (!smsRes.ok) {
-              const msg =
-                (
-                  await smsRes
-                    .json()
-                    .catch(
-                      async () => ({
-                        error: await smsRes.text().catch(() => ""),
-                      }),
-                    )
-                ).error || "Could not send SMS";
-              toast.warning(`${msg}. Receipt opened to print manually.`);
-            } else {
-              toast.success("Receipt text sent to customer.");
-            }
-          } catch {
-            toast.warning(
-              "SMS failed. Receipt opened to print manually.",
-            );
-          }
-        }
-      }
-      setPay({
-        userId: "",
-        orderId: "",
-        amount: "",
-        note: "",
-        method: "cash",
-        reference: "",
-        receivedBy: "",
-        location: "",
-        status: "normal",
-        refundDisposition: undefined,
-      });
-      queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : "Failed to record payment";
-      toast.error(message);
-    }
-  }
+  // Legacy per-order payment card removed in favor of Actions-based flows.
 
   if (error) {
     const msg = String((error as Error)?.message || "Error");
@@ -776,223 +539,7 @@ export default function AdminCustomers() {
         ) : null}
       </div>
       <div className="grid gap-4">
-        <div
-          ref={formRef}
-          onFocusCapture={() => setEditing(true)}
-          onBlurCapture={() => setEditing(false)}
-          className="p-4 rounded-xl shadow-md grid gap-2 max-w-2xl"
-        >
-          <h3 className="font-medium">Record Payment</h3>
-          <Input
-            placeholder="User ID"
-            value={pay.userId}
-            onChange={(e) =>
-              setPay((v) => ({
-                ...v,
-                userId: e.target.value,
-                orderId: "",
-              }))
-            }
-          />
-          <div className="space-y-1">
-            <Input
-              list={orderListId}
-              placeholder={pay.status === "refund" ? "Order ID (required for refunds)" : "Order ID (optional)"}
-              value={pay.orderId}
-              onChange={(e) => setPay((v) => ({ ...v, orderId: e.target.value }))}
-              className={pay.status === "refund" && !pay.orderId ? "border-red-500" : undefined}
-            />
-            <datalist id={orderListId}>
-              {orderOptions.map((opt) => (
-                <option key={opt.id} value={opt.id} label={opt.label} />
-              ))}
-            </datalist>
-            <p className="text-xs text-muted-foreground">
-              {ordersLoading
-                ? "Loading orders..."
-                : ordersError
-                ? `Could not load orders: ${ordersError}`
-                : pay.userId
-                ? orderOptions.length
-                  ? "Pick an order from the dropdown or paste an ID."
-                  : "No orders found for this customer."
-                : "Enter a User ID to load their orders."}
-            </p>
-            {isRefund && orderPaid !== null && (
-              <p className="text-xs text-muted-foreground">
-                Paid on this order: {formatCurrency(orderPaid)}. Refunds cannot exceed this amount.
-              </p>
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs text-muted-foreground">Method</label>
-              <Select
-                value={pay.method}
-                onValueChange={(val: "cash" | "card" | "transfer" | "adjustment") =>
-                  setPay((v) => ({ ...v, method: val }))
-                }
-              >
-                <SelectTrigger className="h-9"><SelectValue placeholder="Select method" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="card">Card</SelectItem>
-                  <SelectItem value="transfer">Transfer</SelectItem>
-                  <SelectItem value="adjustment">Adjustment</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground">Status</label>
-              <Select
-                value={pay.status}
-                onValueChange={(val: "normal" | "refund" | "void") =>
-                  setPay((v) => ({
-                    ...v,
-                    status: val,
-                    refundDisposition: val === "refund" ? v.refundDisposition || "cash" : undefined,
-                  }))
-                }
-              >
-                <SelectTrigger className="h-9"><SelectValue placeholder="Status" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="refund">Refund</SelectItem>
-                  <SelectItem value="void">Void</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          {pay.status === "refund" && (
-            <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs space-y-2">
-              <p className="font-semibold text-foreground">Refund destination</p>
-              <label className="flex items-start gap-2 text-foreground">
-                <input
-                  type="radio"
-                  className="mt-0.5"
-                  checked={pay.refundDisposition === "cash"}
-                  onChange={() => setPay((v) => ({ ...v, refundDisposition: "cash" }))}
-                />
-                <span>
-                  Return to customer &mdash; cash/leverage handed back. Does <strong>not</strong> change Unapplied Funds.
-                </span>
-              </label>
-              <label className="flex items-start gap-2 text-foreground">
-                <input
-                  type="radio"
-                  className="mt-0.5"
-                  checked={pay.refundDisposition === "credit"}
-                  onChange={() => setPay((v) => ({ ...v, refundDisposition: "credit" }))}
-                />
-                <span>
-                  Add to Unapplied Funds &mdash; keep as store credit that can be applied to future orders.
-                </span>
-              </label>
-            </div>
-          )}
-          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground space-y-1">
-            <p className="font-semibold text-foreground">Payment method</p>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li><span className="font-semibold text-foreground">Cash:</span> Walk-in cash counted at the desk.</li>
-              <li><span className="font-semibold text-foreground">Card:</span> POS or online card transaction with a receipt number.</li>
-              <li><span className="font-semibold text-foreground">Transfer:</span> Bank or mobile-money transfer (reference the slip/SMS).</li>
-              <li><span className="font-semibold text-foreground">Adjustment:</span> Back-office move such as applying credits or correcting unapplied funds.</li>
-            </ul>
-            <p className="mt-2 font-semibold text-foreground">Status</p>
-            <ul className="list-disc pl-4 space-y-0.5">
-              <li><span className="font-semibold text-foreground">Normal:</span> Standard payment that increases the customer&rsquo;s paid amount.</li>
-              <li><span className="font-semibold text-foreground">Refund:</span> Money returned to the customer (usually entered as a negative amount).</li>
-              <li><span className="font-semibold text-foreground">Void:</span> Entry captured in error that should be excluded from reporting while keeping an audit trail.</li>
-            </ul>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <Input placeholder="Reference/Receipt" value={pay.reference} onChange={(e) => setPay((v) => ({ ...v, reference: e.target.value }))} />
-            <Input placeholder="Received By" value={pay.receivedBy} onChange={(e) => setPay((v) => ({ ...v, receivedBy: e.target.value }))} />
-          </div>
-          <Input placeholder="Location" value={pay.location} onChange={(e) => setPay((v) => ({ ...v, location: e.target.value }))} />
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              step="0.01"
-              placeholder="Amount (required)"
-              value={pay.amount}
-              onChange={(e) => setPay((v) => ({ ...v, amount: e.target.value }))}
-              required
-              ref={amountInputRef}
-              className={invalidOverpay ? "border-red-500" : undefined}
-            />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!(typeof maxAllowed === "number") || (maxAllowed ?? 0) <= 0 || Number(pay.amount || 0) === Number(maxAllowed)}
-              onClick={() => {
-                if (typeof maxAllowed === "number") {
-                  setPay((v) => ({ ...v, amount: String(maxAllowed.toFixed(2)) }));
-                }
-              }}
-            >
-              Use Max
-            </Button>
-          </div>
-          {typeof maxAllowed === "number" && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>Max: {formatCurrency(maxAllowed)}</span>
-              <HelpCircle className="h-3 w-3" aria-label="Max amount explanation" />
-            </div>
-          )}
-          <Input
-            placeholder="Note"
-            value={pay.note}
-            onChange={(e) => setPay((v) => ({ ...v, note: e.target.value }))}
-          />
-          <div className="grid sm:grid-cols-2 gap-2 items-center">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={autoText}
-                onChange={(e) => setAutoText(e.target.checked)}
-              />
-              Auto-text receipt to customer
-            </label>
-          <Input
-            placeholder="Customer phone (optional override)"
-            value={smsPhone}
-            onChange={(e) => setSmsPhone(e.target.value)}
-          />
-          </div>
-          <Dialog open={confirmPaymentOpen} onOpenChange={setConfirmPaymentOpen}>
-            <DialogTrigger asChild>
-              <Button disabled={disableSubmit}>
-                Add Payment
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Confirm payment entry</DialogTitle>
-              </DialogHeader>
-              <p className="text-sm text-muted-foreground">
-                You are about to record a payment for this customer. Please confirm that the amount,
-                method, and related order or user are correct before continuing.
-              </p>
-              <div className="flex justify-end gap-2 mt-4">
-                <DialogClose asChild>
-                  <Button variant="secondary">Cancel</Button>
-                </DialogClose>
-                <DialogClose asChild>
-                  <Button
-                    onClick={() => {
-                      void submitPayment();
-                    }}
-                    disabled={disableSubmit}
-                  >
-                    Confirm &amp; Save
-                  </Button>
-                </DialogClose>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
+        {/* Record Payment card removed in favor of Actions-based Add Payment & Adjustment */}
         <div className="hidden md:block overflow-x-auto">
           <Table className="w-full table-auto min-w-[1120px] admin-customers-table">
             <TableHeader>
@@ -1033,11 +580,11 @@ export default function AdminCustomers() {
                 </TableHead>
                 <TableHead className="w-[160px] text-center">
                   <div className="inline-flex items-center justify-center gap-1">
-                    <span>Unapplied Funds</span>
-                    <Tooltip content="Credits held for this customer (Payments - Paid).">
+                    <span>Store Credit</span>
+                    <Tooltip content="Store credit held for this customer (Payments - Paid).">
                       <HelpCircle
                         className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Unapplied funds"
+                        aria-label="Store credit"
                       />
                     </Tooltip>
                   </div>
@@ -1092,25 +639,6 @@ export default function AdminCustomers() {
                           <span title="WhatsApp reachable" className="inline-flex items-center gap-0.5 text-emerald-700"><MessageCircle className="w-3 h-3" /></span>
                         )}
                       </div>
-                      {pay.userId === r.user.id && (() => {
-                        const outstanding = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
-                        return (
-                          <span
-                            role="button"
-                            title="Click to use max outstanding"
-                            onClick={() => {
-                              setPay((v) => ({ ...v, amount: String(outstanding.toFixed(2)) }));
-                              setTimeout(() => {
-                                formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                                amountInputRef.current?.focus();
-                              }, 0);
-                            }}
-                            className="cursor-pointer text-[10px] md:text-xs bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded px-1.5 py-0.5 whitespace-nowrap"
-                          >
-                            Outstanding: {formatCurrency(outstanding)}
-                          </span>
-                        );
-                      })()}
                     </div>
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
@@ -1208,21 +736,6 @@ export default function AdminCustomers() {
                       )}
                     </div>
                   </div>
-                  {pay.userId === r.user.id && (
-                    <button
-                      type="button"
-                      className="text-[10px] bg-amber-50 border border-amber-200 text-amber-800 rounded px-2 py-0.5"
-                      onClick={() => {
-                        setPay((v) => ({ ...v, amount: String(outstanding.toFixed(2)) }));
-                        setTimeout(() => {
-                          formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                          amountInputRef.current?.focus();
-                        }, 0);
-                      }}
-                    >
-                      Outstanding: {formatCurrency(outstanding)}
-                    </button>
-                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -1346,11 +859,12 @@ export default function AdminCustomers() {
       if (!open) {
         setRefundCredit(null);
         setRefundAmount("");
+        setRefundAll(true);
       }
     }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Refund Unapplied Funds</DialogTitle>
+          <DialogTitle>Refund Store Credit</DialogTitle>
         </DialogHeader>
         {refundCredit && (
           <div className="space-y-3 text-sm">
@@ -1358,8 +872,25 @@ export default function AdminCustomers() {
               Customer: <span className="font-medium">{refundCredit.email}</span>
             </p>
             <p className="text-muted-foreground">
-              Available credit: <span className="font-semibold">{formatCurrency(refundCredit.credit)}</span>
+              Available store credit: <span className="font-semibold">{formatCurrency(refundCredit.credit)}</span>
             </p>
+            <div className="space-y-1">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="h-3 w-3"
+                  checked={refundAll}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setRefundAll(checked);
+                    if (checked && refundCredit) {
+                      setRefundAmount(refundCredit.credit.toFixed(2));
+                    }
+                  }}
+                />
+                Refund full store credit
+              </label>
+            </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">Amount to refund</label>
               <Input
@@ -1368,6 +899,7 @@ export default function AdminCustomers() {
                 step="0.01"
                 value={refundAmount}
                 onChange={(e) => setRefundAmount(e.target.value)}
+                disabled={refundAll}
               />
             </div>
             <div className="space-y-1">
@@ -1376,7 +908,7 @@ export default function AdminCustomers() {
                 <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="transfer">Transfer</SelectItem>
+                  <SelectItem value="transfer">MoMo transfer</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1439,6 +971,280 @@ export default function AdminCustomers() {
             </DialogFooter>
           </div>
         )}
+      </DialogContent>
+    </Dialog>
+    {/* Add Payment (across orders) */}
+    <Dialog
+      open={!!addPaymentFor}
+      onOpenChange={(open) => {
+        if (!open) {
+          setAddPaymentFor(null);
+          setAddPaymentAmount("");
+          setAddPaymentMethod("cash");
+          setAddPaymentNote("");
+        }
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add Payment (apply to oldest orders)</DialogTitle>
+        </DialogHeader>
+        {addPaymentFor && (() => {
+          const row = rows.find((r) => r.user.id === addPaymentFor.userId);
+          const outstanding = row
+            ? Math.max(
+                0,
+                Number(row.ordersTotal || 0) - Number(row.paidTotal || 0),
+              )
+            : 0;
+          return (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Customer:{" "}
+                <span className="font-medium">
+                  {addPaymentFor.email || addPaymentFor.userId}
+                </span>
+              </p>
+              <p className="text-muted-foreground">
+                Total outstanding balance across all open orders (unpaid or partially‑paid):{" "}
+                <span className="font-semibold">
+                  {formatCurrency(outstanding)}
+                </span>
+              </p>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="Amount to apply"
+                  value={addPaymentAmount}
+                  onChange={(e) => setAddPaymentAmount(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={outstanding <= 0}
+                  onClick={() =>
+                    setAddPaymentAmount(outstanding.toFixed(2))
+                  }
+                >
+                  Use full balance
+                </Button>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">
+                  Method
+                </label>
+                <Select
+                  value={addPaymentMethod}
+                  onValueChange={(val) =>
+                    setAddPaymentMethod(val as "cash" | "transfer")
+                  }
+                >
+                  <SelectTrigger className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="transfer">MoMo transfer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Input
+                placeholder="Note (optional)"
+                value={addPaymentNote}
+                onChange={(e) => setAddPaymentNote(e.target.value)}
+              />
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button
+                    variant="outline"
+                    disabled={addPaymentSubmitting}
+                  >
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button
+                  onClick={async () => {
+                    if (!addPaymentFor) return;
+                    const row = rows.find(
+                      (r) => r.user.id === addPaymentFor.userId,
+                    );
+                    const outstanding = row
+                      ? Math.max(
+                          0,
+                          Number(row.ordersTotal || 0) -
+                            Number(row.paidTotal || 0),
+                        )
+                      : 0;
+                    const value = Number(addPaymentAmount);
+                    if (!value || isNaN(value) || value <= 0) {
+                      toast.error("Enter a valid payment amount");
+                      return;
+                    }
+                    if (value > outstanding + 0.0001) {
+                      toast.error(
+                        "Amount exceeds customer's outstanding balance",
+                      );
+                      return;
+                    }
+                    try {
+                      setAddPaymentSubmitting(true);
+                      await createUserPayment({
+                        userId: addPaymentFor.userId,
+                        amount: value,
+                        method: addPaymentMethod,
+                        note: addPaymentNote,
+                        location: "admin/customers:actions-add-payment",
+                      });
+                      toast.success("Payment recorded and applied to orders.");
+                      setAddPaymentFor(null);
+                      setAddPaymentAmount("");
+                      setAddPaymentMethod("cash");
+                      setAddPaymentNote("");
+                      queryClient.invalidateQueries({
+                        queryKey: ["admin", "customers"],
+                      });
+                    } catch (e: unknown) {
+                      const message =
+                        e instanceof Error
+                          ? e.message
+                          : "Failed to record payment";
+                      toast.error(message);
+                    } finally {
+                      setAddPaymentSubmitting(false);
+                    }
+                  }}
+                  disabled={addPaymentSubmitting}
+                >
+                  Confirm Payment
+                </Button>
+              </DialogFooter>
+            </div>
+          );
+        })()}
+      </DialogContent>
+    </Dialog>
+    {/* Manual adjustment */}
+    <Dialog
+      open={!!adjustFor}
+      onOpenChange={(open) => {
+        if (!open) {
+          setAdjustFor(null);
+          setAdjustAmount("");
+          setAdjustNote("");
+        }
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Adjustment (back-office)</DialogTitle>
+        </DialogHeader>
+        {adjustFor && (() => {
+          const row = rows.find((r) => r.user.id === adjustFor.userId);
+          const outstanding = row
+            ? Math.max(
+                0,
+                Number(row.ordersTotal || 0) - Number(row.paidTotal || 0),
+              )
+            : 0;
+          return (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Customer:{" "}
+                <span className="font-medium">
+                  {adjustFor.email || adjustFor.userId}
+                </span>
+              </p>
+              <p className="text-muted-foreground">
+                Current outstanding balance:{" "}
+                <span className="font-semibold">
+                  {formatCurrency(outstanding)}
+                </span>
+              </p>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="Adjustment amount"
+                value={adjustAmount}
+                onChange={(e) => setAdjustAmount(e.target.value)}
+              />
+              <Input
+                placeholder="Reason / note (recommended)"
+                value={adjustNote}
+                onChange={(e) => setAdjustNote(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Positive adjustments reduce the customer's outstanding balance and
+                are applied automatically to the oldest unpaid or partially‑paid
+                orders first (same logic as Add Payment).
+              </p>
+              <DialogFooter>
+                <DialogClose asChild>
+                  <Button variant="outline" disabled={adjustSubmitting}>
+                    Cancel
+                  </Button>
+                </DialogClose>
+                <Button
+                  onClick={async () => {
+                    if (!adjustFor) return;
+                    const row = rows.find(
+                      (r) => r.user.id === adjustFor.userId,
+                    );
+                    const outstanding = row
+                      ? Math.max(
+                          0,
+                          Number(row.ordersTotal || 0) -
+                            Number(row.paidTotal || 0),
+                        )
+                      : 0;
+                    const value = Number(adjustAmount);
+                    if (!value || isNaN(value) || value <= 0) {
+                      toast.error("Enter a valid adjustment amount");
+                      return;
+                    }
+                    if (value > outstanding + 0.0001) {
+                      toast.error(
+                        "Adjustment exceeds customer's outstanding balance",
+                      );
+                      return;
+                    }
+                    try {
+                      setAdjustSubmitting(true);
+                      await createUserPayment({
+                        userId: adjustFor.userId,
+                        amount: value,
+                        method: "adjustment",
+                        note: adjustNote,
+                        location: "admin/customers:actions-adjustment",
+                      });
+                      toast.success("Adjustment recorded.");
+                      setAdjustFor(null);
+                      setAdjustAmount("");
+                      setAdjustNote("");
+                      queryClient.invalidateQueries({
+                        queryKey: ["admin", "customers"],
+                      });
+                    } catch (e: unknown) {
+                      const message =
+                        e instanceof Error
+                          ? e.message
+                          : "Failed to record adjustment";
+                      toast.error(message);
+                    } finally {
+                      setAdjustSubmitting(false);
+                    }
+                  }}
+                  disabled={adjustSubmitting}
+                >
+                  Save Adjustment
+                </Button>
+              </DialogFooter>
+            </div>
+          );
+        })()}
       </DialogContent>
     </Dialog>
     {/* Explain totals dialog */}
@@ -1619,7 +1425,7 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
           <div className="font-mono tabular-nums font-semibold">{formatCurrency(paidSum)}</div>
         </div>
         <div className="rounded border p-3 text-center">
-          <div className="text-muted-foreground">Unapplied funds</div>
+          <div className="text-muted-foreground">Store credit</div>
           <div className={`font-mono tabular-nums font-semibold ${unapplied > 0.005 ? "text-amber-700" : "text-muted-foreground"}`}>{formatCurrency(unapplied)}</div>
         </div>
         <div className="rounded border p-3 text-center">

@@ -32,12 +32,29 @@ type CartItem = {
   };
 };
 
+type BalanceSummary = {
+  totalDue: number;
+  totalPaid: number;
+  balance: number;
+  paymentsTotal?: number;
+  unappliedFunds?: number;
+  cashRefunds?: number;
+  updatedAt: string | Date;
+};
+
 export default function CartPage() {
   const queryClient = useQueryClient();
   const { data: me } = useQuery({
     queryKey: ["account", "me"],
     queryFn: () => fetch("/api/account/me").then((r) => r.json()),
     refetchInterval: 15000,
+  });
+  const { data: balanceData } = useQuery<BalanceSummary>({
+    queryKey: ["balance", "self"],
+    queryFn: () =>
+      fetch("/api/balance?self=1").then((r) => r.json() as Promise<BalanceSummary>),
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
   });
 
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
@@ -91,6 +108,11 @@ export default function CartPage() {
   const subtotal = items.reduce(
     (s, it) => s + Number(it.product.price) * it.quantity,
     0
+  );
+
+  const creditAvailable = Math.max(
+    0,
+    Number(balanceData?.unappliedFunds ?? 0),
   );
 
   async function placeOrder() {
@@ -761,6 +783,22 @@ export default function CartPage() {
                         <span className="font-semibold">{formatCurrency(subtotal)}</span>
                       </div>
                     </div>
+                    {creditAvailable > 0 && (
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 space-y-1">
+                        <p className="font-medium">
+                          Store credit available:{" "}
+                          <span className="font-semibold">
+                            {formatCurrency(creditAvailable)}
+                          </span>
+                          .
+                        </p>
+                        <p>
+                          For this order, your store credit will be applied
+                          automatically once the order is created. Any remaining
+                          balance will still need to be paid with cash or MoMo.
+                        </p>
+                      </div>
+                    )}
                     {itemsSorted.length > 0 && (
                       <div className="text-xs text-muted-foreground">
                         <span className="font-medium">Includes:</span>{" "}
@@ -843,6 +881,22 @@ export default function CartPage() {
                         </span>
                       </div>
                     </div>
+                    {creditAvailable > 0 && (
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 space-y-1">
+                        <p className="font-medium">
+                          Store credit available:{" "}
+                          <span className="font-semibold">
+                            {formatCurrency(creditAvailable)}
+                          </span>
+                          .
+                        </p>
+                        <p>
+                          For this purchase, your store credit will be applied
+                          first and any remaining amount will then be charged to
+                          this MoMo payment.
+                        </p>
+                      </div>
+                    )}
                   </div>
                   <div className="flex justify-end gap-2 mt-4">
                     <DialogClose asChild>

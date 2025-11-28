@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
+import { notifyPaymentEvent } from "@/lib/notifications";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -263,6 +264,31 @@ export async function POST(req: Request) {
 
       return { payment, applied, credit: creditEntry };
     });
+
+    // Customer-facing notifications:
+    try {
+      // Only notify for customer-related payments (positive normal payments,
+      // and refunds that create store credit).
+      if (!isRefund && normalizedAmount > 0) {
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId,
+          amount: normalizedAmount,
+        });
+      } else if (
+        isRefund &&
+        refundMode === "CREDIT" &&
+        normalizedAmount < 0
+      ) {
+        await notifyPaymentEvent({
+          kind: "store_credit_issued",
+          userId,
+          amount: Math.abs(normalizedAmount),
+        });
+      }
+    } catch (e) {
+      console.warn("notifyPaymentEvent error:", e);
+    }
 
     return NextResponse.json(result);
   } catch (err: unknown) {

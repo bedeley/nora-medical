@@ -34,7 +34,7 @@ type OrderItem = {
 type OrderPayload = {
   id: string;
   status: string;
-  deliveryStatus: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED";
+  deliveryStatus: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED";
   deliveredAt: string | Date | null;
   total: number;
   amountPaid?: number;
@@ -43,6 +43,13 @@ type OrderPayload = {
   adminNote?: string | null;
   user?: { name: string | null; email: string | null } | null;
   items: OrderItem[];
+  payments?: Array<{
+    id: string;
+    amount: number | string;
+    note: string | null;
+    status: string;
+    createdAt: string | Date;
+  }>;
 };
 
 export default function OrderDetails({ orderId }: OrderDetailsProps) {
@@ -83,13 +90,52 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const amountPaid = Number(order.amountPaid ?? 0);
   const balance = Number(order.balance ?? Math.max(0, order.total - amountPaid));
 
-  async function updateStatus(newStatus: string) {
+  const paymentBreakdown = (() => {
+    const payments = order.payments || [];
+    let storeCreditApplied = 0;
+    let momoPaid = 0;
+    let cashPaid = 0;
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note as string) as {
+          reference?: string;
+          applied?: Array<{ orderId?: string; applied?: number }>;
+          method?: string;
+        };
+        if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
+          for (const a of meta.applied) {
+            if (a && a.orderId === order.id) {
+              storeCreditApplied += Number(a.applied || 0);
+            }
+          }
+        }
+        if (meta.method === "momo") {
+          momoPaid += Number(p.amount || 0);
+        }
+        if (meta.method === "cash" || meta.method === "transfer") {
+          cashPaid += Number(p.amount || 0);
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return { storeCreditApplied, momoPaid, cashPaid };
+  })();
+
+  async function updateStatus(
+    newStatus: string,
+    opts?: { restockReturned?: boolean },
+  ) {
     try {
       setUpdating(true);
       const res = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({
+          status: newStatus,
+          ...(opts?.restockReturned ? { restockReturned: true } : {}),
+        }),
       });
 
       if (!res.ok) {
@@ -108,7 +154,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     }
   }
 
-  async function updateDelivery(newDelivery: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED") {
+  async function updateDelivery(
+    newDelivery: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED",
+  ) {
     try {
       setDeliveryUpdating(true);
       const res = await fetch(`/api/orders/${orderId}`, {
@@ -123,7 +171,13 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       }
       queryClient.invalidateQueries({ queryKey: ["order", orderId] });
       toast.success(
-        newDelivery === "DELIVERED" ? "Order marked as Delivered" : newDelivery === "PARTIALLY_DELIVERED" ? "Order marked as Partially Delivered" : "Marked as Not Delivered"
+        newDelivery === "DELIVERED"
+          ? "Order marked as Delivered"
+          : newDelivery === "PARTIALLY_DELIVERED"
+          ? "Order marked as Partially Delivered"
+          : newDelivery === "RETURNED"
+          ? "Order marked as Returned"
+          : "Marked as Not Delivered",
       );
     } catch (err) {
       console.error(err);
@@ -171,12 +225,27 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               size="sm"
               onClick={() => {
                 if (s === "CANCELLED") {
+                  const delivery = order.deliveryStatus || "NOT_DELIVERED";
+                  if (
+                    delivery === "DELIVERED" ||
+                    delivery === "PARTIALLY_DELIVERED"
+                  ) {
+                    toast.error(
+                      "Change delivery status to Returned before cancelling this order.",
+                    );
+                    return;
+                  }
                   setConfirmCancel(true);
                   return;
                 }
                 updateStatus(s);
               }}
-              disabled={updating || deleting || order.status === s}
+              disabled={
+                updating ||
+                deleting ||
+                order.status === s ||
+                order.status === "CANCELLED"
+              }
             >
               {updating && order.status !== s ? (
                 <Loader2 className="w-4 h-4 mr-1 animate-spin" />
@@ -263,7 +332,14 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             <strong>Status:</strong> {order.status}
           </p>
           <p className="text-sm text-muted-foreground">
-            <strong>Delivery:</strong> {order.deliveryStatus === "DELIVERED" ? "Delivered" : order.deliveryStatus === "PARTIALLY_DELIVERED" ? "Partially Delivered" : "Not Delivered"}
+            <strong>Delivery:</strong>{" "}
+            {order.deliveryStatus === "DELIVERED"
+              ? "Delivered"
+              : order.deliveryStatus === "PARTIALLY_DELIVERED"
+              ? "Partially Delivered"
+              : order.deliveryStatus === "RETURNED"
+              ? "Returned"
+              : "Not Delivered"}
             {order.deliveredAt ? ` on ${new Date(order.deliveredAt).toLocaleString()}` : ""}
           </p>
           <p className="text-sm text-muted-foreground">
@@ -272,6 +348,33 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           <p className="text-sm text-muted-foreground">
             <strong>Amount Paid:</strong> ${amountPaid.toFixed(2)}
           </p>
+          {(paymentBreakdown.cashPaid > 0 ||
+            paymentBreakdown.momoPaid > 0 ||
+            paymentBreakdown.storeCreditApplied > 0) && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {paymentBreakdown.cashPaid > 0 && (
+                <>
+                  Cash/transfer: ${paymentBreakdown.cashPaid.toFixed(2)}{" "}
+                </>
+              )}
+              {paymentBreakdown.momoPaid > 0 && (
+                <>
+                  {paymentBreakdown.cashPaid > 0 ? "· " : ""}
+                  MoMo: ${paymentBreakdown.momoPaid.toFixed(2)}{" "}
+                </>
+              )}
+              {paymentBreakdown.storeCreditApplied > 0 && (
+                <>
+                  {paymentBreakdown.cashPaid > 0 ||
+                  paymentBreakdown.momoPaid > 0
+                    ? "· "
+                    : ""}
+                  Store credit: $
+                  {paymentBreakdown.storeCreditApplied.toFixed(2)}
+                </>
+              )}
+            </p>
+          )}
           <p className={`text-sm ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
             <strong>Outstanding Balance:</strong> ${balance.toFixed(2)}
           </p>
@@ -330,12 +433,17 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       </CardContent>
 
       <CardFooter className="justify-end">
-        <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
+          <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
           <div className="flex gap-2">
             <Button
               variant={order.deliveryStatus === "PARTIALLY_DELIVERED" ? "default" : "outline"}
               size="sm"
-              disabled={deliveryUpdating || deleting}
+              disabled={
+                deliveryUpdating ||
+                deleting ||
+                order.deliveryStatus === "RETURNED" ||
+                order.status === "CANCELLED"
+              }
               onClick={() => updateDelivery("PARTIALLY_DELIVERED")}
             >
               {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
@@ -344,11 +452,25 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             <Button
               variant={order.deliveryStatus === "DELIVERED" ? "default" : "outline"}
               size="sm"
-              disabled={deliveryUpdating || deleting}
+              disabled={
+                deliveryUpdating ||
+                deleting ||
+                order.deliveryStatus === "RETURNED" ||
+                order.status === "CANCELLED"
+              }
               onClick={() => updateDelivery("DELIVERED")}
             >
               {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
               Mark Delivered
+            </Button>
+            <Button
+              variant={order.deliveryStatus === "RETURNED" ? "default" : "outline"}
+              size="sm"
+              disabled={deliveryUpdating || deleting || order.status === "CANCELLED"}
+              onClick={() => updateDelivery("RETURNED")}
+            >
+              {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Mark Returned
             </Button>
           </div>
           <Button
@@ -364,22 +486,74 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           <DialogHeader>
             <DialogTitle>Cancel Order</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Are you sure you want to mark this order as cancelled? This does not automatically refund payments.
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmCancel(false)} disabled={updating}>No</Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirmCancel(false);
-                updateStatus("CANCELLED");
-              }}
-              disabled={updating}
-            >
-              Yes, cancel
-            </Button>
-          </DialogFooter>
+          {order.deliveryStatus === "RETURNED" ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                This order has been marked as <strong>Returned</strong>. When cancelling,
+                do you want to add the returned items back into inventory?
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                If you choose to restock, product stock levels will be increased and a
+                RETURN inventory movement will be recorded. This does not automatically
+                refund any payments.
+              </p>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmCancel(false)}
+                  disabled={updating}
+                >
+                  Close
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setConfirmCancel(false);
+                    updateStatus("CANCELLED");
+                  }}
+                  disabled={updating}
+                >
+                  Cancel only (no restock)
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirmCancel(false);
+                    updateStatus("CANCELLED", { restockReturned: true });
+                  }}
+                  disabled={updating}
+                >
+                  Cancel &amp; Restock
+                </Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Are you sure you want to mark this order as cancelled? This does not
+                automatically refund payments.
+              </p>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmCancel(false)}
+                  disabled={updating}
+                >
+                  No
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirmCancel(false);
+                    updateStatus("CANCELLED");
+                  }}
+                  disabled={updating}
+                >
+                  Yes, cancel
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
       <Dialog open={confirmDelete} onOpenChange={(o) => { if (!o) setConfirmDelete(false); }}>

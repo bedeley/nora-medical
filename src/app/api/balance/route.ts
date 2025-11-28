@@ -63,7 +63,16 @@ export async function GET(req: Request) {
         select: { total: true, amountPaid: true },
       }),
       prisma.payment.findMany({
-        where: { userId },
+        where: {
+          userId,
+          // Exclude internal auto-apply adjustment entries so that
+          // "unappliedFunds" decreases when credit is applied to orders.
+          NOT: {
+            note: {
+              contains: "\"reference\":\"AUTO_APPLY\"",
+            },
+          },
+        },
         select: { amount: true, status: true, refundDisposition: true },
       }),
     ]);

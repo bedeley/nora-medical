@@ -21,6 +21,13 @@ type ReceiptOrder = {
   deliveryStatus?: string | null;
   user?: { name?: string | null; email?: string | null } | null;
   items: Array<{ id: string; quantity: number; price: number | string; product?: { name?: string | null } | null }>;
+  payments?: Array<{
+    id: string;
+    amount: number | string;
+    note: string | null;
+    status: string;
+    createdAt: string | Date;
+  }>;
 };
 
 const fetcher = async (u: string) => {
@@ -57,6 +64,49 @@ export default function ReceiptPage() {
   const total = Number(order.total || 0);
   const paid = Number(order.amountPaid || 0);
   const balance = Math.max(0, total - paid);
+
+  const storeCreditApplied = (() => {
+    const payments = order.payments || [];
+    if (!payments.length) return 0;
+    let sum = 0;
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note) as {
+          reference?: string;
+          applied?: Array<{ orderId?: string; applied?: number }>;
+        };
+        if (meta?.reference !== "AUTO_APPLY" || !Array.isArray(meta.applied)) {
+          continue;
+        }
+        for (const a of meta.applied) {
+          if (!a || a.orderId !== order.id) continue;
+          sum += Number(a.applied || 0);
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return sum;
+  })();
+
+  const momoPaid = (() => {
+    const payments = order.payments || [];
+    if (!payments.length) return 0;
+    let sum = 0;
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note) as { method?: string };
+        if (meta?.method === "momo") {
+          sum += Number(p.amount || 0);
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return sum;
+  })();
 
   return (
     <div className="mx-auto max-w-2xl p-6 print:p-0">
@@ -152,6 +202,18 @@ export default function ReceiptPage() {
                 <span>Paid</span>
                 <span>{formatCurrency(paid)}</span>
               </div>
+              {storeCreditApplied > 0 && (
+                <div className="flex justify-between py-1 text-xs text-muted-foreground">
+                  <span>Paid from store credit</span>
+                  <span>{formatCurrency(storeCreditApplied)}</span>
+                </div>
+              )}
+              {momoPaid > 0 && (
+                <div className="flex justify-between py-1 text-xs text-muted-foreground">
+                  <span>Paid via MoMo</span>
+                  <span>{formatCurrency(momoPaid)}</span>
+                </div>
+              )}
               <div className="flex justify-between py-1 font-semibold">
                 <span>Balance</span>
                 <span>{formatCurrency(balance)}</span>

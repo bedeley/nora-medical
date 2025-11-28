@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+import { initiateMomoPayout } from "@/lib/momo";
+import { notifyPaymentEvent } from "@/lib/notifications";
 
 const refundSchema = z.object({
   amount: z.number().positive(),
@@ -65,6 +67,41 @@ export async function POST(
       );
     }
 
+    const isMomoTransfer = method === "transfer";
+    const momoPayoutEnabled = process.env.MOMO_PAYOUTS_ENABLED === "1";
+
+    // If MoMo payouts are enabled in config and the admin selected the
+    // MoMo transfer option, attempt to trigger a payout to the customer's
+    // saved phone number. This is fully gated by the env flag so it is
+    // effectively "off" until an integration is configured.
+    if (isMomoTransfer && momoPayoutEnabled) {
+      const userRecord = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { phone: true },
+      });
+      const phone = (userRecord?.phone || "").trim();
+      if (!phone) {
+        return NextResponse.json(
+          { error: "Customer has no phone number on file for MoMo refund." },
+          { status: 400 },
+        );
+      }
+
+      const payout = await initiateMomoPayout({
+        provider: "mtn",
+        amount,
+        phone,
+        externalId: `refund-${userId}-${Date.now()}`,
+        description: note || "Store credit refund",
+      });
+      if (!payout.ok) {
+        return NextResponse.json(
+          { error: payout.error || "Failed to initiate MoMo payout" },
+          { status: 502 },
+        );
+      }
+    }
+
     const meta: {
       method: string;
       reference?: string;
@@ -72,6 +109,8 @@ export async function POST(
       status: string;
       location: string;
       creditBefore: number;
+      channel?: "cash" | "momo_transfer";
+      momoPayoutEnabled?: boolean;
     } = {
       method,
       reference,
@@ -79,6 +118,8 @@ export async function POST(
       status: "refund",
       location: "admin/customers:credit-payout",
       creditBefore: creditAvailable,
+      channel: isMomoTransfer ? "momo_transfer" : "cash",
+      momoPayoutEnabled,
     };
 
     const payment = await prisma.payment.create({
@@ -90,6 +131,17 @@ export async function POST(
         refundDisposition: "CASH",
       },
     });
+
+    try {
+      await notifyPaymentEvent({
+        kind: "store_credit_refunded",
+        userId,
+        amount,
+        method,
+      });
+    } catch (e) {
+      console.warn("notifyPaymentEvent (credit refund) error:", e);
+    }
 
     return NextResponse.json({ paymentId: payment.id, creditRemaining: creditAvailable - amount });
   } catch (error) {

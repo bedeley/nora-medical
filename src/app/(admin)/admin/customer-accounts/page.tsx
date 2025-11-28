@@ -18,6 +18,7 @@ type CustomerUser = {
   name: string | null;
   phone: string | null;
   role: string;
+  archived: boolean;
 };
 
 type CustomerRow = {
@@ -54,6 +55,7 @@ export default function CustomerAccountsPage() {
   const rows = useMemo<CustomerRow[]>(() => data?.rows ?? [], [data]);
   const [q, setQ] = useState("");
   const [confirmClose, setConfirmClose] = useState<{ id: string; email?: string | null } | null>(null);
+  const [confirmArchive, setConfirmArchive] = useState<{ id: string; email?: string | null; archived: boolean } | null>(null);
   const [confirmText, setConfirmText] = useState("");
   // Tick every minute to ensure days-since value stays fresh without relying on server refresh
   const [nowTick, setNowTick] = useState<number>(Date.now());
@@ -137,13 +139,43 @@ export default function CustomerAccountsPage() {
                   <TableCell className="text-center">{r.lastOrderAt ? new Date(r.lastOrderAt).toLocaleString() : "-"}</TableCell>
                   <TableCell className="text-center">{formatDaysAgo(r.lastOrderAt)}</TableCell>
                   <TableCell className="text-center">
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setConfirmClose({ id: r.user.id, email: r.user.email })}
-                    >
-                      Close Account
-                    </Button>
+                    <div className="flex justify-center gap-2">
+                      <Button
+                        variant={r.user.archived ? "outline" : "secondary"}
+                        size="sm"
+                        onClick={() =>
+                          setConfirmArchive({
+                            id: r.user.id,
+                            email: r.user.email,
+                            archived: r.user.archived,
+                          })
+                        }
+                      >
+                        {r.user.archived ? "Unarchive" : "Archive"}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={
+                          r.user.archived ||
+                          r.ordersTotal > 0 ||
+                          r.paymentsTotal > 0
+                        }
+                        onClick={() =>
+                          setConfirmClose({
+                            id: r.user.id,
+                            email: r.user.email,
+                          })
+                        }
+                        title={
+                          r.ordersTotal > 0 || r.paymentsTotal > 0
+                            ? "Accounts with order/payment history cannot be deleted; archive instead."
+                            : undefined
+                        }
+                      >
+                        Close Account
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -159,6 +191,7 @@ export default function CustomerAccountsPage() {
         </div>
       )}
 
+      {/* Close account (hard delete for accounts with no history) */}
       <Dialog
         open={!!confirmClose}
         onOpenChange={(open) => {
@@ -170,7 +203,7 @@ export default function CustomerAccountsPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Close Account</DialogTitle>
+          <DialogTitle>Close Account</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Are you sure you want to permanently close this account
@@ -208,6 +241,87 @@ export default function CustomerAccountsPage() {
               }}
             >
               Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Archive / Unarchive account */}
+      <Dialog
+        open={!!confirmArchive}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmArchive(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {confirmArchive?.archived ? "Unarchive Account" : "Archive Account"}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {confirmArchive?.archived
+              ? "This will mark the account as active again."
+              : "This will mark the account as archived. Archived accounts remain in history but are treated as inactive."}
+            {confirmArchive?.email ? ` (${confirmArchive.email})` : ""}
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmArchive(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant={confirmArchive?.archived ? "secondary" : "destructive"}
+              onClick={async () => {
+                if (!confirmArchive) return;
+                try {
+                  const res = await fetch(
+                    `/api/admin/users/${confirmArchive.id}/archive`,
+                    {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        archived: !confirmArchive.archived,
+                      }),
+                    },
+                  );
+                  if (!res.ok) {
+                    const j = await res
+                      .json()
+                      .catch(
+                        async () => ({
+                          error: await res.text().catch(() => ""),
+                        }),
+                      );
+                    throw new Error(
+                      j?.error ||
+                        (confirmArchive.archived
+                          ? "Failed to unarchive account"
+                          : "Failed to archive account"),
+                    );
+                  }
+                  toast.success(
+                    confirmArchive.archived
+                      ? "Account unarchived"
+                      : "Account archived",
+                  );
+                  setConfirmArchive(null);
+                  queryClient.invalidateQueries({
+                    queryKey: ["admin", "customers"],
+                  });
+                } catch (err) {
+                  const message =
+                    err instanceof Error
+                      ? err.message
+                      : "Failed to update account";
+                  toast.error(message);
+                }
+              }}
+            >
+              {confirmArchive?.archived ? "Unarchive" : "Archive"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -63,6 +63,27 @@ function toMsisdn(phone: string) {
 }
 
 /**
+ * Placeholder type and helper for future MoMo payouts (refunds) to customers.
+ * This is intentionally minimal and is gated by an environment flag in the
+ * calling route so it is effectively "off" until a real integration is wired.
+ */
+export type PayoutParams = {
+  provider: MomoProvider;
+  amount: number;
+  phone: string;
+  externalId: string;
+  description?: string;
+};
+
+export async function initiateMomoPayout(
+  _params: PayoutParams,
+): Promise<InitiateResult> {
+  // This helper is a stub. When MOMO_PAYOUTS_ENABLED is set and a provider
+  // payout API is available, replace this implementation with a real call.
+  return { ok: false, error: "MoMo payout integration not configured" };
+}
+
+/**
  * Initiates a request-to-pay with the provider.
  *
  * NOTE: This is a thin placeholder. In production, configure the provider

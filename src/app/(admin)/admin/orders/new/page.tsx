@@ -39,7 +39,7 @@ export default function NewAdminOrderPage() {
   const [items, setItems] = useState<{ productId: string; name: string; price: number; quantity: number }[]>([]);
   const [initialPayment, setInitialPayment] = useState<string>("");
   const [deliveryStatus, setDeliveryStatus] = useState<
-    "NOT_SET" | "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED"
+    "NOT_SET" | "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED"
   >("NOT_SET");
 
   const selectedProduct = useMemo(
@@ -222,9 +222,14 @@ export default function NewAdminOrderPage() {
               <label className="block text-sm font-medium mb-1">Delivery Status</label>
               <Select
                 value={deliveryStatus}
-                onValueChange={(v: "NOT_SET" | "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED") =>
-                  setDeliveryStatus(v)
-                }
+                onValueChange={(
+                  v:
+                    | "NOT_SET"
+                    | "NOT_DELIVERED"
+                    | "PARTIALLY_DELIVERED"
+                    | "DELIVERED"
+                    | "RETURNED",
+                ) => setDeliveryStatus(v)}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Default: Not Delivered" />
@@ -234,6 +239,7 @@ export default function NewAdminOrderPage() {
                   <SelectItem value="NOT_DELIVERED">Not Delivered</SelectItem>
                   <SelectItem value="PARTIALLY_DELIVERED">Partially Delivered</SelectItem>
                   <SelectItem value="DELIVERED">Delivered</SelectItem>
+                  <SelectItem value="RETURNED">Returned</SelectItem>
                 </SelectContent>
               </Select>
             </div>

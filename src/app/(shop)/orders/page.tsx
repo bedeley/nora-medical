@@ -91,6 +91,7 @@ function OrdersContent() {
     refetchInterval: 15000,
     refetchOnWindowFocus: false,
   });
+  const queryClientOrders = useQueryClient();
   const { data: balanceData } = useClientQuery({
     queryKey: ["balance", "self"],
     queryFn: () => fetcher("/api/balance?self=1"),
@@ -187,7 +188,7 @@ function OrdersContent() {
   const cashRefunds = Math.max(0, Number(balanceData?.cashRefunds ?? 0));
 
   return (
-    <section className="space-y-4 orders-page">
+    <section className="orders-page mx-auto w-full max-w-5xl space-y-4 px-3 sm:px-4 lg:px-0">
       {(justPlaced || hasOutstanding) && (
         <div className="rounded-md border border-primary/20 bg-primary/10 text-primary p-3 text-sm">
           {justPlaced ? (
@@ -200,9 +201,58 @@ function OrdersContent() {
       {(creditAvailable > 0 || cashRefunds > 0) && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 p-3 text-sm space-y-1">
           {creditAvailable > 0 && (
-            <p>
-              Store credit available: <span className="font-semibold">{formatCurrency(creditAvailable)}</span>. You can ask us to apply it to a balance or use it on your next order.
-            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <p>
+                Store credit available:{" "}
+                <span className="font-semibold">
+                  {formatCurrency(creditAvailable)}
+                </span>
+                . You can apply it directly to your outstanding orders, and it
+                will also be auto-applied when you place new orders (oldest
+                unpaid or partially-paid orders are cleared first).
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    const res = await fetch("/api/account/credit/apply", {
+                      method: "POST",
+                    });
+                    const j = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      throw new Error(
+                        j?.error || "Failed to apply store credit",
+                      );
+                    }
+                    toast.success(
+                      j?.applied
+                        ? `Applied ${formatCurrency(
+                            Number(j.applied || 0),
+                          )} of store credit to your orders.`
+                        : "No store credit could be applied.",
+                    );
+                    queryClient.invalidateQueries({
+                      queryKey: ["orders", "history"],
+                    });
+                    queryClient.invalidateQueries({
+                      queryKey: ["balance", "self"],
+                    });
+                    queryClientOrders.invalidateQueries({
+                      queryKey: ["orders", "history"],
+                    });
+                  } catch (e: unknown) {
+                    const message =
+                      e instanceof Error
+                        ? e.message
+                        : "Failed to apply store credit";
+                    toast.error(message);
+                  }
+                }}
+              >
+                Apply Store Credit
+              </Button>
+            </div>
           )}
           {cashRefunds > 0 && (
             <p>
@@ -233,26 +283,26 @@ function OrdersContent() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
           <CardContent className="!py-2">
             <p className="text-[11px] text-muted-foreground">Orders</p>
             <p className="text-lg font-semibold">{summary.totalOrders}</p>
           </CardContent>
         </Card>
-        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
           <CardContent className="!py-2">
             <p className="text-[11px] text-muted-foreground">Total Spent</p>
             <p className="text-lg font-semibold">{formatCurrency(summary.totalSpent)}</p>
           </CardContent>
         </Card>
-        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
           <CardContent className="!py-2">
             <p className="text-[11px] text-muted-foreground">Total Paid</p>
             <p className="text-lg font-semibold text-green-700">{formatCurrency(summary.totalPaid)}</p>
           </CardContent>
         </Card>
-        <Card className="!py-2 !border-none !shadow-md !rounded-none">
+        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
           <CardContent className="!py-2">
             <p className="text-[11px] text-muted-foreground">Outstanding</p>
             <p className={`text-lg font-semibold ${summary.outstanding > 0 ? "text-red-600" : "text-green-700"}`}>
@@ -283,9 +333,9 @@ function OrdersContent() {
         return (
           <Card
             key={order.id}
-            className="text-xs !py-2 !border-none !shadow-md !rounded-none"
+            className="text-xs !py-1.5 !border-none !shadow-sm !rounded-none"
           >
-            <CardHeader className="!py-2 !px-3">
+            <CardHeader className="!py-1.5 !px-3">
               <CardTitle className="flex justify-between items-center text-[13px]">
                 <span className="flex items-center gap-2">
                   <span>Order #{order.id.slice(0, 8)}</span>
@@ -323,43 +373,54 @@ function OrdersContent() {
                 })()}
               </CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-1.5 !px-3 !py-2">
+            <CardContent className="grid gap-1 !px-3 !py-1.5">
               {uniqueProducts.length > 0 && (
-                <div className="flex items-center gap-2 mb-1.5">
-                  <div className="flex gap-2">
-                    {uniqueProducts.slice(0, 3).map((it) => (
-                      <div
-                        key={it.product.id}
-                        className="relative h-7 w-7 rounded-md bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center"
-                      >
-                        {it.product.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={it.product.imageUrl}
-                            alt={it.product.name}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <span className="text-[9px] px-1 text-slate-500 text-center line-clamp-2">
-                            {it.product.name}
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-2">
+                      {uniqueProducts.slice(0, 3).map((it) => (
+                        <div
+                          key={it.product.id}
+                          className="relative h-7 w-7 rounded-md bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center"
+                        >
+                          {it.product.imageUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={it.product.imageUrl}
+                              alt={it.product.name}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-[9px] px-1 text-slate-500 text-center line-clamp-2">
+                              {it.product.name}
+                            </span>
+                          )}
+                          <span className="absolute bottom-[1px] right-[1px] bg-slate-900/80 text-white text-[9px] leading-none px-0.5 rounded">
+                            x{it.quantity}
                           </span>
-                        )}
-                        <span className="absolute bottom-[1px] right-[1px] bg-slate-900/80 text-white text-[9px] leading-none px-0.5 rounded">
-                          x{it.quantity}
-                        </span>
-                      </div>
-                    ))}
-                    {uniqueProducts.length > 3 && (
-                      <div className="h-7 w-7 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-600">
-                        +{uniqueProducts.length - 3}
-                      </div>
-                    )}
+                        </div>
+                      ))}
+                      {uniqueProducts.length > 3 && (
+                        <div className="h-7 w-7 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-600">
+                          +{uniqueProducts.length - 3}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-muted-foreground">
+                      {uniqueProducts.length === 1
+                        ? `${uniqueProducts[0].quantity} item`
+                        : `${uniqueProducts.reduce((s, it) => s + Number(it.quantity || 0), 0)} items`}
+                    </span>
                   </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {uniqueProducts.length === 1
-                      ? `${uniqueProducts[0].quantity} item`
-                      : `${uniqueProducts.reduce((s, it) => s + Number(it.quantity || 0), 0)} items`}
-                  </span>
+                  <Button
+                    asChild
+                    size="xs"
+                    variant="outline"
+                    className="px-3 py-1"
+                    title="View printable receipt"
+                  >
+                    <Link href={`/orders/${order.id}/receipt`}>View Receipt</Link>
+                  </Button>
                 </div>
               )}
               <div className="flex justify-between">
@@ -374,6 +435,53 @@ function OrdersContent() {
                 <span>Amount Paid:</span>
                 <span>{formatCurrency(Number(order.totalPaid))}</span>
               </div>
+              {(() => {
+                const payments = (order.payments || []) as Array<{
+                  id: string;
+                  amount: number | string;
+                  note?: string | null;
+                }>;
+                let storeCreditApplied = 0;
+                let momoPaid = 0;
+                for (const p of payments) {
+                  if (!p.note) continue;
+                  try {
+                    const meta = JSON.parse(p.note) as {
+                      reference?: string;
+                      applied?: Array<{ orderId?: string; applied?: number }>;
+                      method?: string;
+                    };
+                    if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
+                      for (const a of meta.applied) {
+                        if (a && a.orderId === order.id) {
+                          storeCreditApplied += Number(a.applied || 0);
+                        }
+                      }
+                    }
+                    if (meta.method === "momo") {
+                      momoPaid += Number(p.amount || 0);
+                    }
+                  } catch {
+                    // ignore malformed notes
+                  }
+                }
+                return (
+                  <>
+                    {storeCreditApplied > 0 && (
+                      <div className="flex justify-between text-[11px] text-muted-foreground">
+                        <span>Paid from store credit:</span>
+                        <span>{formatCurrency(storeCreditApplied)}</span>
+                      </div>
+                    )}
+                    {momoPaid > 0 && (
+                      <div className="flex justify-between text-[11px] text-muted-foreground">
+                        <span>Paid via MoMo:</span>
+                        <span>{formatCurrency(momoPaid)}</span>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               <div className="flex justify-between font-semibold">
                 <span>Balance:</span>
                 <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
@@ -402,12 +510,6 @@ function OrdersContent() {
                 </div>
               )}
 
-              <div className="mt-3 flex justify-end">
-                <Button asChild size="sm" variant="outline" title="View printable receipt">
-                  <Link href={`/orders/${order.id}/receipt`}>View Receipt</Link>
-                </Button>
-              </div>
-
               {order.payments.length > 0 && (
                 <div className="mt-3">
                   <div className="flex items-center justify-between">
@@ -431,35 +533,69 @@ function OrdersContent() {
                     </Button>
                   </div>
                   {expanded[order.id] && (
-                    <div className="mt-2 overflow-x-auto max-w-full">
-                      <Table className="text-xs min-w-full">
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="py-1 px-2 whitespace-nowrap">Date</TableHead>
-                            <TableHead className="py-1 px-2 whitespace-nowrap">Type</TableHead>
-                            <TableHead className="py-1 px-2 whitespace-nowrap">Amount</TableHead>
-                            <TableHead className="py-1 px-2 whitespace-nowrap">Note</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {order.payments.map((p) => (
-                            <TableRow key={p.id}>
-                              <TableCell className="py-1 px-2 whitespace-nowrap">
-                                {new Date(p.createdAt).toLocaleDateString()}
-                              </TableCell>
-                              <TableCell className="py-1 px-2 whitespace-nowrap">
-                                {formatPaymentLabel(p)}
-                              </TableCell>
-                              <TableCell className="py-1 px-2 whitespace-nowrap">
-                                {formatCurrency(Number(p.amount))}
-                              </TableCell>
-                              <TableCell className="py-1 px-2 break-words max-w-[200px]">
-                                {formatPaymentNote(p)}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                    <div className="mt-2 text-xs space-y-1">
+                      {(() => {
+                        const payments = order.payments || [];
+                        let storeCreditApplied = 0;
+                        let momoPaid = 0;
+                        let cashPaid = 0;
+                        for (const p of payments) {
+                          if (!p.note) continue;
+                          try {
+                            const meta = JSON.parse(p.note as string) as {
+                              reference?: string;
+                              applied?: Array<{ orderId?: string; applied?: number }>;
+                              method?: string;
+                            };
+                            if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
+                              for (const a of meta.applied) {
+                                if (a && a.orderId === order.id) {
+                                  storeCreditApplied += Number(a.applied || 0);
+                                }
+                              }
+                            }
+                            if (meta.method === "momo") {
+                              momoPaid += Number(p.amount || 0);
+                            }
+                            if (meta.method === "cash" || meta.method === "transfer") {
+                              cashPaid += Number(p.amount || 0);
+                            }
+                          } catch {
+                            // ignore malformed notes
+                          }
+                        }
+                        if (storeCreditApplied <= 0 && momoPaid <= 0 && cashPaid <= 0) {
+                          return <p>No summarized payment information available.</p>;
+                        }
+                        return (
+                          <>
+                            {cashPaid > 0 && (
+                              <p>
+                                Paid in cash/transfer:{" "}
+                                <span className="font-semibold">
+                                  {formatCurrency(cashPaid)}
+                                </span>
+                              </p>
+                            )}
+                            {momoPaid > 0 && (
+                              <p>
+                                Paid via MoMo:{" "}
+                                <span className="font-semibold">
+                                  {formatCurrency(momoPaid)}
+                                </span>
+                              </p>
+                            )}
+                            {storeCreditApplied > 0 && (
+                              <p>
+                                Store credit applied:{" "}
+                                <span className="font-semibold">
+                                  {formatCurrency(storeCreditApplied)}
+                                </span>
+                              </p>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -780,11 +916,11 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
         <Button
           size="sm"
           variant="secondary"
-          onClick={async () => {
+          onClick={() => {
             const full = Number(maxAmount) || 0;
             setAmtStr(String(full.toFixed(2)));
             if (isValidPhone(phone) && full > 0) {
-              await onPay();
+              setConfirmOpen(true);
             }
           }}
           disabled={loading || !(Number(maxAmount) > 0)}

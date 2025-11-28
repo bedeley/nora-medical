@@ -6,8 +6,10 @@ export async function GET() {
   const session = await getServerSession(authOptions);
   if (!session) return new Response("Unauthorized", { status: 401 });
 
+  const userId = (session.user as AuthenticatedUser).id;
+
   const orders = await prisma.order.findMany({
-    where: { userId: (session.user as AuthenticatedUser).id },
+    where: { userId },
     include: {
       payments: true,
       items: {
@@ -19,6 +21,18 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
   });
 
+  // Include AUTO_APPLY credit adjustment payments for this user so that
+  // order summaries can show how much store credit was applied to each order,
+  // even though those adjustment entries are not tied to a single orderId.
+  const autoApplyPayments = await prisma.payment.findMany({
+    where: {
+      userId,
+      note: {
+        contains: "\"reference\":\"AUTO_APPLY\"",
+      },
+    },
+  });
+
   // Normalize numeric fields and include computed balance consistently
   const data = orders.map((o: typeof orders[number]) => {
     const total = Number(o.total);
@@ -26,6 +40,20 @@ export async function GET() {
     const rawBalance = Number(o.balance ?? 0);
     const computedBalance = Math.max(0, total - amountPaid);
     const balance = rawBalance === 0 ? computedBalance : rawBalance;
+    // Merge per-order payments with AUTO_APPLY credit entries for this user
+    // (deduplicated by id).
+    const mergedPayments = (() => {
+      if (!autoApplyPayments.length) return o.payments || [];
+      const map = new Map<string, (typeof o.payments)[number]>();
+      for (const p of o.payments || []) {
+        map.set(p.id, p);
+      }
+      for (const p of autoApplyPayments) {
+        if (!map.has(p.id)) map.set(p.id, p as (typeof o.payments)[number]);
+      }
+      return Array.from(map.values());
+    })();
+
     return {
       id: o.id,
       status: o.status,
@@ -33,7 +61,7 @@ export async function GET() {
       total,
       amountPaid,
       balance,
-      payments: (o.payments || []).map((p: typeof o.payments[number]) => ({
+      payments: mergedPayments.map((p: typeof mergedPayments[number]) => ({
         id: p.id,
         amount: Number(p.amount),
         note: p.note,

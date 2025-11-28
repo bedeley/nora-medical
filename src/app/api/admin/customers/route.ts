@@ -10,6 +10,7 @@ type UserSummary = {
   name: string | null;
   phone: string | null;
   role: string;
+  archived: boolean;
   phoneVerifiedAt: Date | null;
 };
 
@@ -54,7 +55,7 @@ export async function GET() {
     const results = await Promise.allSettled([
       prisma.user.findMany({
         where: { OR: [{ role: "CUSTOMER" }, { role: "ADMIN" }] },
-        select: { id: true, email: true, name: true, phone: true, role: true, phoneVerifiedAt: true },
+        select: { id: true, email: true, name: true, phone: true, role: true, archived: true, phoneVerifiedAt: true },
         orderBy: { createdAt: "desc" },
       }),
       prisma.order.groupBy({
@@ -64,6 +65,16 @@ export async function GET() {
       }),
       prisma.payment.groupBy({
         by: ["userId"],
+        // Exclude internal auto-apply adjustment entries so that
+        // "Unapplied Funds" (Payments - Paid) decreases when credit
+        // is applied to open orders.
+        where: {
+          NOT: {
+            note: {
+              contains: "\"reference\":\"AUTO_APPLY\"",
+            },
+          },
+        },
         _sum: { amount: true },
       }),
       prisma.payment.groupBy({
