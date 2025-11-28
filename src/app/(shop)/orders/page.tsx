@@ -9,14 +9,6 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   Select,
   SelectTrigger,
   SelectValue,
@@ -180,7 +172,7 @@ function OrdersContent() {
   if (!orders.length)
     return (
       <div className="text-center py-20 text-muted-foreground">
-        You haven’t placed any orders yet.
+        You haven&apos;t placed any orders yet.
       </div>
     );
 
@@ -635,55 +627,8 @@ type OrderPayment = {
   } | null;
 };
 
-function formatPaymentLabel(p: OrderPayment) {
-  const status = String(p.status || p.meta?.status || "").toUpperCase();
-  const disposition = String(p.refundDisposition || p.meta?.refundDisposition || "").toUpperCase();
-  if (status === "REFUND" && disposition === "CASH") return "Refund (cash)";
-  if (status === "REFUND" && disposition === "CREDIT") return "Refund (credit)";
-  if (status === "REFUND") return "Refund";
-  if (status === "VOID") return "Void";
-  return "Payment";
-}
-
-function formatPaymentNote(p: OrderPayment) {
-  const raw = p?.note;
-  if (!raw) return "-";
-  try {
-    const meta = JSON.parse(raw);
-
-    // Customer-friendly MoMo messages
-    if (meta?.method === "momo") {
-      const provider = String(meta.provider || "mtn").toUpperCase();
-      const status = String(meta.status || p.status || "").toUpperCase();
-
-      if (status === "PENDING") return `Mobile Money payment pending (${provider})`;
-      if (status === "SUCCESS" || status === "SUCCESSFUL")
-        return `Mobile Money payment confirmed (${provider})`;
-      if (status === "FAILED") return `Mobile Money payment failed (${provider})`;
-
-      return `Mobile Money payment (${provider})`;
-    }
-
-    // Admin-entered note text, if present
-    if (typeof meta?.note === "string" && meta.note.trim()) {
-      return meta.note.trim();
-    }
-
-    // Refund/credit notes
-    if (typeof meta?.reason === "string" && meta.reason.trim()) {
-      return meta.reason.trim();
-    }
-
-    // Generic fallback using method/status if available
-    const parts: string[] = [];
-    if (meta?.method) parts.push(String(meta.method));
-    if (meta?.status) parts.push(String(meta.status));
-    if (parts.length) return parts.join(" - ");
-  } catch {
-    // not JSON, fall through to raw
-  }
-  return raw;
-}
+// Legacy payment formatting helpers no longer used on this page have been
+// removed to keep lint clean.
 
 function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderId: string; maxAmount: number; defaultPhone?: string; onSuccess?: () => void }) {
   const [phone, setPhone] = useState<string>(defaultPhone || "");
