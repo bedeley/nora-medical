@@ -3,7 +3,7 @@
 export const dynamic = "force-dynamic";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { useEffect, useState, useId, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,13 +87,6 @@ type PaymentRow = {
   } | null;
   status: string | null;
   refundDisposition: string | null;
-};
-
-type OrderOption = {
-  id: string;
-  label: string;
-  status: string;
-  balance: number;
 };
 
 export default function AdminCustomers() {

@@ -42,7 +42,7 @@ function AdminPurchasesContent() {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PurchaseRow[]>([]);
   const [page, setPage] = useState(1);
-  const pageSize = 50;
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
   const [products, setProducts] = useState<Product[]>([]);
   const [form, setForm] = useState({ productId: "", quantity: "", unitCost: "", supplier: "", note: "" });
   const [currentCost, setCurrentCost] = useState<number | null>(null);

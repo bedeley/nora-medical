@@ -153,10 +153,9 @@ export default function CartPage() {
     refetchOnWindowFocus: false,
   });
 
-  const guestProducts = guestProductsData?.items ?? [];
-
   const guestItems: CartItem[] = useMemo(() => {
     if (!guestRaw.length) return [];
+    const guestProducts = guestProductsData?.items ?? [];
     const map = new Map(
       guestProducts.map((p) => [
         p.id,
@@ -180,7 +179,7 @@ export default function CartPage() {
         } as CartItem;
       })
       .filter((it): it is CartItem => Boolean(it));
-  }, [guestRaw, guestProducts]);
+  }, [guestRaw, guestProductsData]);
 
   // Automatically merge guest cart into server cart once user signs in
   const [mergeAttempted, setMergeAttempted] = useState(false);
