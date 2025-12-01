@@ -110,7 +110,7 @@ export async function POST(req: Request) {
     });
 
     if (channel === "email") {
-      const subject = "Nora Hospital Supplies password reset";
+      const subject = "Noralls Medical Supplies password reset";
       const text = [
         `Hi ${user.name || "there"},`,
         "",
@@ -120,7 +120,7 @@ export async function POST(req: Request) {
         "Enter this code on the sign-in page to set a new password.",
         "If you didn't request this, you can ignore this email.",
         "",
-        "— Nora Hospital Supplies",
+        "— Noralls Medical Supplies",
       ].join("\n");
       const sent = await sendEmail(user.email || rawIdentifier, subject, text);
       if (!sent.ok) {
@@ -130,7 +130,7 @@ export async function POST(req: Request) {
       if (!user.phone) {
         return NextResponse.json({ error: "No phone on file for WhatsApp reset. Use email instead." }, { status: 400 });
       }
-      const message = `Nora Hospital Supplies password reset code: ${code}. Enter this on the login page within 15 minutes.`;
+      const message = `Noralls Medical Supplies password reset code: ${code}. Enter this on the login page within 15 minutes.`;
       const wa = await sendWhatsApp(user.phone, message).catch(() => ({ ok: false }));
       if (!wa?.ok) {
         const sms = await sendSms(user.phone, message);

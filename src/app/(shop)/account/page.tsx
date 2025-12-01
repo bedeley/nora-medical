@@ -210,8 +210,12 @@ function AccountContent() {
         )}
         {isEmailVerified && (
           <div className="mt-4 flex gap-3">
-            <Link href="/orders" className="underline">Order history</Link>
-            <Link href="/account/balance" className="underline">My balance</Link>
+            <Link href="/orders" className="hidden sm:inline underline">
+              Order history
+            </Link>
+            <Link href="/account/balance" className="hidden sm:inline underline">
+              My balance
+            </Link>
           </div>
         )}
 

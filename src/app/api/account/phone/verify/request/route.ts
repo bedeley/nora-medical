@@ -34,7 +34,7 @@ export async function POST(req: Request) {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
     await prisma.userOtp.create({ data: { userId, purpose: "phone_verification", codeHash: hash, expiresAt } });
 
-    const msg = `Nora Hospital Supplies: Your verification code is ${code}. It expires in 10 minutes.`;
+  const msg = `Noralls Medical Supplies: Your verification code is ${code}. It expires in 10 minutes.`;
     const wa = await sendWhatsApp(phone, msg).catch(
       () => ({ ok: false } as { ok: boolean })
     );

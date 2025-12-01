@@ -9,15 +9,15 @@ const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://nora-hospital-supplie
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
   title: {
-    default: "Nora’ Hospital Supply",
-    template: "%s | Nora’ Hospital Supply",
+    default: "Noralls Medical Supplies",
+    template: "%s | Noralls Medical Supplies",
   },
-  description: "Online hospital and clinical supply store.",
+  description: "Online medical supply store for hospitals, clinics, and practitioners.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Nora Supply",
+    title: "Noralls Medical Supplies",
   },
   icons: {
     icon: [

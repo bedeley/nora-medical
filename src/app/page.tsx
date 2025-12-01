@@ -32,8 +32,8 @@ export default async function HomePage() {
     <main className="min-h-screen flex flex-col items-center justify-center text-center p-6">
       <section className="max-w-5xl w-full">
         <div className="flex flex-col items-center gap-4 text-center px-2">
-          <Image src="/logo.svg" alt="Nora Hospital Supply Logo" width={140} height={140} className="w-32 sm:w-40 h-auto" />
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight leading-tight">Welcome to Nora Hospital Supply</h1>
+          <Image src="/logo.svg" alt="Noralls Medical Supplies Logo" width={140} height={140} className="w-32 sm:w-40 h-auto" />
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight leading-tight">Welcome to Noralls Medical Supplies</h1>
           <p className="text-muted-foreground max-w-xl text-base sm:text-lg">
             Your trusted source for hospital and clinical supplies. Browse our wide range of professional
             products — from thermometers to gloves — and enjoy quick, reliable service.
@@ -55,18 +55,18 @@ export default async function HomePage() {
               </>
             )}
             {!session && (
-              <>
-                <Link href="/login" className="w-full sm:w-auto">
+              <div className="flex flex-col gap-2 w-full md:hidden">
+                <Link href="/login" className="w-full">
                   <Button variant="outline" size="lg" className="w-full">
                     Login
                   </Button>
                 </Link>
-                <Link href="/register" className="w-full sm:w-auto">
+                <Link href="/register" className="w-full">
                   <Button variant="outline" size="lg" className="w-full">
                     Create Account
                   </Button>
                 </Link>
-              </>
+              </div>
             )}
           </div>
         </div>
@@ -98,7 +98,7 @@ export default async function HomePage() {
 
         <Card className="mt-10 p-6 !rounded-none !border-none shadow-md">
           <CardContent className="grid gap-4">
-            <h2 className="text-xl font-semibold">Why Choose Nora?</h2>
+            <h2 className="text-xl font-semibold">Why Choose Noralls?</h2>
             <ul className="text-left list-disc list-inside space-y-1">
               <li>Quality medical products for clinics, hospitals, and home care.</li>
               <li>Transparent pricing with no hidden fees.</li>

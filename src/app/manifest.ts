@@ -2,9 +2,9 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Nora Hospital Supply",
-    short_name: "Nora Supply",
-    description: "Mobile-friendly ordering and admin experience for Nora Hospital Supplies.",
+    name: "Noralls Medical Supplies",
+    short_name: "Noralls",
+    description: "Mobile-friendly ordering and admin experience for Noralls Medical Supplies.",
     start_url: "/",
     scope: "/",
     display: "standalone",

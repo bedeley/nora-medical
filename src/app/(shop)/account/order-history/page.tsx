@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { formatCurrency } from "@/lib/currency";
+import { formatIdReadable } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type HistoryItem = {
@@ -63,7 +64,9 @@ export default function OrderHistoryPage() {
             className="border-none shadow-md py-3"
           >
             <CardHeader className="py-3">
-              <CardTitle>Order #{order.id.slice(0, 6)}</CardTitle>
+              <CardTitle className="text-sm">
+                Order {formatIdReadable(order.id)}
+              </CardTitle>
             </CardHeader>
             <CardContent className="text-sm py-3">
               <p>

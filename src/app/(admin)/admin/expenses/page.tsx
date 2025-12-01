@@ -215,7 +215,10 @@ function AdminExpensesContent() {
                 </tr>
               ) : (
                 rows.map((r) => (
-                  <tr key={r.id} className="odd:bg-white even:bg-muted/40">
+                  <tr
+                    key={r.id}
+                    className="odd:bg-background even:bg-muted/40 hover:bg-accent/60"
+                  >
                     <td className="p-2">{new Date(r.createdAt).toLocaleString()}</td>
                     <td className="p-2">{r.category}</td>
                     <td className="p-2 text-right">{Number(r.amount).toFixed(2)}</td>

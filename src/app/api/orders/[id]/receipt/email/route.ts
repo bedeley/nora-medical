@@ -41,7 +41,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       .join("");
     const html = `
       <div style="font-family: system-ui, sans-serif; line-height: 1.4;">
-        <h2>Nora Hospital Supplies — Receipt</h2>
+        <h2>Noralls Medical Supplies — Receipt</h2>
         <p>Order <strong>#${order.id}</strong></p>
         <p>Date: ${order.createdAt.toISOString()}</p>
         <table width="100%" cellspacing="0" cellpadding="6" style="border-top:1px solid #ddd;border-bottom:1px solid #ddd;">

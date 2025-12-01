@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   const secret = randomBase32(20);
   await prisma.user.update({ where: { id: userId }, data: { twoFactorSecret: secret } });
   const label = `admin:${user.email || userId}`;
-  const issuer = "Nora Hospital Supplies";
+  const issuer = "Noralls Medical Supplies";
   const url = otpauthURL({ secret, label, issuer });
   return NextResponse.json({ ok: true, secret, otpauth: url });
 }

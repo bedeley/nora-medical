@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { format } from "date-fns";
 import { formatCurrency } from "@/lib/currency";
+import { formatIdReadable } from "@/lib/utils";
 
 type PaymentUser = { name?: string | null; email: string; phone?: string | null };
 
@@ -152,7 +153,9 @@ export default function PaymentReceiptPage() {
             <tbody>
               {applied.map((a) => (
                 <tr key={a.orderId}>
-                  <td className="border px-2 py-1">#{a.orderId.slice(0,8)}</td>
+                  <td className="border px-2 py-1">
+                    {formatIdReadable(a.orderId)}
+                  </td>
                   <td className="border px-2 py-1 text-right">{formatCurrency(a.applied)}</td>
                   <td className="border px-2 py-1 text-right">{formatCurrency(a.newAmountPaid)}</td>
                   <td className="border px-2 py-1 text-right">{formatCurrency(a.newBalance)}</td>
@@ -166,7 +169,9 @@ export default function PaymentReceiptPage() {
 
       {orderData && (
         <div className="mb-4">
-          <h2 className="font-medium mb-1">Items for Order #{orderData.id?.slice(0,8)}</h2>
+          <h2 className="font-medium mb-1">
+            Items for Order {formatIdReadable(orderData.id)}
+          </h2>
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr>

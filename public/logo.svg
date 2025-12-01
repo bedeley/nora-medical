@@ -1,7 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="64" viewBox="0 0 256 64" role="img" aria-label="Nora' Hospital Supply">
-<defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stop-color="#0ea5e9"/><stop offset="100%" stop-color="#22c55e"/></linearGradient></defs>
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64" role="img" aria-label="Noralls Medical Supplies">
+<defs>
+  <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+    <stop offset="0%" stop-color="#0ea5e9"/>
+    <stop offset="100%" stop-color="#22c55e"/>
+  </linearGradient>
+</defs>
 <rect rx="12" width="64" height="64" fill="url(#g)"/>
 <g transform="translate(12,12)"><circle cx="20" cy="20" r="18" fill="white"/><path d="M20 8v24M8 20h24" stroke="url(#g)" stroke-width="4" stroke-linecap="round"/></g>
-<text x="80" y="42" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto" font-weight="700" font-size="28" fill="#0f172a">Nora’</text>
-<text x="150" y="42" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto" font-weight="500" font-size="18" fill="#334155">Hospital Supply</text>
+  <text x="80" y="32" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto" font-weight="700" font-size="26" fill="url(#g)">Noralls</text>
+  <text x="80" y="52" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto" font-weight="500" font-size="16" fill="url(#g)">Medical Supplies</text>
 </svg>

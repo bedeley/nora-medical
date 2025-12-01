@@ -10,6 +10,7 @@ import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import Image from "next/image";
 import { ADMIN_PHONE } from "@/lib/config";
+import { formatIdReadable } from "@/lib/utils";
 
 type ReceiptOrder = {
   id: string;
@@ -137,12 +138,14 @@ export default function ReceiptPage() {
         {/* Brand header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Image src="/logo.svg" alt="Nora Hospital Supplies" width={150} height={48} />
+            <Image src="/logo.svg" alt="Noralls Medical Supplies" width={150} height={48} />
           </div>
           <div className="text-right text-xs">
-            <p className="font-semibold">Nora Hospital Supplies</p>
+            <p className="font-semibold">Noralls Medical Supplies</p>
             <p className="text-muted-foreground">Tel: {ADMIN_PHONE}</p>
-            <p className="text-muted-foreground">Order #{order.id}</p>
+            <p className="text-muted-foreground">
+              Order {formatIdReadable(order.id)}
+            </p>
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 text-sm">

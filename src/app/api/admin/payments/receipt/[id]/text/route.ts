@@ -50,7 +50,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
     const method = meta && meta.method ? ` via ${String(meta.method)}` : "";
     const amount = formatCurrency(Number(payment.amount || 0));
-    const msg = `Nora Hospital Supplies: Payment of ${amount}${method} received. View receipt: ${receiptUrl}`;
+    const msg = `Noralls Medical Supplies: Payment of ${amount}${method} received. View receipt: ${receiptUrl}`;
 
     // Try WhatsApp first
     const toPhone = to.replace(/[^\d+]/g, "");

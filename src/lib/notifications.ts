@@ -93,7 +93,7 @@ export async function notifyOrderEvent(event: OrderEvent) {
     const lines = [
       name ? `Hi ${name},` : "Hi,",
       "",
-      "Your order has been cancelled by Nora Hospital Supplies.",
+      "Your order has been cancelled by Noralls Medical Supplies.",
     ];
     if (event.amountPaid > 0) {
       lines.push(
@@ -106,7 +106,7 @@ export async function notifyOrderEvent(event: OrderEvent) {
     await maybeSendEmail(email, subject, text);
     await maybeSendSms(
       phone,
-      `Nora Hospital Supplies: your order has been cancelled.${
+      `Noralls Medical Supplies: your order has been cancelled.${
         event.amountPaid > 0
           ? ` We have ${prettyAmount} recorded; credit/refund will be handled on your account.`
           : ""
@@ -129,14 +129,14 @@ export async function notifyOrderEvent(event: OrderEvent) {
       "",
       `The delivery status of your order has been updated to: ${humanStatus}.`,
       "",
-      "If you have any questions, please contact Nora Hospital Supplies.",
+      "If you have any questions, please contact Noralls Medical Supplies.",
     ];
     const text = lines.join("\n");
 
     await maybeSendEmail(email, subject, text);
     await maybeSendSms(
       phone,
-      `Nora Hospital Supplies: your order delivery status is now ${humanStatus}.`,
+      `Noralls Medical Supplies: your order delivery status is now ${humanStatus}.`,
     );
     return;
   }
@@ -162,7 +162,7 @@ export async function notifyPaymentEvent(event: PaymentEvent) {
     await maybeSendEmail(email, subject, text);
     await maybeSendSms(
       phone,
-      `Nora Hospital Supplies: payment of ${prettyAmount} received and applied to your outstanding orders.`,
+      `Noralls Medical Supplies: payment of ${prettyAmount} received and applied to your outstanding orders.`,
     );
     return;
   }
@@ -182,7 +182,7 @@ export async function notifyPaymentEvent(event: PaymentEvent) {
     await maybeSendEmail(email, subject, text);
     await maybeSendSms(
       phone,
-      `Nora Hospital Supplies: store credit of ${prettyAmount} has been added to your account.`,
+      `Noralls Medical Supplies: store credit of ${prettyAmount} has been added to your account.`,
     );
     return;
   }
@@ -197,15 +197,14 @@ export async function notifyPaymentEvent(event: PaymentEvent) {
       "",
       `We have refunded ${prettyAmount} of your store credit via ${channel}.`,
       "",
-      "If this looks incorrect, please contact Nora Hospital Supplies.",
+      "If this looks incorrect, please contact Noralls Medical Supplies.",
     ];
     const text = lines.join("\n");
     await maybeSendEmail(email, subject, text);
     await maybeSendSms(
       phone,
-      `Nora Hospital Supplies: ${prettyAmount} of your store credit has been refunded via ${channel}.`,
+      `Noralls Medical Supplies: ${prettyAmount} of your store credit has been refunded via ${channel}.`,
     );
     return;
   }
 }
-

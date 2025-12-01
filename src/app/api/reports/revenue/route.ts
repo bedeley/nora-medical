@@ -327,7 +327,7 @@ export async function GET(req: Request) {
         .fontSize(9)
         .font("Helvetica-Oblique")
         .fillColor("gray")
-        .text("© Nora Hospital Supplies — Confidential Report", {
+        .text("© Noralls Medical Supplies — Confidential Report", {
           align: "center",
         });
 

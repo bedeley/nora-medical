@@ -18,10 +18,10 @@ export async function generateMetadata({
   const q = (params.q as string) || "";
   return {
     title: q
-      ? `Search results for "${q}" – Nora Hospital Supplies`
-      : "All Products – Nora Hospital Supplies",
+      ? `Search results for "${q}" – Noralls Medical Supplies`
+      : "All Products – Noralls Medical Supplies",
     description: q
-      ? `Browse search results for "${q}" at Nora Hospital Supplies. Find the medical equipment and products you need.`
+      ? `Browse search results for "${q}" at Noralls Medical Supplies. Find the medical equipment and products you need.`
       : "Shop medical and hospital supplies. Browse our full product catalog, including surgical, diagnostic, and healthcare essentials.",
   };
 }

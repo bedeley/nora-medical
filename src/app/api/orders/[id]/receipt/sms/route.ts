@@ -6,6 +6,7 @@ import { sendSms } from "@/lib/sms";
 import { sendWhatsApp } from "@/lib/whatsapp";
 import { sendEmail } from "@/lib/email";
 import { formatCurrency, formatDateTimeGH } from "@/lib/currency";
+import { formatIdReadable } from "@/lib/utils";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -27,8 +28,8 @@ type OrderForReceipt = {
 
 function formatReceiptText(order: OrderForReceipt) {
   const lines: string[] = [];
-  lines.push(`Nora Hospital Supplies`);
-  lines.push(`Order #${order.id}`);
+  lines.push(`Noralls Medical Supplies`);
+  lines.push(`Order ${formatIdReadable(order.id)}`);
   lines.push(`Date: ${formatDateTimeGH(order.createdAt)}`);
   const customerName = order.user?.name || "";
   lines.push(`Customer: ${customerName}`);

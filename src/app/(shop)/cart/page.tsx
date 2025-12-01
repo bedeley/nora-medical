@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,12 +13,25 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { formatCurrency } from "@/lib/currency";
 import { toast } from "sonner";
 import Link from "next/link";
 // framer-motion removed to avoid layout jitter on /cart
 import { ADMIN_PHONE } from "@/lib/config";
+import { useSession } from "next-auth/react";
+import {
+  clearGuestCart,
+  getGuestCart,
+  updateGuestCartItem,
+  removeGuestCartItem,
+  type GuestCartItem,
+} from "@/lib/guest-cart";
 
 type CartItem = {
   id: string;
@@ -43,6 +56,7 @@ type BalanceSummary = {
 };
 
 export default function CartPage() {
+  const { data: session } = useSession();
   const queryClient = useQueryClient();
   const { data: me } = useQuery({
     queryKey: ["account", "me"],
@@ -68,6 +82,8 @@ export default function CartPage() {
   const [confirmPlaceOrderOpen, setConfirmPlaceOrderOpen] = useState(false);
   const [confirmMomoOpen, setConfirmMomoOpen] = useState(false);
   const qtyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+
+  // Server-backed cart for signed-in users
   const { data, error } = useQuery({
     queryKey: ["cart"],
     queryFn: () => fetch("/api/cart").then((r) => r.json()),
@@ -75,7 +91,7 @@ export default function CartPage() {
     refetchInterval: false,
     refetchOnWindowFocus: false,
   });
-  const items: CartItem[] = (data?.items || []).map(
+  const serverItems: CartItem[] = (data?.items || []).map(
     (it: {
       id: string;
       quantity: number | string;
@@ -93,6 +109,116 @@ export default function CartPage() {
       },
     })
   );
+
+  // Guest cart (localStorage) for users who are not signed in
+  const { data: guestRaw = [] } = useQuery<GuestCartItem[]>({
+    queryKey: ["guest-cart"],
+    queryFn: async () => getGuestCart(),
+    refetchOnWindowFocus: false,
+  });
+
+  const guestProductIds = useMemo(
+    () => guestRaw.map((it) => it.productId),
+    [guestRaw],
+  );
+
+  const { data: guestProductsData } = useQuery({
+    queryKey: ["guest-cart-products", guestProductIds.join(",")],
+    enabled: guestProductIds.length > 0,
+    queryFn: async () => {
+      const ids = guestProductIds.join(",");
+      if (!ids) {
+        return {
+          items: [] as Array<{
+            id: string;
+            name: string;
+            imageUrl: string | null;
+            price: number | string;
+          }>,
+        };
+      }
+      const res = await fetch(`/api/products?ids=${encodeURIComponent(ids)}`);
+      if (!res.ok) {
+        throw new Error("Failed to load products for guest cart");
+      }
+      return (await res.json()) as {
+        items: Array<{
+          id: string;
+          name: string;
+          imageUrl: string | null;
+          price: number | string;
+        }>;
+      };
+    },
+    refetchOnWindowFocus: false,
+  });
+
+  const guestProducts = guestProductsData?.items ?? [];
+
+  const guestItems: CartItem[] = useMemo(() => {
+    if (!guestRaw.length) return [];
+    const map = new Map(
+      guestProducts.map((p) => [
+        p.id,
+        {
+          id: String(p.id),
+          name: String(p.name),
+          imageUrl: p.imageUrl,
+          price: p.price,
+        },
+      ]),
+    );
+    return guestRaw
+      .map((g) => {
+        const p = map.get(g.productId);
+        if (!p) return null;
+        return {
+          id: g.productId,
+          quantity: g.quantity,
+          updatedAt: g.updatedAt,
+          product: p,
+        } as CartItem;
+      })
+      .filter((it): it is CartItem => Boolean(it));
+  }, [guestRaw, guestProducts]);
+
+  // Automatically merge guest cart into server cart once user signs in
+  const [mergeAttempted, setMergeAttempted] = useState(false);
+  useEffect(() => {
+    if (!session) return;
+    if (!guestRaw.length) return;
+    if (mergeAttempted) return;
+    setMergeAttempted(true);
+
+    const doMerge = async () => {
+      try {
+        for (const item of guestRaw) {
+          const res = await fetch("/api/cart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              productId: item.productId,
+              quantity: item.quantity,
+            }),
+          });
+          if (!res.ok) {
+            // If any item fails, log and continue with others
+            console.error("Failed to merge guest cart item", item.productId);
+          }
+        }
+        clearGuestCart();
+        queryClient.invalidateQueries({ queryKey: ["cart"] });
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } catch (e) {
+        console.error("Failed to merge guest cart", e);
+      }
+    };
+
+    void doMerge();
+  }, [session, guestRaw, mergeAttempted, queryClient]);
+
+  const isSignedIn = Boolean(session);
+  const items: CartItem[] = isSignedIn ? serverItems : guestItems;
   const itemsSorted = useMemo(() => {
     try {
       return [...items].sort((a, b) => {
@@ -116,6 +242,17 @@ export default function CartPage() {
   );
 
   async function placeOrder() {
+    if (!isSignedIn) {
+      toast.info("Please sign in or create an account to checkout.", {
+        action: {
+          label: "Sign in",
+          onClick: () => {
+            window.location.href = `/login?next=${encodeURIComponent("/cart")}`;
+          },
+        },
+      });
+    return;
+    }
     try {
       setPlacing(true);
       const res = await fetch("/api/orders", { method: "POST" });
@@ -145,6 +282,17 @@ export default function CartPage() {
   }
 
   async function placeOrderAndPayMomo() {
+    if (!isSignedIn) {
+      toast.info("Please sign in or create an account to checkout.", {
+        action: {
+          label: "Sign in",
+          onClick: () => {
+            window.location.href = `/login?next=${encodeURIComponent("/cart")}`;
+          },
+        },
+      });
+      return;
+    }
     try {
       setMomoProcessing(true);
       // Validate MoMo phone BEFORE creating the order to avoid
@@ -256,22 +404,33 @@ export default function CartPage() {
     }
   }
 
-  async function removeItem(itemId: string, productId: string, name: string) {
+  async function removeItem(itemId: string, productId: string, name: string, quantity: number) {
     try {
       setRemovingIds((s) => new Set(s).add(itemId));
-      const res = await fetch(`/api/cart/item/${itemId}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed");
-      queryClient.invalidateQueries({ queryKey: ["cart"] });
+      if (!isSignedIn) {
+        removeGuestCartItem(productId);
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } else {
+        const res = await fetch(`/api/cart/item/${itemId}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Failed");
+        queryClient.invalidateQueries({ queryKey: ["cart"] });
+      }
       toast.warning(`${name} removed.`, {
         action: {
           label: "Undo",
           onClick: async () => {
-            await fetch("/api/cart", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ productId, quantity: 1 }),
-            });
-            queryClient.invalidateQueries({ queryKey: ["cart"] });
+            if (!isSignedIn) {
+              // Restore previous quantity for guest carts
+              updateGuestCartItem(productId, quantity);
+              queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+            } else {
+              await fetch("/api/cart", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ productId, quantity: 1 }),
+              });
+              queryClient.invalidateQueries({ queryKey: ["cart"] });
+            }
             toast.success(`${name} restored to cart`);
           },
         },
@@ -292,12 +451,17 @@ export default function CartPage() {
     if (!Number.isFinite(quantity) || quantity < 1) return;
     try {
       setUpdatingIds((s) => new Set(s).add(id));
-      await fetch(`/api/cart/item/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quantity }),
-      });
-      queryClient.invalidateQueries({ queryKey: ["cart"] });
+      if (!isSignedIn) {
+        updateGuestCartItem(id, quantity);
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } else {
+        await fetch(`/api/cart/item/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity }),
+        });
+        queryClient.invalidateQueries({ queryKey: ["cart"] });
+      }
       toast.info("Cart updated");
     } finally {
       setUpdatingIds((s) => {
@@ -322,39 +486,27 @@ export default function CartPage() {
   async function clearCart() {
     try {
       setClearing(true);
-      const res = await fetch("/api/cart/clear", { method: "POST" });
-      const j = (await res.json().catch(() => ({} as { error?: string })));
-      if (!res.ok) {
-        const msg = j?.error || "Failed to clear cart";
-        toast.error(msg);
-        return;
+      if (!isSignedIn) {
+        clearGuestCart();
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } else {
+        const res = await fetch("/api/cart/clear", { method: "POST" });
+        const j = (await res.json().catch(() => ({} as { error?: string })));
+        if (!res.ok) {
+          const msg = j?.error || "Failed to clear cart";
+          toast.error(msg);
+          return;
+        }
+        // Optimistically clear local cache to avoid stale view
+        queryClient.setQueryData(["cart"], { items: [], total: 0 });
+        await queryClient.invalidateQueries({ queryKey: ["cart"] });
       }
-      // Optimistically clear local cache to avoid stale view
-      queryClient.setQueryData(["cart"], { items: [], total: 0 });
-      await queryClient.invalidateQueries({ queryKey: ["cart"] });
       setTempQty({});
       setUpdatingIds(new Set());
       toast.info("Cart cleared");
     } finally {
       setClearing(false);
     }
-  }
-
-  // Gate cart access for unverified accounts: force them through the account
-  // verification flow before using the cart.
-  if (me && !me.phoneVerifiedAt) {
-    return (
-      <section className="container mx-auto py-12">
-        <h1 className="text-2xl font-semibold mb-2">Verify Your Account</h1>
-        <p className="text-sm text-muted-foreground mb-4">
-          Your account is not fully verified yet. Please request a verification code
-          on the Account page and enter it there before using the cart.
-        </p>
-        <Link href="/account?verify=1" className="underline text-sm">
-          Go to verification page
-        </Link>
-      </section>
-    );
   }
 
   if (error) {
@@ -366,7 +518,7 @@ export default function CartPage() {
     );
   }
 
-  if (data && !items.length)
+  if (!items.length)
     return (
       <div className="text-center py-20">
         <p className="text-muted-foreground mb-4">Your cart is empty.</p>
@@ -580,7 +732,8 @@ export default function CartPage() {
                             removeItem(
                               it.id,
                               it.product.id,
-                              it.product.name
+                              it.product.name,
+                              it.quantity
                             )
                           }
                           disabled={removingIds.has(it.id)}
@@ -727,7 +880,14 @@ export default function CartPage() {
                             <DialogClose asChild>
                               <Button
                                 variant="destructive"
-                                onClick={() => removeItem(it.id, it.product.id, it.product.name)}
+                                onClick={() =>
+                                  removeItem(
+                                    it.id,
+                                    it.product.id,
+                                    it.product.name,
+                                    it.quantity,
+                                  )
+                                }
                                 disabled={removingIds.has(it.id)}
                               >
                                 Confirm
@@ -755,6 +915,15 @@ export default function CartPage() {
             <span>{formatCurrency(subtotal)}</span>
           </div>
           <div className="mt-3 grid gap-2">
+            {!isSignedIn && items.length > 0 && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                You can add items as a guest, but you need to{" "}
+                <Link href="/login" className="underline font-medium">
+                  sign in or create an account
+                </Link>{" "}
+                to place your order.
+              </p>
+            )}
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-muted-foreground">
                 Call <strong>{ADMIN_PHONE}</strong> to arrange payment or pay now with MoMo.

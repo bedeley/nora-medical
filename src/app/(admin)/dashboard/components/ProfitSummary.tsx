@@ -1,10 +1,18 @@
 "use client";
 
+import { useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { TrendingUp, TrendingDown, PieChart, HelpCircle } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
-import ExpenseCategoryPie from "./ExpenseCategoryPie";
 import { Tooltip } from "@/components/ui/tooltip";
+import {
+  ResponsiveContainer,
+  PieChart as RechartsPieChart,
+  Pie,
+  Cell,
+  Legend,
+  Tooltip as RechartsTooltip,
+} from "recharts";
 
 type ExpenseSlice = { category: string; amount: number };
 
@@ -25,7 +33,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
   const totalExpense = summary?.totalExpense ?? 0;
   const profit = summary?.profit ?? 0;
   const margin = summary?.margin ?? 0;
-  const breakdown = summary?.expenseBreakdown ?? [];
+  const [view, setView] = useState<"cards" | "pie">("cards");
 
   const metrics: Array<{
     key: string;
@@ -76,72 +84,142 @@ export default function ProfitSummary({ summary }: SummaryProps) {
   ];
 
   return (
-    <Card className="p-4">
+    <Card className="p-4 shadow-md !border-none">
       <CardHeader className="pb-2">
         <CardTitle className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <span className="inline-flex items-center gap-2">
-            <PieChart className="h-5 w-5 text-amber-500" />
-            Profit vs Expense Snapshot
-          </span>
-          <span className="text-xs font-normal text-muted-foreground">
-            Totals respect the filters selected below.
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2">
+              <PieChart className="h-5 w-5 text-amber-500" />
+              Profit vs Expense Snapshot
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-normal text-muted-foreground">
+              Totals respect the filters selected below.
+            </span>
+            <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
+              <button
+                type="button"
+                className={`px-2 py-0.5 text-xs rounded-sm ${
+                  view === "cards"
+                    ? "bg-background shadow-sm font-semibold"
+                    : "text-muted-foreground"
+                }`}
+                onClick={() => setView("cards")}
+              >
+                Summary
+              </button>
+              <button
+                type="button"
+                className={`px-2 py-0.5 text-xs rounded-sm ${
+                  view === "pie"
+                    ? "bg-background shadow-sm font-semibold"
+                    : "text-muted-foreground"
+                }`}
+                onClick={() => setView("pie")}
+              >
+                Pie chart
+              </button>
+            </div>
+          </div>
         </CardTitle>
       </CardHeader>
 
       <CardContent className="grid gap-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {metrics.map((metric) => (
-            <div key={metric.key} className="rounded-md border p-3 bg-muted/30">
-              <p className="text-xs text-muted-foreground flex items-center gap-1">
-                {metric.label}
-                <Tooltip content={metric.info}>
-                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label={metric.label} />
-                </Tooltip>
-              </p>
-              <p className={`text-lg font-semibold ${metric.accent ?? ""}`}>
-                {metric.format === "percent"
-                  ? `${metric.value.toFixed(1)}%`
-                  : `${metric.asNegative ? "-" : ""}${formatCurrency(metric.value)}`}
-              </p>
-              {metric.key === "profit" && (
+        {view === "cards" ? (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            {metrics.map((metric) => (
+              <div
+                key={metric.key}
+                className="rounded-md bg-background p-3 shadow-sm"
+              >
                 <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  {profit >= 0 ? (
-                    <TrendingUp className="h-3 w-3 text-green-500" />
-                  ) : (
-                    <TrendingDown className="h-3 w-3 text-red-500" />
-                  )}
-                  Margin {margin.toFixed(1)}%
+                  {metric.label}
+                  <Tooltip content={metric.info}>
+                    <HelpCircle
+                      className="h-3.5 w-3.5 text-muted-foreground"
+                      aria-label={metric.label}
+                    />
+                  </Tooltip>
                 </p>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div>
-          <p className="text-xs font-semibold text-muted-foreground mb-1">
-            Expense Breakdown
-          </p>
-          {breakdown.length ? (
-            <ul className="text-sm space-y-1">
-              {breakdown.slice(0, 6).map((b) => (
-                <li key={b.category} className="flex items-center justify-between">
-                  <span className="truncate">{b.category}</span>
-                  <span className="font-medium">{formatCurrency(b.amount)}</span>
-                </li>
-              ))}
-              {breakdown.length > 6 && (
-                <li className="text-xs text-muted-foreground">
-                  +{breakdown.length - 6} more categories in chart
-                </li>
-              )}
-            </ul>
-          ) : (
-            <p className="text-xs text-muted-foreground">No expenses recorded for this filter.</p>
-          )}
-        </div>
-
-        <ExpenseCategoryPie breakdown={breakdown} />
+                <p className={`text-lg font-semibold ${metric.accent ?? ""}`}>
+                  {metric.format === "percent"
+                    ? `${metric.value.toFixed(2)}%`
+                    : `${metric.asNegative ? "-" : ""}${formatCurrency(
+                        metric.value,
+                      )}`}
+                </p>
+                {metric.key === "profit" && (
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    {profit >= 0 ? (
+                      <TrendingUp className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <TrendingDown className="h-3 w-3 text-red-500" />
+                    )}
+                    Margin {margin.toFixed(2)}%
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="w-full h-72">
+            {totalRevenue <= 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Not enough data to render a pie chart. Adjust the filters above
+                to include some revenue.
+              </p>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <RechartsPieChart>
+                  <RechartsTooltip
+                    formatter={(value: number, name: string) => [
+                      formatCurrency(Number(value || 0)),
+                      name,
+                    ]}
+                  />
+                  <Legend />
+                  <Pie
+                    data={[
+                      {
+                        name: "COGS",
+                        value: Math.max(0, totalCOGS),
+                      },
+                      {
+                        name: "Operating Expenses",
+                        value: Math.max(0, totalExpense),
+                      },
+                      {
+                        name: "Net Profit",
+                        value: Math.max(0, profit),
+                      },
+                    ]}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    label={(entry) =>
+                      formatCurrency(
+                        Number(
+                          (entry as { value?: number | string }).value || 0,
+                        ),
+                      )
+                    }
+                    labelLine={false}
+                  >
+                    <Cell key="cogs" fill="#f97316" />
+                    <Cell key="expense" fill="#ef4444" />
+                    <Cell
+                      key="profit"
+                      fill={profit >= 0 ? "#22c55e" : "#94a3b8"}
+                    />
+                  </Pie>
+                </RechartsPieChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

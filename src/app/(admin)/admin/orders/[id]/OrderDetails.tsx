@@ -17,6 +17,7 @@ import {
 import Image from "next/image";
 import { Loader2, Package, Trash2, Printer, MessageSquareText } from "lucide-react";
 import { ADMIN_PHONE } from "@/lib/config";
+import { formatIdReadable } from "@/lib/utils";
 
 interface OrderDetailsProps {
   orderId: string;
@@ -214,7 +215,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <CardTitle className="flex items-center gap-2 min-w-0 max-w-full">
           <Package className="w-5 h-5 text-primary shrink-0" />
-          <span className="truncate">Order #{order.id}</span>
+          <span className="truncate">
+            Order {formatIdReadable(order.id)}
+          </span>
         </CardTitle>
 
         <div className="flex flex-wrap gap-2 justify-start sm:justify-end w-full">

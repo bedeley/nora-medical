@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     message?: string;
   };
   const { whatsappTo, smsTo, emailTo, message } = body;
-  const msg = message || "Test from Nora Hospital Supplies";
+  const msg = message || "Test from Noralls Medical Supplies";
   const result: {
     whatsapp?: unknown;
     sms?: unknown;

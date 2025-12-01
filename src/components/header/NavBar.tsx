@@ -21,6 +21,7 @@ import {
   ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
 import {
   DropdownMenu,
@@ -58,6 +59,7 @@ export default function NavBar() {
   const { data: cartData } = useQuery({
     queryKey: ["cart"],
     queryFn: () => fetch("/api/cart").then((r) => r.json()),
+    enabled: !!session,
     // Avoid constant polling to prevent layout jitter across pages
     refetchInterval: false,
     staleTime: 15000,
@@ -66,10 +68,32 @@ export default function NavBar() {
     placeholderData: { items: [], total: 0 },
   });
 
-  const itemCount = (cartData?.items || []).reduce(
-    (sum: number, item: { quantity?: number | string }) => sum + (Number(item.quantity) || 0),
-    0
-  );
+  const { data: guestCart } = useQuery({
+    queryKey: ["guest-cart"],
+    queryFn: async () => {
+      if (typeof window === "undefined") return [];
+      const mod = await import("@/lib/guest-cart");
+      return mod.getGuestCart();
+    },
+    enabled: !session && mounted,
+    refetchOnWindowFocus: false,
+    refetchInterval: false,
+  });
+
+  const itemCount = useMemo(() => {
+    if (session) {
+      return (cartData?.items || []).reduce(
+        (sum: number, item: { quantity?: number | string }) =>
+          sum + (Number(item.quantity) || 0),
+        0,
+      );
+    }
+    return (guestCart || []).reduce(
+      (sum: number, item: { quantity?: number | string }) =>
+        sum + (Number(item.quantity) || 0),
+      0,
+    );
+  }, [session, cartData, guestCart]);
 
   const displayName = session?.user?.name
     ? String(session.user.name).replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
@@ -86,147 +110,261 @@ export default function NavBar() {
   );
 
   const isAdmin = (session?.user as AuthenticatedUser | undefined)?.role === "ADMIN";
+  const onHome = pathname === "/";
+  const showPublicHomeActions = !session && onHome;
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto flex items-center gap-3 py-2 px-4 relative">
         <Link href="/" className="flex items-center gap-2">
-          <Image src="/logo.svg" alt="Nora' Hospital Supply" width={140} height={40} priority />
+          <Image src="/logo.svg" alt="Noralls Medical Supplies" width={140} height={40} priority />
+          <span className="hidden sm:inline text-sm font-semibold tracking-tight">
+            Noralls Medical Supplies
+          </span>
         </Link>
 
-        <nav className={`ml-auto hidden md:flex items-center gap-3 min-w-0 ${mobileOpen ? "opacity-0 pointer-events-none" : ""}`}>
-          <Link href="/products" className="text-sm font-medium hover:underline whitespace-nowrap">
+        {/* Desktop navigation */}
+        <div
+          className={`ml-auto hidden md:flex items-center gap-4 min-w-0 ${
+            mobileOpen ? "opacity-0 pointer-events-none" : ""
+          }`}
+        >
+          <Link
+            href="/products"
+            className="text-sm font-medium hover:underline whitespace-nowrap"
+          >
             Products
           </Link>
           <Link
+            href="/about"
+            className="text-sm font-medium hover:underline whitespace-nowrap"
+          >
+            About
+          </Link>
+          <form
+            action="/products"
+            method="GET"
+            className="hidden lg:flex items-center"
+          >
+            <Input
+              type="search"
+              name="q"
+              placeholder="Search products…"
+              className="w-44 xl:w-60 text-xs"
+            />
+          </form>
+          <a
+            href={ADMIN_PHONE_TEL}
+            className="flex flex-shrink-0 items-center text-sm font-medium gap-1"
+          >
+            <Phone className="h-4 w-4" /> {ADMIN_PHONE}
+          </a>
+
+          {showPublicHomeActions ? (
+            <>
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="whitespace-nowrap"
+              >
+                <Link href="/register">Create account</Link>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="whitespace-nowrap"
+                onClick={() => signIn()}
+              >
+                Log in
+              </Button>
+            </>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-1 max-w-[200px] sm:max-w-none"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="capitalize" suppressHydrationWarning>
+                      {displayName}
+                    </span>
+                    {isAdmin && (
+                      <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
+                        Admin
+                      </span>
+                    )}
+                  </div>
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+
+              <DropdownMenuContent align="end" className="w-52">
+                {!session && (
+                  <>
+                    <DropdownMenuItem onClick={() => signIn()}>
+                      Sign in
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/account">Create account</Link>
+                    </DropdownMenuItem>
+                  </>
+                )}
+
+                {session && (
+                  <>
+                    <DropdownMenuLabel className="text-xs text-muted-foreground">
+                      {session.user?.email}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link href="/account">My account</Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/orders">Order history</Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/account/balance">My balance</Link>
+                    </DropdownMenuItem>
+                    {isAdmin && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel className="text-xs flex items-center gap-1 text-muted-foreground">
+                          <Shield className="h-3 w-3" /> Admin Panel
+                        </DropdownMenuLabel>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin">
+                            <Package className="h-3 w-3 mr-2" /> Dashboard
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/products">
+                            <Package className="h-3 w-3 mr-2" /> Products
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/customers">
+                            <Users className="h-3 w-3 mr-2" /> Customer Cart
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/customer-accounts">
+                            <Users className="h-3 w-3 mr-2" /> Customer Accounts
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/orders">
+                            <DollarSign className="h-3 w-3 mr-2" /> Orders/Payments
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/inventory">
+                            <ClipboardList className="h-3 w-3 mr-2" /> Inventory
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/profit-loss">
+                            <ClipboardList className="h-3 w-3 mr-2" /> Profit &amp; Loss
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/purchases">
+                            <ClipboardList className="h-3 w-3 mr-2" /> Purchases
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/movements">
+                            <ClipboardList className="h-3 w-3 mr-2" /> Movements
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link href="/admin/expenses">
+                            <DollarSign className="h-3 w-3 mr-2" /> Expenses
+                          </Link>
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => signOut({ callbackUrl: "/" })}
+                    >
+                      Sign out
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
+          <ThemeToggle />
+
+          <Link
             href="/cart"
-            className="text-sm font-medium relative flex items-center gap-1"
+            className="relative flex items-center"
             aria-label={`Cart items: ${itemCount}`}
             suppressHydrationWarning
           >
             <ShoppingCart className="h-5 w-5" />
             <span
-              className="absolute -top-2 left-4 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] leading-none font-semibold w-5 h-5"
+              className="absolute -top-2 left-3 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] leading-none font-semibold w-5 h-5"
               suppressHydrationWarning
             >
               {itemCount || 0}
             </span>
-            Cart
           </Link>
-        </nav>
+        </div>
 
-        <div className="flex flex-1 items-center justify-end gap-2">
-          <a href={ADMIN_PHONE_TEL} className="hidden sm:flex flex-shrink-0 items-center text-sm font-medium gap-1">
+        {/* Mobile actions (phone, theme toggle, account label, menu) */}
+        <div className="flex flex-1 items-center justify-end gap-2 md:hidden">
+          <a
+            href={ADMIN_PHONE_TEL}
+            className="hidden xs:flex flex-shrink-0 items-center text-sm font-medium gap-1"
+          >
             <Phone className="h-4 w-4" /> {ADMIN_PHONE}
           </a>
           <ThemeToggle />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="sm" className="flex items-center gap-1 max-w-[200px] sm:max-w-none">
-              <div className="flex items-center gap-2">
-                <span className="capitalize" suppressHydrationWarning>
-                  {displayName}
-                </span>
-                {isAdmin && (
-                  <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">Admin</span>
-                )}
-                </div>
-                <ChevronDown className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-
-            <DropdownMenuContent align="end" className="w-52">
-              {!session && (
-                <>
-                  <DropdownMenuItem onClick={() => signIn()}>Sign in</DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/account">Create account</Link>
-                  </DropdownMenuItem>
-                </>
-              )}
-
-              {session && (
-                <>
-                  <DropdownMenuLabel className="text-xs text-muted-foreground">{session.user?.email}</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link href="/account">My account</Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/orders">Order history</Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/account/balance">My balance</Link>
-                  </DropdownMenuItem>
-                  {isAdmin && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuLabel className="text-xs flex items-center gap-1 text-muted-foreground">
-                        <Shield className="h-3 w-3" /> Admin Panel
-                      </DropdownMenuLabel>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin">
-                          <Package className="h-3 w-3 mr-2" /> Dashboard
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/products">
-                          <Package className="h-3 w-3 mr-2" /> Products
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/customers">
-                          <Users className="h-3 w-3 mr-2" /> Customer Cart
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/customer-accounts">
-                          <Users className="h-3 w-3 mr-2" /> Customer Accounts
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/orders">
-                          <DollarSign className="h-3 w-3 mr-2" /> Orders/Payments
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/inventory">
-                          <ClipboardList className="h-3 w-3 mr-2" /> Inventory
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/profit-loss">
-                          <ClipboardList className="h-3 w-3 mr-2" /> Profit &amp; Loss
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/purchases">
-                          <ClipboardList className="h-3 w-3 mr-2" /> Purchases
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/movements">
-                          <ClipboardList className="h-3 w-3 mr-2" /> Movements
-                        </Link>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem asChild>
-                        <Link href="/admin/expenses">
-                          <DollarSign className="h-3 w-3 mr-2" /> Expenses
-                        </Link>
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => signOut({ callbackUrl: "/" })}>Sign out</DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
+          {session && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-1 max-w-[160px]"
+                >
+                  <span className="truncate capitalize" suppressHydrationWarning>
+                    {displayName}
+                  </span>
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel className="text-xs text-muted-foreground">
+                  {session.user?.email}
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/account">My account</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/orders">Order history</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/account/balance">My balance</Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => signOut({ callbackUrl: "/" })}
+                >
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Button
             variant="outline"
             size="icon"
-            className="md:hidden"
             onClick={() => setMobileOpen((prev) => !prev)}
             aria-label="Toggle navigation menu"
           >
@@ -244,6 +382,14 @@ export default function NavBar() {
                   <X className="h-5 w-5" />
                 </Button>
               </div>
+              <form action="/products" method="GET" className="mb-6">
+                <Input
+                  type="search"
+                  name="q"
+                  placeholder="Search products…"
+                  className="w-full text-sm"
+                />
+              </form>
               <nav className="space-y-4 text-lg font-medium">
                 {mobileLinks.map((link: (typeof mobileLinks)[number]) => (
                   <Link key={link.href} href={link.href} className="block" onClick={() => setMobileOpen(false)}>

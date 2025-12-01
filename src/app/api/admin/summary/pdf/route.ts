@@ -100,7 +100,7 @@ export async function GET(req: Request) {
     return new NextResponse(uint8, {
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="Nora_Financial_Report_${Date.now()}.pdf"`,
+        "Content-Disposition": `attachment; filename="Noralls_Financial_Report_${Date.now()}.pdf"`,
       },
     });
   } catch (err) {
@@ -280,7 +280,7 @@ async function generateBrandedPDF({
       thickness: 1,
       color: gray,
     });
-    p.drawText("Prepared by Nora Hospital Supplies", {
+    p.drawText("Prepared by Noralls Medical Supplies", {
       x: 50,
       y: 45,
       size: 9,

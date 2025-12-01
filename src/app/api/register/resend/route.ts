@@ -62,7 +62,7 @@ export async function POST(req: Request) {
       },
     });
 
-    const message = `Nora Hospital Supplies verification code: ${code}. Enter this on the verification screen within 15 minutes to complete your registration.`;
+    const message = `Noralls Medical Supplies verification code: ${code}. Enter this on the verification screen within 15 minutes to complete your registration.`;
 
     let otpSent = false;
     let otpChannel: string | undefined = undefined;
@@ -82,9 +82,9 @@ export async function POST(req: Request) {
     }
 
     if (!otpSent && user.email) {
-      const subject = "Verify your Nora Hospital Supplies account";
+      const subject = "Verify your Noralls Medical Supplies account";
       const text = [
-        "Welcome to Nora Hospital Supplies.",
+        "Welcome to Noralls Medical Supplies.",
         "",
         `Your verification code is: ${code}`,
         "",

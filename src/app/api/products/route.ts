@@ -61,6 +61,38 @@ export async function GET(request: Request) {
     | "updatedAt";
 
   try {
+    const idsParam = searchParams.get("ids");
+    if (idsParam) {
+      const ids = idsParam
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!ids.length) {
+        return NextResponse.json({
+          items: [],
+          total: 0,
+          page: 1,
+          pageSize: 0,
+        });
+      }
+      const items = await prisma.product.findMany({
+        where: { id: { in: ids } },
+        orderBy: { createdAt: "desc" },
+      });
+      const safeItems = items.map((p: typeof items[number]) => ({
+        ...p,
+        price: Number(p.price),
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+      }));
+      return NextResponse.json({
+        items: safeItems,
+        total: safeItems.length,
+        page: 1,
+        pageSize: safeItems.length,
+      });
+    }
+
     const includeArchived = searchParams.get("includeArchived") === "1";
     const startsWith = searchParams.get("startsWith") === "1";
     const nameFilter =

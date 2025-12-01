@@ -33,6 +33,8 @@ function AdminMovementsContent() {
   const [filters, setFilters] = useState({ start: "", end: "", product: "", reason: "" });
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<MovementRow[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<MovementRow | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -87,6 +89,7 @@ function AdminMovementsContent() {
       if (!res.ok) throw new Error("Failed to load movements");
       const data = await res.json();
       setRows((data.items || []) as MovementRow[]);
+      setPage(1);
     } catch (err) {
       console.error(err);
     } finally {
@@ -100,6 +103,12 @@ function AdminMovementsContent() {
   }, [fetchMovements]);
 
   const net = useMemo(() => rows.reduce((s, r) => s + Number(r.delta || 0), 0), [rows]);
+  const totalPages = Math.max(1, Math.ceil((rows.length || 0) / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return rows.slice(start, start + pageSize);
+  }, [rows, currentPage, pageSize]);
 
   const handleExport = async () => {
     const params = new URLSearchParams();
@@ -160,11 +169,34 @@ function AdminMovementsContent() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">{loading ? "Loading..." : `${rows.length} record(s)`}</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>{loading ? "Loading..." : `${rows.length} record(s)`}</span>
+            <span className="hidden sm:inline">•</span>
+            <label className="flex items-center gap-1">
+              <span className="text-xs">Rows per page:</span>
+              <select
+                className="h-7 rounded border bg-background px-1 text-xs"
+                value={pageSize}
+                onChange={(e) => {
+                  const next = Number(e.target.value) as 25 | 50 | 100;
+                  setPageSize(next);
+                  setPage(1);
+                }}
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </label>
+          </div>
           <p className="text-sm">
             Net:{" "}
-            <span className={`font-medium ${net >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            <span
+              className={`font-medium ${
+                net >= 0 ? "text-green-600" : "text-red-600"
+              }`}
+            >
               {net}
             </span>
           </p>
@@ -176,7 +208,7 @@ function AdminMovementsContent() {
               No movements found
             </div>
           ) : (
-            rows.map((r) => (
+            paginatedRows.map((r) => (
               <div key={r.id} className="rounded-lg border p-4 shadow-sm space-y-3">
                 <div className="flex justify-between gap-2">
                   <div>
@@ -239,10 +271,10 @@ function AdminMovementsContent() {
                   <td colSpan={7} className="p-4 text-center text-muted-foreground">No movements found</td>
                 </tr>
               ) : (
-                rows.map((r) => (
+                paginatedRows.map((r) => (
                   <tr
                     key={r.id}
-                    className="odd:bg-white even:bg-muted/40 hover:bg-accent cursor-pointer"
+                    className="odd:bg-background even:bg-muted/40 hover:bg-accent/60 cursor-pointer"
                     onClick={() => { setSelected(r); setOpen(true); }}
                     title="View details"
                   >
@@ -269,6 +301,33 @@ function AdminMovementsContent() {
             </tbody>
           </table>
         </div>
+        {rows.length > pageSize && (
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground pt-2">
+            <span>
+              Page {currentPage} of {totalPages}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>

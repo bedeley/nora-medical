@@ -150,7 +150,7 @@ export async function initiateMomo(params: InitiateParams): Promise<InitiateResu
           externalId: params.externalId,
           payer: { partyIdType: "MSISDN", partyId: toMsisdn(phone) },
           payerMessage: params.description || "Payment",
-          payeeNote: params.description || "Nora Hospital Supplies",
+          payeeNote: params.description || "Noralls Medical Supplies",
         }),
       });
       if (!res.ok && res.status !== 202) {

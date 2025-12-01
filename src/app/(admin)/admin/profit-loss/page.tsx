@@ -171,11 +171,34 @@ function ProfitLossContent() {
           <CardTitle>Totals</CardTitle>
         </CardHeader>
         <CardContent className="grid sm:grid-cols-2 md:grid-cols-5 gap-3">
-          <Stat label="Revenue" value={summary ? formatCurrency(summary.totalRevenue) : "-"} />
-          <Stat label="COGS" value={summary ? formatCurrency(summary.totalCOGS) : "-"} />
-          <Stat label="Expenses" value={summary ? formatCurrency(summary.totalExpense) : "-"} />
-          <Stat label="Net Profit" value={summary ? formatCurrency(summary.profit) : "-"} emphasis={summary ? summary.profit : 0} />
-          <Stat label="Margin" value={summary ? `${summary.margin.toFixed(2)}%` : "-"} />
+          <Stat
+            label="Revenue"
+            value={summary ? formatCurrency(summary.totalRevenue) : "-"}
+          />
+          <Stat
+            label="COGS"
+            value={summary ? formatCurrency(summary.totalCOGS) : "-"}
+            accent="text-amber-600"
+          />
+          <Stat
+            label="Expenses"
+            value={summary ? formatCurrency(summary.totalExpense) : "-"}
+            accent="text-red-600"
+          />
+          <Stat
+            label="Net Profit"
+            value={summary ? formatCurrency(summary.profit) : "-"}
+            accent={
+              summary ? (summary.profit >= 0 ? "text-green-600" : "text-red-600") : ""
+            }
+          />
+          <Stat
+            label="Margin"
+            value={summary ? `${summary.margin.toFixed(2)}%` : "-"}
+            accent={
+              summary ? (summary.margin >= 0 ? "text-green-600" : "text-red-600") : ""
+            }
+          />
         </CardContent>
       </Card>
 
@@ -208,7 +231,10 @@ function ProfitLossContent() {
               </TableRow>
             )}
             {trend.map((t) => (
-              <TableRow key={t.date} className="odd:bg-muted/30">
+              <TableRow
+                key={t.date}
+                className="odd:bg-background even:bg-muted/40 hover:bg-accent/60"
+              >
                 <TableCell>{t.date}</TableCell>
                 <TableCell className="text-right">{formatCurrency(t.revenue)}</TableCell>
                 <TableCell className="text-right">{formatCurrency(t.cogs ?? 0)}</TableCell>
@@ -239,12 +265,19 @@ export default function ProfitLossPage() {
   );
 }
 
-function Stat({ label, value, emphasis }: { label: string; value: string; emphasis?: number }) {
-  const cls = emphasis === undefined ? "" : emphasis >= 0 ? "text-green-600" : "text-red-600";
+function Stat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: string;
+}) {
   return (
-    <div className="p-3 rounded-md border bg-card">
+    <div className="p-3 rounded-md bg-background shadow-sm">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`text-lg font-semibold ${cls}`}>{value}</div>
+      <div className={`text-lg font-semibold ${accent ?? ""}`}>{value}</div>
     </div>
   );
 }

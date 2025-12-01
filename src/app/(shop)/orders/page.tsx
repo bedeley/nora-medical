@@ -24,6 +24,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { formatCurrency, formatDateGH } from "@/lib/currency";
+import { formatIdReadable } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp } from "lucide-react";
@@ -135,23 +136,6 @@ function OrdersContent() {
         </p>
       </div>
     );
-
-  // Gate orders access for unverified accounts so they must complete
-  // verification first.
-  if (me && !me.phoneVerifiedAt) {
-    return (
-      <section className="container mx-auto py-12">
-        <h1 className="text-2xl font-semibold mb-2">Verify Your Account</h1>
-        <p className="text-sm text-muted-foreground mb-4">
-          Your account is not fully verified yet. Please request a verification code
-          on the Account page and enter it there before viewing your orders.
-        </p>
-        <Link href="/account?verify=1" className="underline text-sm">
-          Go to verification page
-        </Link>
-      </section>
-    );
-  }
 
   if (isLoading)
     return (
@@ -330,7 +314,9 @@ function OrdersContent() {
             <CardHeader className="!py-1.5 !px-3">
               <CardTitle className="flex justify-between items-center text-[13px]">
                 <span className="flex items-center gap-2">
-                  <span>Order #{order.id.slice(0, 8)}</span>
+                  <span className="truncate max-w-[160px]">
+                    Order {formatIdReadable(order.id)}
+                  </span>
                   {(() => {
                     try {
                       const pending = (order.payments || []).some((p) => {
@@ -771,7 +757,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
           </div>
         )}
       </div>
-      <div className="grid gap-1">
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
         <Input
           type="text"
           inputMode="decimal"
@@ -785,8 +771,14 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
           }}
           className="w-40"
         />
-        <span className={`text-xs ${amountInvalid ? 'text-red-600' : 'text-muted-foreground'}`}>
-          {amountInvalid ? `Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}` : `Outstanding: ${formatCurrency(Number(maxAmount) || 0)}`}
+        <span
+          className={`text-xs ${
+            amountInvalid ? "text-red-600" : "text-muted-foreground"
+          }`}
+        >
+          {amountInvalid
+            ? `Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}`
+            : `Outstanding: ${formatCurrency(Number(maxAmount) || 0)}`}
         </span>
       </div>
       <div className="flex gap-2">

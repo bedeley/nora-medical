@@ -13,14 +13,13 @@ import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { formatCurrency } from "@/lib/currency";
+import {
+  addToGuestCart,
+  getGuestCart,
+  removeGuestCartItem,
+  updateGuestCartItem,
+} from "@/lib/guest-cart";
 
 interface ProductCardProps {
   id: string;
@@ -79,33 +78,44 @@ export default function ProductCard({
   });
 
   async function addToCart() {
-    if (!session) {
-      toast.info("Please sign in to add items to your cart.");
-      router.push("/account");
-      return;
-    }
-
     try {
       setLoading(true);
-      const res = await fetch("/api/cart", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId: id, quantity: 1 }),
-      });
+      if (!session) {
+        addToGuestCart(id, 1);
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } else {
+        const res = await fetch("/api/cart", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ productId: id, quantity: 1 }),
+        });
 
-      if (!res.ok) {
-        toast.error("Could not add item to cart.");
-        return;
+        if (!res.ok) {
+          toast.error("Could not add item to cart.");
+          return;
+        }
+
+        queryClient.invalidateQueries({ queryKey: ["cart"] });
       }
-
-
-      queryClient.invalidateQueries({ queryKey: ["cart"] });
       toast.success(`${name} added to cart.`, {
         action: {
           label: "Undo",
           onClick: async () => {
-            await fetch(`/api/cart/item/${id}`, { method: "DELETE" });
-            queryClient.invalidateQueries({ queryKey: ["cart"] });
+            if (!session) {
+              const current = getGuestCart().find(
+                (it) => it.productId === id,
+              );
+              const nextQty = (current?.quantity ?? 1) - 1;
+              if (nextQty > 0) {
+                updateGuestCartItem(id, nextQty);
+              } else {
+                removeGuestCartItem(id);
+              }
+              queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+            } else {
+              await fetch(`/api/cart/item/${id}`, { method: "DELETE" });
+              queryClient.invalidateQueries({ queryKey: ["cart"] });
+            }
             toast("Item removed from cart");
           },
         },
@@ -122,6 +132,7 @@ export default function ProductCard({
     <div className="cursor-pointer h-full">
       <Card
         className={`bg-card text-card-foreground rounded-none border-none shadow-sm transition-shadow duration-300 hover:shadow-lg flex h-full flex-col ${isCompact ? "text-sm" : ""}`}
+        onClick={() => router.push(`/products/${id}`)}
       >
         <CardHeader className="p-0">
           <div className="relative overflow-hidden h-44 bg-white">
@@ -187,11 +198,14 @@ export default function ProductCard({
         </CardContent>
 
         <CardFooter className={isCompact ? "p-3 pt-0" : "p-4 pt-0"}>
-          <div className="flex items-center gap-2 w-full">
+          <div className="w-full">
             <Button
               size={isCompact ? "sm" : "default"}
-              className="flex-1"
-              onClick={addToCart}
+              className="w-full"
+              onClick={(e) => {
+                e.stopPropagation();
+                void addToCart();
+              }}
               disabled={loading || !inStock}
             >
               {loading ? (
@@ -206,67 +220,6 @@ export default function ProductCard({
                 "Add to Cart"
               )}
             </Button>
-            <Dialog>
-              <DialogTrigger asChild>
-                <button
-                  type="button"
-                  className="text-xs underline text-muted-foreground hover:text-foreground shrink-0 whitespace-nowrap"
-                  aria-label={`Quick view for ${name}`}
-                >
-                  Quick View
-                </button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-xl rounded-none border-none">
-                <DialogHeader>
-                  <DialogTitle className="text-base">{name}</DialogTitle>
-                </DialogHeader>
-                <div className="grid gap-3">
-                  <div className="relative overflow-hidden bg-muted aspect-[4/3]">
-                    <Image
-                      src={imgSrc}
-                      alt={name}
-                      fill
-                      sizes="(max-width: 768px) 80vw, 40vw"
-                      className="object-cover"
-                      onError={() => setImgSrc("/placeholder.png")}
-                    />
-                  </div>
-                  <div className="text-sm grid gap-1">
-                    {brand && (
-                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{brand}</p>
-                    )}
-                    {unit && <p className="text-muted-foreground">{unit}</p>}
-                    {description && (
-                      <p className="text-muted-foreground">{description}</p>
-                    )}
-                    <div className="mt-1">
-                      {onSale && (
-                        <span className="text-xs text-muted-foreground line-through mr-2">{formatCurrency(numericCompare)}</span>
-                      )}
-                      <span className="text-base font-semibold">{formattedPrice}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <Button onClick={addToCart} disabled={loading || !inStock} className="flex-1">
-                      {loading ? "Adding..." : "Add to Cart"}
-                    </Button>
-                    <a
-                      href={`/products/${id}`}
-                      className="text-xs underline text-muted-foreground hover:text-foreground whitespace-nowrap"
-                    >
-                      View Details
-                    </a>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-            <a
-              href={`/products/${id}`}
-              className="text-xs underline text-muted-foreground hover:text-foreground shrink-0 whitespace-nowrap"
-              aria-label={`View details for ${name}`}
-            >
-              Details
-            </a>
           </div>
         </CardFooter>
       </Card>

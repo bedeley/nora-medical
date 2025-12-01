@@ -41,6 +41,8 @@ function AdminPurchasesContent() {
   const [filters, setFilters] = useState({ start: "", end: "", supplier: "", q: "", product: "" });
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PurchaseRow[]>([]);
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
   const [products, setProducts] = useState<Product[]>([]);
   const [form, setForm] = useState({ productId: "", quantity: "", unitCost: "", supplier: "", note: "" });
   const [currentCost, setCurrentCost] = useState<number | null>(null);
@@ -102,6 +104,7 @@ function AdminPurchasesContent() {
         return;
       }
       setRows(data.items || []);
+      setPage(1);
       setError(null);
     } catch (err) {
       console.error(err);
@@ -153,6 +156,13 @@ function AdminPurchasesContent() {
     const value = rows.reduce((s, r) => s + Number(r.total || 0), 0);
     return { qty, value };
   }, [rows]);
+
+  const totalPages = Math.max(1, Math.ceil((rows.length || 0) / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return rows.slice(start, start + pageSize);
+  }, [rows, currentPage, pageSize]);
 
   const handleExport = async () => {
     const params = new URLSearchParams();
@@ -246,21 +256,53 @@ function AdminPurchasesContent() {
               onChange={(e) => setForm({ ...form, quantity: e.target.value })} required />
           </div>
           <div>
-            <Label htmlFor="uc">Unit Cost</Label>
-            <Input id="uc" type="number" step="0.01" min="0" value={form.unitCost}
-              onChange={(e) => setForm({ ...form, unitCost: e.target.value })} required />
-            {currentCost != null && (
-              <div className="mt-1 text-xs text-muted-foreground">
-                Current avg cost: <span className="font-medium">{Number(currentCost).toFixed(2)}</span>
-                {variance && variance.pct !== null && Math.abs(variance.pct) >= 20 && (
-                  <Tooltip content={`Entered cost deviates ${variance.pct!.toFixed(1)}% from current average`}>
-                    <span className={`ml-2 font-medium ${variance.pct! > 0 ? 'text-red-600' : 'text-amber-600'}`}>
-                      {variance.pct! > 0 ? '↑' : '↓'} {Math.abs(variance.pct!).toFixed(1)}%
+            <Label
+              htmlFor="uc"
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <span>Unit Cost</span>
+              {currentCost != null && (
+                <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <span>
+                    Current avg:{" "}
+                    <span className="font-medium">
+                      {Number(currentCost).toFixed(2)}
                     </span>
-                  </Tooltip>
-                )}
-              </div>
-            )}
+                  </span>
+                  {variance &&
+                    variance.pct !== null &&
+                    Math.abs(variance.pct) >= 20 && (
+                      <Tooltip
+                        content={`Entered cost deviates ${variance.pct!.toFixed(
+                          1,
+                        )}% from current average`}
+                      >
+                        <span
+                          className={`ml-1 font-medium ${
+                            variance.pct! > 0
+                              ? "text-red-600"
+                              : "text-amber-600"
+                          }`}
+                        >
+                          {variance.pct! > 0 ? "↑" : "↓"}{" "}
+                          {Math.abs(variance.pct!).toFixed(1)}%
+                        </span>
+                      </Tooltip>
+                    )}
+                </span>
+              )}
+            </Label>
+            <Input
+              id="uc"
+              type="number"
+              step="0.01"
+              min="0"
+              value={form.unitCost}
+              onChange={(e) =>
+                setForm({ ...form, unitCost: e.target.value })
+              }
+              required
+            />
           </div>
           <div>
             <Label htmlFor="supplier">Supplier</Label>
@@ -310,8 +352,27 @@ function AdminPurchasesContent() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-muted-foreground">{loading ? "Loading..." : `${rows.length} record(s)`}</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>{loading ? "Loading..." : `${rows.length} record(s)`}</span>
+            <span className="hidden sm:inline">•</span>
+            <label className="flex items-center gap-1">
+              <span className="text-xs">Rows per page:</span>
+              <select
+                className="h-7 rounded border bg-background px-1 text-xs"
+                value={pageSize}
+                onChange={(e) => {
+                  const next = Number(e.target.value) as 25 | 50 | 100;
+                  setPageSize(next);
+                  setPage(1);
+                }}
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </label>
+          </div>
           <p className="text-sm">
             Totals: <span className="font-medium">Qty {totals.qty}</span> &bull;{" "}
             <span className="font-medium">Value {formatCurrency(totals.value)}</span>
@@ -324,7 +385,7 @@ function AdminPurchasesContent() {
               No purchases found
             </div>
           ) : (
-            rows.map((r) => (
+            paginatedRows.map((r) => (
               <div key={r.id} className="rounded-lg border p-4 shadow-sm space-y-2">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
@@ -391,8 +452,11 @@ function AdminPurchasesContent() {
                   <td colSpan={8} className="p-4 text-center text-muted-foreground">No purchases found</td>
                 </tr>
               ) : (
-                rows.map((r) => (
-                  <tr key={r.id} className="odd:bg-white even:bg-muted/40">
+                paginatedRows.map((r) => (
+                  <tr
+                    key={r.id}
+                    className="odd:bg-background even:bg-muted/40 hover:bg-accent/60"
+                  >
                     <td className="p-2 border">{new Date(r.createdAt).toLocaleString()}</td>
                     <td className="p-2 border">{toTitleCase(r.productName || "")}</td>
                     <td className="p-2 border text-right">{r.quantity}</td>
@@ -417,6 +481,34 @@ function AdminPurchasesContent() {
             </tbody>
           </table>
         </div>
+
+        {rows.length > pageSize && (
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground pt-2">
+            <span>
+              Page {currentPage} of {totalPages}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
         <Dialog open={infoOpen} onOpenChange={setInfoOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>

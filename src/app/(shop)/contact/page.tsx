@@ -1,6 +1,6 @@
 export const metadata = {
-  title: "Contact Nora’ Hospital Supply",
-  description: "Get in touch with Nora’ Hospital Supply for orders, support, and inquiries.",
+  title: "Contact Noralls Medical Supplies",
+  description: "Get in touch with Noralls Medical Supplies for orders, support, and inquiries.",
 };
 
 import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";

@@ -103,22 +103,9 @@ function AdminDashboardContent() {
     expenseBreakdown: [],
   });
   const [groupBy, setGroupBy] = useState<"day" | "week" | "month" | "year">("day");
-
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [rawData, setRawData] = useState<RawReportRow[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
-
-  const summaryCards = [
-    { label: "Revenue", value: formatCurrency(summary.totalRevenue) },
-    { label: "COGS", value: formatCurrency(summary.totalCOGS) },
-    { label: "Expense", value: formatCurrency(summary.totalExpense) },
-    {
-      label: "Profit",
-      value: formatCurrency(summary.profit),
-      accent: summary.profit >= 0 ? "text-green-600" : "text-red-600",
-    },
-    { label: "Margin %", value: `${summary.margin.toFixed(2)}%` },
-  ];
 
   // Initialize filters from URL
   useEffect(() => {
@@ -271,7 +258,7 @@ function AdminDashboardContent() {
   }
 
   return (
-    <Card>
+    <Card className="shadow-md !border-none">
       <CardHeader className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
         <div className="w-full">
           <CardTitle>Sales & Expense Overview</CardTitle>
@@ -402,7 +389,7 @@ function AdminDashboardContent() {
       </CardHeader>
 
       <CardContent className="grid gap-4">
-        {/* Profit vs Expense with category pie */}
+        {/* Summary snapshot (revenue, COGS, expenses, profit, margin) */}
         <ProfitSummary summary={summary} />
 
         {/* Filters */}
@@ -618,17 +605,6 @@ function AdminDashboardContent() {
           </Card>
         </div>
 
-        {/* Summary */}
-        <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          {summaryCards.map((card) => (
-            <Card key={card.label}>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">{card.label}</p>
-                <p className={`text-xl font-semibold ${card.accent ?? ""}`}>{card.value}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
       </CardContent>
     </Card>
   );

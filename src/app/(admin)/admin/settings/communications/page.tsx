@@ -19,7 +19,7 @@ export default function CommunicationsSettingsPage() {
   const [whatsappTo, setWhatsappTo] = useState("");
   const [smsTo, setSmsTo] = useState("");
   const [emailTo, setEmailTo] = useState("");
-  const [message, setMessage] = useState("Hello from Nora Hospital Supplies");
+  const [message, setMessage] = useState("Hello from Noralls Medical Supplies");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<CommStatus | null>(null);
 
