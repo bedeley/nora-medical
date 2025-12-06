@@ -26,8 +26,17 @@ export default function AdminGroupLayout({
           <Link href="/admin/orders" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/orders") ? "bg-muted" : ""}`}>Orders</Link>
           <Link href="/admin/customers" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/customers") ? "bg-muted" : ""}`}>Customers</Link>
           <Link href="/admin/products" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/products") ? "bg-muted" : ""}`}>Products</Link>
-          <Link href="/admin/payments/momo" className={`ml-auto px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/payments/momo") ? "bg-primary text-primary-foreground" : "border"}`}>MoMo Payments</Link>
-          <Link href="/admin/settings/communications" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/communications") ? "bg-muted" : ""}`}>Settings</Link>
+          <Link href="/admin/audit" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/audit") ? "bg-muted" : ""}`}>Audit Log</Link>
+          <Link
+            href="/admin/payments/momo"
+            className={`ml-auto px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/payments/momo") ? "bg-muted" : "border"
+            }`}
+          >
+            MoMo Payments
+          </Link>
+          <Link href="/admin/settings/communications" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/communications") ? "bg-muted" : ""}`}>Comms</Link>
+          <Link href="/admin/settings/features" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/features") ? "bg-muted" : ""}`}>Features</Link>
         </nav>
       </header>
       {children}

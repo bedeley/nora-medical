@@ -182,6 +182,10 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                   <Pie
                     data={[
                       {
+                        name: "Revenue",
+                        value: Math.max(0, totalRevenue),
+                      },
+                      {
                         name: "COGS",
                         value: Math.max(0, totalCOGS),
                       },
@@ -208,6 +212,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                     }
                     labelLine={false}
                   >
+                    <Cell key="revenue" fill="#3b82f6" />
                     <Cell key="cogs" fill="#f97316" />
                     <Cell key="expense" fill="#ef4444" />
                     <Cell
@@ -218,6 +223,9 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                 </RechartsPieChart>
               </ResponsiveContainer>
             )}
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Revenue shown for reference; COGS + Operating Expenses + Net Profit should equal total revenue for the selected period.
+            </p>
           </div>
         )}
       </CardContent>

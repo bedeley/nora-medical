@@ -218,17 +218,7 @@ export default function CartPage() {
 
   const isSignedIn = Boolean(session);
   const items: CartItem[] = isSignedIn ? serverItems : guestItems;
-  const itemsSorted = useMemo(() => {
-    try {
-      return [...items].sort((a, b) => {
-        const ta = new Date(a.updatedAt || 0).getTime();
-        const tb = new Date(b.updatedAt || 0).getTime();
-        return tb - ta;
-      });
-    } catch {
-      return items;
-    }
-  }, [items]);
+  const itemsSorted = items;
 
   const subtotal = items.reduce(
     (s, it) => s + Number(it.product.price) * it.quantity,
@@ -446,19 +436,32 @@ export default function CartPage() {
     }
   }
 
-  async function updateQty(id: string, quantity: number) {
+  async function updateQty(id: string, quantity: number, productId?: string) {
     if (!Number.isFinite(quantity) || quantity < 1) return;
     try {
       setUpdatingIds((s) => new Set(s).add(id));
       if (!isSignedIn) {
-        updateGuestCartItem(id, quantity);
-        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+        // For guest carts, ids are productIds; update localStorage and sync query cache
+        const targetProductId = productId ?? id;
+        updateGuestCartItem(targetProductId, quantity);
+        queryClient.setQueryData<GuestCartItem[] | undefined>(
+          ["guest-cart"],
+          () => getGuestCart(),
+        );
       } else {
-        await fetch(`/api/cart/item/${id}`, {
+        const targetProductId = productId ?? id;
+        const res = await fetch(`/api/cart`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ quantity }),
+          body: JSON.stringify({ productId: targetProductId, quantity }),
         });
+        if (!res.ok) {
+          const j = await res
+            .json()
+            .catch(async () => ({ error: await res.text().catch(() => "") }));
+          const msg = j?.error || "Failed to update cart";
+          throw new Error(msg);
+        }
         queryClient.invalidateQueries({ queryKey: ["cart"] });
       }
       toast.info("Cart updated");
@@ -472,13 +475,13 @@ export default function CartPage() {
     }
   }
 
-  function scheduleQtyUpdate(id: string, quantity: number) {
+  function scheduleQtyUpdate(id: string, quantity: number, productId?: string) {
     const existing = qtyTimers.current[id];
     if (existing) {
       try { clearTimeout(existing); } catch {}
     }
     qtyTimers.current[id] = setTimeout(() => {
-      updateQty(id, quantity);
+      updateQty(id, quantity, productId);
     }, 300);
   }
 
@@ -629,7 +632,7 @@ export default function CartPage() {
                             next >= 1 &&
                             next <= 100
                           ) {
-                            scheduleQtyUpdate(it.id, next);
+                            scheduleQtyUpdate(it.id, next, it.product.id);
                           }
                         }}
                         onBlur={async () => {
@@ -641,11 +644,8 @@ export default function CartPage() {
                                 clearTimeout(existing);
                               } catch {}
                             }
-                            const v = Math.min(
-                              100,
-                              Math.max(1, Number(cur))
-                            );
-                            await updateQty(it.id, v);
+                            const v = Math.min(100, Math.max(1, Number(cur)));
+                            await updateQty(it.id, v, it.product.id);
                             queryClient.invalidateQueries({
                               queryKey: ["cart"],
                             });
@@ -680,7 +680,7 @@ export default function CartPage() {
                                 clearTimeout(existing);
                               } catch {}
                             }
-                            await updateQty(it.id, n);
+                            await updateQty(it.id, n, it.product.id);
                             queryClient.invalidateQueries({
                               queryKey: ["cart"],
                             });
@@ -810,7 +810,7 @@ export default function CartPage() {
                             setTempQty((prev) => ({ ...prev, [it.id]: digits }));
                             const next = Number(digits);
                             if (digits && Number.isFinite(next) && next >= 1 && next <= 100) {
-                              scheduleQtyUpdate(it.id, next);
+                              scheduleQtyUpdate(it.id, next, it.product.id);
                             }
                           }}
                           onBlur={async () => {
@@ -819,7 +819,7 @@ export default function CartPage() {
                               const existing = qtyTimers.current[it.id];
                               if (existing) { try { clearTimeout(existing); } catch {} }
                               const v = Math.min(100, Math.max(1, Number(cur)));
-                              await updateQty(it.id, v);
+                              await updateQty(it.id, v, it.product.id);
                               queryClient.invalidateQueries({ queryKey: ["cart"] });
                             }
                             setTempQty((prev) => {
@@ -839,7 +839,7 @@ export default function CartPage() {
                               setTempQty((prev) => ({ ...prev, [it.id]: String(n) }));
                               const existing = qtyTimers.current[it.id];
                               if (existing) { try { clearTimeout(existing); } catch {} }
-                              await updateQty(it.id, n);
+                              await updateQty(it.id, n, it.product.id);
                               queryClient.invalidateQueries({ queryKey: ["cart"] });
                               setTempQty((prev) => {
                                 const x = { ...prev };

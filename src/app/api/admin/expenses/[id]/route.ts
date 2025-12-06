@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const expenseUpdateSchema = z.object({
   category: z.string().min(2).optional(),
@@ -14,8 +15,14 @@ const expenseUpdateSchema = z.object({
 
 export async function PATCH(_req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -39,6 +46,19 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
       where: { id: params.id },
       data: parsed.data,
     });
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "EXPENSE_UPDATE",
+        entityType: "EXPENSE",
+        entityId: params.id,
+        meta: parsed.data,
+      });
+    } catch {
+      // best-effort
+    }
+
     return NextResponse.json(updated);
   } catch (err) {
     console.error("Error updating expense:", err);
@@ -51,14 +71,32 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
 
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
 
   try {
     await prisma.expense.delete({ where: { id: params.id } });
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "EXPENSE_DELETE",
+        entityType: "EXPENSE",
+        entityId: params.id,
+      });
+    } catch {
+      // best-effort
+    }
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("Error deleting expense:", err);

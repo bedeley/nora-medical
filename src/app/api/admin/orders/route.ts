@@ -4,6 +4,8 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
+import { notifyOrderEvent, notifyPaymentEvent } from "@/lib/notifications";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -27,7 +29,10 @@ const createSchema = z.object({
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  if (!session || (!isAdmin && !isStaff)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) {
@@ -149,7 +154,53 @@ export async function POST(req: Request) {
       return created;
     });
 
-    return NextResponse.json({ success: true, orderId: order.id, total, amountPaid, balance, status });
+    // Customer-facing notifications
+    try {
+      await notifyOrderEvent({
+        kind: "order_created",
+        userId,
+        orderId: order.id,
+        total,
+        amountPaid,
+      });
+      if (amountPaid > 0) {
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId,
+          amount: amountPaid,
+        });
+      }
+    } catch (e) {
+      console.warn("admin orders notifications error:", e);
+    }
+
+    // Audit log: admin-created order (and optional initial payment)
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_CREATE_ADMIN",
+        entityType: "ORDER",
+        entityId: order.id,
+        meta: {
+          customerId: userId,
+          total,
+          amountPaid,
+          balance,
+          status,
+        },
+      });
+    } catch {
+      // best-effort
+    }
+
+    return NextResponse.json({
+      success: true,
+      orderId: order.id,
+      total,
+      amountPaid,
+      balance,
+      status,
+    });
   } catch (err) {
     console.error("Admin create order error:", err);
     return NextResponse.json({ error: "Failed to create order" }, { status: 500 });

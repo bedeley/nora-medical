@@ -42,7 +42,7 @@ function AdminExpensesContent() {
 
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams();
     if (filters.start) params.set("start", filters.start);
     else params.delete("start");
     if (filters.end) params.set("end", filters.end);
@@ -53,7 +53,7 @@ function AdminExpensesContent() {
     else params.delete("q");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [filters, pathname, router, searchParams]);
+  }, [filters, pathname, router]);
 
   const fetchExpenses = useCallback(async () => {
     try {

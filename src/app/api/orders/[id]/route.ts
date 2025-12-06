@@ -3,7 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { notifyOrderEvent } from "@/lib/notifications";
-
+import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 import { z } from "zod";
 
@@ -23,6 +24,8 @@ type OrderWithRelations = {
     id: string;
     quantity: number;
     price: unknown;
+    deliveredQuantity?: number;
+    returnedQuantity?: number;
     product: { id: string; name: string; imageUrl: string | null } | null;
   }>;
   payments: Array<{
@@ -63,18 +66,28 @@ function serializeOrder(o: OrderWithRelations) {
     user: o.user,
     placedById: o.placedById || null,
     adminNote: o.adminNote || null,
-    items: (o.items || []).map((i: OrderWithRelations["items"][number]) => ({
-      id: i.id,
-      quantity: i.quantity,
-      price: Number(i.price),
-      product: i.product
-        ? {
-            id: i.product.id,
-            name: i.product.name,
-            imageUrl: i.product.imageUrl,
-          }
-        : null,
-    })),
+    items: (o.items || []).map((i: OrderWithRelations["items"][number]) => {
+      const deliveredQuantity = Number(
+        (i as { deliveredQuantity?: unknown }).deliveredQuantity ?? 0,
+      );
+      const returnedQuantity = Number(
+        (i as { returnedQuantity?: unknown }).returnedQuantity ?? 0,
+      );
+      return {
+        id: i.id,
+        quantity: i.quantity,
+        price: Number(i.price),
+        deliveredQuantity,
+        returnedQuantity,
+        product: i.product
+          ? {
+              id: i.product.id,
+              name: i.product.name,
+              imageUrl: i.product.imageUrl,
+            }
+          : null,
+      };
+    }),
     payments: (o.payments || []).map(
       (p: OrderWithRelations["payments"][number]) => ({
         id: p.id,
@@ -167,23 +180,41 @@ const updateSchema = z.object({
 // PATCH /api/orders/[id] — update status (admin only)
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const user = session.user as AuthenticatedUser;
-  if (user.role !== "ADMIN")
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  if (!isAdmin && !isStaff)
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   try {
+    const params = await context.params;
+    const orderId = params.id;
+
     const body = await req.json();
     const parsed = updateSchema.safeParse(body);
     if (!parsed.success || (!parsed.data.status && !parsed.data.deliveryStatus)) {
       return NextResponse.json({ error: "Invalid update payload" }, { status: 400 });
     }
 
-    const current = await prisma.order.findUnique({ where: { id: params.id } });
+    // Staff can only update delivery status, not financial/order status.
+    if (!isAdmin && parsed.data.status) {
+      return NextResponse.json(
+        { error: "Only admins can change payment status." },
+        { status: 403 },
+      );
+    }
+
+    const current = await prisma.order.findUnique({ where: { id: orderId } });
     if (!current) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
@@ -247,7 +278,7 @@ export async function PATCH(
       //   when a sale that never delivered is cancelled.
       if (newStatus === "CANCELLED" && (restockReturned || current.deliveryStatus === "NOT_DELIVERED")) {
         const before = await tx.order.findUnique({
-          where: { id: params.id },
+          where: { id: orderId },
           include: { items: true },
         });
         if (!before) throw new Error("Order not found for restock");
@@ -283,8 +314,8 @@ export async function PATCH(
         }
       }
 
-      return tx.order.update({
-        where: { id: params.id },
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
         data,
         include: {
           items: { include: { product: true } },
@@ -292,6 +323,38 @@ export async function PATCH(
           payments: true,
         },
       });
+
+      // If the overall delivery status is being set to DELIVERED, mark all
+      // line items as fully delivered as well so per-item delivery stays
+      // consistent with the order-level status.
+      if (newDelivery === "DELIVERED") {
+        const items = await tx.orderItem.findMany({
+          where: { orderId },
+          select: { id: true, quantity: true },
+        });
+        for (const it of items) {
+          await tx.orderItem.update({
+            where: { id: it.id },
+            data: { deliveredQuantity: it.quantity },
+          });
+        }
+      } else if (newDelivery === "RETURNED") {
+        // If the overall delivery status is RETURNED, mark all line items as
+        // fully returned so item-level summaries reflect a full return of the
+        // order.
+        const items = await tx.orderItem.findMany({
+          where: { orderId },
+          select: { id: true, quantity: true },
+        });
+        for (const it of items) {
+          await tx.orderItem.update({
+            where: { id: it.id },
+            data: { returnedQuantity: it.quantity },
+          });
+        }
+      }
+
+      return updatedOrder;
     });
 
     // Fire-and-forget customer notifications for key events
@@ -325,6 +388,25 @@ export async function PATCH(
       console.warn("notifyOrderEvent error:", e);
     }
 
+    // Audit log for status/delivery changes
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_UPDATE",
+        entityType: "ORDER",
+        entityId: updated.id,
+        meta: {
+          previousStatus: current.status,
+          newStatus,
+          previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
+          newDeliveryStatus: parsed.data.deliveryStatus || current.deliveryStatus || "NOT_DELIVERED",
+          restockReturned,
+        },
+      });
+    } catch {
+      // audit logging is best-effort
+    }
+
     return NextResponse.json({ success: true, data: serializeOrder(updated) });
   } catch (error) {
     console.error("Error updating order status:", error);
@@ -337,9 +419,13 @@ export async function PATCH(
 
 // DELETE /api/orders/[id] — delete order (admin only)
 export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string } }
+  req: Request,
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -348,7 +434,9 @@ export async function DELETE(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   try {
-    const order = await prisma.order.findUnique({ where: { id: params.id } });
+    const params = await context.params;
+    const orderId = params.id;
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
@@ -359,10 +447,25 @@ export async function DELETE(
     }
 
     await prisma.$transaction(async (tx: TxClient) => {
-      await tx.payment.updateMany({ where: { orderId: params.id }, data: { orderId: null } });
-      await tx.orderItem.deleteMany({ where: { orderId: params.id } });
-      await tx.order.delete({ where: { id: params.id } });
+      await tx.payment.updateMany({ where: { orderId }, data: { orderId: null } });
+      await tx.orderItem.deleteMany({ where: { orderId } });
+      await tx.order.delete({ where: { id: orderId } });
     });
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_DELETE",
+        entityType: "ORDER",
+        entityId: orderId,
+        meta: {
+          amountPaid,
+          deliveryStatus: order.deliveryStatus,
+        },
+      });
+    } catch {
+      // best-effort
+    }
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Error deleting order:", error);

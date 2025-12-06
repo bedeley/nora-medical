@@ -22,7 +22,7 @@ const updateQuantitySchema = z.object({
  */
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   const session = await getServerSession(authOptions);
   if (!session) {
@@ -42,9 +42,11 @@ export async function PATCH(
       );
     }
 
+    const params = await context.params;
+    const itemId = params.id;
     const userId = (session.user as AuthenticatedUser).id;
     const item = await prisma.cartItem.findFirst({
-      where: { id: params.id, cart: { userId } },
+      where: { id: itemId, cart: { userId } },
     });
     if (!item) {
       return NextResponse.json(
@@ -54,7 +56,7 @@ export async function PATCH(
     }
 
     const result = await prisma.cartItem.updateMany({
-      where: { id: params.id, cart: { userId } },
+      where: { id: itemId, cart: { userId } },
       data: { quantity: parsed.data.quantity },
     });
     if (result.count !== 1) {
@@ -76,32 +78,34 @@ export async function PATCH(
  * Remove a specific item from the user's cart
  */
 export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string } }
+  req: Request,
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!assertSameOrigin(_req)) {
+  if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
 
   try {
+    const params = await context.params;
+    const itemId = params.id;
     const userId = (session.user as AuthenticatedUser).id;
     const existing = await prisma.cartItem.findFirst({
-      where: { id: params.id, cart: { userId } },
+      where: { id: itemId, cart: { userId } },
     });
     if (!existing) {
       return NextResponse.json({ error: "Item not found" }, { status: 404 });
     }
 
-    const result = await prisma.cartItem.deleteMany({ where: { id: params.id, cart: { userId } } });
+    const result = await prisma.cartItem.deleteMany({ where: { id: itemId, cart: { userId } } });
     if (result.count !== 1) {
       return NextResponse.json({ error: "Delete failed" }, { status: 409 });
     }
 
-    return NextResponse.json({ success: true, deletedId: params.id });
+    return NextResponse.json({ success: true, deletedId: itemId });
   } catch (error) {
     console.error("Error deleting cart item:", error);
     return NextResponse.json(

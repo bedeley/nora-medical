@@ -32,9 +32,10 @@ export async function PATCH(
       role?: string;
     };
     const roleRaw = String(body?.role || "").toUpperCase();
-    if (!roleRaw || !["ADMIN", "CUSTOMER"].includes(roleRaw)) {
+    const allowedRoles = ["ADMIN", "CUSTOMER", "STAFF", "ACCOUNTANT"];
+    if (!roleRaw || !allowedRoles.includes(roleRaw)) {
       return NextResponse.json(
-        { error: "Role must be ADMIN or CUSTOMER" },
+        { error: "Role must be one of ADMIN, STAFF, ACCOUNTANT, CUSTOMER" },
         { status: 400 }
       );
     }

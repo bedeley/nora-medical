@@ -36,6 +36,7 @@ type CustomerRow = {
   ordersTotal: number;
   paidTotal: number;
   paymentsTotal: number;
+  storeCredit: number;
   delivery: { delivered: number; partial: number; pending: number };
   refundedCash: number;
   lastOrderAt: string | null;
@@ -47,14 +48,18 @@ type CustomerRow = {
 export async function GET() {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!session || (!isAdmin && !isStaff && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
     const results = await Promise.allSettled([
       prisma.user.findMany({
-        where: { OR: [{ role: "CUSTOMER" }, { role: "ADMIN" }] },
+        where: { OR: [{ role: "CUSTOMER" }, { role: "ADMIN" }, { role: "STAFF" }, { role: "ACCOUNTANT" }] },
         select: { id: true, email: true, name: true, phone: true, role: true, archived: true, phoneVerifiedAt: true },
         orderBy: { createdAt: "desc" },
       }),
@@ -65,9 +70,9 @@ export async function GET() {
       }),
       prisma.payment.groupBy({
         by: ["userId"],
-        // Exclude internal auto-apply adjustment entries so that
-        // "Unapplied Funds" (Payments - Paid) decreases when credit
-        // is applied to open orders.
+        // Payments: all non-AUTO_APPLY payment rows (cash/MoMo, refunds,
+        // credit issuance). We later subtract store-credit issuance so
+        // the final "Payments" column reflects net cash/MoMo after refunds.
         where: {
           NOT: {
             note: {
@@ -82,6 +87,37 @@ export async function GET() {
         where: {
           status: PaymentStatus.REFUND,
           refundDisposition: RefundDestination.CASH,
+        },
+        _sum: { amount: true },
+      }),
+      // Store credit issued via returns/adjustments
+      prisma.payment.groupBy({
+        by: ["userId"],
+        where: {
+          status: PaymentStatus.NORMAL,
+          refundDisposition: RefundDestination.CREDIT,
+        },
+        _sum: { amount: true },
+      }),
+      // Store credit applied to orders (AUTO_APPLY adjustments)
+      prisma.payment.groupBy({
+        by: ["userId"],
+        where: {
+          note: {
+            contains: "\"reference\":\"AUTO_APPLY\"",
+          },
+        },
+        _sum: { amount: true },
+      }),
+      // Store credit refunded out as cash from the dedicated credit payout flow
+      prisma.payment.groupBy({
+        by: ["userId"],
+        where: {
+          status: PaymentStatus.REFUND,
+          refundDisposition: RefundDestination.CASH,
+          note: {
+            contains: "\"location\":\"admin/customers:credit-payout\"",
+          },
         },
         _sum: { amount: true },
       }),
@@ -109,9 +145,12 @@ export async function GET() {
     const ordersRes = results[1];
     const paymentsRes = results[2];
     const refundsRes = results[3];
-    const deliveryRes = results[4];
-    const lastRes = results[5];
-    const cartsRes = results[6];
+    const creditIssuedRes = results[4];
+    const creditAppliedRes = results[5];
+    const creditRefundedRes = results[6];
+    const deliveryRes = results[7];
+    const lastRes = results[8];
+    const cartsRes = results[9];
 
     const users: UserSummary[] =
       usersRes.status === "fulfilled" ? (usersRes.value as UserSummary[]) : [];
@@ -132,7 +171,9 @@ export async function GET() {
     const paymentsByUser: Record<string, { paymentsTotal: number }> = {};
     for (const p of paymentSums) {
       if (!p.userId) continue;
-      paymentsByUser[p.userId] = { paymentsTotal: Number(p._sum.amount ?? 0) };
+      paymentsByUser[p.userId] = {
+        paymentsTotal: Number(p._sum.amount ?? 0),
+      };
     }
 
     const refundsByUser: Record<string, number> = {};
@@ -141,6 +182,30 @@ export async function GET() {
         if (!r.userId) continue;
         const total = Math.abs(Number(r._sum.amount ?? 0));
         refundsByUser[r.userId] = total;
+      }
+    }
+
+    const creditIssuedByUser: Record<string, number> = {};
+    if (creditIssuedRes.status === "fulfilled") {
+      for (const r of creditIssuedRes.value) {
+        if (!r.userId) continue;
+        creditIssuedByUser[r.userId] = Number(r._sum.amount ?? 0);
+      }
+    }
+
+    const creditAppliedByUser: Record<string, number> = {};
+    if (creditAppliedRes.status === "fulfilled") {
+      for (const r of creditAppliedRes.value) {
+        if (!r.userId) continue;
+        creditAppliedByUser[r.userId] = Number(r._sum.amount ?? 0);
+      }
+    }
+
+    const creditRefundedByUser: Record<string, number> = {};
+    if (creditRefundedRes.status === "fulfilled") {
+      for (const r of creditRefundedRes.value) {
+        if (!r.userId) continue;
+        creditRefundedByUser[r.userId] = Number(r._sum.amount ?? 0);
       }
     }
 
@@ -203,18 +268,32 @@ export async function GET() {
       };
     }
 
-    const allRows: CustomerRow[] = users.map((u: UserSummary) => ({
-      user: u,
-      ordersTotal: sumsByUser[u.id]?.ordersTotal ?? 0,
-      paidTotal: sumsByUser[u.id]?.paidTotal ?? 0,
-      paymentsTotal: paymentsByUser[u.id]?.paymentsTotal ?? 0,
-      delivery: deliveryByUser[u.id] || { delivered: 0, partial: 0, pending: 0 },
-      refundedCash: refundsByUser[u.id] || 0,
-      lastOrderAt: lastOrderByUser[u.id] || null,
-      whatsappReady: !!(u.phone && String(u.phone).trim()),
-      phoneVerified: !!u.phoneVerifiedAt,
-      cart: cartByUser[u.id] || null,
-    }));
+    const allRows: CustomerRow[] = users.map((u: UserSummary) => {
+      const ordersTotal = sumsByUser[u.id]?.ordersTotal ?? 0;
+      const paidTotal = sumsByUser[u.id]?.paidTotal ?? 0;
+      const rawPaymentsTotal = paymentsByUser[u.id]?.paymentsTotal ?? 0;
+      const issued = creditIssuedByUser[u.id] ?? 0;
+      const applied = creditAppliedByUser[u.id] ?? 0;
+      const refundedCredit = creditRefundedByUser[u.id] ?? 0;
+      // creditRefundedByUser values are negative amounts; adding them reduces credit.
+      const storeCredit = Math.max(0, issued - applied + refundedCredit);
+      // Net cash/MoMo payments = all non-AUTO_APPLY rows minus store-credit issuance.
+      const paymentsTotal = Math.max(0, rawPaymentsTotal - issued);
+
+      return {
+        user: u,
+        ordersTotal,
+        paidTotal,
+        paymentsTotal,
+        storeCredit,
+        delivery: deliveryByUser[u.id] || { delivered: 0, partial: 0, pending: 0 },
+        refundedCash: refundsByUser[u.id] || 0,
+        lastOrderAt: lastOrderByUser[u.id] || null,
+        whatsappReady: !!(u.phone && String(u.phone).trim()),
+        phoneVerified: !!u.phoneVerifiedAt,
+        cart: cartByUser[u.id] || null,
+      };
+    });
 
     // Only include ADMIN users if they have any activity
     const rows = allRows.filter((r: CustomerRow) => {
@@ -264,6 +343,36 @@ export async function GET() {
                     error: String(
                       (refundsRes as { reason?: { message?: string } }).reason?.message ??
                         (refundsRes as { reason?: unknown }).reason ??
+                        "unknown"
+                    ),
+                  }
+                : null,
+              creditIssuedRes.status === "rejected"
+                ? {
+                    step: "creditIssued",
+                    error: String(
+                      (creditIssuedRes as { reason?: { message?: string } }).reason?.message ??
+                        (creditIssuedRes as { reason?: unknown }).reason ??
+                        "unknown"
+                    ),
+                  }
+                : null,
+              creditAppliedRes.status === "rejected"
+                ? {
+                    step: "creditApplied",
+                    error: String(
+                      (creditAppliedRes as { reason?: { message?: string } }).reason?.message ??
+                        (creditAppliedRes as { reason?: unknown }).reason ??
+                        "unknown"
+                    ),
+                  }
+                : null,
+              creditRefundedRes.status === "rejected"
+                ? {
+                    step: "creditRefunded",
+                    error: String(
+                      (creditRefundedRes as { reason?: { message?: string } }).reason?.message ??
+                        (creditRefundedRes as { reason?: unknown }).reason ??
                         "unknown"
                     ),
                   }

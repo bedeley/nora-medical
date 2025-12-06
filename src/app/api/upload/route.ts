@@ -6,6 +6,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { assertSameOrigin } from "@/lib/origin";
 import { isR2Configured, uploadImageToR2 } from "@/lib/r2-storage";
 import { isLiveStage } from "@/lib/env";
+import { recordAuditLog } from "@/lib/audit-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,8 +48,16 @@ function detectImageType(buf: Buffer): "jpeg" | "png" | "webp" | "unknown" {
 export async function POST(req: Request) {
   try {
     const session = await getServerSession(authOptions);
-    const user = session?.user as AuthenticatedUser | undefined;
-    if (!session || user?.role !== "ADMIN") {
+    if (!session) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+      });
+    }
+    const user = session.user as AuthenticatedUser;
+    const role = user.role;
+    const isAdmin = role === "ADMIN";
+    const isStaff = role === "STAFF";
+    if (!isAdmin && !isStaff) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
     }
     if (!assertSameOrigin(req)) {
@@ -80,6 +89,24 @@ export async function POST(req: Request) {
     }
 
     const ext = (kind === "jpeg" ? ".jpg" : `.${kind}`) as ".jpg" | ".jpeg" | ".png" | ".webp";
+
+    // Best-effort audit log (before upload destination)
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "IMAGE_UPLOAD",
+        entityType: "PRODUCT_IMAGE",
+        entityId: "n/a",
+        meta: {
+          mime,
+          size: file.size,
+          ext,
+          filename: (file as File & { name?: string }).name || null,
+        },
+      });
+    } catch {
+      // ignore audit errors
+    }
 
     // Prefer Cloudflare R2 when configured (required for production)
     if (isR2Configured()) {

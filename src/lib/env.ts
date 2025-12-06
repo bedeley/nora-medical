@@ -1,6 +1,7 @@
 const rawStage =
   process.env.NEXT_PUBLIC_APP_STAGE ??
   process.env.APP_STAGE ??
+  process.env.VERCEL_ENV ??
   process.env.NODE_ENV ??
   "development";
 
@@ -18,4 +19,3 @@ export const ADMIN_SESSION_MAX_AGE_SECONDS =
   Number.isFinite(adminSessionMinutes) && adminSessionMinutes > 0
     ? adminSessionMinutes * 60
     : 15 * 60;
-

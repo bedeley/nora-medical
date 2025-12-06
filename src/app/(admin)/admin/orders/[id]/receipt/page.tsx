@@ -21,7 +21,14 @@ type ReceiptOrder = {
   createdAt: string | Date;
   deliveryStatus?: string | null;
   user?: { name?: string | null; email?: string | null } | null;
-  items: Array<{ id: string; quantity: number; price: number | string; product?: { name?: string | null } | null }>;
+  items: Array<{
+    id: string;
+    quantity: number;
+    price: number | string;
+    deliveredQuantity?: number;
+    returnedQuantity?: number;
+    product?: { name?: string | null } | null;
+  }>;
   payments?: Array<{
     id: string;
     amount: number | string;
@@ -177,8 +184,10 @@ export default function ReceiptPage() {
               <tr className="border-b">
                 <th className="text-left py-2">Item</th>
                 <th className="text-right py-2">Qty</th>
+                <th className="text-right py-2">Delivered</th>
                 <th className="text-right py-2">Price</th>
                 <th className="text-right py-2">Total</th>
+                <th className="text-right py-2">Returns</th>
               </tr>
             </thead>
             <tbody>
@@ -186,8 +195,30 @@ export default function ReceiptPage() {
                 <tr key={it.id} className="border-b last:border-0">
                   <td className="py-2">{it.product?.name || "Item"}</td>
                   <td className="text-right py-2">{it.quantity}</td>
+                  <td className="text-right py-2">
+                    {(() => {
+                      const delivered = Number(it.deliveredQuantity ?? 0);
+                      const qty = Number(it.quantity || 0);
+                      if (!qty) return "0";
+                      if (delivered <= 0) return "0";
+                      if (delivered >= qty) return `${qty}`;
+                      return `${delivered}/${qty}`;
+                    })()}
+                  </td>
                   <td className="text-right py-2">{formatCurrency(Number(it.price))}</td>
                   <td className="text-right py-2">{formatCurrency(Number(it.price) * it.quantity)}</td>
+                  <td className="text-right py-2 text-xs">
+                    {(() => {
+                      const returned = Number(it.returnedQuantity ?? 0);
+                      const delivered = Number(it.deliveredQuantity ?? 0);
+                      const qty = Number(it.quantity || 0);
+                      if (returned <= 0) return "—";
+                      if (returned >= delivered && delivered > 0) {
+                        return `All delivered returned (${returned})`;
+                      }
+                      return `${returned} of ${qty} returned`;
+                    })()}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -11,7 +11,11 @@ export async function POST(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN")
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!session || (!isAdmin && !isStaff && !isAccountant))
     return new Response("Forbidden", { status: 403 });
   if (!assertSameOrigin(req)) return new Response("Bad origin", { status: 403 });
   const userId = params.id;

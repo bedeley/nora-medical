@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { productSchema } from "../route";
 import { z } from "zod";
+import { assertSameOrigin } from "@/lib/origin";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -12,10 +13,11 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A)
  * Fetch a single product by ID (public)
  */
 export async function GET(
-  request: Request,
-  { params }: { params: { id: string } }
+  _request: Request,
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   try {
+    const params = await context.params;
     const product = await prisma.product.findUnique({ where: { id: params.id } });
 
     if (!product) {
@@ -77,8 +79,12 @@ const productUpdateSchema = productSchema
  */
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
+  if (!assertSameOrigin(request)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
 
   const user = session?.user as AuthenticatedUser | undefined;
@@ -87,6 +93,7 @@ export async function PATCH(
   }
 
   try {
+    const params = await context.params;
     const body = await request.json();
     const parsed = productUpdateSchema.safeParse(body);
 
@@ -126,8 +133,12 @@ export async function PATCH(
  */
 export async function DELETE(
   request: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
+  if (!assertSameOrigin(request)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
 
   const user = session?.user as AuthenticatedUser | undefined;
@@ -136,6 +147,7 @@ export async function DELETE(
   }
 
   try {
+    const params = await context.params;
     const product = await prisma.product.findUnique({
       where: { id: params.id },
     });

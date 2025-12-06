@@ -50,10 +50,10 @@ function ProfitLossContent() {
     initialized.current = true;
   }, [searchParams]);
 
-  // Reflect to URL
+  // Reflect to URL (avoid using searchParams as a dependency to prevent loops)
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams?.toString() || "");
+    const params = new URLSearchParams();
     if (start) params.set("start", start); else params.delete("start");
     if (end) params.set("end", end); else params.delete("end");
     if (groupBy) params.set("groupBy", groupBy); else params.delete("groupBy");
@@ -61,7 +61,7 @@ function ProfitLossContent() {
     if (category) params.set("category", category); else params.delete("category");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [start, end, groupBy, customer, category, pathname, router, searchParams]);
+  }, [start, end, groupBy, customer, category, pathname, router]);
 
   // Build API URL
   const apiUrl = useMemo(() => {
@@ -77,7 +77,9 @@ function ProfitLossContent() {
   const { data, error, isLoading } = useClientQuery<SummaryPayload>({
     queryKey: ["admin","summary", { start, end, groupBy, customer, category }],
     queryFn: () => fetcher(apiUrl),
-    refetchInterval: 4000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   async function exportFile(kind: "csv" | "pdf") {

@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/currency";
+import { formatIdReadable } from "@/lib/utils";
 import { Download, RefreshCcw, Search, DollarSign, ArrowUpDown, ArrowUp, ArrowDown, HelpCircle } from "lucide-react";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
@@ -45,7 +46,8 @@ type AdminOrder = {
   total: number | string;
   amountPaid: number | string;
   balance: number | string;
-  user?: { name?: string | null; email?: string | null; phone?: string | null } | null;
+  userId?: string | null;
+  user?: { id?: string; name?: string | null; email?: string | null; phone?: string | null } | null;
   adminNote?: string | null;
 };
 
@@ -63,6 +65,7 @@ function AdminOrdersContent() {
   const [paymentNote, setPaymentNote] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [paymentTab, setPaymentTab] = useState<"custom" | "full">("custom");
+  const [applyingCredit, setApplyingCredit] = useState(false);
   const [sortKey, setSortKey] = useState<
     | "total"
     | "amountPaid"
@@ -105,10 +108,10 @@ function AdminOrdersContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reflect state to URL (debounced for query)
+  // Reflect state to URL based on current filters/sort/query
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams();
     // filter
     if (filter && filter !== "ALL") params.set("filter", filter);
     else params.delete("filter");
@@ -125,7 +128,7 @@ function AdminOrdersContent() {
 
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [filter, query, sortKey, sortDir, deliveryFilter, pathname, router, searchParams]);
+  }, [filter, query, sortKey, sortDir, deliveryFilter, pathname, router]);
 
   // Type-to-focus: focus Search and append keystrokes when typing outside inputs
   useEffect(() => {
@@ -187,7 +190,34 @@ function AdminOrdersContent() {
   const { data, isLoading } = useClientQuery({
     queryKey: ["admin", "orders"],
     queryFn: () => fetcher("/api/orders"),
-    refetchInterval: 8000,
+    refetchOnWindowFocus: false,
+  });
+
+  const selectedUserId = selectedOrder?.userId;
+
+  type AccountSummary = {
+    ordersTotal: number;
+    paidTotal: number;
+    paymentsTotal: number;
+    balance: number;
+    storeCredit: number;
+    cashRefunds: number;
+    updatedAt: string;
+  };
+
+  const {
+    data: accountSummary,
+    isLoading: isSummaryLoading,
+  } = useClientQuery<AccountSummary>({
+    queryKey: ["admin", "customer-balance", selectedUserId] as unknown as [
+      string,
+      string,
+      string | null | undefined,
+    ],
+    queryFn: () =>
+      fetcher(`/api/admin/customers/${selectedUserId}/balance`),
+    enabled: !!selectedUserId && isDialogOpen,
+    refetchOnWindowFocus: false,
   });
 
   if (isLoading) return <p className="text-center mt-10">Loading orders...</p>;
@@ -240,6 +270,13 @@ function AdminOrdersContent() {
     return d.toLocaleDateString();
   }
 
+  function shortOrderId(id: string | undefined | null) {
+    if (!id) return "";
+    const full = formatIdReadable(id);
+    const parts = full.split("-");
+    return parts.slice(0, 2).join("-");
+  }
+
   const sortedOrders = (() => {
     if (!sortKey) return filteredOrders;
     const arr = [...filteredOrders];
@@ -276,7 +313,13 @@ function AdminOrdersContent() {
         body: JSON.stringify({ amount, note: paymentNote || undefined }),
       });
 
-      if (!res.ok) throw new Error("Failed");
+      if (!res.ok) {
+        const j = await res
+          .json()
+          .catch(async () => ({ error: await res.text().catch(() => "") }));
+        const msg = j?.error || "Failed to record payment";
+        throw new Error(msg);
+      }
       toast.success(`Payment of ${formatCurrency(amount)} recorded.`);
       // Clear local state and navigate to order details for delivery updates
       setPaymentAmount("");
@@ -287,6 +330,47 @@ function AdminOrdersContent() {
     } catch (err) {
       console.error(err);
       toast.error("Error recording payment.");
+    }
+  }
+
+  async function applyStoreCredit() {
+    if (!selectedUserId) return;
+    try {
+      setApplyingCredit(true);
+      const res = await fetch(
+        `/api/admin/customers/${selectedUserId}/credit/apply`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      if (!res.ok) {
+        const j = await res
+          .json()
+          .catch(async () => ({ error: await res.text().catch(() => "") }));
+        const msg = j?.error || "Failed to apply store credit";
+        throw new Error(msg);
+      }
+      const result = await res.json().catch(() => null);
+      const applied = result?.applied ?? 0;
+      if (applied > 0) {
+        toast.success(
+          `Applied ${formatCurrency(Number(applied))} in store credit across this customer's open orders.`,
+        );
+      } else {
+        toast.info("No store credit available to apply.");
+      }
+      queryClient.invalidateQueries({ queryKey: ["admin", "orders"] });
+      if (selectedUserId) {
+        queryClient.invalidateQueries({
+          queryKey: ["admin", "customer-balance", selectedUserId],
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Error applying store credit.");
+    } finally {
+      setApplyingCredit(false);
     }
   }
 
@@ -468,7 +552,7 @@ function AdminOrdersContent() {
                 <TableRow key={order.id}>
                   <TableCell>
                     <Link href={`/admin/orders/${order.id}`} className="hover:underline">
-                      #{order.id.slice(0, 8)}
+                      {shortOrderId(order.id)}
                     </Link>
                   </TableCell>
                   <TableCell>
@@ -557,7 +641,9 @@ function AdminOrdersContent() {
               <div key={order.id} className="rounded-lg border p-4 space-y-3 text-sm">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold break-all">#{order.id.slice(0, 8)}</p>
+                    <p className="font-semibold break-all">
+                      {shortOrderId(order.id)}
+                    </p>
                     <p className="text-xs text-muted-foreground">{order.user?.name || "Unknown"}</p>
                     <p className="text-xs text-muted-foreground break-all">{order.user?.email || "—"}</p>
                   </div>
@@ -679,6 +765,48 @@ function AdminOrdersContent() {
                 <strong>Remaining Balance:</strong>{" "}
                 {formatCurrency(Number(selectedOrder.balance || 0))}
               </p>
+
+              {selectedUserId && (
+                <div className="rounded-md bg-muted px-3 py-2 text-sm space-y-1">
+                  <p className="font-medium">
+                    Store credit for this customer
+                  </p>
+                  <p>
+                    {isSummaryLoading && "Checking store credit…"}
+                    {!isSummaryLoading && accountSummary && (
+                      <>
+                        Available store credit:{" "}
+                        <span className="font-mono">
+                          {formatCurrency(
+                            Number(accountSummary.storeCredit || 0),
+                          )}
+                        </span>
+                      </>
+                    )}
+                    {!isSummaryLoading &&
+                      !accountSummary &&
+                      "Unable to load store credit right now."}
+                  </p>
+                  {accountSummary && accountSummary.storeCredit > 0 && (
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
+                      <p className="text-xs text-muted-foreground">
+                        Applying store credit will reduce this customer&rsquo;s
+                        outstanding balances across all open orders
+                        (oldest first), including this one.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={applyStoreCredit}
+                        disabled={applyingCredit}
+                      >
+                        {applyingCredit ? "Applying…" : "Apply store credit"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Amount Mode:</span>

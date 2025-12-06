@@ -29,6 +29,8 @@ type OrderItem = {
   id: string;
   quantity: number;
   price: number;
+  deliveredQuantity?: number;
+  returnedQuantity?: number;
   product: { name: string; imageUrl: string | null } | null;
 };
 
@@ -68,6 +70,14 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const [deliveryUpdating, setDeliveryUpdating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [returningItem, setReturningItem] = useState<OrderItem | null>(null);
+  const [returnQuantity, setReturnQuantity] = useState<string>("1");
+  const [returnSubmitting, setReturnSubmitting] = useState(false);
+  const [restockReturnToStock, setRestockReturnToStock] = useState(true);
+  const [deliveryItem, setDeliveryItem] = useState<OrderItem | null>(null);
+  const [deliveryMode, setDeliveryMode] = useState<"delivered" | "partial">("delivered");
+  const [deliveryQty, setDeliveryQty] = useState<string>("1");
+  const [deliveryItemSubmitting, setDeliveryItemSubmitting] = useState(false);
 
   if (isLoading)
     return (
@@ -122,6 +132,44 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       }
     }
     return { storeCreditApplied, momoPaid, cashPaid };
+  })();
+
+  const notificationSummary = (() => {
+    const payments = order.payments || [];
+    let hasPaymentRecorded = false;
+    let hasStoreCreditIssued = false;
+    let hasStoreCreditRefunded = false;
+
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note as string) as {
+          reference?: string;
+          status?: string;
+          refundDisposition?: string | null;
+        };
+        if (
+          typeof p.amount === "number" &&
+          p.amount > 0 &&
+          (p.status || "").toUpperCase() === "NORMAL"
+        ) {
+          hasPaymentRecorded = true;
+        }
+        if (
+          meta.reference === "AUTO_APPLY" ||
+          (meta.status === "normal" && meta.refundDisposition === "CREDIT")
+        ) {
+          hasStoreCreditIssued = true;
+        }
+        if ((p.status || "").toUpperCase() === "REFUND") {
+          hasStoreCreditRefunded = true;
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+
+    return { hasPaymentRecorded, hasStoreCreditIssued, hasStoreCreditRefunded };
   })();
 
   async function updateStatus(
@@ -207,6 +255,90 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       toast.error("Unexpected error deleting order");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function submitItemReturn() {
+    if (!returningItem) return;
+    const qty = Number(returnQuantity);
+    if (!Number.isInteger(qty) || qty <= 0) {
+      toast.error("Enter a valid quantity to return.");
+      return;
+    }
+    try {
+      setReturnSubmitting(true);
+      const res = await fetch(`/api/admin/orders/${orderId}/return-item`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: returningItem.id,
+          quantity: qty,
+          refundMode: "credit",
+          restock: restockReturnToStock,
+        }),
+      });
+      const j = await res
+        .json()
+        .catch(async () => ({ error: await res.text().catch(() => "") }));
+      if (!res.ok) {
+        toast.error(j?.error || "Failed to process item return");
+        return;
+      }
+      toast.success("Item return processed.");
+      setReturningItem(null);
+      setReturnQuantity("1");
+      queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+    } catch (e) {
+      console.error(e);
+      toast.error("Unexpected error processing item return.");
+    } finally {
+      setReturnSubmitting(false);
+    }
+  }
+
+  async function submitItemDelivery() {
+    if (!deliveryItem) return;
+    const mode = deliveryMode;
+    let qty: number | undefined;
+    if (mode === "partial") {
+      qty = Number(deliveryQty);
+      if (!Number.isInteger(qty) || qty < 0) {
+        toast.error("Enter a valid delivered quantity.");
+        return;
+      }
+      if (qty > deliveryItem.quantity) {
+        toast.error("Delivered quantity cannot exceed ordered quantity.");
+        return;
+      }
+    }
+    try {
+      setDeliveryItemSubmitting(true);
+      const res = await fetch(`/api/admin/orders/${orderId}/item-delivery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: deliveryItem.id,
+          mode,
+          ...(typeof qty === "number" ? { quantity: qty } : {}),
+        }),
+      });
+      const j = await res
+        .json()
+        .catch(async () => ({ error: await res.text().catch(() => "") }));
+      if (!res.ok) {
+        toast.error(j?.error || "Failed to update item delivery");
+        return;
+      }
+      toast.success("Item delivery updated.");
+      setDeliveryItem(null);
+      setDeliveryQty("1");
+      setDeliveryMode("delivered");
+      queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+    } catch (e) {
+      console.error(e);
+      toast.error("Unexpected error updating item delivery.");
+    } finally {
+      setDeliveryItemSubmitting(false);
     }
   }
 
@@ -399,6 +531,48 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               <strong>Admin Note:</strong> {order.adminNote}
             </p>
           ) : null}
+
+          <div className="mt-4 border-t pt-3">
+            <h3 className="text-sm font-semibold mb-1">Customer Notifications</h3>
+            <p className="text-xs text-muted-foreground">
+              Notifications are sent automatically when orders are created, payments are
+              recorded, store credit is issued/refunded, or delivery status changes.
+            </p>
+            <ul className="mt-2 space-y-1 text-xs">
+              <li>
+                <span className="font-medium">Order confirmation:</span>{" "}
+                {order.createdAt
+                  ? "Sent when this order was created."
+                  : "Not available"}
+              </li>
+              <li>
+                <span className="font-medium">Payments received:</span>{" "}
+                {notificationSummary.hasPaymentRecorded
+                  ? "At least one payment notification has been sent."
+                  : "No payment notifications detected yet."}
+              </li>
+              <li>
+                <span className="font-medium">Store credit issued:</span>{" "}
+                {notificationSummary.hasStoreCreditIssued
+                  ? "Customer has been notified about store credit on their account."
+                  : "No store-credit notifications detected."}
+              </li>
+              <li>
+                <span className="font-medium">Store credit refunded:</span>{" "}
+                {notificationSummary.hasStoreCreditRefunded
+                  ? "Customer has been notified about a credit refund."
+                  : "No credit-refund notifications detected."}
+              </li>
+              <li>
+                <span className="font-medium">Delivery status:</span>{" "}
+                {order.deliveryStatus === "DELIVERED" ||
+                order.deliveryStatus === "PARTIALLY_DELIVERED" ||
+                order.deliveryStatus === "RETURNED"
+                  ? "Customer has been notified about the latest delivery update."
+                  : "No delivery notifications yet (status is Not Delivered)."}
+              </li>
+            </ul>
+          </div>
         </div>
 
         <div className="border-t pt-4">
@@ -421,14 +595,106 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   <div>
                     <p className="font-medium">{item.product?.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      Qty: {item.quantity} A- ${item.price.toFixed(2)}
+                      Qty: {item.quantity} · ${item.price.toFixed(2)}
+                      {typeof item.returnedQuantity === "number" &&
+                      item.returnedQuantity > 0 ? (
+                        <span className="ml-2 text-[11px] text-muted-foreground">
+                          Returned: {item.returnedQuantity}
+                        </span>
+                      ) : null}
+                      {typeof item.deliveredQuantity === "number" &&
+                      item.deliveredQuantity > 0 ? (
+                        <span className="ml-2 text-[11px] text-muted-foreground">
+                          Delivered: {item.deliveredQuantity}/{item.quantity}
+                        </span>
+                      ) : (
+                        <span className="ml-2 text-[11px] text-muted-foreground">
+                          Delivered: 0/{item.quantity}
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
 
-                <p className="font-semibold">
-                  ${(item.quantity * item.price).toFixed(2)}
-                </p>
+                <div className="flex flex-col items-end gap-2">
+                  <p className="font-semibold">
+                    ${(item.quantity * item.price).toFixed(2)}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="px-2"
+                      disabled={
+                        order.status === "CANCELLED" ||
+                        deliveryItemSubmitting
+                      }
+                      onClick={() => {
+                        setDeliveryItem(item);
+                        setDeliveryMode("delivered");
+                        setDeliveryQty(String(item.quantity));
+                      }}
+                    >
+                      Mark delivered
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="px-2"
+                      disabled={
+                        order.status === "CANCELLED" ||
+                        deliveryItemSubmitting
+                      }
+                      onClick={() => {
+                        setDeliveryItem(item);
+                        setDeliveryMode("partial");
+                        const remaining =
+                          item.quantity -
+                          (item.deliveredQuantity ?? 0);
+                        setDeliveryQty(
+                          String(
+                            remaining > 0 ? remaining : item.quantity,
+                          ),
+                        );
+                      }}
+                    >
+                      Partial
+                    </Button>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="px-2"
+                    disabled={
+                      order.status === "CANCELLED" ||
+                      returnSubmitting ||
+                      (typeof item.deliveredQuantity === "number"
+                        ? item.deliveredQuantity -
+                            (item.returnedQuantity ?? 0) <=
+                          0
+                        : (item.returnedQuantity ?? 0) >= item.quantity)
+                    }
+                    onClick={() => {
+                      const delivered = item.deliveredQuantity ?? 0;
+                      const alreadyReturned = item.returnedQuantity ?? 0;
+                      const maxReturnable = Math.max(
+                        0,
+                        delivered - alreadyReturned,
+                      );
+                      if (maxReturnable <= 0) {
+                        toast.info(
+                          "No delivered units are available to return for this item.",
+                        );
+                        return;
+                      }
+                      setReturningItem(item);
+                      setReturnQuantity("1");
+                      setRestockReturnToStock(true);
+                    }}
+                  >
+                    Return item
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
@@ -583,6 +849,168 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               Delete
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={!!deliveryItem}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeliveryItem(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {deliveryMode === "partial"
+                ? "Update item partial delivery"
+                : "Mark item delivered"}
+            </DialogTitle>
+          </DialogHeader>
+          {deliveryItem && (
+            <>
+              <p className="text-sm text-muted-foreground mb-2">
+                {deliveryItem.product?.name} · $
+                {deliveryItem.price.toFixed(2)} each
+              </p>
+              {deliveryMode === "partial" ? (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground block mb-1">
+                      Units delivered
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={deliveryItem.quantity}
+                      value={deliveryQty}
+                      onChange={(e) => setDeliveryQty(e.target.value)}
+                      className="w-full border rounded px-2 py-1 text-sm"
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Ordered: {deliveryItem.quantity}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  This will mark all {deliveryItem.quantity} unit(s) as
+                  delivered for this item.
+                </p>
+              )}
+              <DialogFooter className="mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => setDeliveryItem(null)}
+                  disabled={deliveryItemSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={submitItemDelivery}
+                  disabled={deliveryItemSubmitting}
+                >
+                  {deliveryItemSubmitting ? (
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  ) : null}
+                  Save
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={!!returningItem}
+        onOpenChange={(open) => {
+          if (!open) {
+            setReturningItem(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Return item</DialogTitle>
+          </DialogHeader>
+          {returningItem && (
+            <>
+              <p className="text-sm text-muted-foreground mb-2">
+                {returningItem.product?.name} · $
+                {returningItem.price.toFixed(2)} each
+              </p>
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">
+                    Quantity to return
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={
+                      Math.max(
+                        0,
+                        (returningItem.deliveredQuantity ?? 0) -
+                          (returningItem.returnedQuantity ?? 0),
+                      )
+                    }
+                    value={returnQuantity}
+                    onChange={(e) => setReturnQuantity(e.target.value)}
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Available to return (delivered units not yet
+                    returned):{" "}
+                    {Math.max(
+                      0,
+                      (returningItem.deliveredQuantity ?? 0) -
+                        (returningItem.returnedQuantity ?? 0),
+                    )}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Returns for this item are refunded as{" "}
+                    <span className="font-medium">store credit</span>. If the
+                    customer prefers cash instead, please contact the accounts
+                    team so their store credit can be converted and refunded.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="restock-return"
+                    type="checkbox"
+                    className="h-3 w-3"
+                    checked={restockReturnToStock}
+                    onChange={(e) => setRestockReturnToStock(e.target.checked)}
+                  />
+                  <label
+                    htmlFor="restock-return"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Add returned units back into inventory
+                  </label>
+                </div>
+              </div>
+              <DialogFooter className="mt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => setReturningItem(null)}
+                  disabled={returnSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={submitItemReturn}
+                  disabled={returnSubmitting}
+                >
+                  {returnSubmitting ? (
+                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  ) : null}
+                  Process return
+                </Button>
+              </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </Card>

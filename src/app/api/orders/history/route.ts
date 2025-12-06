@@ -57,6 +57,8 @@ export async function GET() {
     return {
       id: o.id,
       status: o.status,
+      deliveryStatus: o.deliveryStatus,
+      deliveredAt: o.deliveredAt ? o.deliveredAt.toISOString() : null,
       createdAt: o.createdAt.toISOString(),
       total,
       amountPaid,
@@ -73,6 +75,12 @@ export async function GET() {
         id: it.id,
         quantity: it.quantity,
         price: Number(it.price),
+        deliveredQuantity: Number(
+          (it as { deliveredQuantity?: unknown }).deliveredQuantity ?? 0,
+        ),
+        returnedQuantity: Number(
+          (it as { returnedQuantity?: unknown }).returnedQuantity ?? 0,
+        ),
         product: it.product
           ? {
               id: it.product.id,

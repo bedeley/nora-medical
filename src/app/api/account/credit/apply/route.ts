@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PaymentStatus } from "@/lib/prisma-enums";
+import { assertSameOrigin } from "@/lib/origin";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (
   arg: infer A,
@@ -10,7 +11,11 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (
   ? A
   : never;
 
-export async function POST() {
+export async function POST(req: Request) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -28,14 +33,8 @@ export async function POST() {
       const payments = await tx.payment.findMany({
         where: {
           userId,
-          // Exclude internal auto-apply adjustment entries (admin and customer)
-          NOT: {
-            note: {
-              contains: "\"reference\":\"AUTO_APPLY\"",
-            },
-          },
         },
-        select: { amount: true },
+        select: { amount: true, status: true, refundDisposition: true, note: true },
       });
 
       const totalDue = orders.reduce(
@@ -46,13 +45,39 @@ export async function POST() {
         (s, o) => s + Number(o.amountPaid || 0),
         0,
       );
-      const paymentsTotal = payments.reduce(
-        (s, p) => s + Number(p.amount || 0),
-        0,
-      );
-
       const balance = Math.max(0, totalDue - totalPaid);
-      const credit = Math.max(0, paymentsTotal - totalPaid);
+
+      // Store credit: credits from returns/adjustments, minus AUTO_APPLY
+      // applications and prior cash payouts of credit.
+      let credit = 0;
+      for (const p of payments as Array<{
+        amount: unknown;
+        status: unknown;
+        refundDisposition: unknown;
+        note: string | null;
+      }>) {
+        const amount = Number(p.amount || 0);
+        const note = p.note || "";
+        const isAutoApply = note.includes("\"reference\":\"AUTO_APPLY\"");
+        const isCreditIssued =
+          p.status === PaymentStatus.NORMAL &&
+          p.refundDisposition === "CREDIT" &&
+          amount > 0;
+        const isCreditCashPayout =
+          p.status === PaymentStatus.REFUND &&
+          p.refundDisposition === "CASH" &&
+          note.includes("\"location\":\"admin/customers:credit-payout\"");
+
+        if (isCreditIssued) {
+          credit += amount;
+        } else if (isAutoApply) {
+          credit -= amount;
+        } else if (isCreditCashPayout) {
+          // negative amount reduces credit
+          credit += amount;
+        }
+      }
+      credit = Math.max(0, credit);
 
       if (balance <= 0.005 || credit <= 0.005) {
         return {

@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcrypt";
+import { assertSameOrigin } from "@/lib/origin";
 
 export async function PATCH(req: Request) {
   // Feature flag: disable password change unless explicitly enabled
@@ -11,6 +12,10 @@ export async function PATCH(req: Request) {
       { error: "Password change is temporarily disabled." },
       { status: 403 }
     );
+  }
+
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
 
   const session = await getServerSession(authOptions);

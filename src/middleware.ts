@@ -15,7 +15,10 @@ export default withAuth(
     const user = req.nextauth?.token as AuthToken | undefined;
 
     // Admin access control
-    if (pathname.startsWith("/admin") && user?.role !== "ADMIN") {
+    if (
+      pathname.startsWith("/admin") &&
+      !["ADMIN", "STAFF", "ACCOUNTANT"].includes(String(user?.role || ""))
+    ) {
       return NextResponse.redirect(new URL("/unauthorized", req.url));
     }
 

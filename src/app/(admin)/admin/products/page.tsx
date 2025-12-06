@@ -129,14 +129,14 @@ function AdminProductsContent() {
 
   // Reflect state to URL (search, page, includeArchived)
   useEffect(() => {
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams();
     if (search) params.set("q", search); else params.delete("q");
     if (page && page > 1) params.set("page", String(page)); else params.delete("page");
     if (pageSize && pageSize !== 10) params.set("pageSize", String(pageSize)); else params.delete("pageSize");
     if (includeArchived) params.set("includeArchived", "1"); else params.delete("includeArchived");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [search, page, pageSize, includeArchived, pathname, router, searchParams]);
+  }, [search, page, pageSize, includeArchived, pathname, router]);
 
   // Global key handler: when typing outside inputs, focus search and append the key
   useEffect(() => {
@@ -184,7 +184,9 @@ function AdminProductsContent() {
   const { data, error, isLoading } = useClientQuery({
     queryKey: ["admin","products", { search, page, pageSize, includeArchived }],
     queryFn: () => fetcher(`/api/products?q=${encodeURIComponent(search)}&page=${page}&pageSize=${pageSize}&sort=updatedAt&includeArchived=${includeArchived ? "1" : "0"}&startsWith=1`),
-    refetchInterval: 2000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // Keyboard shortcut: '/' focuses the search input when not typing in an input already

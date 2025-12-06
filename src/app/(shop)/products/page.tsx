@@ -73,6 +73,29 @@ export default async function ProductsPage({
     updatedAt: p.updatedAt.toISOString(),
   }));
 
+  const now = Date.now();
+  const thirtyDaysMs = 1000 * 60 * 60 * 24 * 30;
+  const highlightNew = plainItems.filter((p) => {
+    try {
+      return now - Date.parse(p.createdAt) < thirtyDaysMs;
+    } catch {
+      return false;
+    }
+  }).slice(0, 4);
+  const highlightLowStock = plainItems.filter(
+    (p) => typeof p.stock === "number" && p.stock > 0 && p.stock <= 3,
+  ).slice(0, 4);
+
+  // Avoid showing highlight products twice by excluding them from the main grid
+  const highlightedIds = new Set([
+    ...highlightNew.map((p) => p.id),
+    ...highlightLowStock.map((p) => p.id),
+  ]);
+  const mainGridItems =
+    highlightedIds.size > 0
+      ? plainItems.filter((p) => !highlightedIds.has(p.id))
+      : plainItems;
+
   return (
     <section className="container mx-auto py-8">
       <div className="max-w-5xl mx-auto">
@@ -81,24 +104,78 @@ export default async function ProductsPage({
 
       {plainItems.length > 0 ? (
         <>
-          <div className="mt-8 max-w-5xl mx-auto">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {plainItems.map((p: (typeof plainItems)[number]) => (
-              <ProductCard
-                key={p.id}
-                id={p.id}
-                name={p.name}
-                description={p.description}
-                imageUrl={p.imageUrl}
-                price={p.price}
-                inStock={typeof p.stock === 'number' ? p.stock > 0 : true}
-                lowStock={typeof p.stock === 'number' ? p.stock > 0 && p.stock <= 3 : false}
-                isNew={(() => { try { return (Date.now() - Date.parse(p.createdAt)) < 1000*60*60*24*30 } catch { return false } })()}
-                variant="auto"
-              />
-            ))}
-          </div>
-          </div>
+          {(highlightNew.length > 0 || highlightLowStock.length > 0) && (
+            <div className="mt-6 max-w-5xl mx-auto space-y-4">
+              {highlightNew.length > 0 && (
+                <div>
+                  <h2 className="text-sm font-semibold mb-2">
+                    New arrivals
+                  </h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {highlightNew.map((p) => (
+                      <ProductCard
+                        key={`new-${p.id}`}
+                        id={p.id}
+                        name={p.name}
+                        description={p.description}
+                        imageUrl={p.imageUrl}
+                        price={p.price}
+                        inStock={typeof p.stock === "number" ? p.stock > 0 : true}
+                        lowStock={typeof p.stock === "number" ? p.stock > 0 && p.stock <= 3 : false}
+                        isNew
+                        variant="compact"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {highlightLowStock.length > 0 && (
+                <div>
+                  <h2 className="text-sm font-semibold mb-2">
+                    Low stock (going fast)
+                  </h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {highlightLowStock.map((p) => (
+                      <ProductCard
+                        key={`low-${p.id}`}
+                        id={p.id}
+                        name={p.name}
+                        description={p.description}
+                        imageUrl={p.imageUrl}
+                        price={p.price}
+                        inStock={typeof p.stock === "number" ? p.stock > 0 : true}
+                        lowStock
+                        isNew={(() => { try { return now - Date.parse(p.createdAt) < thirtyDaysMs; } catch { return false; } })()}
+                        variant="compact"
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {mainGridItems.length > 0 && (
+            <div className="mt-8 max-w-5xl mx-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {mainGridItems.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    id={p.id}
+                    name={p.name}
+                    description={p.description}
+                    imageUrl={p.imageUrl}
+                    price={p.price}
+                    inStock={typeof p.stock === "number" ? p.stock > 0 : true}
+                    lowStock={typeof p.stock === "number" ? p.stock > 0 && p.stock <= 3 : false}
+                    isNew={(() => { try { return now - Date.parse(p.createdAt) < thirtyDaysMs; } catch { return false; } })()}
+                    variant="auto"
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           <Pagination total={total} page={page} pageSize={pageSize} />
         </>

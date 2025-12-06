@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -105,8 +106,14 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  if (!isAdmin && !isStaff) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -149,6 +156,25 @@ export async function POST(req: Request) {
 
       return { purchaseId: purchase.id, newStock, newCost: Number(newCost) };
     });
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "PURCHASE_CREATE",
+        entityType: "PURCHASE",
+        entityId: result.purchaseId,
+        meta: {
+          productId,
+          quantity,
+          unitCost,
+          newStock: result.newStock,
+          newCost: result.newCost,
+          supplier,
+        },
+      });
+    } catch {
+      // best-effort
+    }
 
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {

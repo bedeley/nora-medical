@@ -7,13 +7,17 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 import { notifyPaymentEvent } from "@/lib/notifications";
+import { recordAuditLog } from "@/lib/audit-log";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!session || (!isAdmin && !isAccountant)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   if (!assertSameOrigin(req)) {
@@ -288,6 +292,27 @@ export async function POST(req: Request) {
       }
     } catch (e) {
       console.warn("notifyPaymentEvent error:", e);
+    }
+
+    // Audit log: admin payment or refund
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: isRefund ? "PAYMENT_REFUND" : "PAYMENT_CREATE",
+        entityType: "PAYMENT",
+        entityId: result.payment.id,
+        meta: {
+          userId,
+          orderId,
+          amount: normalizedAmount,
+          method,
+          status: normalizedStatus,
+          refundDisposition: refundDisposition || null,
+          location,
+        },
+      });
+    } catch {
+      // best-effort
     }
 
     return NextResponse.json(result);

@@ -13,7 +13,10 @@ type InventoryPurchase = {
 export async function GET() {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  if (!session || (!isAdmin && !isStaff)) {
     return new Response("Forbidden", { status: 403 });
   }
   const products = await prisma.product.findMany({

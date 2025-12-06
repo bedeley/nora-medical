@@ -1,12 +1,19 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { notifyPaymentEvent } from "@/lib/notifications";
+import { parseMomoCallbackBody, verifyMomoSignature } from "@/lib/momo";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
-import { parseMomoCallback } from "@/lib/momo";
+
+export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const parsed = await parseMomoCallback(req);
+    const rawBody = await req.text();
+    if (!verifyMomoSignature(rawBody, req.headers)) {
+      return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+    }
+    const parsed = parseMomoCallbackBody(rawBody);
     if (!parsed.valid || !parsed.externalId) {
       return NextResponse.json({ error: "Invalid callback" }, { status: 400 });
     }
@@ -41,6 +48,8 @@ export async function POST(req: Request) {
     }
 
     // Apply to order balances, similar to admin payments route
+    const userIdForNotification = payment.userId || undefined;
+
     await prisma.$transaction(async (tx: TxClient) => {
       const fresh = await tx.payment.findUnique({ where: { id: payment.id } });
       if (!fresh) throw new Error("Payment disappeared");
@@ -134,6 +143,19 @@ export async function POST(req: Request) {
       };
       await tx.payment.update({ where: { id: payment.id }, data: { note: JSON.stringify(meta) } });
     });
+
+    // Notify customer about successful MoMo payment
+    try {
+      if (userIdForNotification) {
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId: userIdForNotification,
+          amount,
+        });
+      }
+    } catch (e) {
+      console.warn("notifyPaymentEvent (momo callback) error:", e);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

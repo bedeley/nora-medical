@@ -25,6 +25,8 @@ type ReceiptOrder = {
     id: string;
     quantity: number;
     price: number | string;
+    deliveredQuantity?: number;
+    returnedQuantity?: number;
     product?: { name?: string | null } | null;
   }>;
   payments?: Array<{
@@ -186,6 +188,49 @@ export default function ReceiptPage() {
                       {formatCurrency(Number(it.price) * it.quantity)}
                     </span>
                   </div>
+                  <div className="flex justify-between col-span-2">
+                    <span className="text-muted-foreground">Delivery</span>
+                    {(() => {
+                      const delivered = Number(it.deliveredQuantity ?? 0);
+                      const qty = Number(it.quantity || 0);
+                      let label = "Not delivered yet";
+                      let cls = "bg-slate-100 text-slate-700";
+                      if (delivered >= qty && qty > 0) {
+                        label = "Delivered";
+                        cls = "bg-emerald-100 text-emerald-700";
+                      } else if (delivered > 0) {
+                        label = `Partially delivered (${delivered}/${qty})`;
+                        cls = "bg-amber-100 text-amber-800";
+                      }
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] ${cls}`}>
+                          {label}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  {Number(it.returnedQuantity ?? 0) > 0 && (
+                    <div className="flex justify-between col-span-2">
+                      <span className="text-muted-foreground">Returns</span>
+                      {(() => {
+                        const returned = Number(it.returnedQuantity ?? 0);
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (returned >= delivered && delivered > 0) {
+                          return (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                              All delivered units returned ({returned})
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                            {returned} of {qty} returned
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -198,8 +243,10 @@ export default function ReceiptPage() {
                 <tr className="border-b">
                   <th className="text-left py-2">Item</th>
                   <th className="text-right py-2">Qty</th>
+                  <th className="text-right py-2">Delivered</th>
                   <th className="text-right py-2">Price</th>
                   <th className="text-right py-2">Total</th>
+                  <th className="text-right py-2">Returns</th>
                 </tr>
               </thead>
               <tbody>
@@ -208,10 +255,32 @@ export default function ReceiptPage() {
                     <td className="py-2">{it.product?.name || "Item"}</td>
                     <td className="text-right py-2">{it.quantity}</td>
                     <td className="text-right py-2">
+                      {(() => {
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (!qty) return "0";
+                        if (delivered <= 0) return "0";
+                        if (delivered >= qty) return `${qty}`;
+                        return `${delivered}/${qty}`;
+                      })()}
+                    </td>
+                    <td className="text-right py-2">
                       {formatCurrency(Number(it.price))}
                     </td>
                     <td className="text-right py-2">
                       {formatCurrency(Number(it.price) * it.quantity)}
+                    </td>
+                    <td className="text-right py-2 text-xs">
+                      {(() => {
+                        const returned = Number(it.returnedQuantity ?? 0);
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (returned <= 0) return "—";
+                        if (returned >= delivered && delivered > 0) {
+                          return `All delivered returned (${returned})`;
+                        }
+                        return `${returned} of ${qty} returned`;
+                      })()}
                     </td>
                   </tr>
                 ))}

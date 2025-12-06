@@ -40,6 +40,7 @@ import {
   Bar,
   Legend,
 } from "recharts";
+import { useQuery } from "@tanstack/react-query";
 
 type DashboardSummary = {
   totalRevenue: number;
@@ -75,6 +76,21 @@ type RawReportRow = {
   amount: number;
 };
 
+type TopProduct = {
+  id: string;
+  name: string;
+  totalSold: number;
+  revenue: number;
+};
+
+type TopCustomer = {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  ordersTotal: number;
+  creditAvailable: number;
+};
+
 const axisNumberFormatter = new Intl.NumberFormat("en-GH", {
   minimumFractionDigits: 0,
   maximumFractionDigits: 2,
@@ -107,6 +123,26 @@ function AdminDashboardContent() {
   const [rawData, setRawData] = useState<RawReportRow[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
 
+  const { data: topProducts } = useQuery<TopProduct[]>({
+    queryKey: ["admin", "top-products"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/top-products?mode=quantity");
+      if (!res.ok) throw new Error("Failed to load top products");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const { data: topCustomers } = useQuery<TopCustomer[]>({
+    queryKey: ["admin", "top-customers"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/top-customers");
+      if (!res.ok) throw new Error("Failed to load top customers");
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
   // Initialize filters from URL
   useEffect(() => {
     if (initialized.current) return;
@@ -131,10 +167,10 @@ function AdminDashboardContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reflect filters to URL
+  // Reflect filters to URL (avoid using searchParams as a dependency to prevent loops)
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams();
     if (filters.start) params.set("start", filters.start); else params.delete("start");
     if (filters.end) params.set("end", filters.end); else params.delete("end");
     if (filters.customer) params.set("customer", filters.customer); else params.delete("customer");
@@ -142,7 +178,7 @@ function AdminDashboardContent() {
     params.set("groupBy", groupBy);
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [filters, groupBy, pathname, router, searchParams]);
+  }, [filters, groupBy, pathname, router]);
 
   // Fetch dashboard summary/trend
   const fetchChartData = useCallback(async () => {
@@ -391,6 +427,55 @@ function AdminDashboardContent() {
       <CardContent className="grid gap-4">
         {/* Summary snapshot (revenue, COGS, expenses, profit, margin) */}
         <ProfitSummary summary={summary} />
+
+        {/* At-a-glance insights: top products & customers */}
+        {(topProducts && topProducts.length > 0) || (topCustomers && topCustomers.length > 0) ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            {topProducts && topProducts.length > 0 && (
+              <div className="border rounded-md p-3 bg-muted/40">
+                <h3 className="text-sm font-semibold mb-2">Top products (by quantity)</h3>
+                <ul className="space-y-1 text-xs">
+                  {topProducts.slice(0, 5).map((p) => (
+                    <li key={p.id} className="flex justify-between gap-2">
+                      <span className="truncate" title={p.name}>{p.name}</span>
+                      <span className="tabular-nums">{p.totalSold} pcs</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Based on all recorded order items. Use this to check which items drive most sales.
+                </p>
+              </div>
+            )}
+            {topCustomers && topCustomers.length > 0 && (
+              <div className="border rounded-md p-3 bg-muted/40">
+                <h3 className="text-sm font-semibold mb-2">Top customers</h3>
+                <ul className="space-y-1 text-xs">
+                  {topCustomers.slice(0, 5).map((c) => (
+                    <li key={c.userId} className="flex flex-col gap-0.5">
+                      <div className="flex justify-between gap-2">
+                        <span className="truncate" title={c.email || c.name || ""}>
+                          {c.name || c.email || "Unknown customer"}
+                        </span>
+                        <span className="tabular-nums font-medium">
+                          GH₵ {c.ordersTotal.toFixed(2)}
+                        </span>
+                      </div>
+                      {c.creditAvailable > 0 && (
+                        <span className="text-[11px] text-emerald-700">
+                          Credit: GH₵ {c.creditAvailable.toFixed(2)}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Ranked by total order value. Use this when following up with key accounts.
+                </p>
+              </div>
+            )}
+          </div>
+        ) : null}
 
         {/* Filters */}
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">

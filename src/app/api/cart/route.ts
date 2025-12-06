@@ -38,7 +38,7 @@ export async function GET() {
       include: {
         items: {
           include: { product: true },
-          orderBy: { updatedAt: "desc" }, // most recently updated items first
+          orderBy: { createdAt: "asc" },
         },
       },
     });
@@ -125,6 +125,27 @@ export async function POST(req: Request) {
       create: { userId },
     });
 
+    // Enforce stock limits at cart level so customers can't add more than
+    // available stock across multiple "add to cart" clicks.
+    const existing = await prisma.cartItem.findUnique({
+      where: {
+        cartId_productId: {
+          cartId: cart.id,
+          productId,
+        },
+      },
+    });
+    const currentQty = existing?.quantity ?? 0;
+    const nextQty = currentQty + quantity;
+    if (typeof product.stock === "number" && nextQty > product.stock) {
+      return NextResponse.json(
+        {
+          error: `Only ${product.stock} unit(s) of ${product.name} are available. Adjust the quantity in your cart.`,
+        },
+        { status: 400 },
+      );
+    }
+
     // Merge or create cart item
     await prisma.cartItem.upsert({
       where: {
@@ -190,6 +211,21 @@ export async function PATCH(req: Request) {
     );
     if (!item) {
       return NextResponse.json({ error: "Item not in cart" }, { status: 404 });
+    }
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!product) {
+      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    }
+    if (typeof product.stock === "number" && quantity > product.stock) {
+      return NextResponse.json(
+        {
+          error: `Only ${product.stock} unit(s) of ${product.name} are available. Adjust the quantity in your cart.`,
+        },
+        { status: 400 },
+      );
     }
 
     await prisma.cartItem.update({

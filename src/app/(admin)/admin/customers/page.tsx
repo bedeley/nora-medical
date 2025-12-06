@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { useEffect, useState, useMemo } from "react";
+import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,8 +26,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
-import { RefreshCcw, HelpCircle, MoreVertical, CheckCircle2, XCircle, MessageCircle } from "lucide-react";
+import { RefreshCcw, HelpCircle, MoreVertical } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import Link from "next/link";
 import { Tooltip } from "@/components/ui/tooltip";
 
 const fetcher = async (u: string) => {
@@ -48,6 +50,7 @@ type CustomerRow = {
   ordersTotal?: number;
   paidTotal?: number;
   paymentsTotal?: number;
+   storeCredit?: number;
   refundedCash?: number;
   cart?: {
     total?: number;
@@ -90,6 +93,11 @@ type PaymentRow = {
 };
 
 export default function AdminCustomers() {
+  const { data: session } = useSession();
+  const currentRole = (session?.user as { role?: string } | undefined)?.role || "";
+  const canManageRoles =
+    process.env.NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED === "1" &&
+    currentRole === "ADMIN";
   const queryClient = useQueryClient();
   const [confirmClear, setConfirmClear] = useState<{ id: string; email?: string|null } | null>(null);
   const [deliveryFilter, setDeliveryFilter] = useState<string>("all");
@@ -226,10 +234,61 @@ export default function AdminCustomers() {
         >
           Explain totals
         </DropdownMenuItem>
-        {Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)) > 0.005 && (
+        <DropdownMenuItem
+          onClick={() => {
+            window.open(`/api/admin/customers/${r.user.id}/statement?format=csv`, "_blank");
+          }}
+        >
+          Download statement (CSV)
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            window.open(`/api/admin/customers/${r.user.id}/statement?format=pdf`, "_blank");
+          }}
+        >
+          Download statement (PDF)
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={async () => {
+            try {
+              const res = await fetch(
+                `/api/admin/customers/${r.user.id}/statement/email`,
+                { method: "POST" },
+              );
+              const j = await res.json().catch(() => ({} as { error?: string }));
+              if (!res.ok) {
+                throw new Error(j?.error || "Failed to email statement");
+              }
+              toast.success("Statement emailed to customer.");
+            } catch (e: unknown) {
+              const message =
+                e instanceof Error ? e.message : "Failed to email statement";
+              toast.error(message);
+            }
+          }}
+        >
+          Email statement
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={`/admin/customers/${r.user.id}/view`}>
+            View as customer (read-only)
+          </Link>
+        </DropdownMenuItem>
+        {Math.max(
+          0,
+          r.storeCredit ??
+            Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
+        ) > 0.005 && (
           <DropdownMenuItem
             onClick={async () => {
-              const unapplied = Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0));
+              const unapplied = Math.max(
+                0,
+                r.storeCredit ??
+                  Math.max(
+                    0,
+                    (r.paymentsTotal ?? 0) - (r.paidTotal || 0),
+                  ),
+              );
               const outstanding = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
               const EPSILON = 0.005;
 
@@ -286,12 +345,20 @@ export default function AdminCustomers() {
           Adjustment
         </DropdownMenuItem>
         {(() => {
-          const credit = Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0));
+          const credit = Math.max(
+            0,
+            r.storeCredit ??
+              Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
+          );
           if (credit <= 0.005) return null;
           return (
             <DropdownMenuItem
               onClick={() => {
-                setRefundCredit({ userId: r.user.id, email: r.user.email, credit });
+                setRefundCredit({
+                  userId: r.user.id,
+                  email: r.user.email,
+                  credit,
+                });
                 setRefundAmount(credit.toFixed(2));
                 setRefundAll(true);
                 setRefundMethod("cash");
@@ -303,38 +370,101 @@ export default function AdminCustomers() {
             </DropdownMenuItem>
           );
         })()}
-        {process.env.NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED === "1" && (
-          <DropdownMenuItem
-            onClick={async () => {
-              try {
-                const currentRole = String(r.user.role || "CUSTOMER").toUpperCase();
-                const nextRole = currentRole === "ADMIN" ? "CUSTOMER" : "ADMIN";
-                const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
-                  method: "PATCH",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ role: nextRole }),
-                });
-                const j = await res.json().catch(() => ({}));
-                if (!res.ok) {
-                  throw new Error(j?.error || "Failed to update role");
+        {canManageRoles && (
+          <>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ role: "ADMIN" }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to update role");
+                  }
+                  toast.success("User set as admin.");
+                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to update role";
+                  toast.error(message);
                 }
-                toast.success(
-                  nextRole === "ADMIN"
-                    ? "User promoted to admin."
-                    : "User set to customer."
-                );
-                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-              } catch (e: unknown) {
-                const message =
-                  e instanceof Error ? e.message : "Failed to update role";
-                toast.error(message);
-              }
-            }}
-          >
-            {String(r.user.role || "CUSTOMER").toUpperCase() === "ADMIN"
-              ? "Set as customer"
-              : "Make admin"}
-          </DropdownMenuItem>
+              }}
+            >
+              Make admin
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ role: "STAFF" }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to update role");
+                  }
+                  toast.success("User set as staff.");
+                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to update role";
+                  toast.error(message);
+                }
+              }}
+            >
+              Make staff
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ role: "ACCOUNTANT" }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to update role");
+                  }
+                  toast.success("User set as accountant.");
+                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to update role";
+                  toast.error(message);
+                }
+              }}
+            >
+              Make accountant
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ role: "CUSTOMER" }),
+                  });
+                  const j = await res.json().catch(() => ({}));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to update role");
+                  }
+                  toast.success("User set as customer.");
+                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to update role";
+                  toast.error(message);
+                }
+              }}
+            >
+              Set as customer
+            </DropdownMenuItem>
+          </>
         )}
         {r.cart?.items?.length ? (
           <DropdownMenuItem
@@ -552,7 +682,7 @@ export default function AdminCustomers() {
                 <TableHead className="w-[140px] text-center">
                   <div className="inline-flex items-center justify-center gap-1">
                     <span>Payments</span>
-                    <Tooltip content="All payments received (may include unapplied)">
+                    <Tooltip content="Net cash/MoMo payments (excluding internal credit moves).">
                       <HelpCircle
                         className="h-3.5 w-3.5 text-muted-foreground"
                         aria-label="Payments total"
@@ -563,7 +693,7 @@ export default function AdminCustomers() {
                 <TableHead className="w-[160px] text-center">
                   <div className="inline-flex items-center justify-center gap-1">
                     <span>Store Credit</span>
-                    <Tooltip content="Store credit held for this customer (Payments - Paid).">
+                    <Tooltip content="Store credit held for this customer (credit from returns and adjustments not yet applied or refunded).">
                       <HelpCircle
                         className="h-3.5 w-3.5 text-muted-foreground"
                         aria-label="Store credit"
@@ -611,16 +741,6 @@ export default function AdminCustomers() {
                   <TableCell className="max-w-[320px] text-left">
                     <div className="flex flex-wrap items-center gap-2 min-w-0">
                       <span className="truncate">{r.user.email}</span>
-                      <div className="flex items-center gap-1 text-xs">
-                        {r.phoneVerified ? (
-                          <span title="Phone verified" className="inline-flex items-center gap-0.5 text-green-700"><CheckCircle2 className="w-3 h-3" /></span>
-                        ) : (
-                          <span title="Phone not verified" className="inline-flex items-center gap-0.5 text-red-700"><XCircle className="w-3 h-3" /></span>
-                        )}
-                        {r.whatsappReady && (
-                          <span title="WhatsApp reachable" className="inline-flex items-center gap-0.5 text-emerald-700"><MessageCircle className="w-3 h-3" /></span>
-                        )}
-                      </div>
                     </div>
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
@@ -630,9 +750,21 @@ export default function AdminCustomers() {
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">
                     {(() => {
-                      const delta = Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0));
-                      const cls = delta > 0.005 ? "text-amber-700" : "text-muted-foreground";
-                      return <span className={cls}>{formatCurrency(delta)}</span>;
+                      const delta = Math.max(
+                        0,
+                        r.storeCredit ??
+                          Math.max(
+                            0,
+                            (r.paymentsTotal ?? 0) - (r.paidTotal || 0),
+                          ),
+                      );
+                      const cls =
+                        delta > 0.005
+                          ? "text-amber-700"
+                          : "text-muted-foreground";
+                      return (
+                        <span className={cls}>{formatCurrency(delta)}</span>
+                      );
                     })()}
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">
@@ -692,8 +824,15 @@ export default function AdminCustomers() {
     </div>
         <div className="md:hidden space-y-4">
           {filteredRows.map((r: CustomerRow) => {
-            const outstanding = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
-            const credit = Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0));
+            const outstanding = Math.max(
+              0,
+              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+            );
+            const credit = Math.max(
+              0,
+              r.storeCredit ??
+                Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
+            );
             const delivery = r.delivery || { delivered: 0, partial: 0, pending: 0 };
             return (
               <div key={r.user.id} className="rounded-lg !border-0 shadow-md p-4 space-y-3 text-sm">
@@ -701,22 +840,6 @@ export default function AdminCustomers() {
                   <div className="min-w-0">
                     <p className="font-semibold break-all">{r.user.email}</p>
                     <p className="text-xs text-muted-foreground">{r.user.name || "Unnamed customer"}</p>
-                    <div className="flex items-center gap-2 mt-1 text-xs">
-                      {r.phoneVerified ? (
-                        <span className="inline-flex items-center gap-0.5 text-green-700">
-                          <CheckCircle2 className="w-3 h-3" /> Verified
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-0.5 text-red-700">
-                          <XCircle className="w-3 h-3" /> Unverified
-                        </span>
-                      )}
-                      {r.whatsappReady && (
-                        <span className="inline-flex items-center gap-0.5 text-emerald-700">
-                          <MessageCircle className="w-3 h-3" /> WhatsApp
-                        </span>
-                      )}
-                    </div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1450,7 +1573,7 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
                         ))}
                       </div>
                     ) : (
-                      <span className="text-muted-foreground">Not applied to any order</span>
+                      <span className="text-muted-foreground">Store credit (not yet applied to any order)</span>
                     )}
                   </TableCell>
                 </TableRow>

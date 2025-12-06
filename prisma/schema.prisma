@@ -10,6 +10,8 @@ datasource db {
 enum Role {
   CUSTOMER
   ADMIN
+  STAFF
+  ACCOUNTANT
 }
 
 enum PaymentStatus {
@@ -28,9 +30,9 @@ model User {
   name             String?
   email            String?   @unique
   username         String?   @unique
+  phone            String?   @unique
   password         String
   role             Role      @default(CUSTOMER)
-  phone            String?
   archived         Boolean   @default(false)
   phoneVerifiedAt  DateTime?
   twoFactorEnabled Boolean   @default(false)
@@ -48,6 +50,7 @@ model User {
   placedOrders     Order[]   @relation("OrderPlacedBy")
   payments         Payment[]
   balance          Balance?
+  auditLogs        AuditLog[]
 }
 
 model UserOtp {
@@ -132,6 +135,10 @@ model OrderItem {
   // Snapshot of unit cost at the time of sale for accurate COGS
   costAtSale Decimal? @db.Decimal(10, 2)
   quantity   Int
+  // Units from this line that have been delivered so far
+  deliveredQuantity Int @default(0)
+  // Total units from this line that have been returned
+  returnedQuantity Int @default(0)
 }
 
 model Payment {
@@ -218,6 +225,27 @@ model InventoryMovement {
 
   @@index([productId])
   @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actor      User?    @relation(fields: [actorId], references: [id])
+  actorId    String?
+  action     String
+  entityType String
+  entityId   String
+  meta       String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model FeatureFlag {
+  key      String   @id
+  enabled  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
 }
 
 // GuestCustomer model removed

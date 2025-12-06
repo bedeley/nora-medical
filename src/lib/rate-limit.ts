@@ -1,3 +1,5 @@
+import { isLiveStage } from "@/lib/env";
+
 type Counter = { count: number; resetAt: number };
 const buckets = new Map<string, Counter>();
 
@@ -69,6 +71,16 @@ export async function rateLimit(req: Request, bucketName: string, windowMs = 60_
   // Prefer shared store when configured (Vercel KV/Upstash); fall back to memory.
   const remote = await redisRateLimit(key, windowMs, max);
   if (remote) return remote;
+
+  if (isLiveStage()) {
+    // In live/prod, we require a shared store so throttling actually holds across instances.
+    console.warn("[rate-limit] Shared store not configured; blocking request", { bucket: bucketName });
+    return { ok: false as const, retryIn: windowMs } as const;
+  }
+
+  if (!redisUrl || !redisToken) {
+    console.warn("[rate-limit] Using in-memory limiter (non-live stage)", { bucket: bucketName });
+  }
 
   return memoryRateLimit(key, windowMs, max);
 }

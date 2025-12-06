@@ -27,7 +27,7 @@ import { formatCurrency, formatDateGH } from "@/lib/currency";
 import { formatIdReadable } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, PackageCheck } from "lucide-react";
 import { useClientQuery } from "@/hooks/use-client-query";
 
 type PaymentMeta = {
@@ -45,6 +45,8 @@ type OrderItem = {
     name: string;
     imageUrl: string | null;
   } | null;
+  deliveredQuantity?: number;
+  returnedQuantity?: number;
 };
 
 type Payment = {
@@ -57,6 +59,8 @@ type Payment = {
 type Order = {
   id: string;
   status: string;
+  deliveryStatus?: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED" | string;
+  deliveredAt?: string | Date | null;
   createdAt: string | Date;
   total: number | string;
   amountPaid?: number | string;
@@ -247,35 +251,23 @@ function OrdersContent() {
         <div className="flex items-center gap-2">
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="Filter status" />
+              <SelectValue placeholder="Filter by payment status" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All</SelectItem>
-              <SelectItem value="PENDING">Pending</SelectItem>
+              <SelectItem value="PENDING">Has outstanding balance</SelectItem>
               <SelectItem value="PAID">Paid</SelectItem>
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      {/* Summary cards (hide lifetime totals; show only count and outstanding) */}
+      <div className="grid gap-2 sm:grid-cols-2 text-xs">
         <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
           <CardContent className="!py-2">
             <p className="text-[11px] text-muted-foreground">Orders</p>
             <p className="text-lg font-semibold">{summary.totalOrders}</p>
-          </CardContent>
-        </Card>
-        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
-          <CardContent className="!py-2">
-            <p className="text-[11px] text-muted-foreground">Total Spent</p>
-            <p className="text-lg font-semibold">{formatCurrency(summary.totalSpent)}</p>
-          </CardContent>
-        </Card>
-        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
-          <CardContent className="!py-2">
-            <p className="text-[11px] text-muted-foreground">Total Paid</p>
-            <p className="text-lg font-semibold text-green-700">{formatCurrency(summary.totalPaid)}</p>
           </CardContent>
         </Card>
         <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
@@ -292,19 +284,35 @@ function OrdersContent() {
         const items = Array.isArray(order.items) ? order.items : [];
         const nonNullItems = items.filter((it) => it?.product);
         const uniqueProducts = nonNullItems.reduce(
-          (acc: Array<{ product: NonNullable<OrderItem["product"]>; quantity: number }>, it) => {
-          if (!it.product) return acc;
-          const existing = acc.find((x) => x.product.id === it.product!.id);
-          if (existing) {
-            existing.quantity += it.quantity;
-          } else {
-            acc.push({
-              product: it.product as NonNullable<OrderItem["product"]>,
-              quantity: it.quantity,
-            });
-          }
-          return acc;
-        }, []);
+          (
+            acc: Array<{
+              product: NonNullable<OrderItem["product"]>;
+              quantity: number;
+              delivered: number;
+              returned: number;
+            }>,
+            it,
+          ) => {
+            if (!it.product) return acc;
+            const delivered = Number(it.deliveredQuantity ?? 0);
+            const returned = Number(it.returnedQuantity ?? 0);
+            const existing = acc.find((x) => x.product.id === it.product!.id);
+            if (existing) {
+              existing.quantity += it.quantity;
+              existing.delivered += delivered;
+              existing.returned += returned;
+            } else {
+              acc.push({
+                product: it.product as NonNullable<OrderItem["product"]>,
+                quantity: it.quantity,
+                delivered,
+                returned,
+              });
+            }
+            return acc;
+          },
+          [],
+        );
 
         return (
           <Card
@@ -334,21 +342,43 @@ function OrdersContent() {
                     return null;
                   })()}
                 </span>
-                {(() => {
-                  const sc =
-                    order.status === "PAID"
-                      ? "bg-green-100 text-green-700"
-                      : order.status === "PARTIALLY_PAID"
-                      ? "bg-yellow-100 text-yellow-800"
-                      : order.status === "CANCELLED"
-                      ? "bg-gray-200 text-gray-700"
-                      : "bg-red-100 text-red-700";
-                  return (
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
-                      {order.status}
-                    </span>
-                  );
-                })()}
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const sc =
+                      order.status === "PAID"
+                        ? "bg-green-100 text-green-700"
+                        : order.status === "PARTIALLY_PAID"
+                        ? "bg-yellow-100 text-yellow-800"
+                        : order.status === "CANCELLED"
+                        ? "bg-gray-200 text-gray-700"
+                        : "bg-red-100 text-red-700";
+                    return (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
+                        {order.status}
+                      </span>
+                    );
+                  })()}
+                  {(() => {
+                    const ds = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+                    let label = "Not delivered";
+                    let cls = "bg-slate-100 text-slate-700";
+                    if (ds === "DELIVERED") {
+                      label = "Delivered";
+                      cls = "bg-emerald-100 text-emerald-700";
+                    } else if (ds === "PARTIALLY_DELIVERED") {
+                      label = "Partially delivered";
+                      cls = "bg-amber-100 text-amber-800";
+                    } else if (ds === "RETURNED") {
+                      label = "Returned";
+                      cls = "bg-gray-200 text-gray-700";
+                    }
+                    return (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${cls}`}>
+                        {label}
+                      </span>
+                    );
+                  })()}
+                </div>
               </CardTitle>
             </CardHeader>
             <CardContent className="grid gap-1 !px-3 !py-1.5">
@@ -384,11 +414,40 @@ function OrdersContent() {
                         </div>
                       )}
                     </div>
-                    <span className="text-[11px] text-muted-foreground">
-                      {uniqueProducts.length === 1
-                        ? `${uniqueProducts[0].quantity} item`
-                        : `${uniqueProducts.reduce((s, it) => s + Number(it.quantity || 0), 0)} items`}
-                    </span>
+                    <div className="flex flex-col text-[11px] text-muted-foreground">
+                      <span>
+                        {uniqueProducts.length === 1
+                          ? `${uniqueProducts[0].quantity} item`
+                          : `${uniqueProducts.reduce(
+                              (s, it) => s + Number(it.quantity || 0),
+                              0,
+                            )} items`}
+                      </span>
+                      <span>
+                        {(() => {
+                          const totalQty = uniqueProducts.reduce(
+                            (s, it) => s + Number(it.quantity || 0),
+                            0,
+                          );
+                          const totalDelivered = uniqueProducts.reduce(
+                            (s, it) => s + Number(it.delivered || 0),
+                            0,
+                          );
+                          const totalReturned = uniqueProducts.reduce(
+                            (s, it) => s + Number(it.returned || 0),
+                            0,
+                          );
+                          if (totalReturned > 0 && totalReturned >= totalDelivered) {
+                            return `Returned items: ${totalReturned}`;
+                          }
+                          if (totalDelivered <= 0) return "Items not delivered yet";
+                          if (totalDelivered >= totalQty) {
+                            return "All items delivered";
+                          }
+                          return `Items delivered: ${totalDelivered}/${totalQty}`;
+                        })()}
+                      </span>
+                    </div>
                   </div>
                   <Button
                     asChild
@@ -402,17 +461,107 @@ function OrdersContent() {
                 </div>
               )}
               <div className="flex justify-between">
-                <span>Date:</span>
+                <span>Date</span>
                 <span>{formatDateGH(order.createdAt)}</span>
               </div>
+              {order.deliveredAt && (
+                <div className="flex justify-between">
+                  <span>Delivered</span>
+                  <span>
+                    {formatDateGH(order.deliveredAt)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between">
-                <span>Total Amount:</span>
+                <span>Total</span>
                 <span>{formatCurrency(Number(order.total))}</span>
               </div>
               <div className="flex justify-between">
-                <span>Amount Paid:</span>
+                <span>Paid</span>
                 <span>{formatCurrency(Number(order.totalPaid))}</span>
               </div>
+              {(() => {
+                const payments = (order.payments || []) as Array<{
+                  id: string;
+                  amount: number | string;
+                  note?: string | null;
+                }>;
+                let storeCreditApplied = 0;
+                for (const p of payments) {
+                  if (!p.note) continue;
+                  try {
+                    const meta = JSON.parse(p.note) as {
+                      reference?: string;
+                      applied?: Array<{ orderId?: string; applied?: number }>;
+                    };
+                    if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
+                      for (const a of meta.applied) {
+                        if (a && a.orderId === order.id) {
+                          storeCreditApplied += Number(a.applied || 0);
+                        }
+                      }
+                    }
+                  } catch {
+                    // ignore malformed notes
+                  }
+                }
+                if (storeCreditApplied <= 0) return null;
+                return (
+                  <div className="flex justify-between text-[11px] text-muted-foreground">
+                    <span>Paid from store credit:</span>
+                    <span>{formatCurrency(storeCreditApplied)}</span>
+                  </div>
+                );
+              })()}
+              {items.length > 0 && (
+                <div className="mt-2 border-t pt-2 space-y-1">
+                  <p className="text-[11px] font-semibold text-muted-foreground">
+                    Items and delivery
+                  </p>
+                  {items.map((it) => {
+                    const delivered = Number(it.deliveredQuantity ?? 0);
+                    const returned = Number(it.returnedQuantity ?? 0);
+                    const qty = Number(it.quantity || 0);
+                    return (
+                      <div
+                        key={it.id}
+                        className="flex items-center justify-between gap-2 text-[11px]"
+                      >
+                        <span className="truncate max-w-[200px]">
+                          {it.product?.name || "Item"}{" "}
+                          <span className="text-muted-foreground">
+                            ×{qty}
+                          </span>
+                        </span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span
+                            className={`px-2 py-0.5 rounded-full whitespace-nowrap ${
+                              delivered >= qty && qty > 0
+                                ? "bg-emerald-100 text-emerald-700"
+                                : delivered > 0
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
+                          >
+                            {delivered >= qty && qty > 0
+                              ? "Delivered"
+                              : delivered > 0
+                              ? `Partially delivered (${delivered}/${qty})`
+                              : "Not delivered yet"}
+                          </span>
+                          {returned > 0 && (
+                            <span className="text-[10px] text-muted-foreground">
+                              {returned >= delivered && delivered > 0
+                                ? `All delivered units returned (${returned})`
+                                : `${returned} of ${qty} returned`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {(() => {
                 const payments = (order.payments || []) as Array<{
                   id: string;
@@ -461,10 +610,46 @@ function OrdersContent() {
                 );
               })()}
               <div className="flex justify-between font-semibold">
-                <span>Balance:</span>
+                <span>Balance</span>
                 <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
                   {formatCurrency(Number(order.balance))}
                 </span>
+              </div>
+
+              {/* Simple timeline-style view */}
+              <div className="mt-3 border-t pt-2 space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-medium">Order placed</span>
+                  <span>{formatDateGH(order.createdAt)}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-medium">Payments</span>
+                  <span>
+                    {Number(order.totalPaid) > 0
+                      ? `${formatCurrency(Number(order.totalPaid))} paid`
+                      : "No payments yet"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-medium">Delivery</span>
+                  <span>
+                    {(() => {
+                      const ds = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+                      if (ds === "DELIVERED") {
+                        return order.deliveredAt
+                          ? `Delivered on ${formatDateGH(order.deliveredAt)}`
+                          : "Delivered";
+                      }
+                      if (ds === "PARTIALLY_DELIVERED") {
+                        return "Partially delivered";
+                      }
+                      if (ds === "RETURNED") {
+                        return "Returned";
+                      }
+                      return "Not delivered";
+                    })()}
+                  </span>
+                </div>
               </div>
 
               {Number(order.balance) > 0 && order.status !== "CANCELLED" && (
@@ -495,6 +680,8 @@ function OrdersContent() {
                     <Button
                       variant="outline"
                       size="sm"
+                      aria-expanded={!!expanded[order.id]}
+                      aria-controls={`order-${order.id}-payments`}
                       onClick={() =>
                         setExpanded((e) => ({ ...e, [order.id]: !e[order.id] }))
                       }
@@ -511,7 +698,10 @@ function OrdersContent() {
                     </Button>
                   </div>
                   {expanded[order.id] && (
-                    <div className="mt-2 text-xs space-y-1">
+                    <div
+                      id={`order-${order.id}-payments`}
+                      className="mt-2 text-xs space-y-1"
+                    >
                       {(() => {
                         const payments = order.payments || [];
                         let storeCreditApplied = 0;
@@ -578,6 +768,41 @@ function OrdersContent() {
                   )}
                 </div>
               )}
+
+              {/* Reorder shortcut */}
+              {uniqueProducts.length > 0 && (
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-[11px] flex items-center gap-1"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try {
+                        for (const it of items) {
+                          if (!it.product) continue;
+                          await fetch("/api/cart", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              productId: it.product.id,
+                              quantity: it.quantity,
+                            }),
+                          });
+                        }
+                        toast.success("Items from this order were added to your cart.");
+                        queryClient.invalidateQueries({ queryKey: ["cart"] });
+                      } catch (err) {
+                        console.error(err);
+                        toast.error("Failed to add items back to cart.");
+                      }
+                    }}
+                  >
+                    <PackageCheck className="w-3 h-3" />
+                    Reorder items
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         );
@@ -605,7 +830,7 @@ export default function OrdersPage() {
 // to keep this page focused on high-level order summaries.
 
 function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderId: string; maxAmount: number; defaultPhone?: string; onSuccess?: () => void }) {
-  const [phone, setPhone] = useState<string>(defaultPhone || "");
+  const [phone, setPhone] = useState<string>("");
   const [normalized, setNormalized] = useState<string>("");
   const [amtStr, setAmtStr] = useState<string>(() => (Number(maxAmount) > 0 ? String(Number(maxAmount).toFixed(2)) : ""));
   const [loading, setLoading] = useState(false);
@@ -721,7 +946,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
   const showSavedPhoneChoice = Boolean(savedPhoneNormalized);
 
   return (
-    <div className="grid gap-2 sm:flex sm:items-end sm:gap-2">
+    <div className="grid gap-2 sm:flex sm:items-start sm:gap-2">
       <div className="grid gap-1">
         <Input
           type="tel"
@@ -734,16 +959,8 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
         />
         {(phone || normalized || showSavedPhoneChoice) && (
           <div className="flex flex-wrap gap-2 text-xs">
-            {isValidPhone(phone) ? (
-              <button
-                type="button"
-                className="text-muted-foreground underline-offset-2 hover:underline"
-                onClick={() => setPhone(normalizePhone(phone))}
-              >
-                Will use: {normalizePhone(phone)}
-              </button>
-            ) : (
-              phone && <span className="text-red-600">Enter a valid phone number</span>
+            {phone && !isValidPhone(phone) && (
+              <span className="text-red-600">Enter a valid phone number</span>
             )}
             {showSavedPhoneChoice && phone !== savedPhoneNormalized && (
               <button
@@ -751,35 +968,54 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
                 className="text-primary underline-offset-2 hover:underline"
                 onClick={() => setPhone(savedPhoneNormalized)}
               >
-                Use saved number ({savedPhoneNormalized})
+                Use saved MoMo number: {savedPhoneNormalized}
               </button>
+            )}
+            {isValidPhone(savedPhoneNormalized) && !phone && (
+              <span className="text-muted-foreground">
+                We&apos;ll send the payment prompt to your saved MoMo number when you use it here.
+              </span>
             )}
           </div>
         )}
       </div>
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-        <Input
-          type="text"
-          inputMode="decimal"
-          pattern="[0-9]*[.,]?[0-9]*"
-          placeholder={`Amount (max ${formatCurrency(Number(maxAmount) || 0)})`}
-          value={amtStr}
-          onChange={(e) => {
-            const raw = e.target.value || "";
-            const cleaned = raw.replace(/[^0-9.,]/g, "");
-            setAmtStr(cleaned);
-          }}
-          className="w-40"
-        />
-        <span
-          className={`text-xs ${
-            amountInvalid ? "text-red-600" : "text-muted-foreground"
-          }`}
-        >
-          {amountInvalid
-            ? `Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}`
-            : `Outstanding: ${formatCurrency(Number(maxAmount) || 0)}`}
-        </span>
+        <div className="relative w-40">
+          <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-xs text-muted-foreground">
+            GH₵
+          </span>
+          <Input
+            type="text"
+            inputMode="decimal"
+            pattern="[0-9]*[.,]?[0-9]*"
+            placeholder="0.00"
+            value={amtStr}
+            onChange={(e) => {
+              const raw = e.target.value || "";
+              const cleaned = raw.replace(/[^0-9.,]/g, "");
+              setAmtStr(cleaned);
+            }}
+            className="w-full pl-10"
+          />
+        </div>
+        {amountInvalid ? (
+          <span className="text-xs text-red-600">
+            {`Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}`}
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="text-xs text-muted-foreground underline-offset-2 hover:underline text-left"
+            onClick={() => {
+              const max = Number(maxAmount) || 0;
+              if (max > 0) {
+                setAmtStr(String(max.toFixed(2)));
+              }
+            }}
+          >
+            Outstanding: {formatCurrency(Number(maxAmount) || 0)}
+          </button>
+        )}
       </div>
       <div className="flex gap-2">
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>

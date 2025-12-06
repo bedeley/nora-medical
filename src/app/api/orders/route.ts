@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { notifyOrderEvent } from "@/lib/notifications";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -23,7 +24,7 @@ export async function GET() {
       where: isAdmin ? {} : { userId: user.id },
       include: {
         items: { include: { product: true } },
-        user: { select: { name: true, email: true } },
+        user: { select: { id: true, name: true, email: true } },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -36,7 +37,8 @@ export async function GET() {
       deliveryStatus: string | null;
       deliveredAt: Date | null;
       createdAt: Date;
-      user: { name: string | null; email: string | null } | null;
+      userId: string | null;
+      user: { id: string; name: string | null; email: string | null } | null;
       items: Array<{
         id: string;
         quantity: number;
@@ -64,6 +66,7 @@ export async function GET() {
       }
       return {
         id: o.id,
+        userId: o.userId || null,
         status,
         deliveryStatus: o.deliveryStatus || "NOT_DELIVERED",
         deliveredAt: o.deliveredAt
@@ -348,6 +351,18 @@ export async function POST(req: Request) {
 
       return newOrder;
     });
+
+    // Customer-facing notification: order confirmation
+    try {
+      await notifyOrderEvent({
+        kind: "order_created",
+        userId,
+        orderId: order.id,
+        total,
+      });
+    } catch (e) {
+      console.warn("notifyOrderEvent (order_created) error:", e);
+    }
 
     return NextResponse.json({
       success: true,

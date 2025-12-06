@@ -83,42 +83,16 @@ export default function AccountBalancePage() {
             <p className="text-red-600">Failed to load balance.</p>
           ) : (
             <div className="grid gap-2 text-sm">
+              <p className="text-xs text-muted-foreground">
+                This page shows whether you currently have any outstanding balance or store credit
+                on your account. For detailed history, use your order list below.
+              </p>
               <div className="flex justify-between">
-                <span>Total Due</span>
-                <span className="font-medium">{formatCurrency(data.totalDue)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Total Paid</span>
-                <span className="font-medium text-green-700">{formatCurrency(data.totalPaid)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Balance</span>
+                <span>Outstanding balance</span>
                 <span className={data.balance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
-                  {formatCurrency(data.balance)}
+                  {data.balance > 0 ? formatCurrency(data.balance) : "None"}
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span>Unapplied Funds</span>
-                <span className="font-medium">
-                  {formatCurrency(data.unappliedFunds ?? Math.max(0, (data.paymentsTotal ?? 0) - data.totalPaid))}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Refunded to You</span>
-                <span className="font-medium text-red-700">
-                  {formatCurrency(data.cashRefunds ?? 0)}
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground mt-2">
-                Updated: {new Date(data.updatedAt).toLocaleString()}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Unapplied funds = store credit we&apos;re holding for you.
-                Refunded totals show cash already handed back. Store credit can
-                be applied to your outstanding orders and will also be
-                auto-applied when you place new orders (starting with the
-                oldest unpaid or partially-paid ones).
-              </p>
               {creditAvailable > 0 && (
                 <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                   <p className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">
@@ -164,6 +138,9 @@ export default function AccountBalancePage() {
                   </button>
                 </div>
               )}
+              <p className="text-xs text-muted-foreground mt-2">
+                Updated: {new Date(data.updatedAt).toLocaleString()}
+              </p>
             </div>
           )}
         </CardContent>

@@ -109,9 +109,15 @@ export default function NavBar() {
     [itemCount, session]
   );
 
-  const isAdmin = (session?.user as AuthenticatedUser | undefined)?.role === "ADMIN";
+  const role = (session?.user as AuthenticatedUser | undefined)?.role;
+  const isAdmin = role === "ADMIN";
+  const isBackOffice = role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
   const onHome = pathname === "/";
   const showPublicHomeActions = !session && onHome;
+
+  const isCurrent = (href: string) =>
+    typeof pathname === "string" &&
+    (pathname === href || pathname.startsWith(`${href}/`));
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -191,7 +197,7 @@ export default function NavBar() {
                     <span className="capitalize" suppressHydrationWarning>
                       {displayName}
                     </span>
-                    {isAdmin && (
+                    {isBackOffice && (
                       <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
                         Admin
                       </span>
@@ -201,7 +207,7 @@ export default function NavBar() {
                 </Button>
               </DropdownMenuTrigger>
 
-              <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuContent align="end" className="w-52 px-1">
                 {!session && (
                   <>
                     <DropdownMenuItem onClick={() => signIn()}>
@@ -220,67 +226,164 @@ export default function NavBar() {
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
-                      <Link href="/account">My account</Link>
+                      <Link
+                        href="/account"
+                        className={
+                          isCurrent("/account")
+                            ? "font-semibold text-primary"
+                            : ""
+                        }
+                      >
+                        My account
+                      </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
-                      <Link href="/orders">Order history</Link>
+                      <Link
+                        href="/orders"
+                        className={
+                          isCurrent("/orders")
+                            ? "font-semibold text-primary"
+                            : ""
+                        }
+                      >
+                        Order history
+                      </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
-                      <Link href="/account/balance">My balance</Link>
+                      <Link
+                        href="/account/balance"
+                        className={
+                          isCurrent("/account/balance")
+                            ? "font-semibold text-primary"
+                            : ""
+                        }
+                      >
+                        My balance
+                      </Link>
                     </DropdownMenuItem>
-                    {isAdmin && (
+                    {isBackOffice && (
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuLabel className="text-xs flex items-center gap-1 text-muted-foreground">
                           <Shield className="h-3 w-3" /> Admin Panel
                         </DropdownMenuLabel>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin">
+                          <Link
+                            href="/admin"
+                            className={
+                              isCurrent("/admin")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <Package className="h-3 w-3 mr-2" /> Dashboard
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/products">
+                          <Link
+                            href="/admin/products"
+                            className={
+                              isCurrent("/admin/products")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <Package className="h-3 w-3 mr-2" /> Products
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/customers">
+                          <Link
+                            href="/admin/customers"
+                            className={
+                              isCurrent("/admin/customers")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <Users className="h-3 w-3 mr-2" /> Customer Cart
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/customer-accounts">
+                          <Link
+                            href="/admin/customer-accounts"
+                            className={
+                              isCurrent("/admin/customer-accounts")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <Users className="h-3 w-3 mr-2" /> Customer Accounts
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/orders">
+                          <Link
+                            href="/admin/orders"
+                            className={
+                              isCurrent("/admin/orders")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <DollarSign className="h-3 w-3 mr-2" /> Orders/Payments
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/inventory">
+                          <Link
+                            href="/admin/inventory"
+                            className={
+                              isCurrent("/admin/inventory")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <ClipboardList className="h-3 w-3 mr-2" /> Inventory
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/profit-loss">
+                          <Link
+                            href="/admin/profit-loss"
+                            className={
+                              isCurrent("/admin/profit-loss")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <ClipboardList className="h-3 w-3 mr-2" /> Profit &amp; Loss
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/purchases">
+                          <Link
+                            href="/admin/purchases"
+                            className={
+                              isCurrent("/admin/purchases")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <ClipboardList className="h-3 w-3 mr-2" /> Purchases
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/movements">
+                          <Link
+                            href="/admin/movements"
+                            className={
+                              isCurrent("/admin/movements")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <ClipboardList className="h-3 w-3 mr-2" /> Movements
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
-                          <Link href="/admin/expenses">
+                          <Link
+                            href="/admin/expenses"
+                            className={
+                              isCurrent("/admin/expenses")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
                             <DollarSign className="h-3 w-3 mr-2" /> Expenses
                           </Link>
                         </DropdownMenuItem>
@@ -326,20 +429,27 @@ export default function NavBar() {
           </a>
           <ThemeToggle />
           {session && (
-            <DropdownMenu>
+              <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="outline"
                   size="sm"
-                  className="flex items-center gap-1 max-w-[160px]"
+                  className="flex items-center gap-1 max-w-[200px] px-3"
                 >
-                  <span className="truncate capitalize" suppressHydrationWarning>
-                    {displayName}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="truncate capitalize" suppressHydrationWarning>
+                      {displayName}
+                    </span>
+                    {isAdmin && (
+                      <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
+                        Admin
+                      </span>
+                    )}
+                  </div>
                   <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuContent align="end" className="w-52 px-1">
                 <DropdownMenuLabel className="text-xs text-muted-foreground">
                   {session.user?.email}
                 </DropdownMenuLabel>
@@ -353,6 +463,64 @@ export default function NavBar() {
                 <DropdownMenuItem asChild>
                   <Link href="/account/balance">My balance</Link>
                 </DropdownMenuItem>
+                {isAdmin && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs flex items-center gap-1 text-muted-foreground">
+                      <Shield className="h-3 w-3" /> Admin Panel
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin">
+                        <Package className="h-3 w-3 mr-2" /> Dashboard
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/products">
+                        <Package className="h-3 w-3 mr-2" /> Products
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/customers">
+                        <Users className="h-3 w-3 mr-2" /> Customer Cart
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/customer-accounts">
+                        <Users className="h-3 w-3 mr-2" /> Customer Accounts
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/orders">
+                        <DollarSign className="h-3 w-3 mr-2" /> Orders/Payments
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/inventory">
+                        <ClipboardList className="h-3 w-3 mr-2" /> Inventory
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/profit-loss">
+                        <ClipboardList className="h-3 w-3 mr-2" /> Profit &amp; Loss
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/purchases">
+                        <ClipboardList className="h-3 w-3 mr-2" /> Purchases
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/movements">
+                        <ClipboardList className="h-3 w-3 mr-2" /> Movements
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/expenses">
+                        <DollarSign className="h-3 w-3 mr-2" /> Expenses
+                      </Link>
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => signOut({ callbackUrl: "/" })}

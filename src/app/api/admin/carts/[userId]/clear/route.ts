@@ -2,15 +2,27 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
 
 // POST /api/admin/carts/[userId]/clear — clear a specific user's cart (admin only)
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: { userId: string } }
 ) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  if (!isAdmin && !isStaff) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -30,6 +42,18 @@ export async function POST(
       // Optionally delete the cart record as well to keep things tidy
       prisma.cart.delete({ where: { id: cart.id } }),
     ]);
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "CART_CLEAR",
+        entityType: "CART",
+        entityId: cart.id,
+        meta: { customerId: userId },
+      });
+    } catch {
+      // best-effort
+    }
 
     return NextResponse.json({ success: true, message: "Cart cleared" });
   } catch (error) {

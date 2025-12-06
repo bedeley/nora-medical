@@ -12,7 +12,10 @@ import { rateLimit } from "@/lib/rate-limit";
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!session || (!isAdmin && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });

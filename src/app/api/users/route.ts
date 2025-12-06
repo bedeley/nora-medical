@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     const { name, email, username, password, phone } = parsed.data;
     const normalizedEmail = email ? email.toLowerCase().trim() : undefined;
     const normalizedUsername = username ? username.toLowerCase().trim() : undefined;
-    const normalizedPhone = phone.trim();
+    const normalizedPhone = (phone || "").trim();
 
     const titleCase = (s: string) =>
       String(s || "").replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
@@ -38,6 +38,10 @@ export async function POST(req: Request) {
     if (normalizedUsername) {
       const existsUsername = await prisma.user.findUnique({ where: { username: normalizedUsername } });
       if (existsUsername) return new Response("Username in use", { status: 409 });
+    }
+    if (normalizedPhone) {
+      const existsPhone = await prisma.user.findUnique({ where: { phone: normalizedPhone } });
+      if (existsPhone) return new Response("Phone in use", { status: 409 });
     }
 
     // First registered user can become ADMIN only with bootstrap secret; otherwise CUSTOMER

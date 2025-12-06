@@ -3,17 +3,20 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-export async function GET(
-  _req: Request,
-  { params }: { params: { userId: string } }
-) {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!session || (!isAdmin && !isStaff && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const userId = params.userId;
+  const url = new URL(req.url);
+  const segments = url.pathname.split("/").filter(Boolean);
+  const userId = segments[segments.length - 2];
   try {
     const orders = await prisma.order.findMany({
       where: { userId, status: { not: "CANCELLED" } },

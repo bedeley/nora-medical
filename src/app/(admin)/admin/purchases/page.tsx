@@ -65,7 +65,7 @@ function AdminPurchasesContent() {
 
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams();
     if (filters.start) params.set("start", filters.start); else params.delete("start");
     if (filters.end) params.set("end", filters.end); else params.delete("end");
     if (filters.supplier) params.set("supplier", filters.supplier); else params.delete("supplier");
@@ -73,7 +73,7 @@ function AdminPurchasesContent() {
     if (filters.product) params.set("product", filters.product); else params.delete("product");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [filters, pathname, router, searchParams]);
+  }, [filters, pathname, router]);
 
   async function fetchProducts() {
     try {

@@ -8,6 +8,8 @@ import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { Card, CardContent } from "@/components/ui/card";
+import { formatCurrency } from "@/lib/currency";
 
 type AccountMe = {
   id: string;
@@ -27,6 +29,14 @@ type OrderHistoryItem = {
   payments?: Array<{ amount: number | string }>;
 };
 
+type BalanceSummary = {
+  totalDue: number;
+  totalPaid: number;
+  balance: number;
+  unappliedFunds?: number;
+  updatedAt: string | Date;
+};
+
 function AccountContent() {
   const { data: session } = useSession();
   const searchParams = useSearchParams();
@@ -43,6 +53,12 @@ function AccountContent() {
     queryFn: () => fetcher("/api/account/me"),
     enabled: !!session,
     refetchInterval: 15000,
+  });
+  const { data: balance } = useQuery<BalanceSummary>({
+    queryKey: ["balance", "self", "account"],
+    queryFn: () => fetcher("/api/balance?self=1"),
+    enabled: !!session,
+    refetchInterval: 30000,
   });
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState(""); // phone verification code
@@ -208,6 +224,45 @@ function AccountContent() {
             You have unpaid orders. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to complete payment.
           </div>
         )}
+        {balance && (
+          <div className="mt-4 max-w-md">
+            <Card className="border-none shadow-sm rounded-none">
+              <CardContent className="py-3">
+                <p className="text-xs text-muted-foreground mb-1">
+                  Quick summary of your account today:
+                </p>
+                <div className="flex justify-between text-sm">
+                  <span>Outstanding balance</span>
+                  <span className={balance.balance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
+                    {balance.balance > 0 ? formatCurrency(balance.balance) : "None"}
+                  </span>
+                </div>
+                {typeof balance.unappliedFunds === "number" && balance.unappliedFunds > 0 && (
+                  <div className="flex justify-between text-sm mt-1">
+                    <span>Store credit</span>
+                    <span className="font-medium text-emerald-700">
+                      {formatCurrency(balance.unappliedFunds)}
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+        <div className="mt-4 max-w-md">
+          <p className="text-sm text-muted-foreground">
+            To see whether you currently owe anything or have store credit on your
+            account, use the{" "}
+            <Link href="/account/balance" className="underline">
+              My balance
+            </Link>{" "}
+            page. For detailed order-by-order history, use{" "}
+            <Link href="/orders" className="underline">
+              Order history
+            </Link>
+            .
+          </p>
+        </div>
         {isEmailVerified && (
           <div className="mt-4 flex gap-3">
             <Link href="/orders" className="hidden sm:inline underline">

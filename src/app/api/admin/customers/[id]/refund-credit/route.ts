@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { initiateMomoPayout } from "@/lib/momo";
 import { notifyPaymentEvent } from "@/lib/notifications";
+import { recordAuditLog } from "@/lib/audit-log";
+import { isFeatureEnabled } from "@/lib/features";
+import { assertSameOrigin } from "@/lib/origin";
 
 const refundSchema = z.object({
   amount: z.number().positive(),
@@ -17,9 +20,19 @@ export async function POST(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -37,26 +50,37 @@ export async function POST(
   const { amount, method, reference, note } = parsed.data;
 
   try {
-    const [orders, payments] = await Promise.all([
-      prisma.order.findMany({
-        where: { userId, status: { not: "CANCELLED" } },
-        select: { total: true, amountPaid: true },
-      }),
-      prisma.payment.findMany({
-        where: { userId },
-        select: { amount: true },
-      }),
-    ]);
+    const payments = await prisma.payment.findMany({
+      where: { userId },
+      select: { amount: true, status: true, refundDisposition: true, note: true },
+    });
 
-    const totalPaid = orders.reduce(
-      (sum: number, o: { amountPaid: unknown }) => sum + Number(o.amountPaid || 0),
-      0
-    );
-    const paymentsTotal = payments.reduce(
-      (sum: number, p: { amount: unknown }) => sum + Number(p.amount || 0),
-      0
-    );
-    const creditAvailable = Math.max(0, paymentsTotal - totalPaid);
+    // Compute store credit using the same semantics as /api/balance:
+    // credit from returns/adjustments, minus AUTO_APPLY applications and
+    // prior cash payouts of store credit.
+    let creditAvailable = 0;
+    for (const p of payments) {
+      const amount = Number(p.amount || 0);
+      const note = p.note || "";
+      const isAutoApply = note.includes("\"reference\":\"AUTO_APPLY\"");
+      const isCreditIssued =
+        p.status === "NORMAL" &&
+        p.refundDisposition === "CREDIT" &&
+        amount > 0;
+      const isCreditCashPayout =
+        p.status === "REFUND" &&
+        p.refundDisposition === "CASH" &&
+        note.includes("\"location\":\"admin/customers:credit-payout\"");
+
+      if (isCreditIssued) {
+        creditAvailable += amount;
+      } else if (isAutoApply) {
+        creditAvailable -= amount;
+      } else if (isCreditCashPayout) {
+        creditAvailable += amount;
+      }
+    }
+    creditAvailable = Math.max(0, creditAvailable);
 
     if (amount > creditAvailable + 0.0001) {
       return NextResponse.json(
@@ -68,7 +92,8 @@ export async function POST(
     }
 
     const isMomoTransfer = method === "transfer";
-    const momoPayoutEnabled = process.env.MOMO_PAYOUTS_ENABLED === "1";
+    const momoPayoutEnvEnabled = process.env.MOMO_PAYOUTS_ENABLED === "1";
+    const momoPayoutEnabled = await isFeatureEnabled("momo_payouts", momoPayoutEnvEnabled);
 
     // If MoMo payouts are enabled in config and the admin selected the
     // MoMo transfer option, attempt to trigger a payout to the customer's
@@ -141,6 +166,23 @@ export async function POST(
       });
     } catch (e) {
       console.warn("notifyPaymentEvent (credit refund) error:", e);
+    }
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "STORE_CREDIT_REFUND",
+        entityType: "PAYMENT",
+        entityId: payment.id,
+        meta: {
+          customerId: userId,
+          amount,
+          method,
+          reference,
+        },
+      });
+    } catch {
+      // best-effort
     }
 
     return NextResponse.json({ paymentId: payment.id, creditRemaining: creditAvailable - amount });

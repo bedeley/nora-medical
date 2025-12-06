@@ -52,7 +52,9 @@ function InventoryContent() {
   const { data, isLoading } = useClientQuery<{ rows: Row[] }>({
     queryKey: ["admin", "inventory"],
     queryFn: () => fetcher("/api/admin/inventory"),
-    refetchInterval: 3000,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   const rows: Row[] = useMemo(() => data?.rows || [], [data]);
@@ -100,10 +102,10 @@ function InventoryContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reflect to URL
+  // Reflect to URL (avoid using searchParams as a dependency to prevent loops)
   useEffect(() => {
     if (!initialized.current) return;
-    const params = new URLSearchParams(searchParams?.toString() || "");
+    const params = new URLSearchParams();
     if (q) params.set("q", q);
     else params.delete("q");
     if (minStock) params.set("minStock", minStock);
@@ -120,7 +122,7 @@ function InventoryContent() {
     else params.delete("sortDir");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [q, minStock, maxStock, minPrice, maxPrice, sortKey, sortDir, pathname, router, searchParams]);
+  }, [q, minStock, maxStock, minPrice, maxPrice, sortKey, sortDir, pathname, router]);
 
   // Client-only updated timestamp to avoid hydration mismatch
   useEffect(() => {

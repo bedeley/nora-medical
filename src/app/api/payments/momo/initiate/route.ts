@@ -6,6 +6,7 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo } from "@/lib/momo";
 import { rateLimit } from "@/lib/rate-limit";
+import { isLiveStage } from "@/lib/env";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
     // a TEST- reference. In that case, apply the payment immediately so the
     // customer flow works without polling.
     const isTestRef = String(init.reference || "").startsWith("TEST-");
-    if (isTestRef) {
+    if (isTestRef && !isLiveStage()) {
       await prisma.$transaction(async (tx: TxClient) => {
         const fresh = await tx.payment.findUnique({ where: { id: payment.id } });
         if (!fresh) throw new Error('Payment disappeared');
@@ -127,6 +128,11 @@ export async function POST(req: Request) {
       const withRef = { ...meta, providerRef: init.reference };
       await prisma.payment.update({ where: { id: payment.id }, data: { note: JSON.stringify(withRef) } });
     } catch {}
+
+    if (isTestRef && isLiveStage()) {
+      // Defensive: shouldn't happen because initiateMomo fails closed in live stage
+      return NextResponse.json({ error: "MoMo test reference not allowed in production" }, { status: 502 });
+    }
 
     return NextResponse.json({ ok: true, paymentId: payment.id, reference: init.reference });
   } catch (e: unknown) {

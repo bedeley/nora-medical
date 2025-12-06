@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const expenseSchema = z.object({
   category: z.string().min(2, "Category is required"),
@@ -14,8 +15,14 @@ const expenseSchema = z.object({
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -40,6 +47,21 @@ export async function POST(req: Request) {
       data: parsed.data,
     });
 
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "EXPENSE_CREATE",
+        entityType: "EXPENSE",
+        entityId: expense.id,
+        meta: {
+          category: expense.category,
+          amount: Number(expense.amount),
+        },
+      });
+    } catch {
+      // best-effort
+    }
+
     return NextResponse.json(expense);
   } catch (err) {
     console.error("Error creating expense:", err);
@@ -52,8 +74,14 @@ export async function POST(req: Request) {
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

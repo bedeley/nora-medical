@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { assertSameOrigin } from "@/lib/origin";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -13,17 +14,27 @@ const paymentSchema = z.object({
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const user = session.user as AuthenticatedUser;
-  if (user.role !== "ADMIN")
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isStaff && !isAccountant)
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   try {
+    const params = await context.params;
+    const orderId = params.id;
     const body = await req.json();
     const parsed = paymentSchema.safeParse(body);
     if (!parsed.success) {
@@ -36,7 +47,7 @@ export async function PATCH(
     const { amount, note } = parsed.data;
 
     const result = await prisma.$transaction(async (tx: TxClient) => {
-      const order = await tx.order.findUnique({ where: { id: params.id } });
+      const order = await tx.order.findUnique({ where: { id: orderId } });
       if (!order) throw new Error("Order not found");
       if (order.status === "CANCELLED") throw new Error("Cannot record payment for cancelled order");
 
@@ -54,7 +65,7 @@ export async function PATCH(
       const newBalance = Math.max(0, Number(order.total) - newAmountPaid);
 
       const updated = await tx.order.update({
-        where: { id: params.id },
+        where: { id: orderId },
         data: {
           amountPaid: newAmountPaid,
           balance: newBalance,

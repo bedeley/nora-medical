@@ -123,9 +123,15 @@ export async function initiateMomo(params: InitiateParams): Promise<InitiateResu
     );
   };
 
-  // If not configured, return mock success to allow local testing without provider
-  if (looksUnconfigured(subscriptionKey) || looksUnconfigured(apiUser) || looksUnconfigured(apiKey)) {
+  const missingCreds = looksUnconfigured(subscriptionKey) || looksUnconfigured(apiUser) || looksUnconfigured(apiKey);
+
+  // If not configured and we're in a non-live stage, return mock success to allow local testing without provider
+  if (missingCreds && !isLiveStage()) {
     return { ok: true, reference: `TEST-${params.externalId}` };
+  }
+
+  if (missingCreds && isLiveStage()) {
+    return { ok: false, error: "MoMo not configured for production" };
   }
 
   try {
@@ -185,14 +191,14 @@ type MomoCallbackBody = {
   amount?: number | string;
 };
 
-export async function parseMomoCallback(req: Request): Promise<{
+export function parseMomoCallbackBody(rawBody: string): {
   valid: boolean;
   externalId?: string;
   status?: string; // SUCCESSFUL | FAILED | TIMEOUT | PENDING
   amount?: number;
-}> {
+} {
   try {
-    const body = (await req.json()) as MomoCallbackBody;
+    const body = JSON.parse(rawBody) as MomoCallbackBody;
     const externalId = String(body?.externalId || body?.reference || "");
     const status = String(body?.status || body?.statusCode || "");
     const amount = Number(body?.amount || 0) || undefined;
@@ -201,6 +207,16 @@ export async function parseMomoCallback(req: Request): Promise<{
   } catch {
     return { valid: false };
   }
+}
+
+export async function parseMomoCallback(req: Request): Promise<{
+  valid: boolean;
+  externalId?: string;
+  status?: string;
+  amount?: number;
+}> {
+  const text = await req.text();
+  return parseMomoCallbackBody(text);
 }
 
 type MomoStatusResult =
@@ -235,4 +251,33 @@ export async function getMomoStatus(provider: MomoProvider, reference: string): 
     return { ok: false, error: "Status check error" };
   }
 }
-import { randomUUID as nodeRandomUUID } from "crypto";
+import { randomUUID as nodeRandomUUID, createHmac, timingSafeEqual } from "crypto";
+
+export function verifyMomoSignature(rawBody: string, headers: Headers): boolean {
+  const secret = (process.env.MOMO_WEBHOOK_SECRET || "").trim();
+  const headerName = (process.env.MOMO_WEBHOOK_SIGNATURE_HEADER || "x-momo-signature").toLowerCase();
+  if (!secret) {
+    // No secret configured: accept callback but log that verification is off.
+    return true;
+  }
+
+  let signature =
+    headers.get(headerName) ||
+    headers.get(headerName.toUpperCase()) ||
+    headers.get(headerName.replace(/^x-/, "X-"));
+  if (!signature) {
+    console.warn("MoMo callback: missing signature header", headerName);
+    return false;
+  }
+  signature = signature.trim();
+
+  const hmac = createHmac("sha256", secret);
+  hmac.update(rawBody, "utf8");
+  const computed = hmac.digest("hex");
+
+  const sigBuf = Buffer.from(signature, "utf8");
+  const compBuf = Buffer.from(computed, "utf8");
+  if (sigBuf.length !== compBuf.length) return false;
+  return timingSafeEqual(sigBuf, compBuf);
+}
+import { isLiveStage } from "@/lib/env";

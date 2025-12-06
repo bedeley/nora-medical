@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
+import { assertSameOrigin } from "@/lib/origin";
 
 /**
  * ✅ Zod schema for new product creation
@@ -157,6 +158,10 @@ export async function GET(request: Request) {
  * Create a new product (admin only)
  */
 export async function POST(request: Request) {
+  if (!assertSameOrigin(request)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
 
   const user = session?.user as AuthenticatedUser | undefined;

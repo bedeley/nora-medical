@@ -65,15 +65,8 @@ export async function GET(req: Request) {
       prisma.payment.findMany({
         where: {
           userId,
-          // Exclude internal auto-apply adjustment entries so that
-          // "unappliedFunds" decreases when credit is applied to orders.
-          NOT: {
-            note: {
-              contains: "\"reference\":\"AUTO_APPLY\"",
-            },
-          },
         },
-        select: { amount: true, status: true, refundDisposition: true },
+        select: { amount: true, status: true, refundDisposition: true, note: true },
       }),
     ]);
 
@@ -99,7 +92,37 @@ export async function GET(req: Request) {
         (sum: number, p: { amount: unknown }) => sum + Math.abs(Number(p.amount || 0)),
         0
       );
-    const unappliedFunds = Math.max(0, paymentsTotal - totalPaid);
+    // Compute store credit explicitly so that credit from returns is tracked
+    // even when the customer still has outstanding balances on other orders.
+    let credit = 0;
+    for (const p of payments as Array<{
+      amount: unknown;
+      status: unknown;
+      refundDisposition: unknown;
+      note: string | null;
+    }>) {
+      const amount = Number(p.amount || 0);
+      const note = p.note || "";
+      const isAutoApply = note.includes("\"reference\":\"AUTO_APPLY\"");
+      const isCreditIssued =
+        p.status === PaymentStatus.NORMAL &&
+        p.refundDisposition === RefundDestination.CREDIT &&
+        amount > 0;
+      const isCreditCashPayout =
+        p.status === PaymentStatus.REFUND &&
+        p.refundDisposition === RefundDestination.CASH &&
+        note.includes("\"location\":\"admin/customers:credit-payout\"");
+
+      if (isCreditIssued) {
+        credit += amount;
+      } else if (isAutoApply) {
+        credit -= amount;
+      } else if (isCreditCashPayout) {
+        // amount is negative, so this reduces credit
+        credit += amount;
+      }
+    }
+    const unappliedFunds = Math.max(0, credit);
 
     return NextResponse.json({
       totalDue,

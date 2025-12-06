@@ -31,10 +31,17 @@ export default function ProductPage() {
   const [imgSrc, setImgSrc] = useState<string>("/placeholder.png");
   const queryClient = useQueryClient();
 
-  // ✅ Fetch product from API
+  // ✅ Fetch product from API (treat non-2xx as errors)
   const { data, error, isLoading } = useQuery<Product>({
     queryKey: ["product", id],
-    queryFn: () => fetch(`/api/products/${id}`).then((r) => r.json()),
+    queryFn: async () => {
+      const r = await fetch(`/api/products/${id}`);
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "Failed to load product");
+        throw new Error(txt || "Failed to load product");
+      }
+      return (await r.json()) as Product;
+    },
     enabled: !!id,
     staleTime: 60000,
   });
@@ -63,6 +70,8 @@ export default function ProductPage() {
 
   const numericPrice = Number(product.price) || 0;
   const formattedPrice = formatCurrency(numericPrice);
+  const stock = Number(product.stock ?? 0);
+  const lowStock = stock > 0 && stock <= 5;
 
   async function addToCart() {
     if (!session) {
@@ -80,7 +89,8 @@ export default function ProductPage() {
       });
 
       if (!res.ok) {
-        toast.error("Could not add item to cart.");
+        const j = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+        toast.error(j?.error || "Could not add item to cart.");
         return;
       }
 
@@ -110,7 +120,7 @@ export default function ProductPage() {
         <div className="relative aspect-square w-full bg-muted overflow-hidden">
           <Image
             src={imgSrc}
-            alt={product.name}
+            alt={product.name || "Product image"}
             fill
             sizes="(max-width: 768px) 80vw, 40vw"
             className="object-cover"
@@ -127,20 +137,24 @@ export default function ProductPage() {
 
           <div className="flex items-center gap-3 mt-2">
             <p className="text-2xl font-bold">{formattedPrice}</p>
-            {product.stock > 0 ? (
-              <span className="text-green-600 text-sm font-medium">
-                In Stock
+            {stock <= 0 ? (
+              <span className="text-red-500 text-sm font-medium">
+                Out of stock
+              </span>
+            ) : lowStock ? (
+              <span className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 text-xs font-medium">
+                Low stock &mdash; only {stock} left
               </span>
             ) : (
-              <span className="text-red-500 text-sm font-medium">
-                Out of Stock
+              <span className="text-green-600 text-sm font-medium">
+                In stock
               </span>
             )}
           </div>
 
           <Button
             onClick={addToCart}
-            disabled={product.stock === 0 || loading}
+            disabled={stock === 0 || loading}
             className="w-full sm:w-auto mt-6"
           >
             {loading ? "Adding..." : "Add to Cart"}

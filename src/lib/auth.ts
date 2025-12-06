@@ -8,6 +8,7 @@ import type { JWT } from "next-auth/jwt";
 import type { Role } from "@/lib/prisma-enums";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
 import { decode as defaultJwtDecode, encode as defaultJwtEncode } from "next-auth/jwt";
+import { rateLimit } from "@/lib/rate-limit";
 
 export type AuthenticatedUser = {
   id: string;
@@ -59,7 +60,7 @@ export const authOptions: AuthOptions = {
         identifier: { label: "Email or username", type: "text" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials) {
+      async authorize(credentials, req) {
         const schema = z.object({
           identifier: z.string().min(3),
           password: z.string().min(6),
@@ -71,6 +72,26 @@ export const authOptions: AuthOptions = {
         const { identifier, password } = parsed.data;
         const raw = identifier.trim();
         const isEmail = raw.includes("@");
+
+        // Basic login rate limiting: IP + identifier bucket
+        if (req) {
+          try {
+            const limited = await rateLimit(
+              req as unknown as Request,
+              `login:${raw.toLowerCase()}`,
+              60_000,
+              5,
+            );
+            if (!limited.ok) {
+              console.warn("[auth] login rate limit exceeded", {
+                identifier: raw.toLowerCase(),
+              });
+              return null;
+            }
+          } catch (e) {
+            console.warn("[auth] login rate limit check failed", e);
+          }
+        }
 
         const whereClause = isEmail
           ? { email: raw.toLowerCase() }

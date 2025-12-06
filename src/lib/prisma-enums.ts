@@ -15,5 +15,7 @@ export type RefundDestination = (typeof RefundDestination)[keyof typeof RefundDe
 export const Role = {
   CUSTOMER: "CUSTOMER",
   ADMIN: "ADMIN",
+  STAFF: "STAFF",
+  ACCOUNTANT: "ACCOUNTANT",
 } as const;
 export type Role = (typeof Role)[keyof typeof Role];
