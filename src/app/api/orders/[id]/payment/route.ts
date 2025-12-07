@@ -51,13 +51,21 @@ export async function PATCH(
       if (!order) throw new Error("Order not found");
       if (order.status === "CANCELLED") throw new Error("Cannot record payment for cancelled order");
 
-      // Create a payment record linked to the order and user
+      // Create a payment record linked to the order and user.
+      // Store structured metadata so customer/admin views can summarize by method.
+      const meta = {
+        method: "cash" as const,
+        reference: "ADMIN_ORDER_PAYMENT" as const,
+        location: "admin/orders",
+        note: note || "Admin recorded payment",
+      };
+
       await tx.payment.create({
         data: {
           userId: order.userId,
           orderId: order.id,
           amount,
-          note: note || "Admin recorded payment",
+          note: JSON.stringify(meta),
         },
       });
 

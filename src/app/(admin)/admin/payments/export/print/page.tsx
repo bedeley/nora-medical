@@ -79,7 +79,7 @@ function PaymentsPrintContent() {
   }, [parsed, amountIndex]);
 
   return (
-    <section className="p-6">
+    <section className="p-6 print-container">
       <h1 className="text-2xl font-semibold mb-4">Payments Export {month ? `(${month})` : ""}</h1>
       <div className="text-sm text-muted-foreground mb-2">
         {method && <span className="mr-2">Method: {method}</span>}
@@ -88,11 +88,11 @@ function PaymentsPrintContent() {
       </div>
       {err && <p className="text-red-600">{err}</p>}
       {!err && (
-        <table className="w-full text-sm border-collapse">
+        <table className="w-full text-sm border-collapse print-table">
           <thead>
             <tr>
               {parsed.header.map((h, i) => (
-                <th key={i} className="border px-2 py-1 text-left">{h}</th>
+                <th key={i} className="border px-1 py-1 text-left">{h}</th>
               ))}
             </tr>
           </thead>
@@ -100,7 +100,7 @@ function PaymentsPrintContent() {
             {parsed.rows.map((r, i) => (
               <tr key={i}>
                 {r.map((c, j) => (
-                  <td key={j} className="border px-2 py-1 align-top">{c}</td>
+                  <td key={j} className="border px-1 py-1 align-top">{c}</td>
                 ))}
               </tr>
             ))}
@@ -108,20 +108,47 @@ function PaymentsPrintContent() {
           {amountIndex >= 0 && (
             <tfoot>
               <tr>
-                <td className="border px-2 py-1 font-semibold">TOTAL</td>
+                <td className="border px-1 py-1 font-semibold">TOTAL</td>
                 {parsed.header.slice(1, amountIndex).map((_, i) => (
-                  <td key={i} className="border px-2 py-1"></td>
+                  <td key={i} className="border px-1 py-1"></td>
                 ))}
-                <td className="border px-2 py-1 font-semibold">{total.toFixed(2)}</td>
+                <td className="border px-1 py-1 font-semibold">{total.toFixed(2)}</td>
                 {parsed.header.slice(amountIndex + 1).map((_, i) => (
-                  <td key={i} className="border px-2 py-1"></td>
+                  <td key={i} className="border px-1 py-1"></td>
                 ))}
               </tr>
             </tfoot>
           )}
         </table>
       )}
-      <style>{`@media print { body { -webkit-print-color-adjust: exact; } }`}</style>
+      <style>{`
+        @media print {
+          @page {
+            size: A4 landscape;
+            margin: 10mm;
+          }
+          body {
+            -webkit-print-color-adjust: exact;
+            margin: 0;
+          }
+          .print-container {
+            padding: 0;
+            width: 100%;
+          }
+          .print-table th,
+          .print-table td {
+            padding: 2px 4px;
+            font-size: 10px;
+            word-wrap: break-word;
+            word-break: break-word;
+          }
+          .print-table {
+            width: 100%;
+            table-layout: fixed;
+            border-collapse: collapse;
+          }
+        }
+      `}</style>
     </section>
   );
 }

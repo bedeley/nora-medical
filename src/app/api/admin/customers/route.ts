@@ -91,36 +91,6 @@ export async function GET() {
         _sum: { amount: true },
       }),
       // Store credit issued via returns/adjustments
-      prisma.payment.groupBy({
-        by: ["userId"],
-        where: {
-          status: PaymentStatus.NORMAL,
-          refundDisposition: RefundDestination.CREDIT,
-        },
-        _sum: { amount: true },
-      }),
-      // Store credit applied to orders (AUTO_APPLY adjustments)
-      prisma.payment.groupBy({
-        by: ["userId"],
-        where: {
-          note: {
-            contains: "\"reference\":\"AUTO_APPLY\"",
-          },
-        },
-        _sum: { amount: true },
-      }),
-      // Store credit refunded out as cash from the dedicated credit payout flow
-      prisma.payment.groupBy({
-        by: ["userId"],
-        where: {
-          status: PaymentStatus.REFUND,
-          refundDisposition: RefundDestination.CASH,
-          note: {
-            contains: "\"location\":\"admin/customers:credit-payout\"",
-          },
-        },
-        _sum: { amount: true },
-      }),
       prisma.order.groupBy({
         by: ["userId", "deliveryStatus"],
         where: { status: { not: "CANCELLED" } },
@@ -145,12 +115,9 @@ export async function GET() {
     const ordersRes = results[1];
     const paymentsRes = results[2];
     const refundsRes = results[3];
-    const creditIssuedRes = results[4];
-    const creditAppliedRes = results[5];
-    const creditRefundedRes = results[6];
-    const deliveryRes = results[7];
-    const lastRes = results[8];
-    const cartsRes = results[9];
+    const deliveryRes = results[4];
+    const lastRes = results[5];
+    const cartsRes = results[6];
 
     const users: UserSummary[] =
       usersRes.status === "fulfilled" ? (usersRes.value as UserSummary[]) : [];
@@ -185,28 +152,89 @@ export async function GET() {
       }
     }
 
+    // Build a per-user store credit ledger using the same semantics as
+    // /api/admin/customers/[id]/balance so values stay consistent.
+    const paymentsLedger = await prisma.payment.findMany({
+      select: {
+        userId: true,
+        amount: true,
+        status: true,
+        refundDisposition: true,
+        note: true,
+      },
+    });
+
     const creditIssuedByUser: Record<string, number> = {};
-    if (creditIssuedRes.status === "fulfilled") {
-      for (const r of creditIssuedRes.value) {
-        if (!r.userId) continue;
-        creditIssuedByUser[r.userId] = Number(r._sum.amount ?? 0);
-      }
-    }
-
     const creditAppliedByUser: Record<string, number> = {};
-    if (creditAppliedRes.status === "fulfilled") {
-      for (const r of creditAppliedRes.value) {
-        if (!r.userId) continue;
-        creditAppliedByUser[r.userId] = Number(r._sum.amount ?? 0);
+    const creditRefundedByUser: Record<string, number> = {};
+    const storeCreditByUser: Record<string, number> = {};
+
+    for (const p of paymentsLedger as Array<{
+      userId: string | null;
+      amount: unknown;
+      status: unknown;
+      refundDisposition: unknown;
+      note: string | null;
+    }>) {
+      if (!p.userId) continue;
+      const userId = p.userId;
+      const amount = Number(p.amount || 0);
+      const note = p.note || "";
+      let meta: {
+        reference?: string;
+        location?: string;
+        refundDisposition?: string;
+        method?: string;
+      } = {};
+      try {
+        meta = note ? (JSON.parse(note) as typeof meta) : {};
+      } catch {
+        // ignore malformed meta
+      }
+      const isAutoApply =
+        meta.reference === "AUTO_APPLY" ||
+        note.includes("\"reference\":\"AUTO_APPLY\"");
+      const topLevelDisposition =
+        typeof p.refundDisposition === "string"
+          ? (p.refundDisposition as string).toUpperCase()
+          : null;
+      const metaDisposition = meta.refundDisposition
+        ? meta.refundDisposition.toUpperCase()
+        : null;
+      const isCreditDestination =
+        topLevelDisposition === RefundDestination.CREDIT ||
+        metaDisposition === "CREDIT";
+      const isCashDestination =
+        topLevelDisposition === RefundDestination.CASH ||
+        metaDisposition === "CASH";
+      const isAdjustment =
+        (meta.method || "").toLowerCase() === "adjustment";
+      const isCreditIssued =
+        p.status === PaymentStatus.NORMAL &&
+        amount > 0 &&
+        (isCreditDestination || (isAdjustment && !isAutoApply));
+      const isCreditCashPayout =
+        p.status === PaymentStatus.REFUND &&
+        isCashDestination &&
+        (meta.location === "admin/customers:credit-payout" ||
+          note.includes("\"location\":\"admin/customers:credit-payout\""));
+
+      if (isCreditIssued) {
+        creditIssuedByUser[userId] = (creditIssuedByUser[userId] || 0) + amount;
+      } else if (isAutoApply) {
+        creditAppliedByUser[userId] =
+          (creditAppliedByUser[userId] || 0) + amount;
+      } else if (isCreditCashPayout) {
+        creditRefundedByUser[userId] =
+          (creditRefundedByUser[userId] || 0) + amount;
       }
     }
 
-    const creditRefundedByUser: Record<string, number> = {};
-    if (creditRefundedRes.status === "fulfilled") {
-      for (const r of creditRefundedRes.value) {
-        if (!r.userId) continue;
-        creditRefundedByUser[r.userId] = Number(r._sum.amount ?? 0);
-      }
+    for (const userId of Object.keys(creditIssuedByUser)) {
+      const issued = creditIssuedByUser[userId] ?? 0;
+      const applied = creditAppliedByUser[userId] ?? 0;
+      const refundedCredit = creditRefundedByUser[userId] ?? 0;
+      storeCreditByUser[userId] = Math.max(0, issued - applied + refundedCredit);
     }
 
     const deliveryByUser: Record<string, { delivered: number; partial: number; pending: number }> = {};
@@ -273,10 +301,7 @@ export async function GET() {
       const paidTotal = sumsByUser[u.id]?.paidTotal ?? 0;
       const rawPaymentsTotal = paymentsByUser[u.id]?.paymentsTotal ?? 0;
       const issued = creditIssuedByUser[u.id] ?? 0;
-      const applied = creditAppliedByUser[u.id] ?? 0;
-      const refundedCredit = creditRefundedByUser[u.id] ?? 0;
-      // creditRefundedByUser values are negative amounts; adding them reduces credit.
-      const storeCredit = Math.max(0, issued - applied + refundedCredit);
+      const storeCredit = storeCreditByUser[u.id] ?? 0;
       // Net cash/MoMo payments = all non-AUTO_APPLY rows minus store-credit issuance.
       const paymentsTotal = Math.max(0, rawPaymentsTotal - issued);
 
@@ -343,36 +368,6 @@ export async function GET() {
                     error: String(
                       (refundsRes as { reason?: { message?: string } }).reason?.message ??
                         (refundsRes as { reason?: unknown }).reason ??
-                        "unknown"
-                    ),
-                  }
-                : null,
-              creditIssuedRes.status === "rejected"
-                ? {
-                    step: "creditIssued",
-                    error: String(
-                      (creditIssuedRes as { reason?: { message?: string } }).reason?.message ??
-                        (creditIssuedRes as { reason?: unknown }).reason ??
-                        "unknown"
-                    ),
-                  }
-                : null,
-              creditAppliedRes.status === "rejected"
-                ? {
-                    step: "creditApplied",
-                    error: String(
-                      (creditAppliedRes as { reason?: { message?: string } }).reason?.message ??
-                        (creditAppliedRes as { reason?: unknown }).reason ??
-                        "unknown"
-                    ),
-                  }
-                : null,
-              creditRefundedRes.status === "rejected"
-                ? {
-                    step: "creditRefunded",
-                    error: String(
-                      (creditRefundedRes as { reason?: { message?: string } }).reason?.message ??
-                        (creditRefundedRes as { reason?: unknown }).reason ??
                         "unknown"
                     ),
                   }

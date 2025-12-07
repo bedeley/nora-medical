@@ -2,11 +2,15 @@ import { prisma } from "@/lib/prisma";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 
-export async function GET() {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session) return new Response("Unauthorized", { status: 401 });
 
-  const userId = (session.user as AuthenticatedUser).id;
+  const me = session.user as AuthenticatedUser;
+  const url = new URL(req.url);
+  const reqUrlUserId = url.searchParams.get("userId") || "";
+  const isPrivileged = me.role === "ADMIN" || me.role === "STAFF" || me.role === "ACCOUNTANT";
+  const userId = isPrivileged && reqUrlUserId ? reqUrlUserId : me.id;
 
   const orders = await prisma.order.findMany({
     where: { userId },

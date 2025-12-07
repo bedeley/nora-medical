@@ -103,15 +103,44 @@ export async function GET(req: Request) {
     }>) {
       const amount = Number(p.amount || 0);
       const note = p.note || "";
-      const isAutoApply = note.includes("\"reference\":\"AUTO_APPLY\"");
+      let meta: {
+        reference?: string;
+        location?: string;
+        refundDisposition?: string;
+        method?: string;
+      } = {};
+      try {
+        meta = note ? (JSON.parse(note) as typeof meta) : {};
+      } catch {
+        // ignore malformed meta
+      }
+      const isAutoApply =
+        meta.reference === "AUTO_APPLY" ||
+        note.includes("\"reference\":\"AUTO_APPLY\"");
+      const topLevelDisposition =
+        typeof p.refundDisposition === "string"
+          ? (p.refundDisposition as string).toUpperCase()
+          : null;
+      const metaDisposition = meta.refundDisposition
+        ? meta.refundDisposition.toUpperCase()
+        : null;
+      const isCreditDestination =
+        topLevelDisposition === RefundDestination.CREDIT ||
+        metaDisposition === "CREDIT";
+      const isCashDestination =
+        topLevelDisposition === RefundDestination.CASH ||
+        metaDisposition === "CASH";
+      const isAdjustment =
+        (meta.method || "").toLowerCase() === "adjustment";
       const isCreditIssued =
         p.status === PaymentStatus.NORMAL &&
-        p.refundDisposition === RefundDestination.CREDIT &&
-        amount > 0;
+        amount > 0 &&
+        (isCreditDestination || (isAdjustment && !isAutoApply));
       const isCreditCashPayout =
         p.status === PaymentStatus.REFUND &&
-        p.refundDisposition === RefundDestination.CASH &&
-        note.includes("\"location\":\"admin/customers:credit-payout\"");
+        isCashDestination &&
+        (meta.location === "admin/customers:credit-payout" ||
+          note.includes("\"location\":\"admin/customers:credit-payout\""));
 
       if (isCreditIssued) {
         credit += amount;

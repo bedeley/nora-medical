@@ -17,6 +17,7 @@ import {
 import Image from "next/image";
 import { Loader2, Package, Trash2, Printer, MessageSquareText } from "lucide-react";
 import { ADMIN_PHONE } from "@/lib/config";
+import { formatCurrency } from "@/lib/currency";
 import { formatIdReadable } from "@/lib/utils";
 
 interface OrderDetailsProps {
@@ -478,10 +479,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             {order.deliveredAt ? ` on ${new Date(order.deliveredAt).toLocaleString()}` : ""}
           </p>
           <p className="text-sm text-muted-foreground">
-            <strong>Total:</strong> ${order.total.toFixed(2)}
+            <strong>Total:</strong> {formatCurrency(order.total)}
           </p>
           <p className="text-sm text-muted-foreground">
-            <strong>Amount Paid:</strong> ${amountPaid.toFixed(2)}
+            <strong>Amount Paid:</strong> {formatCurrency(amountPaid)}
           </p>
           {(paymentBreakdown.cashPaid > 0 ||
             paymentBreakdown.momoPaid > 0 ||
@@ -489,13 +490,13 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             <p className="text-xs text-muted-foreground mt-1">
               {paymentBreakdown.cashPaid > 0 && (
                 <>
-                  Cash/transfer: ${paymentBreakdown.cashPaid.toFixed(2)}{" "}
+                  Cash/transfer: {formatCurrency(paymentBreakdown.cashPaid)}{" "}
                 </>
               )}
               {paymentBreakdown.momoPaid > 0 && (
                 <>
                   {paymentBreakdown.cashPaid > 0 ? "· " : ""}
-                  MoMo: ${paymentBreakdown.momoPaid.toFixed(2)}{" "}
+                  MoMo: {formatCurrency(paymentBreakdown.momoPaid)}{" "}
                 </>
               )}
               {paymentBreakdown.storeCreditApplied > 0 && (
@@ -504,14 +505,13 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   paymentBreakdown.momoPaid > 0
                     ? "· "
                     : ""}
-                  Store credit: $
-                  {paymentBreakdown.storeCreditApplied.toFixed(2)}
+                  Store credit: {formatCurrency(paymentBreakdown.storeCreditApplied)}
                 </>
               )}
             </p>
           )}
           <p className={`text-sm ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
-            <strong>Outstanding Balance:</strong> ${balance.toFixed(2)}
+            <strong>Outstanding Balance:</strong> {formatCurrency(balance)}
           </p>
           <p className="text-sm text-muted-foreground">
             <strong>Date:</strong> {new Date(order.createdAt).toLocaleString()}
@@ -581,10 +581,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             {order.items.map((item) => (
               <div
                 key={item.id}
-                className="flex items-center justify-between border rounded-lg p-3"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border rounded-lg p-3"
               >
-                <div className="flex items-center gap-3">
-                  <div className="relative w-16 h-16">
+                <div className="flex items-start gap-3 w-full sm:w-auto">
+                  <div className="relative w-16 h-16 shrink-0">
                     <Image
                       src={item.product?.imageUrl || "/placeholder.png"}
                       alt={item.product?.name || "Product"}
@@ -592,10 +592,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       className="object-cover rounded"
                     />
                   </div>
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <p className="font-medium">{item.product?.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      Qty: {item.quantity} · ${item.price.toFixed(2)}
+                      Qty: {item.quantity} · {formatCurrency(item.price)}
                       {typeof item.returnedQuantity === "number" &&
                       item.returnedQuantity > 0 ? (
                         <span className="ml-2 text-[11px] text-muted-foreground">
@@ -616,11 +616,11 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   </div>
                 </div>
 
-                <div className="flex flex-col items-end gap-2">
+                <div className="flex flex-col items-end gap-2 w-full sm:w-auto">
                   <p className="font-semibold">
-                    ${(item.quantity * item.price).toFixed(2)}
+                    {formatCurrency(item.quantity * item.price)}
                   </p>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2 justify-end w-full">
                     <Button
                       variant="outline"
                       size="sm"
@@ -702,8 +702,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       </CardContent>
 
       <CardFooter className="justify-end">
-          <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
-          <div className="flex gap-2">
+        <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
+          <div className="flex flex-wrap gap-2 w-full md:w-auto md:justify-end">
             <Button
               variant={order.deliveryStatus === "PARTIALLY_DELIVERED" ? "default" : "outline"}
               size="sm"

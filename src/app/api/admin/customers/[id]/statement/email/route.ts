@@ -22,7 +22,18 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const customerId = params.id;
+  const url = new URL(req.url);
+  const queryId = (url.searchParams.get("id") || "").trim();
+  let customerId = (params?.id || "").trim();
+  if (!customerId) customerId = queryId;
+  if (!customerId) {
+    try {
+      const body = (await req.json().catch(() => ({}))) as { userId?: string; id?: string };
+      customerId = String(body.userId || body.id || "").trim();
+    } catch {
+      customerId = "";
+    }
+  }
   if (!customerId) {
     return NextResponse.json({ error: "Missing customer id" }, { status: 400 });
   }

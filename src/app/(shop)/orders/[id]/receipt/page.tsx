@@ -112,6 +112,43 @@ export default function ReceiptPage() {
     return sum;
   })();
 
+  const cashPaid = (() => {
+    const payments = order.payments || [];
+    if (!payments.length) return 0;
+    let sum = 0;
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note) as { method?: string };
+        if (meta?.method === "cash" || meta?.method === "transfer") {
+          sum += Number(p.amount || 0);
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return sum;
+  })();
+
+  const creditFromReturns = (() => {
+    const payments = order.payments || [];
+    if (!payments.length) return 0;
+    let sum = 0;
+    for (const p of payments) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note) as { reference?: string; orderId?: string };
+        if (meta?.reference === "ITEM_RETURN") {
+          const amt = Number(p.amount || 0);
+          if (amt > 0) sum += amt;
+        }
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return sum;
+  })();
+
   return (
     <div className="mx-auto max-w-2xl p-6 print:p-0">
       {/* Screen-only actions */}
@@ -300,6 +337,12 @@ export default function ReceiptPage() {
                 <span>Paid</span>
                 <span>{formatCurrency(paid)}</span>
               </div>
+              {cashPaid > 0 && (
+                <div className="flex justify-between py-1 text-xs text-muted-foreground">
+                  <span>Paid in cash/transfer</span>
+                  <span>{formatCurrency(cashPaid)}</span>
+                </div>
+              )}
               {storeCreditApplied > 0 && (
                 <div className="flex justify-between py-1 text-xs text-muted-foreground">
                   <span>Paid from store credit</span>
@@ -310,6 +353,12 @@ export default function ReceiptPage() {
                 <div className="flex justify-between py-1 text-xs text-muted-foreground">
                   <span>Paid via MoMo</span>
                   <span>{formatCurrency(momoPaid)}</span>
+                </div>
+              )}
+              {creditFromReturns > 0 && (
+                <div className="flex justify-between py-1 text-xs text-muted-foreground">
+                  <span>Store credit issued from item returns</span>
+                  <span>{formatCurrency(creditFromReturns)}</span>
                 </div>
               )}
               <div className="flex justify-between py-1 font-semibold">

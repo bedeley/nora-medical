@@ -11,17 +11,20 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A)
  * ✅ GET /api/orders
  * Fetch user orders (or all orders if admin)
  */
-export async function GET() {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const user = session.user as AuthenticatedUser;
   const isAdmin = user.role === "ADMIN";
+  const url = new URL(req.url);
+  const allParam = url.searchParams.get("all");
+  const allowAll = isAdmin && allParam === "1"; // opt-in to all orders view
 
   try {
     const orders = await prisma.order.findMany({
-      where: isAdmin ? {} : { userId: user.id },
+      where: allowAll ? {} : { userId: user.id },
       include: {
         items: { include: { product: true } },
         user: { select: { id: true, name: true, email: true } },

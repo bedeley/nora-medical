@@ -89,7 +89,7 @@ function ProductPLContent() {
     initialized.current = true;
   }, [searchParams]);
 
-  // Reflect to URL
+  // Reflect current filters to URL without causing a navigation loop
   useEffect(() => {
     if (!initialized.current) return;
     const params = new URLSearchParams(searchParams?.toString() || "");
@@ -102,7 +102,10 @@ function ProductPLContent() {
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
-    router.replace(next, { scroll: false });
+    const current = `${pathname}?${searchParams?.toString() || ""}`.replace(/\?$/, "");
+    if (next !== current) {
+      router.replace(next, { scroll: false });
+    }
   }, [mode, start, end, order, sortMetric, q, page, pageSize, pathname, router, searchParams]);
 
   // Debounce search input (~2s) -> q used for API/URL
@@ -153,9 +156,10 @@ function ProductPLContent() {
   }, [mode, start, end, order, sortMetric, q, page, pageSize]);
 
   const { data, error, isLoading } = useClientQuery<Payload>({
-    queryKey: ["admin","product-pl", { mode, start, end, order, sort: sortMetric, q, page, pageSize }],
+    queryKey: ["admin", "product-pl", { mode, start, end, order, sort: sortMetric, q, page, pageSize }],
     queryFn: () => fetcher(apiUrl),
-    refetchInterval: 5000,
+    // Data only needs to refresh when filters change, not on a timer.
+    refetchInterval: false,
   });
 
   async function exportFile(kind: "csv" | "pdf") {

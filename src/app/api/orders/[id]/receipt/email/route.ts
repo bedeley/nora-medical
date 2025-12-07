@@ -7,15 +7,34 @@ import { z } from "zod";
 
 const schema = z.object({ to: z.string().email().optional() });
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(
+  req: Request,
+  context: { params: Promise<{ id: string }> | { id: string } },
+) {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const body = await req.json().catch(() => ({}));
+    const params = await context.params;
+    const url = new URL(req.url);
+    const queryId = (url.searchParams.get("id") || "").trim();
+    let orderId = (params?.id || "").trim();
+    let body: unknown = {};
+    try {
+      body = await req.json().catch(() => ({}));
+    } catch {
+      body = {};
+    }
     const parsed = schema.safeParse(body);
+    if (!orderId) {
+      const bodyWithId = (body || {}) as { id?: string; orderId?: string };
+      orderId = String(bodyWithId.orderId || bodyWithId.id || queryId || "").trim();
+    }
+    if (!orderId) {
+      return NextResponse.json({ error: "Missing order id" }, { status: 400 });
+    }
 
     const order = await prisma.order.findUnique({
-      where: { id: params.id },
+      where: { id: orderId },
       include: { items: { include: { product: true } }, user: { select: { email: true, name: true } } },
     });
     if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });

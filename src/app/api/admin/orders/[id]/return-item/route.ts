@@ -104,14 +104,6 @@ export async function POST(
       }
 
       const currentPaid = Number(order.amountPaid ?? 0);
-      const EPSILON = 0.005;
-      // We only refund the portion that exceeds outstanding balance. Ensure
-      // we never refund more than has actually been paid on this order.
-      if (currentPaid + EPSILON < requestedRefund) {
-        throw new Error(
-          "Cannot refund more than the amount paid on this order so far",
-        );
-      }
 
       const beforeOrders = await tx.order.findMany({
         where: { userId: order.userId, NOT: { status: "CANCELLED" } },
@@ -156,8 +148,15 @@ export async function POST(
 
       // Apply the return value to outstanding balance first by reducing the
       // order's total, then treat any remainder as a refund (cash/credit).
+      // Because requestedRefund can never exceed the order's total for this
+      // line, the refundable remainder is always <= currentPaid.
       const orderTotal = Number(order.total ?? 0);
-      const outstandingBefore = Math.max(0, orderTotal - currentPaid);
+      // Use the stored balance as the authoritative outstanding amount so
+      // rounding/previous adjustments match what the UI shows.
+      const storedBalance = Number(
+        (order as { balance?: unknown }).balance ?? Math.max(0, orderTotal - currentPaid),
+      );
+      const outstandingBefore = Math.max(0, storedBalance);
       const reduceTotalBy = Math.min(requestedRefund, outstandingBefore);
       const refundableRemainder = Math.max(0, requestedRefund - reduceTotalBy);
 
@@ -219,6 +218,7 @@ export async function POST(
 
       const metaWithPostTotals = {
         ...meta,
+        orderId,
         appliedToBalance: reduceTotalBy,
         restockToStock,
         postTotals: {

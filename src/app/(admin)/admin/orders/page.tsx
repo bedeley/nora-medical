@@ -189,7 +189,8 @@ function AdminOrdersContent() {
   const queryClient = useQueryClient();
   const { data, isLoading } = useClientQuery({
     queryKey: ["admin", "orders"],
-    queryFn: () => fetcher("/api/orders"),
+    // Admin dashboard should see all orders, not just the logged-in user's.
+    queryFn: () => fetcher("/api/orders?all=1"),
     refetchOnWindowFocus: false,
   });
 

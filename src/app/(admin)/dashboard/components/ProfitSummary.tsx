@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { PieLabelRenderProps } from "recharts";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { TrendingUp, TrendingDown, PieChart, HelpCircle } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
@@ -83,8 +84,77 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     },
   ];
 
+  const pieData: Array<{ name: string; value: number }> = [
+    {
+      name: "Revenue",
+      value: Math.max(0, totalRevenue),
+    },
+    {
+      name: "COGS",
+      value: Math.max(0, totalCOGS),
+    },
+    {
+      name: "Operating Expenses",
+      value: Math.max(0, totalExpense),
+    },
+    {
+      name: "Net Profit",
+      value: Math.max(0, profit),
+    },
+  ];
+
+  const formatSliceValue = (value: number) => {
+    if (!value || !Number.isFinite(value)) return "";
+    try {
+      const compact = new Intl.NumberFormat("en-GH", {
+        notation: "compact",
+        maximumFractionDigits: 1,
+      }).format(value);
+      return `GH₵${compact}`;
+    } catch {
+      return `GH₵${value.toFixed(0)}`;
+    }
+  };
+
+  const renderSliceLabel = (props: PieLabelRenderProps) => {
+    const RADIAN = Math.PI / 180;
+    // Place label just outside the slice along the arc
+    const outerRadius = Number(props.outerRadius ?? 0);
+    const cx = Number(props.cx ?? 0);
+    const cy = Number(props.cy ?? 0);
+    const midAngle = Number(props.midAngle ?? 0);
+
+    const radius = outerRadius + 10;
+    let x = cx + radius * Math.cos(-midAngle * RADIAN);
+    let y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+    const label = formatSliceValue(Number(props.value || 0));
+    if (!label) return null;
+
+    // If the slice is at the very top of the pie, center the label
+    if (midAngle > 80 && midAngle < 100) {
+      x = cx;
+      y = cy - (outerRadius + 12);
+    }
+
+    const textAnchor = x === cx ? "middle" : x >= cx ? "start" : "end";
+
+    return (
+      <text
+        x={x}
+        y={y}
+        fill="#0f172a"
+        textAnchor={textAnchor as "start" | "end"}
+        dominantBaseline="central"
+        fontSize={10}
+      >
+        {label}
+      </text>
+    );
+  };
+
   return (
-    <Card className="p-4 shadow-md !border-none">
+    <Card className="p-4 shadow-md !border-none mb-4">
       <CardHeader className="pb-2">
         <CardTitle className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
@@ -163,69 +233,54 @@ export default function ProfitSummary({ summary }: SummaryProps) {
             ))}
           </div>
         ) : (
-          <div className="w-full h-72">
+          <div className="w-full">
             {totalRevenue <= 0 ? (
               <p className="text-xs text-muted-foreground">
                 Not enough data to render a pie chart. Adjust the filters above
                 to include some revenue.
               </p>
             ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <RechartsPieChart>
-                  <RechartsTooltip
-                    formatter={(value: number, name: string) => [
-                      formatCurrency(Number(value || 0)),
-                      name,
-                    ]}
-                  />
-                  <Legend />
-                  <Pie
-                    data={[
-                      {
-                        name: "Revenue",
-                        value: Math.max(0, totalRevenue),
-                      },
-                      {
-                        name: "COGS",
-                        value: Math.max(0, totalCOGS),
-                      },
-                      {
-                        name: "Operating Expenses",
-                        value: Math.max(0, totalExpense),
-                      },
-                      {
-                        name: "Net Profit",
-                        value: Math.max(0, profit),
-                      },
-                    ]}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={80}
-                    label={(entry) =>
-                      formatCurrency(
-                        Number(
-                          (entry as { value?: number | string }).value || 0,
-                        ),
-                      )
-                    }
-                    labelLine={false}
-                  >
-                    <Cell key="revenue" fill="#3b82f6" />
-                    <Cell key="cogs" fill="#f97316" />
-                    <Cell key="expense" fill="#ef4444" />
-                    <Cell
-                      key="profit"
-                      fill={profit >= 0 ? "#22c55e" : "#94a3b8"}
-                    />
-                  </Pie>
-                </RechartsPieChart>
-              </ResponsiveContainer>
+              <>
+                <div className="h-64 sm:h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RechartsPieChart margin={{ top: 8, bottom: 32, left: 0, right: 0 }}>
+                      <RechartsTooltip
+                        formatter={(value: number, name: string) => [
+                          formatCurrency(Number(value || 0)),
+                          name,
+                        ]}
+                      />
+                      <Legend
+                        verticalAlign="bottom"
+                        align="center"
+                        wrapperStyle={{ fontSize: 11, marginTop: 4 }}
+                      />
+                      <Pie
+                        data={pieData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={70}
+                        label={renderSliceLabel}
+                        labelLine={false}
+                      >
+                        <Cell key="revenue" fill="#3b82f6" />
+                        <Cell key="cogs" fill="#f97316" />
+                        <Cell key="expense" fill="#ef4444" />
+                        <Cell
+                          key="profit"
+                          fill={profit >= 0 ? "#22c55e" : "#94a3b8"}
+                        />
+                      </Pie>
+                    </RechartsPieChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  Revenue shown for reference; COGS + Operating Expenses + Net Profit should equal total revenue for the selected period.
+                </p>
+              </>
             )}
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              Revenue shown for reference; COGS + Operating Expenses + Net Profit should equal total revenue for the selected period.
-            </p>
           </div>
         )}
       </CardContent>

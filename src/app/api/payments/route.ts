@@ -121,8 +121,20 @@ export async function POST(req: Request) {
         status,
         preTotals: { totalDue: totalDueBefore, totalPaid: totalPaidBefore, balance: balanceBefore },
       };
+      const isCreditIssueExplicit =
+        !isRefund &&
+        typeof refundDisposition === "string" &&
+        refundDisposition.toUpperCase() === "CREDIT";
+      const isCreditIssueImplicit =
+        !isRefund &&
+        method === "adjustment" &&
+        location === "admin/customers:actions-adjustment";
       const refundDispositionValue =
-        isRefund && refundMode ? RefundDestination[refundMode] : null;
+        isRefund && refundMode
+          ? RefundDestination[refundMode]
+          : isCreditIssueExplicit || isCreditIssueImplicit
+          ? RefundDestination.CREDIT
+          : null;
 
       const payment = await tx.payment.create({
         data: {

@@ -320,8 +320,8 @@ function OrdersContent() {
             className="text-xs !py-1.5 !border-none !shadow-sm !rounded-none"
           >
             <CardHeader className="!py-1.5 !px-3">
-              <CardTitle className="flex justify-between items-center text-[13px]">
-                <span className="flex items-center gap-2">
+              <CardTitle className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between text-[13px]">
+                <span className="flex items-center gap-2 min-w-0">
                   <span className="truncate max-w-[160px]">
                     Order {formatIdReadable(order.id)}
                   </span>
@@ -342,7 +342,7 @@ function OrdersContent() {
                     return null;
                   })()}
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1 sm:gap-2">
                   {(() => {
                     const sc =
                       order.status === "PAID"
@@ -353,7 +353,7 @@ function OrdersContent() {
                         ? "bg-gray-200 text-gray-700"
                         : "bg-red-100 text-red-700";
                     return (
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${sc}`}>
                         {order.status}
                       </span>
                     );
@@ -373,7 +373,7 @@ function OrdersContent() {
                       cls = "bg-gray-200 text-gray-700";
                     }
                     return (
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${cls}`}>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${cls}`}>
                         {label}
                       </span>
                     );
@@ -383,9 +383,9 @@ function OrdersContent() {
             </CardHeader>
             <CardContent className="grid gap-1 !px-3 !py-1.5">
               {uniqueProducts.length > 0 && (
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <div className="flex gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-1.5">
+                  <div className="flex items-start gap-2">
+                    <div className="flex flex-wrap gap-2 max-w-[176px] sm:max-w-none">
                       {uniqueProducts.slice(0, 3).map((it) => (
                         <div
                           key={it.product.id}
@@ -453,7 +453,7 @@ function OrdersContent() {
                     asChild
                     size="sm"
                     variant="outline"
-                    className="px-3 py-1 text-[11px]"
+                    className="px-3 py-1 text-[11px] self-start sm:self-auto"
                     title="View printable receipt"
                   >
                     <Link href={`/orders/${order.id}/receipt`}>View Receipt</Link>
@@ -525,17 +525,17 @@ function OrdersContent() {
                     return (
                       <div
                         key={it.id}
-                        className="flex items-center justify-between gap-2 text-[11px]"
+                        className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-[11px]"
                       >
-                        <span className="truncate max-w-[200px]">
+                        <span className="truncate sm:max-w-[220px]">
                           {it.product?.name || "Item"}{" "}
                           <span className="text-muted-foreground">
                             ×{qty}
                           </span>
                         </span>
-                        <div className="flex flex-col items-end gap-0.5">
+                        <div className="flex flex-col items-start sm:items-end gap-0.5">
                           <span
-                            className={`px-2 py-0.5 rounded-full whitespace-nowrap ${
+                            className={`px-2 py-0.5 rounded-full text-[10px] leading-tight sm:text-[11px] sm:whitespace-nowrap ${
                               delivered >= qty && qty > 0
                                 ? "bg-emerald-100 text-emerald-700"
                                 : delivered > 0
@@ -562,53 +562,6 @@ function OrdersContent() {
                   })}
                 </div>
               )}
-              {(() => {
-                const payments = (order.payments || []) as Array<{
-                  id: string;
-                  amount: number | string;
-                  note?: string | null;
-                }>;
-                let storeCreditApplied = 0;
-                let momoPaid = 0;
-                for (const p of payments) {
-                  if (!p.note) continue;
-                  try {
-                    const meta = JSON.parse(p.note) as {
-                      reference?: string;
-                      applied?: Array<{ orderId?: string; applied?: number }>;
-                      method?: string;
-                    };
-                    if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
-                      for (const a of meta.applied) {
-                        if (a && a.orderId === order.id) {
-                          storeCreditApplied += Number(a.applied || 0);
-                        }
-                      }
-                    }
-                    if (meta.method === "momo") {
-                      momoPaid += Number(p.amount || 0);
-                    }
-                  } catch {
-                    // ignore malformed notes
-                  }
-                }
-                return (
-                  <>
-                    {storeCreditApplied > 0 && (
-                      <div className="flex justify-between text-[11px] text-muted-foreground">
-                        <span>Paid from store credit:</span>
-                        <span>{formatCurrency(storeCreditApplied)}</span>
-                      </div>
-                    )}
-                    {momoPaid > 0 && (
-                      <div className="flex justify-between text-[11px] text-muted-foreground">
-                        <span>Paid via MoMo:</span>
-                        <span>{formatCurrency(momoPaid)}</span>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
               <div className="flex justify-between font-semibold">
                 <span>Balance</span>
                 <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
@@ -697,54 +650,64 @@ function OrdersContent() {
                       )}
                     </Button>
                   </div>
-                  {expanded[order.id] && (
-                    <div
-                      id={`order-${order.id}-payments`}
-                      className="mt-2 text-xs space-y-1"
-                    >
-                      {(() => {
-                        const payments = order.payments || [];
-                        let storeCreditApplied = 0;
-                        let momoPaid = 0;
-                        let cashPaid = 0;
-                        for (const p of payments) {
-                          if (!p.note) continue;
-                          try {
-                            const meta = JSON.parse(p.note as string) as {
-                              reference?: string;
-                              applied?: Array<{ orderId?: string; applied?: number }>;
-                              method?: string;
-                            };
-                            if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
-                              for (const a of meta.applied) {
-                                if (a && a.orderId === order.id) {
-                                  storeCreditApplied += Number(a.applied || 0);
-                                }
-                              }
+              {expanded[order.id] && (
+                <div
+                  id={`order-${order.id}-payments`}
+                  className="mt-2 text-xs space-y-1"
+                >
+                  {(() => {
+                    const payments = order.payments || [];
+                    let storeCreditApplied = 0;
+                    let momoPaid = 0;
+                    let cashPaid = 0;
+                    let creditFromReturns = 0;
+                    for (const p of payments) {
+                      if (!p.note) continue;
+                      try {
+                        const meta = JSON.parse(p.note as string) as {
+                          reference?: string;
+                          applied?: Array<{ orderId?: string; applied?: number }>;
+                          method?: string;
+                        };
+                        if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
+                          for (const a of meta.applied) {
+                            if (a && a.orderId === order.id) {
+                              storeCreditApplied += Number(a.applied || 0);
                             }
-                            if (meta.method === "momo") {
-                              momoPaid += Number(p.amount || 0);
-                            }
-                            if (meta.method === "cash" || meta.method === "transfer") {
-                              cashPaid += Number(p.amount || 0);
+                          }
+                        }
+                        if (meta.reference === "ITEM_RETURN") {
+                          const amt = Number(p.amount || 0);
+                          if (amt > 0) creditFromReturns += amt;
+                        }
+                        if (meta.method === "momo") {
+                          momoPaid += Number(p.amount || 0);
+                        }
+                        if (meta.method === "cash" || meta.method === "transfer") {
+                          cashPaid += Number(p.amount || 0);
                             }
                           } catch {
                             // ignore malformed notes
                           }
-                        }
-                        if (storeCreditApplied <= 0 && momoPaid <= 0 && cashPaid <= 0) {
-                          return <p>No summarized payment information available.</p>;
-                        }
-                        return (
-                          <>
+                    }
+                    if (
+                      storeCreditApplied <= 0 &&
+                      momoPaid <= 0 &&
+                      cashPaid <= 0 &&
+                      creditFromReturns <= 0
+                    ) {
+                      return <p>No summarized payment information available.</p>;
+                    }
+                    return (
+                      <>
                             {cashPaid > 0 && (
                               <p>
                                 Paid in cash/transfer:{" "}
-                                <span className="font-semibold">
-                                  {formatCurrency(cashPaid)}
-                                </span>
-                              </p>
-                            )}
+                            <span className="font-semibold">
+                              {formatCurrency(cashPaid)}
+                            </span>
+                          </p>
+                        )}
                             {momoPaid > 0 && (
                               <p>
                                 Paid via MoMo:{" "}
@@ -756,14 +719,22 @@ function OrdersContent() {
                             {storeCreditApplied > 0 && (
                               <p>
                                 Store credit applied:{" "}
-                                <span className="font-semibold">
-                                  {formatCurrency(storeCreditApplied)}
-                                </span>
-                              </p>
-                            )}
-                          </>
-                        );
-                      })()}
+                            <span className="font-semibold">
+                              {formatCurrency(storeCreditApplied)}
+                            </span>
+                          </p>
+                        )}
+                        {creditFromReturns > 0 && (
+                          <p>
+                            Store credit issued from item returns:{" "}
+                            <span className="font-semibold">
+                              {formatCurrency(creditFromReturns)}
+                            </span>
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                     </div>
                   )}
                 </div>

@@ -1,9 +1,9 @@
 ﻿"use client";
 
 export const dynamic = "force-dynamic";
+import { Suspense, useEffect, useState, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { useEffect, useState, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,8 @@ import { RefreshCcw, HelpCircle, MoreVertical } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import Link from "next/link";
 import { Tooltip } from "@/components/ui/tooltip";
+import { formatIdReadable } from "@/lib/utils";
+import { useSearchParams } from "next/navigation";
 
 const fetcher = async (u: string) => {
   const r = await fetch(u);
@@ -38,7 +40,7 @@ const fetcher = async (u: string) => {
   return j;
 };
 
-type CustomerRow = {
+export type CustomerRow = {
   user: {
     id: string;
     email: string;
@@ -92,7 +94,7 @@ type PaymentRow = {
   refundDisposition: string | null;
 };
 
-export default function AdminCustomers() {
+function AdminCustomersContent() {
   const { data: session } = useSession();
   const currentRole = (session?.user as { role?: string } | undefined)?.role || "";
   const canManageRoles =
@@ -134,6 +136,8 @@ export default function AdminCustomers() {
   const [adjustAmount, setAdjustAmount] = useState<string>("");
   const [adjustNote, setAdjustNote] = useState<string>("");
   const [adjustSubmitting, setAdjustSubmitting] = useState(false);
+  const searchParams = useSearchParams();
+  const focusId = searchParams.get("focus") || "";
 
   // Payments summary for current export filters
   const summaryParams = new URLSearchParams({ month: exportMonth });
@@ -172,8 +176,9 @@ export default function AdminCustomers() {
     method: "cash" | "transfer" | "adjustment";
     note?: string;
     location: string;
+    refundDisposition?: "cash" | "credit";
   }) {
-    const { userId, amount, method, note, location } = params;
+    const { userId, amount, method, note, location, refundDisposition } = params;
     const res = await fetch("/api/payments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -182,6 +187,7 @@ export default function AdminCustomers() {
         amount,
         method,
         status: "normal",
+        refundDisposition: refundDisposition || undefined,
         note: note || undefined,
         location,
       }),
@@ -253,7 +259,11 @@ export default function AdminCustomers() {
             try {
               const res = await fetch(
                 `/api/admin/customers/${r.user.id}/statement/email`,
-                { method: "POST" },
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ userId: r.user.id }),
+                },
               );
               const j = await res.json().catch(() => ({} as { error?: string }));
               if (!res.ok) {
@@ -736,12 +746,27 @@ export default function AdminCustomers() {
               </TableRow>
             </TableHeader>
               <TableBody>
-              {filteredRows.map((r: CustomerRow) => (
-                <TableRow key={r.user.id}>
+              {filteredRows.map((r: CustomerRow) => {
+                const isFocused =
+                  focusId && String(r.user.id) === String(focusId);
+                const displayLabel =
+                  (r.user.name && r.user.name.trim()) ||
+                  (r.user.email && r.user.email.trim()) ||
+                  formatIdReadable(r.user.id) ||
+                  "Unnamed customer";
+                return (
+                <TableRow
+                  key={r.user.id}
+                  className={
+                    isFocused
+                      ? "bg-amber-50 hover:bg-amber-100"
+                      : undefined
+                  }
+                >
                   <TableCell className="max-w-[320px] text-left">
-                    <div className="flex flex-wrap items-center gap-2 min-w-0">
-                      <span className="truncate">{r.user.email}</span>
-                    </div>
+                    <span className="truncate font-medium">
+                      {displayLabel}
+                    </span>
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
                   <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.paidTotal || 0)}</TableCell>
@@ -811,7 +836,7 @@ export default function AdminCustomers() {
                 </div>
               </TableCell>
             </TableRow>
-          ))}
+          )})}
           {filteredRows.length === 0 && (
             <TableRow>
               <TableCell colSpan={10} className="text-center text-sm text-muted-foreground py-6">
@@ -852,7 +877,7 @@ export default function AdminCustomers() {
                     <p className="font-mono">{formatCurrency(r.paidTotal || 0)}</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase text-muted-foreground">Unapplied</p>
+                    <p className="text-xs uppercase text-muted-foreground">Store Credit</p>
                     <p className="font-mono">{formatCurrency(Math.max(0, credit))}</p>
                   </div>
                   <div>
@@ -1295,25 +1320,9 @@ export default function AdminCustomers() {
                 <Button
                   onClick={async () => {
                     if (!adjustFor) return;
-                    const row = rows.find(
-                      (r) => r.user.id === adjustFor.userId,
-                    );
-                    const outstanding = row
-                      ? Math.max(
-                          0,
-                          Number(row.ordersTotal || 0) -
-                            Number(row.paidTotal || 0),
-                        )
-                      : 0;
                     const value = Number(adjustAmount);
                     if (!value || isNaN(value) || value <= 0) {
                       toast.error("Enter a valid adjustment amount");
-                      return;
-                    }
-                    if (value > outstanding + 0.0001) {
-                      toast.error(
-                        "Adjustment exceeds customer's outstanding balance",
-                      );
                       return;
                     }
                     try {
@@ -1324,6 +1333,7 @@ export default function AdminCustomers() {
                         method: "adjustment",
                         note: adjustNote,
                         location: "admin/customers:actions-adjustment",
+                        refundDisposition: "credit",
                       });
                       toast.success("Adjustment recorded.");
                       setAdjustFor(null);
@@ -1354,7 +1364,7 @@ export default function AdminCustomers() {
     </Dialog>
     {/* Explain totals dialog */}
     <Dialog open={!!explain} onOpenChange={(o) => { if (!o) setExplain(null); }}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Explain Totals {explain?.email ? `for ${explain.email}` : ""}</DialogTitle>
         </DialogHeader>
@@ -1365,6 +1375,21 @@ export default function AdminCustomers() {
     </Dialog>
     {/* Close Account functionality moved to Customer Accounts page */}
     </>
+  );
+}
+
+export default function AdminCustomersPage() {
+  return (
+    <Suspense
+      fallback={
+        <section className="container mx-auto py-8 max-w-4xl">
+          <h1 className="text-2xl font-semibold mb-4">Customer Cart</h1>
+          <p className="text-sm text-muted-foreground">Loading customers…</p>
+        </section>
+      }
+    >
+      <AdminCustomersContent />
+    </Suspense>
   );
 }
 
@@ -1520,20 +1545,20 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
   const unapplied = Math.max(0, paymentsSum - paidSum);
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-3 gap-3 text-sm">
-        <div className="rounded border p-3 text-center">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+        <div className="rounded border p-3 text-center break-words">
           <div className="text-muted-foreground">Payments total</div>
           <div className="font-mono tabular-nums font-semibold">{formatCurrency(paymentsSum)}</div>
         </div>
-        <div className="rounded border p-3 text-center">
+        <div className="rounded border p-3 text-center break-words">
           <div className="text-muted-foreground">Paid (sum of amountPaid)</div>
           <div className="font-mono tabular-nums font-semibold">{formatCurrency(paidSum)}</div>
         </div>
-        <div className="rounded border p-3 text-center">
+        <div className="rounded border p-3 text-center break-words">
           <div className="text-muted-foreground">Store credit</div>
           <div className={`font-mono tabular-nums font-semibold ${unapplied > 0.005 ? "text-amber-700" : "text-muted-foreground"}`}>{formatCurrency(unapplied)}</div>
         </div>
-        <div className="rounded border p-3 text-center">
+        <div className="rounded border p-3 text-center break-words">
           <div className="text-muted-foreground">Refunded (cash)</div>
           <div className="font-mono tabular-nums font-semibold text-red-700">
             {formatCurrency(
@@ -1565,7 +1590,7 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
                   <TableCell className="text-center font-mono tabular-nums">{formatCurrency(Number(p.amount || 0))}</TableCell>
                   <TableCell className="text-left text-xs">
                     {Array.isArray(p.applied) && p.applied.length > 0 ? (
-                      <div className="space-x-2">
+                      <div className="flex flex-wrap gap-1">
                         {p.applied.map((a: PaymentApplied, idx: number) => (
                           <span key={idx} className="inline-block bg-muted rounded px-1.5 py-0.5">
                             {formatOrderId(a.orderId)}: {formatCurrency(Number(a.applied || 0))}

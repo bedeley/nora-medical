@@ -24,19 +24,57 @@ export async function GET(req: Request) {
   try {
     const orders = await prisma.order.findMany({
       where: { userId },
-      select: {
-        id: true,
-        deliveryStatus: true,
-        total: true,
-        amountPaid: true,
-        balance: true,
-        status: true,
-        createdAt: true,
+      include: {
+        payments: true,
+        items: {
+          include: { product: { select: { id: true, name: true, imageUrl: true } } },
+        },
       },
       orderBy: { createdAt: "desc" },
-      take: 50,
     });
-    return NextResponse.json({ orders });
+
+    // Normalize numeric fields and ensure balance is consistent with total/amountPaid
+    const data = orders.map((o: typeof orders[number]) => {
+      const total = Number(o.total);
+      const amountPaid = Number(o.amountPaid ?? 0);
+      const rawBalance = Number(o.balance ?? 0);
+      const computedBalance = Math.max(0, total - amountPaid);
+      const balance = rawBalance === 0 ? computedBalance : rawBalance;
+      return {
+        id: o.id,
+        status: o.status,
+        deliveryStatus: o.deliveryStatus,
+        deliveredAt: o.deliveredAt ? o.deliveredAt.toISOString() : null,
+        createdAt: o.createdAt.toISOString(),
+        total,
+        amountPaid,
+        balance,
+        payments: (o.payments || []).map((p) => ({
+          id: p.id,
+          amount: Number(p.amount),
+          note: p.note,
+          status: p.status || null,
+          refundDisposition: p.refundDisposition || null,
+          createdAt: p.createdAt.toISOString(),
+        })),
+        items: (o.items || []).map((it) => ({
+          id: it.id,
+          quantity: it.quantity,
+          price: Number(it.price),
+          deliveredQuantity: Number((it as { deliveredQuantity?: unknown }).deliveredQuantity ?? 0),
+          returnedQuantity: Number((it as { returnedQuantity?: unknown }).returnedQuantity ?? 0),
+          product: it.product
+            ? {
+                id: it.product.id,
+                name: it.product.name,
+                imageUrl: it.product.imageUrl,
+              }
+            : null,
+        })),
+      };
+    });
+
+    return NextResponse.json({ orders: data });
   } catch (error) {
     console.error("Admin list orders error:", error);
     return NextResponse.json({ error: "Failed to load orders" }, { status: 500 });
