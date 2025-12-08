@@ -65,9 +65,21 @@ export default function ReceiptPage() {
   if (error) return <p className="p-6 text-center text-red-600">Failed to load receipt.</p>;
   if (!order) return <p className="p-6 text-center">Loading receipt...</p>;
 
-  const total = Number(order.total || 0);
+  const subtotal = Number(order.total || 0);
+  const lineTotal = (order.items || []).reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+    0,
+  );
+  const returnAdjustment = Math.max(0, lineTotal - subtotal);
   const paid = Number(order.amountPaid || 0);
-  const balance = Math.max(0, total - paid);
+  const balance = Math.max(0, subtotal - paid);
+  const deliveryLabel = (() => {
+    const raw = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+    if (raw === "DELIVERED") return "Delivered";
+    if (raw === "PARTIALLY_DELIVERED") return "Partially delivered";
+    if (raw === "RETURNED") return "Returned";
+    return "Not delivered";
+  })();
 
   const storeCreditApplied = (() => {
     const payments = order.payments || [];
@@ -117,14 +129,30 @@ export default function ReceiptPage() {
     if (!payments.length) return 0;
     let sum = 0;
     for (const p of payments) {
-      if (!p.note) continue;
+      const amount = Number(p.amount || 0);
+      if (!p.note) {
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          sum += amount;
+        }
+        continue;
+      }
       try {
         const meta = JSON.parse(p.note) as { method?: string };
         if (meta?.method === "cash" || meta?.method === "transfer") {
-          sum += Number(p.amount || 0);
+          sum += amount;
         }
       } catch {
-        // ignore malformed notes
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          sum += amount;
+        }
       }
     }
     return sum;
@@ -195,9 +223,7 @@ export default function ReceiptPage() {
           <div className="text-right space-y-0.5">
             <p>Date: {formatDateTimeGH(order.createdAt)}</p>
             <p>Status: {order.status}</p>
-            {order.deliveryStatus ? (
-              <p>Delivery: {order.deliveryStatus}</p>
-            ) : null}
+            <p>Delivery: {deliveryLabel}</p>
           </div>
         </div>
 
@@ -225,24 +251,35 @@ export default function ReceiptPage() {
                       {formatCurrency(Number(it.price) * it.quantity)}
                     </span>
                   </div>
-                  <div className="flex justify-between col-span-2">
+                  <div className="flex flex-col items-start gap-1 col-span-2">
                     <span className="text-muted-foreground">Delivery</span>
                     {(() => {
                       const delivered = Number(it.deliveredQuantity ?? 0);
                       const qty = Number(it.quantity || 0);
                       let label = "Not delivered yet";
                       let cls = "bg-slate-100 text-slate-700";
+                      let extra: string | null = null;
                       if (delivered >= qty && qty > 0) {
                         label = "Delivered";
                         cls = "bg-emerald-100 text-emerald-700";
                       } else if (delivered > 0) {
-                        label = `Partially delivered (${delivered}/${qty})`;
+                        label = "Partial";
+                        extra = `${delivered}/${qty}`;
                         cls = "bg-amber-100 text-amber-800";
                       }
                       return (
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] ${cls}`}>
-                          {label}
-                        </span>
+                        <div className="flex flex-col items-end gap-0.5 w-full">
+                          <span
+                            className={`inline-flex max-w-full items-center justify-center px-1.5 py-0.5 rounded-full text-[10px] leading-tight ${cls}`}
+                          >
+                            {label}
+                          </span>
+                          {extra && (
+                            <span className="text-[10px] text-muted-foreground break-words">
+                              Delivered: {extra}
+                            </span>
+                          )}
+                        </div>
                       );
                     })()}
                   </div>
@@ -330,8 +367,12 @@ export default function ReceiptPage() {
           <div className="flex justify-end">
             <div className="w-64">
               <div className="flex justify-between py-1">
+                <span>Total</span>
+                <span>{formatCurrency(lineTotal)}</span>
+              </div>
+              <div className="flex justify-between py-1">
                 <span>Subtotal</span>
-                <span>{formatCurrency(total)}</span>
+                <span>{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex justify-between py-1">
                 <span>Paid</span>
@@ -365,6 +406,12 @@ export default function ReceiptPage() {
                 <span>Balance</span>
                 <span>{formatCurrency(balance)}</span>
               </div>
+              {returnAdjustment > 0.005 && (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Note: Subtotal is lower than the original total because returned items reduced this order by{" "}
+                  {formatCurrency(returnAdjustment)}.
+                </p>
+              )}
             </div>
           </div>
         </div>

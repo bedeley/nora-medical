@@ -19,6 +19,7 @@ type CustomerUser = {
   phone: string | null;
   role: string;
   archived: boolean;
+  createdAt: string;
 };
 
 type CustomerRow = {
@@ -109,6 +110,7 @@ export default function CustomerAccountsPage() {
                 <TableHead className="text-center">Name</TableHead>
                 <TableHead className="text-center">Email</TableHead>
                 <TableHead className="text-center">Phone</TableHead>
+                <TableHead className="text-center">Account Created</TableHead>
                 <TableHead className="text-center">Last Order</TableHead>
                 <TableHead className="text-center">Days Ago</TableHead>
                 <TableHead className="text-center">Actions</TableHead>
@@ -135,6 +137,9 @@ export default function CustomerAccountsPage() {
                           </>
                         ))}
                     </span>
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {r.user.createdAt ? new Date(r.user.createdAt).toLocaleString() : "-"}
                   </TableCell>
                   <TableCell className="text-center">{r.lastOrderAt ? new Date(r.lastOrderAt).toLocaleString() : "-"}</TableCell>
                   <TableCell className="text-center">{formatDaysAgo(r.lastOrderAt)}</TableCell>
@@ -181,7 +186,7 @@ export default function CustomerAccountsPage() {
               ))}
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-6">
+                  <TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-6">
                     No customers found.
                   </TableCell>
                 </TableRow>

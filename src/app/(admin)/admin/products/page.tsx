@@ -912,7 +912,7 @@ function EditProductDialog({
       <DialogTrigger asChild>
         {trigger || <Button size="sm" variant="secondary">Edit</Button>}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Edit Product</DialogTitle>
         </DialogHeader>

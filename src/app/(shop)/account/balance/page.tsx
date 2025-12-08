@@ -94,48 +94,23 @@ export default function AccountBalancePage() {
                 </span>
               </div>
               {creditAvailable > 0 && (
-                <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="mt-3">
                   <p className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">
                     Store credit available:{" "}
                     <span className="font-semibold">
                       {formatCurrency(creditAvailable)}
                     </span>
-                    . You can apply it to your outstanding orders.
+                    . This credit will be used automatically when you place new
+                    orders. If you would like it applied to an existing
+                    outstanding balance, please call{" "}
+                    <a
+                      href={ADMIN_PHONE_TEL}
+                      className="underline font-medium"
+                    >
+                      {ADMIN_PHONE}
+                    </a>
+                    .
                   </p>
-                  <button
-                    type="button"
-                    className="text-xs font-medium px-3 py-1 rounded border border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-                    onClick={async () => {
-                      try {
-                        const res = await fetch("/api/account/credit/apply", {
-                          method: "POST",
-                        });
-                        const j = await res.json().catch(() => ({}));
-                        if (!res.ok) {
-                          throw new Error(
-                            j?.error || "Failed to apply store credit",
-                          );
-                        }
-                        alert(
-                          j?.applied
-                            ? `Applied ${formatCurrency(
-                                Number(j.applied || 0),
-                              )} of store credit to your orders.`
-                            : "No store credit could be applied.",
-                        );
-                        // Best-effort refresh via location reload on this simple page.
-                        window.location.reload();
-                      } catch (e: unknown) {
-                        const message =
-                          e instanceof Error
-                            ? e.message
-                            : "Failed to apply store credit";
-                        alert(message);
-                      }
-                    }}
-                  >
-                    Apply Store Credit
-                  </button>
                 </div>
               )}
               <p className="text-xs text-muted-foreground mt-2">

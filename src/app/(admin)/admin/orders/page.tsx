@@ -25,7 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDateGH } from "@/lib/currency";
 import { formatIdReadable } from "@/lib/utils";
 import { Download, RefreshCcw, Search, DollarSign, ArrowUpDown, ArrowUp, ArrowDown, HelpCircle } from "lucide-react";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -700,6 +700,31 @@ function AdminOrdersContent() {
                 <div>
                   <p className="text-xs uppercase text-muted-foreground">Notes</p>
                   <p>{order.adminNote || "—"}</p>
+                </div>
+
+                <div className="border-t pt-2 mt-1 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+                  <div className="flex flex-col">
+                    <span className="font-medium">Order placed</span>
+                    <span>{formatDateGH(order.createdAt)}</span>
+                  </div>
+                  <div className="flex flex-col text-right">
+                    <span className="font-medium">Delivery</span>
+                    <span>
+                      {(() => {
+                        const deliveredAt =
+                          (order as { deliveredAt?: string | Date | null })
+                            .deliveredAt ?? null;
+                        if (delivery === "DELIVERED" && deliveredAt) {
+                          return `Delivered on ${formatDateGH(deliveredAt)}`;
+                        }
+                        if (delivery === "DELIVERED") return "Delivered";
+                        if (delivery === "PARTIALLY_DELIVERED")
+                          return "Partially delivered";
+                        if (delivery === "RETURNED") return "Returned";
+                        return "Not delivered";
+                      })()}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2">

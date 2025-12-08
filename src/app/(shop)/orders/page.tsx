@@ -88,7 +88,6 @@ function OrdersContent() {
     refetchInterval: 15000,
     refetchOnWindowFocus: false,
   });
-  const queryClientOrders = useQueryClient();
   const { data: balanceData } = useClientQuery({
     queryKey: ["balance", "self"],
     queryFn: () => fetcher("/api/balance?self=1"),
@@ -181,57 +180,17 @@ function OrdersContent() {
       {(creditAvailable > 0 || cashRefunds > 0) && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 p-3 text-sm space-y-1">
           {creditAvailable > 0 && (
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
               <p>
                 Store credit available:{" "}
                 <span className="font-semibold">
                   {formatCurrency(creditAvailable)}
                 </span>
-                . You can apply it directly to your outstanding orders, and it
-                will also be auto-applied when you place new orders (oldest
-                unpaid or partially-paid orders are cleared first).
+                . This will be used automatically toward your oldest unpaid or
+                partially-paid orders when you place new orders. If you would
+                like credit applied to an existing balance right away, please
+                contact the store admin.
               </p>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={async () => {
-                  try {
-                    const res = await fetch("/api/account/credit/apply", {
-                      method: "POST",
-                    });
-                    const j = await res.json().catch(() => ({}));
-                    if (!res.ok) {
-                      throw new Error(
-                        j?.error || "Failed to apply store credit",
-                      );
-                    }
-                    toast.success(
-                      j?.applied
-                        ? `Applied ${formatCurrency(
-                            Number(j.applied || 0),
-                          )} of store credit to your orders.`
-                        : "No store credit could be applied.",
-                    );
-                    queryClient.invalidateQueries({
-                      queryKey: ["orders", "history"],
-                    });
-                    queryClient.invalidateQueries({
-                      queryKey: ["balance", "self"],
-                    });
-                    queryClientOrders.invalidateQueries({
-                      queryKey: ["orders", "history"],
-                    });
-                  } catch (e: unknown) {
-                    const message =
-                      e instanceof Error
-                        ? e.message
-                        : "Failed to apply store credit";
-                    toast.error(message);
-                  }
-                }}
-              >
-                Apply Store Credit
-              </Button>
             </div>
           )}
           {cashRefunds > 0 && (
@@ -282,6 +241,12 @@ function OrdersContent() {
 
       {filtered.map((order) => {
         const items = Array.isArray(order.items) ? order.items : [];
+        const lineTotal = items.reduce(
+          (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+          0,
+        );
+        const subtotal = Number(order.total || 0);
+        const returnAdjustment = Math.max(0, lineTotal - subtotal);
         const nonNullItems = items.filter((it) => it?.product);
         const uniqueProducts = nonNullItems.reduce(
           (
@@ -461,58 +426,29 @@ function OrdersContent() {
                 </div>
               )}
               <div className="flex justify-between">
-                <span>Date</span>
-                <span>{formatDateGH(order.createdAt)}</span>
-              </div>
-              {order.deliveredAt && (
-                <div className="flex justify-between">
-                  <span>Delivered</span>
-                  <span>
-                    {formatDateGH(order.deliveredAt)}
-                  </span>
-                </div>
-              )}
-              <div className="flex justify-between">
                 <span>Total</span>
-                <span>{formatCurrency(Number(order.total))}</span>
+                <span>{formatCurrency(lineTotal)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Subtotal</span>
+                <span>{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex justify-between">
                 <span>Paid</span>
                 <span>{formatCurrency(Number(order.totalPaid))}</span>
               </div>
-              {(() => {
-                const payments = (order.payments || []) as Array<{
-                  id: string;
-                  amount: number | string;
-                  note?: string | null;
-                }>;
-                let storeCreditApplied = 0;
-                for (const p of payments) {
-                  if (!p.note) continue;
-                  try {
-                    const meta = JSON.parse(p.note) as {
-                      reference?: string;
-                      applied?: Array<{ orderId?: string; applied?: number }>;
-                    };
-                    if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
-                      for (const a of meta.applied) {
-                        if (a && a.orderId === order.id) {
-                          storeCreditApplied += Number(a.applied || 0);
-                        }
-                      }
-                    }
-                  } catch {
-                    // ignore malformed notes
-                  }
-                }
-                if (storeCreditApplied <= 0) return null;
-                return (
-                  <div className="flex justify-between text-[11px] text-muted-foreground">
-                    <span>Paid from store credit:</span>
-                    <span>{formatCurrency(storeCreditApplied)}</span>
-                  </div>
-                );
-              })()}
+              <div className="flex justify-between font-semibold">
+                <span>Balance</span>
+                <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
+                  {formatCurrency(Number(order.balance))}
+                </span>
+              </div>
+              {returnAdjustment > 0.005 && (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Note: Subtotal is lower than the original total because returned items reduced this
+                  order by {formatCurrency(returnAdjustment)}.
+                </p>
+              )}
               {items.length > 0 && (
                 <div className="mt-2 border-t pt-2 space-y-1">
                   <p className="text-[11px] font-semibold text-muted-foreground">
@@ -562,26 +498,11 @@ function OrdersContent() {
                   })}
                 </div>
               )}
-              <div className="flex justify-between font-semibold">
-                <span>Balance</span>
-                <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
-                  {formatCurrency(Number(order.balance))}
-                </span>
-              </div>
-
-              {/* Simple timeline-style view */}
+              {/* Simple timeline-style view (no duplicated payments) */}
               <div className="mt-3 border-t pt-2 space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-medium">Order placed</span>
                   <span>{formatDateGH(order.createdAt)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="font-medium">Payments</span>
-                  <span>
-                    {Number(order.totalPaid) > 0
-                      ? `${formatCurrency(Number(order.totalPaid))} paid`
-                      : "No payments yet"}
-                  </span>
                 </div>
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-medium">Delivery</span>
@@ -662,7 +583,13 @@ function OrdersContent() {
                     let cashPaid = 0;
                     let creditFromReturns = 0;
                     for (const p of payments) {
-                      if (!p.note) continue;
+                      const amount = Number(p.amount || 0);
+                      if (!p.note) {
+                        if (amount > 0) {
+                          cashPaid += amount;
+                        }
+                        continue;
+                      }
                       try {
                         const meta = JSON.parse(p.note as string) as {
                           reference?: string;
@@ -677,18 +604,19 @@ function OrdersContent() {
                           }
                         }
                         if (meta.reference === "ITEM_RETURN") {
-                          const amt = Number(p.amount || 0);
-                          if (amt > 0) creditFromReturns += amt;
+                          if (amount > 0) creditFromReturns += amount;
                         }
                         if (meta.method === "momo") {
-                          momoPaid += Number(p.amount || 0);
+                          momoPaid += amount;
                         }
                         if (meta.method === "cash" || meta.method === "transfer") {
-                          cashPaid += Number(p.amount || 0);
-                            }
-                          } catch {
-                            // ignore malformed notes
-                          }
+                          cashPaid += amount;
+                        }
+                      } catch {
+                        if (amount > 0) {
+                          cashPaid += amount;
+                        }
+                      }
                     }
                     if (
                       storeCreditApplied <= 0 &&

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { PieLabelRenderProps } from "recharts";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { TrendingUp, TrendingDown, PieChart, HelpCircle } from "lucide-react";
@@ -35,6 +35,22 @@ export default function ProfitSummary({ summary }: SummaryProps) {
   const profit = summary?.profit ?? 0;
   const margin = summary?.margin ?? 0;
   const [view, setView] = useState<"cards" | "pie">("cards");
+  const [pieOuterRadius, setPieOuterRadius] = useState(70);
+
+  useEffect(() => {
+    const updateRadius = () => {
+      if (typeof window === "undefined") return;
+      const w = window.innerWidth;
+      if (w >= 1280) {
+        setPieOuterRadius(110);
+      } else {
+        setPieOuterRadius(70);
+      }
+    };
+    updateRadius();
+    window.addEventListener("resize", updateRadius);
+    return () => window.removeEventListener("resize", updateRadius);
+  }, []);
 
   const metrics: Array<{
     key: string;
@@ -139,14 +155,32 @@ export default function ProfitSummary({ summary }: SummaryProps) {
 
     const textAnchor = x === cx ? "middle" : x >= cx ? "start" : "end";
 
+    const name = String((props as { name?: unknown }).name ?? "");
+    // Match label color to the slice / legend color so the amounts
+    // visually align with the keys under the chart.
+    let fillColor = "#e5e7eb";
+    if (name === "Revenue") {
+      // Lighter blue than the slice for better contrast in dark mode
+      fillColor = "#60a5fa";
+    } else if (name === "COGS") {
+      // Lighter orange
+      fillColor = "#fdba74";
+    } else if (name === "Operating Expenses") {
+      // Lighter red
+      fillColor = "#fca5a5";
+    } else if (name === "Net Profit") {
+      fillColor = profit >= 0 ? "#4ade80" : "#cbd5f5";
+    }
+
     return (
       <text
         x={x}
         y={y}
-        fill="#0f172a"
+        fill={fillColor}
         textAnchor={textAnchor as "start" | "end"}
         dominantBaseline="central"
-        fontSize={10}
+        fontSize={12}
+        fontWeight={600}
       >
         {label}
       </text>
@@ -241,7 +275,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
               </p>
             ) : (
               <>
-                <div className="h-64 sm:h-72">
+                <div className="h-64 sm:h-72 lg:h-80 xl:h-96">
                   <ResponsiveContainer width="100%" height="100%">
                     <RechartsPieChart margin={{ top: 8, bottom: 32, left: 0, right: 0 }}>
                       <RechartsTooltip
@@ -261,7 +295,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                         nameKey="name"
                         cx="50%"
                         cy="50%"
-                        outerRadius={70}
+                        outerRadius={pieOuterRadius}
                         label={renderSliceLabel}
                         labelLine={false}
                       >

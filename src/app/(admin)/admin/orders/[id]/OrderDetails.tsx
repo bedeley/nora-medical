@@ -101,6 +101,11 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     order.status !== "CANCELLED";
   const amountPaid = Number(order.amountPaid ?? 0);
   const balance = Number(order.balance ?? Math.max(0, order.total - amountPaid));
+  const lineTotal = order.items.reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+    0,
+  );
+  const returnAdjustment = Math.max(0, lineTotal - Number(order.total || 0));
 
   const paymentBreakdown = (() => {
     const payments = order.payments || [];
@@ -108,7 +113,17 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     let momoPaid = 0;
     let cashPaid = 0;
     for (const p of payments) {
-      if (!p.note) continue;
+      const amount = Number(p.amount || 0);
+      if (!p.note) {
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          cashPaid += amount;
+        }
+        continue;
+      }
       try {
         const meta = JSON.parse(p.note as string) as {
           reference?: string;
@@ -123,13 +138,19 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           }
         }
         if (meta.method === "momo") {
-          momoPaid += Number(p.amount || 0);
+          momoPaid += amount;
         }
         if (meta.method === "cash" || meta.method === "transfer") {
-          cashPaid += Number(p.amount || 0);
+          cashPaid += amount;
         }
       } catch {
-        // ignore malformed notes
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          cashPaid += amount;
+        }
       }
     }
     return { storeCreditApplied, momoPaid, cashPaid };
@@ -479,7 +500,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             {order.deliveredAt ? ` on ${new Date(order.deliveredAt).toLocaleString()}` : ""}
           </p>
           <p className="text-sm text-muted-foreground">
-            <strong>Total:</strong> {formatCurrency(order.total)}
+            <strong>Total:</strong> {formatCurrency(lineTotal)}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            <strong>Subtotal:</strong> {formatCurrency(order.total)}
           </p>
           <p className="text-sm text-muted-foreground">
             <strong>Amount Paid:</strong> {formatCurrency(amountPaid)}
@@ -513,6 +537,12 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           <p className={`text-sm ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
             <strong>Outstanding Balance:</strong> {formatCurrency(balance)}
           </p>
+          {returnAdjustment > 0.005 && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Note: Subtotal is lower than the original total because returned items reduced this order by{" "}
+              {formatCurrency(returnAdjustment)}.
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">
             <strong>Date:</strong> {new Date(order.createdAt).toLocaleString()}
           </p>

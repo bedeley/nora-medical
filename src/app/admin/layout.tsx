@@ -19,13 +19,55 @@ export default function AdminLayout({
   return (
     <>
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <nav className="container mx-auto flex items-center gap-4 py-2 text-sm">
-          <Link href="/admin/dashboard" className={`px-2 py-1 rounded ${pathname.startsWith("/admin/dashboard") ? "bg-muted" : ""}`}>Dashboard</Link>
-          <Link href="/admin/orders" className={`px-2 py-1 rounded ${pathname.startsWith("/admin/orders") ? "bg-muted" : ""}`}>Orders</Link>
-          <Link href="/admin/customers" className={`px-2 py-1 rounded ${pathname.startsWith("/admin/customers") ? "bg-muted" : ""}`}>Customers</Link>
-          <Link href="/admin/products" className={`px-2 py-1 rounded ${pathname.startsWith("/admin/products") ? "bg-muted" : ""}`}>Products</Link>
-          <Link href="/admin/payments/momo" className={`ml-auto px-2 py-1 rounded ${pathname.startsWith("/admin/payments/momo") ? "bg-primary text-primary-foreground" : "border"}`}>MoMo Payments</Link>
-          <Link href="/admin/settings/communications" className={`px-2 py-1 rounded ${pathname.startsWith("/admin/settings/communications") ? "bg-muted" : ""}`}>Settings</Link>
+        <nav className="container mx-auto flex flex-wrap items-center gap-2 py-2 text-sm">
+          <Link
+            href="/admin/dashboard"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/dashboard") ? "bg-muted" : ""
+            }`}
+          >
+            Dashboard
+          </Link>
+          <Link
+            href="/admin/orders"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/orders") ? "bg-muted" : ""
+            }`}
+          >
+            Orders
+          </Link>
+          <Link
+            href="/admin/customers"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/customers") ? "bg-muted" : ""
+            }`}
+          >
+            Customers
+          </Link>
+          <Link
+            href="/admin/products"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/products") ? "bg-muted" : ""
+            }`}
+          >
+            Products
+          </Link>
+          <Link
+            href="/admin/payments/momo"
+            className={`ml-auto px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/payments/momo") ? "bg-primary text-primary-foreground" : "border"
+            }`}
+          >
+            MoMo Payments
+          </Link>
+          <Link
+            href="/admin/settings/communications"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/settings/communications") ? "bg-muted" : ""
+            }`}
+          >
+            Settings
+          </Link>
         </nav>
       </header>
       {children}

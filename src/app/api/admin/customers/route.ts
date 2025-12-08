@@ -12,6 +12,7 @@ type UserSummary = {
   role: string;
   archived: boolean;
   phoneVerifiedAt: Date | null;
+  createdAt: Date;
 };
 
 type CartItemSummary = {
@@ -59,8 +60,24 @@ export async function GET() {
   try {
     const results = await Promise.allSettled([
       prisma.user.findMany({
-        where: { OR: [{ role: "CUSTOMER" }, { role: "ADMIN" }, { role: "STAFF" }, { role: "ACCOUNTANT" }] },
-        select: { id: true, email: true, name: true, phone: true, role: true, archived: true, phoneVerifiedAt: true },
+        where: {
+          OR: [
+            { role: "CUSTOMER" },
+            { role: "ADMIN" },
+            { role: "STAFF" },
+            { role: "ACCOUNTANT" },
+          ],
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          phone: true,
+          role: true,
+          archived: true,
+          phoneVerifiedAt: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "desc" },
       }),
       prisma.order.groupBy({

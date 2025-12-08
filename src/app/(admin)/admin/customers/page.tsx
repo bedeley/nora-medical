@@ -110,7 +110,16 @@ function AdminCustomersContent() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const [explain, setExplain] = useState<{ userId: string; email: string; paymentsTotal: number; paidTotal: number } | null>(null);
+  const [explain, setExplain] = useState<{
+    userId: string;
+    email: string;
+    paymentsTotal: number;
+    paidTotal: number;
+    ordersTotal: number;
+    storeCredit: number;
+    refundedCash: number;
+    balance: number;
+  } | null>(null);
   const [exportMonth, setExportMonth] = useState(() => {
     const now = new Date();
     const y = now.getUTCFullYear();
@@ -235,6 +244,13 @@ function AdminCustomersContent() {
               email: r.user.email,
               paymentsTotal: Number(r.paymentsTotal || 0),
               paidTotal: Number(r.paidTotal || 0),
+              ordersTotal: Number(r.ordersTotal || 0),
+              storeCredit: Number(r.storeCredit || 0),
+              refundedCash: Number(r.refundedCash || 0),
+              balance: Math.max(
+                0,
+                Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+              ),
             });
           }}
         >
@@ -1369,7 +1385,15 @@ function AdminCustomersContent() {
           <DialogTitle>Explain Totals {explain?.email ? `for ${explain.email}` : ""}</DialogTitle>
         </DialogHeader>
         {explain && (
-          <ExplainTotals userId={explain.userId} paymentsTotal={explain.paymentsTotal} paidTotal={explain.paidTotal} />
+          <ExplainTotals
+            userId={explain.userId}
+            paymentsTotal={explain.paymentsTotal}
+            paidTotal={explain.paidTotal}
+            ordersTotal={explain.ordersTotal}
+            storeCredit={explain.storeCredit}
+            refundedCash={explain.refundedCash}
+            balance={explain.balance}
+          />
         )}
       </DialogContent>
     </Dialog>
@@ -1520,7 +1544,23 @@ function PaymentsSummaryButton(props: { month: string; method: string; status: s
   );
 }
 
-function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; paymentsTotal: number; paidTotal: number }) {
+function ExplainTotals({
+  userId,
+  paymentsTotal,
+  paidTotal,
+  ordersTotal,
+  storeCredit,
+  refundedCash,
+  balance,
+}: {
+  userId: string;
+  paymentsTotal: number;
+  paidTotal: number;
+  ordersTotal: number;
+  storeCredit: number;
+  refundedCash: number;
+  balance: number;
+}) {
   const { data: payData, error: payErr, isFetching: fetchingPayments } = useClientQuery({
     queryKey: ["admin", "payments", "by-user", userId],
     queryFn: async () => {
@@ -1539,40 +1579,118 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
       return j as { ordersTotal: number; paidTotal: number; balance: number };
     },
   });
+
   const list: PaymentRow[] = payData?.payments ?? [];
   const paymentsSum = Number(payData?.total ?? paymentsTotal ?? 0);
   const paidSum = Number(ordData?.paidTotal ?? paidTotal ?? 0);
-  const unapplied = Math.max(0, paymentsSum - paidSum);
+  const ordersSum = Number(ordData?.ordersTotal ?? ordersTotal ?? 0);
+  const balanceSum = Number(ordData?.balance ?? balance ?? 0);
+  const ledgerGap = Math.max(0, paymentsSum - paidSum);
+
   return (
     <div className="grid gap-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-        <div className="rounded border p-3 text-center break-words">
-          <div className="text-muted-foreground">Payments total</div>
-          <div className="font-mono tabular-nums font-semibold">{formatCurrency(paymentsSum)}</div>
-        </div>
-        <div className="rounded border p-3 text-center break-words">
-          <div className="text-muted-foreground">Paid (sum of amountPaid)</div>
-          <div className="font-mono tabular-nums font-semibold">{formatCurrency(paidSum)}</div>
-        </div>
-        <div className="rounded border p-3 text-center break-words">
-          <div className="text-muted-foreground">Store credit</div>
-          <div className={`font-mono tabular-nums font-semibold ${unapplied > 0.005 ? "text-amber-700" : "text-muted-foreground"}`}>{formatCurrency(unapplied)}</div>
-        </div>
-        <div className="rounded border p-3 text-center break-words">
-          <div className="text-muted-foreground">Refunded (cash)</div>
-          <div className="font-mono tabular-nums font-semibold text-red-700">
-            {formatCurrency(
-              list
-                .filter((p) => {
-                  const status = String(p.status || p.meta?.status || "").toUpperCase();
-                  const disposition = String(p.refundDisposition || p.meta?.refundDisposition || "").toUpperCase();
-                  return status === "REFUND" && disposition === "CASH";
-                })
-                .reduce((sum: number, p) => sum + Math.abs(Number(p.amount || 0)), 0)
-            )}
+      {/* Section A: snapshot – matches Customer Cart row */}
+      <div>
+        <h4 className="text-sm font-semibold mb-2">
+          Current summary (matches Customer Cart row)
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Orders (net of returns)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(ordersSum)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Paid (sum of amountPaid)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(paidSum)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Payments (net cash/MoMo)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(paymentsTotal)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Store credit (available)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(storeCredit)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Refunded (cash)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(refundedCash)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Balance (orders – paid)</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(balanceSum)}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Section B: lifetime ledger */}
+      <div>
+        <h4 className="text-sm font-semibold mb-2">Lifetime payment ledger</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Lifetime payments total</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(paymentsSum)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Lifetime amountPaid on orders</div>
+            <div className="font-mono tabular-nums font-semibold">
+              {formatCurrency(paidSum)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">
+              Ledger gap (payments – amountPaid)
+            </div>
+            <div className="font-mono tabular-nums font-semibold text-amber-700">
+              {formatCurrency(ledgerGap)}
+            </div>
+          </div>
+          <div className="rounded border p-3 text-center break-words">
+            <div className="text-muted-foreground">Refunded (cash)</div>
+            <div className="font-mono tabular-nums font-semibold text-red-700">
+              {formatCurrency(
+                list
+                  .filter((p) => {
+                    const status = String(
+                      p.status || p.meta?.status || "",
+                    ).toUpperCase();
+                    const disposition = String(
+                      p.refundDisposition || p.meta?.refundDisposition || "",
+                    ).toUpperCase();
+                    return status === "REFUND" && disposition === "CASH";
+                  })
+                  .reduce(
+                    (sum: number, p) =>
+                      sum + Math.abs(Number(p.amount || 0)),
+                    0,
+                  ),
+              )}
+            </div>
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Lifetime figures include all historical payments, refunds, and credit
+          movements. The “ledger gap” reflects amounts that did not end up as{" "}
+          <code>amountPaid</code> on orders (for example, store-credit issuance
+          and internal adjustments). Current store credit and balance are shown
+          in the summary above.
+        </p>
+      </div>
+
+      {/* Per-payment breakdown */}
       <div className="rounded border overflow-hidden">
         <div className="max-h-[420px] overflow-y-auto">
           <Table className="w-full table-auto">
@@ -1586,27 +1704,44 @@ function ExplainTotals({ userId, paymentsTotal, paidTotal }: { userId: string; p
             <TableBody>
               {list.map((p) => (
                 <TableRow key={p.id}>
-                  <TableCell className="text-left text-sm">{new Date(p.createdAt).toLocaleString()}</TableCell>
-                  <TableCell className="text-center font-mono tabular-nums">{formatCurrency(Number(p.amount || 0))}</TableCell>
+                  <TableCell className="text-left text-sm">
+                    {new Date(p.createdAt).toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-center font-mono tabular-nums">
+                    {formatCurrency(Number(p.amount || 0))}
+                  </TableCell>
                   <TableCell className="text-left text-xs">
                     {Array.isArray(p.applied) && p.applied.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {p.applied.map((a: PaymentApplied, idx: number) => (
-                          <span key={idx} className="inline-block bg-muted rounded px-1.5 py-0.5">
-                            {formatOrderId(a.orderId)}: {formatCurrency(Number(a.applied || 0))}
+                          <span
+                            key={idx}
+                            className="inline-block bg-muted rounded px-1.5 py-0.5"
+                          >
+                            {formatOrderId(a.orderId)}:{" "}
+                            {formatCurrency(Number(a.applied || 0))}
                           </span>
                         ))}
                       </div>
                     ) : (
-                      <span className="text-muted-foreground">Store credit (not yet applied to any order)</span>
+                      <span className="text-muted-foreground">
+                        Store credit (not yet applied to any order)
+                      </span>
                     )}
                   </TableCell>
                 </TableRow>
               ))}
               {list.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={3} className="text-center text-sm text-muted-foreground py-4">
-                    {fetchingPayments || fetchingOrders ? "Loading..." : (payErr || ordErr) ? "Failed to load details" : "No payments found"}
+                  <TableCell
+                    colSpan={3}
+                    className="text-center text-sm text-muted-foreground py-4"
+                  >
+                    {fetchingPayments || fetchingOrders
+                      ? "Loading..."
+                      : payErr || ordErr
+                      ? "Failed to load details"
+                      : "No payments found"}
                   </TableCell>
                 </TableRow>
               )}

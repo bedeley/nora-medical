@@ -69,9 +69,14 @@ export default function ReceiptPage() {
   if (error) return <p className="p-6 text-center text-red-600">Failed to load receipt.</p>;
   if (!order) return <p className="p-6 text-center">Loading receipt...</p>;
 
-  const total = Number(order.total || 0);
+  const subtotal = Number(order.total || 0);
+  const lineTotal = (order.items || []).reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+    0,
+  );
+  const returnAdjustment = Math.max(0, lineTotal - subtotal);
   const paid = Number(order.amountPaid || 0);
-  const balance = Math.max(0, total - paid);
+  const balance = Math.max(0, subtotal - paid);
 
   const storeCreditApplied = (() => {
     const payments = order.payments || [];
@@ -135,19 +140,43 @@ export default function ReceiptPage() {
     return sum;
   })();
 
+  const deliveryLabel = (() => {
+    const raw = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+    if (raw === "DELIVERED") return "Delivered";
+    if (raw === "PARTIALLY_DELIVERED") return "Partially delivered";
+    if (raw === "RETURNED") return "Returned";
+    return "Not delivered";
+  })();
+
   const cashPaid = (() => {
     const payments = order.payments || [];
     if (!payments.length) return 0;
     let sum = 0;
     for (const p of payments) {
-      if (!p.note) continue;
+      const amount = Number(p.amount || 0);
+      if (!p.note) {
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          sum += amount;
+        }
+        continue;
+      }
       try {
         const meta = JSON.parse(p.note) as { method?: string };
         if (meta?.method === "cash" || meta?.method === "transfer") {
-          sum += Number(p.amount || 0);
+          sum += amount;
         }
       } catch {
-        // ignore malformed notes
+        if (
+          amount > 0 &&
+          typeof p.status === "string" &&
+          p.status.toUpperCase() === "NORMAL"
+        ) {
+          sum += amount;
+        }
       }
     }
     return sum;
@@ -205,69 +234,154 @@ export default function ReceiptPage() {
           <div className="text-right space-y-0.5">
             <p>Date: {formatDateTimeGH(order.createdAt)}</p>
             <p>Status: {order.status}</p>
-            {order.deliveryStatus ? (
-              <p>Delivery: {order.deliveryStatus}</p>
-            ) : null}
+            <p>Delivery: {deliveryLabel}</p>
           </div>
         </div>
 
-        <div className="mt-4 text-sm">
-          <p>Customer: {order.user?.name || ""}</p>
-        </div>
-
+        {/* Items list: mobile-friendly cards + desktop table */}
         <div className="mt-6">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b">
-                <th className="text-left py-2">Item</th>
-                <th className="text-right py-2">Qty</th>
-                <th className="text-right py-2">Delivered</th>
-                <th className="text-right py-2">Price</th>
-                <th className="text-right py-2">Total</th>
-                <th className="text-right py-2">Returns</th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.items.map((it) => (
-                <tr key={it.id} className="border-b last:border-0">
-                  <td className="py-2">{it.product?.name || "Item"}</td>
-                  <td className="text-right py-2">{it.quantity}</td>
-                  <td className="text-right py-2">
+          {/* Mobile: stacked item cards for clearer separation */}
+          <div className="grid gap-3 md:hidden">
+            {order.items.map((it) => (
+              <div key={it.id} className="border rounded-md p-3 text-sm">
+                <div className="font-medium">
+                  {it.product?.name || "Item"}
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Qty</span>
+                    <span className="font-medium">{it.quantity}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Price</span>
+                    <span>{formatCurrency(Number(it.price))}</span>
+                  </div>
+                  <div className="flex justify-between col-span-2">
+                    <span className="text-muted-foreground">Total</span>
+                    <span className="font-semibold">
+                      {formatCurrency(Number(it.price) * it.quantity)}
+                    </span>
+                  </div>
+                  <div className="flex flex-col items-start gap-1 col-span-2">
+                    <span className="text-muted-foreground">Delivery</span>
                     {(() => {
                       const delivered = Number(it.deliveredQuantity ?? 0);
                       const qty = Number(it.quantity || 0);
-                      if (!qty) return "0";
-                      if (delivered <= 0) return "0";
-                      if (delivered >= qty) return `${qty}`;
-                      return `${delivered}/${qty}`;
-                    })()}
-                  </td>
-                  <td className="text-right py-2">{formatCurrency(Number(it.price))}</td>
-                  <td className="text-right py-2">{formatCurrency(Number(it.price) * it.quantity)}</td>
-                  <td className="text-right py-2 text-xs">
-                    {(() => {
-                      const returned = Number(it.returnedQuantity ?? 0);
-                      const delivered = Number(it.deliveredQuantity ?? 0);
-                      const qty = Number(it.quantity || 0);
-                      if (returned <= 0) return "—";
-                      if (returned >= delivered && delivered > 0) {
-                        return `All delivered returned (${returned})`;
+                      let label = "Not delivered yet";
+                      let cls = "bg-slate-100 text-slate-700";
+                      let extra: string | null = null;
+                      if (delivered >= qty && qty > 0) {
+                        label = "Delivered";
+                        cls = "bg-emerald-100 text-emerald-700";
+                      } else if (delivered > 0) {
+                        label = "Partial";
+                        extra = `${delivered}/${qty}`;
+                        cls = "bg-amber-100 text-amber-800";
                       }
-                      return `${returned} of ${qty} returned`;
+                      return (
+                        <div className="flex flex-col items-end gap-0.5 w-full">
+                          <span
+                            className={`inline-flex max-w-full items-center justify-center px-1.5 py-0.5 rounded-full text-[10px] leading-tight ${cls}`}
+                          >
+                            {label}
+                          </span>
+                          {extra && (
+                            <span className="text-[10px] text-muted-foreground break-words">
+                              Delivered: {extra}
+                            </span>
+                          )}
+                        </div>
+                      );
                     })()}
-                  </td>
+                  </div>
+                  {Number(it.returnedQuantity ?? 0) > 0 && (
+                    <div className="flex justify-between col-span-2">
+                      <span className="text-muted-foreground">Returns</span>
+                      {(() => {
+                        const returned = Number(it.returnedQuantity ?? 0);
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (returned >= delivered && delivered > 0) {
+                          return (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                              All delivered units returned ({returned})
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                            {returned} of {qty} returned
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop/tablet: keep tabular layout */}
+          <div className="hidden md:block">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left py-2">Item</th>
+                  <th className="text-right py-2">Qty</th>
+                  <th className="text-right py-2">Delivered</th>
+                  <th className="text-right py-2">Price</th>
+                  <th className="text-right py-2">Total</th>
+                  <th className="text-right py-2">Returns</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {order.items.map((it) => (
+                  <tr key={it.id} className="border-b last:border-0">
+                    <td className="py-2">{it.product?.name || "Item"}</td>
+                    <td className="text-right py-2">{it.quantity}</td>
+                    <td className="text-right py-2">
+                      {(() => {
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (!qty) return "0";
+                        if (delivered <= 0) return "0";
+                        if (delivered >= qty) return `${qty}`;
+                        return `${delivered}/${qty}`;
+                      })()}
+                    </td>
+                    <td className="text-right py-2">{formatCurrency(Number(it.price))}</td>
+                    <td className="text-right py-2">
+                      {formatCurrency(Number(it.price) * it.quantity)}
+                    </td>
+                    <td className="text-right py-2 text-xs">
+                      {(() => {
+                        const returned = Number(it.returnedQuantity ?? 0);
+                        const delivered = Number(it.deliveredQuantity ?? 0);
+                        const qty = Number(it.quantity || 0);
+                        if (returned <= 0) return "—";
+                        if (returned >= delivered && delivered > 0) {
+                          return `All delivered returned (${returned})`;
+                        }
+                        return `${returned} of ${qty} returned`;
+                      })()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div className="mt-6 text-sm">
           <div className="flex justify-end">
             <div className="w-64">
               <div className="flex justify-between py-1">
+                <span>Total</span>
+                <span>{formatCurrency(lineTotal)}</span>
+              </div>
+              <div className="flex justify-between py-1">
                 <span>Subtotal</span>
-                <span>{formatCurrency(total)}</span>
+                <span>{formatCurrency(subtotal)}</span>
               </div>
               <div className="flex justify-between py-1">
                 <span>Paid</span>
@@ -301,6 +415,12 @@ export default function ReceiptPage() {
                 <span>Balance</span>
                 <span>{formatCurrency(balance)}</span>
               </div>
+              {returnAdjustment > 0.005 && (
+                <p className="mt-1 text-[10px] text-muted-foreground">
+                  Note: Subtotal is lower than the original total because returned items reduced this order by{" "}
+                  {formatCurrency(returnAdjustment)}.
+                </p>
+              )}
             </div>
           </div>
         </div>

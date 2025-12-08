@@ -141,12 +141,18 @@ export async function POST(req: Request) {
       }
 
       if (amountPaid > 0) {
+        const meta = {
+          method: "cash" as const,
+          reference: "ADMIN_ORDER_INITIAL" as const,
+          location: "admin/orders/new",
+          note: note || "Admin initial payment",
+        };
         await tx.payment.create({
           data: {
             userId,
             orderId: created.id,
             amount: amountPaid,
-            note: note || "Admin initial payment",
+            note: JSON.stringify(meta),
           },
         });
       }
