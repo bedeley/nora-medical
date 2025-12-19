@@ -1,7 +1,9 @@
 export async function sendSms(to: string, body: string) {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_FROM_NUMBER;
+  const alphanumericFrom = process.env.TWILIO_ALPHANUMERIC_SENDER_ID;
+  const numericFrom = process.env.TWILIO_FROM_NUMBER;
+  const from = alphanumericFrom || numericFrom;
 
   if (!sid || !token || !from) {
     return { ok: false, error: "SMS not configured (missing TWILIO env)" };
@@ -30,4 +32,3 @@ export async function sendSms(to: string, body: string) {
 
   return { ok: true };
 }
-

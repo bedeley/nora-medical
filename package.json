@@ -7,6 +7,7 @@
         "fix:orders": "tsx prisma/scripts/normalize-orders.ts",
     "dev": "next dev --turbopack",
     "prebuild": "prisma generate",
+    "migrate:deploy": "prisma migrate deploy",
     "build": "next build",
         "start": "next start",
         "lint": "eslint",
