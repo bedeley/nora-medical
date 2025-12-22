@@ -100,6 +100,14 @@ export async function POST(req: Request) {
   const userId = (session.user as AuthenticatedUser).id;
 
   try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 401 });
+    }
+
     const body = await req.json();
     const parsed = cartItemSchema.safeParse(body);
     if (!parsed.success) {
@@ -186,6 +194,14 @@ export async function PATCH(req: Request) {
   const userId = (session.user as AuthenticatedUser).id;
 
   try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 401 });
+    }
+
     const body = await req.json();
     const parsed = cartItemSchema.safeParse(body);
     if (!parsed.success) {
@@ -255,6 +271,14 @@ export async function DELETE(req: Request) {
   const userId = (session.user as AuthenticatedUser).id;
 
   try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 401 });
+    }
+
     await prisma.cart.deleteMany({ where: { userId } });
     return NextResponse.json({ success: true });
   } catch (error) {

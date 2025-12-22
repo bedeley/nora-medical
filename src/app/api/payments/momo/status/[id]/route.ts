@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getMomoStatus, type MomoProvider } from "@/lib/momo";
+import { notifyPaymentEvent } from "@/lib/notifications";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -38,6 +39,7 @@ export async function GET(
     const status = await getMomoStatus(provider, ref);
     if (!status.ok) return NextResponse.json({ error: status.error || "Status error" }, { status: 502 });
 
+    let appliedNow = false;
     if (String(status.status).toUpperCase() === "SUCCESSFUL") {
       // Apply to order balances if not already applied (idempotent)
       await prisma.$transaction(async (tx: TxClient) => {
@@ -134,7 +136,27 @@ export async function GET(
           where: { id: payment.id },
           data: { note: JSON.stringify(newMeta) },
         });
+        appliedNow = true;
       });
+    }
+
+    if (appliedNow && payment.userId) {
+      try {
+        const purpose = String((meta?.purpose as string | undefined) ?? "");
+        const subject =
+          purpose === "order_checkout"
+            ? "Order Confirmation & Receipt"
+            : "Payment received — updated receipt";
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId: payment.userId,
+          amount: Number(payment.amount || 0),
+          orderId: payment.orderId || undefined,
+          subject,
+        });
+      } catch (e) {
+        console.warn("notifyPaymentEvent (momo status) error:", e);
+      }
     }
 
     return NextResponse.json({ ok: true, status: status.status });

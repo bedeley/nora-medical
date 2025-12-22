@@ -15,6 +15,7 @@ import {
   Menu,
   X,
   Shield,
+  ShieldCheck,
   Package,
   Users,
   DollarSign,
@@ -387,6 +388,18 @@ export default function NavBar() {
                             <DollarSign className="h-3 w-3 mr-2" /> Expenses
                           </Link>
                         </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link
+                            href="/admin/health"
+                            className={
+                              isCurrent("/admin/health")
+                                ? "font-semibold text-primary"
+                                : ""
+                            }
+                          >
+                            <ShieldCheck className="h-3 w-3 mr-2" /> Health Check
+                          </Link>
+                        </DropdownMenuItem>
                       </>
                     )}
                     <DropdownMenuSeparator />
@@ -517,6 +530,11 @@ export default function NavBar() {
                     <DropdownMenuItem asChild>
                       <Link href="/admin/expenses">
                         <DollarSign className="h-3 w-3 mr-2" /> Expenses
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link href="/admin/health">
+                        <ShieldCheck className="h-3 w-3 mr-2" /> Health Check
                       </Link>
                     </DropdownMenuItem>
                   </>

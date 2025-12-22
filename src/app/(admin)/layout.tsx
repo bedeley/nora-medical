@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 export default function AdminGroupLayout({
@@ -13,6 +14,35 @@ export default function AdminGroupLayout({
 }) {
   const pathname = usePathname();
   const isReceipt = typeof pathname === "string" && pathname.includes("/receipt");
+  const [healthSummary, setHealthSummary] = useState<{
+    paymentMismatches: number;
+    orderBalanceMismatches: number;
+    stockMismatches: number;
+    legacyAutoApply: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin/health/summary");
+        const j = await res.json().catch(() => null);
+        if (active && res.ok) setHealthSummary(j);
+      } catch {
+        // ignore banner load errors
+      }
+    })();
+    (async () => {
+      try {
+        await fetch("/api/admin/health/alerts", { method: "POST" });
+      } catch {
+        // ignore alert errors
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   if (isReceipt) {
     return <>{children}</>;
@@ -39,6 +69,32 @@ export default function AdminGroupLayout({
           <Link href="/admin/settings/features" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/features") ? "bg-muted" : ""}`}>Features</Link>
         </nav>
       </header>
+      {healthSummary &&
+      (healthSummary.paymentMismatches > 0 ||
+        healthSummary.orderBalanceMismatches > 0 ||
+        healthSummary.stockMismatches > 0 ||
+        healthSummary.legacyAutoApply > 0) ? (
+        <div className="border-b bg-amber-50 text-amber-900">
+          <div className="container mx-auto py-2 text-xs flex flex-wrap items-center gap-2">
+            <span className="font-semibold">Health Check alert:</span>
+            {healthSummary.paymentMismatches > 0 ? (
+              <span>{healthSummary.paymentMismatches} payment mismatch(es)</span>
+            ) : null}
+            {healthSummary.orderBalanceMismatches > 0 ? (
+              <span>{healthSummary.orderBalanceMismatches} balance mismatch(es)</span>
+            ) : null}
+            {healthSummary.stockMismatches > 0 ? (
+              <span>{healthSummary.stockMismatches} stock mismatch(es)</span>
+            ) : null}
+            {healthSummary.legacyAutoApply > 0 ? (
+              <span>{healthSummary.legacyAutoApply} legacy auto-apply row(s)</span>
+            ) : null}
+            <a href="/admin/health" className="underline font-medium">
+              Review now
+            </a>
+          </div>
+        </div>
+      ) : null}
       {children}
     </div>
   );

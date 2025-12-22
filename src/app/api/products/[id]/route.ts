@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { productSchema } from "../route";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
+import { notifyBackInStock } from "@/lib/stock-alerts";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -18,18 +19,35 @@ export async function GET(
 ) {
   try {
     const params = await context.params;
+    const session = await getServerSession(authOptions);
+    const user = session?.user as AuthenticatedUser | undefined;
+    const role = user?.role;
+    const includePrivate = ["ADMIN", "STAFF", "ACCOUNTANT"].includes(String(role || ""));
     const product = await prisma.product.findUnique({ where: { id: params.id } });
 
     if (!product) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
     }
+    if (!includePrivate && product.archived) {
+      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    }
 
     // ✅ Convert Decimal & Dates to primitives
     const safeProduct = {
-      ...product,
+      id: product.id,
+      name: product.name,
+      description: product.description,
+      imageUrl: product.imageUrl,
       price: Number(product.price),
+      stock: product.stock,
       createdAt: product.createdAt.toISOString(),
       updatedAt: product.updatedAt.toISOString(),
+      ...(includePrivate
+        ? {
+            cost: Number(product.cost),
+            archived: product.archived,
+          }
+        : {}),
     };
 
     return new NextResponse(JSON.stringify(safeProduct), {
@@ -67,10 +85,12 @@ const urlOrPath = z
   );
 
 const productUpdateSchema = productSchema
+  .omit({ cost: true })
   .partial()
   .extend({
     imageUrl: urlOrPath.optional(),
     archived: z.boolean().optional(),
+    editReason: z.string().min(5),
   });
 
 /**
@@ -104,7 +124,27 @@ export async function PATCH(
       );
     }
 
-    const updateData = parsed.data as Parameters<typeof prisma.product.update>[0]["data"];
+    const { editReason, ...rawData } = parsed.data;
+    const updateData =
+      rawData as Parameters<typeof prisma.product.update>[0]["data"];
+    const existing = await prisma.product.findUnique({
+      where: { id: params.id },
+      select: { stock: true },
+    });
+    const oldStock = Number(existing?.stock ?? 0);
+    if (updateData.archived === true) {
+      const stockToCheck =
+        typeof updateData.stock !== "undefined"
+          ? Number(updateData.stock)
+          : oldStock;
+      if (Number(stockToCheck || 0) > 0) {
+        return NextResponse.json(
+          { error: "Cannot archive a product with stock greater than 0." },
+          { status: 400 },
+        );
+      }
+    }
+
     const updated = await prisma.product.update({
       where: { id: params.id },
       data: updateData,
@@ -116,6 +156,28 @@ export async function PATCH(
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
     };
+
+    try {
+      const newStock = Number(updated.stock ?? 0);
+      const reason = String(editReason || "").trim().slice(0, 140);
+      if (typeof updateData.stock !== "undefined") {
+        const delta = newStock - oldStock;
+        if (delta !== 0) {
+          await prisma.inventoryMovement.create({
+            data: {
+              productId: updated.id,
+              delta,
+              reason: `ADJUSTMENT: ${reason || "Admin update"}`,
+            },
+          });
+        }
+      }
+      if (typeof updateData.stock !== "undefined" && oldStock <= 0 && newStock > 0) {
+        await notifyBackInStock(updated.id);
+      }
+    } catch (e) {
+      console.warn("Back-in-stock notification error:", e);
+    }
 
     return NextResponse.json({ success: true, data: safeProduct });
   } catch (error) {
@@ -165,9 +227,12 @@ export async function DELETE(
       );
     }
 
-    // Clean up any cart items referencing this product, then delete product
+    // Clean up related records, then delete product
     await prisma.$transaction(async (tx: TxClient) => {
       await tx.cartItem.deleteMany({ where: { productId: params.id } });
+      await tx.inventoryMovement.deleteMany({ where: { productId: params.id } });
+      await tx.purchase.deleteMany({ where: { productId: params.id } });
+      await tx.stockAlert.deleteMany({ where: { productId: params.id } });
       await tx.product.delete({ where: { id: params.id } });
     });
 

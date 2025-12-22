@@ -117,7 +117,10 @@ export async function GET(
     const order = await prisma.order.findFirst({
       where: isAdmin ? { id: params.id } : { id: params.id, userId: user.id },
       include: {
-        items: { include: { product: true } },
+        items: {
+          include: { product: true },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        },
         user: { select: { name: true, email: true } },
         payments: true,
       },
@@ -127,14 +130,14 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    // Also load any AUTO_APPLY credit adjustment payments for this user so
-    // receipts can show how much store credit was applied to this order,
-    // even though those adjustment entries are not tied to a single orderId.
+    // Also load any legacy AUTO_APPLY credit adjustment payments for this user
+    // that are not tied to a single orderId, so receipts can show applied credit.
     let merged = order as unknown as OrderWithRelations;
     if (order.userId) {
       const autoApplyPayments = await prisma.payment.findMany({
         where: {
           userId: order.userId,
+          orderId: null,
           note: {
             contains: "\"reference\":\"AUTO_APPLY\"",
           },
@@ -146,7 +149,19 @@ export async function GET(
           new Map<string, (typeof order.payments)[number]>(),
         );
         for (const p of autoApplyPayments) {
-          if (!existing.has(p.id)) existing.set(p.id, p);
+          if (existing.has(p.id)) continue;
+          if (!p.note) continue;
+          try {
+            const meta = JSON.parse(p.note) as {
+              applied?: Array<{ orderId?: string }>;
+            };
+            const appliesToOrder = Array.isArray(meta.applied)
+              ? meta.applied.some((a) => a?.orderId === order.id)
+              : false;
+            if (appliesToOrder) existing.set(p.id, p);
+          } catch {
+            // ignore malformed notes
+          }
         }
         merged = {
           ...(order as unknown as OrderWithRelations),
@@ -157,9 +172,14 @@ export async function GET(
 
     return NextResponse.json({ data: serializeOrder(merged) });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to fetch order";
     console.error("Error fetching order:", error);
     return NextResponse.json(
-      { error: "Failed to fetch order" },
+      {
+        error: "Failed to fetch order",
+        details: process.env.NODE_ENV === "production" ? undefined : message,
+      },
       { status: 500 }
     );
   }
@@ -317,11 +337,14 @@ export async function PATCH(
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data,
-        include: {
-          items: { include: { product: true } },
-          user: { select: { name: true, email: true } },
-          payments: true,
+      include: {
+        items: {
+          include: { product: true },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         },
+        user: { select: { name: true, email: true } },
+        payments: true,
+      },
       });
 
       // If the overall delivery status is being set to DELIVERED, mark all

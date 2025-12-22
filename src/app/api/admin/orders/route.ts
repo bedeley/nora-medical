@@ -174,6 +174,8 @@ export async function POST(req: Request) {
           kind: "payment_recorded",
           userId,
           amount: amountPaid,
+          orderId: order.id,
+          subject: "Payment received — updated receipt",
         });
       }
     } catch (e) {

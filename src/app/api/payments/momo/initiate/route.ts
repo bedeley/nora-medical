@@ -52,6 +52,7 @@ export async function POST(req: Request) {
       status: "pending",
       phone,
       orderId,
+      purpose: "balance_payment",
     };
 
     const payment = await prisma.payment.create({

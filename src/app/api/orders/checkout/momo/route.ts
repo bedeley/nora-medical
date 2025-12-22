@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo, isValidPhone, normalizePhoneGH } from "@/lib/momo";
+import { notifyOrderEvent, notifyPaymentEvent } from "@/lib/notifications";
+import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { randomUUID } from "crypto";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -136,16 +139,6 @@ export async function POST(req: Request) {
           },
         };
 
-        const creditPayment = await tx.payment.create({
-          data: {
-            userId,
-            amount: amountToApply,
-            note: JSON.stringify(meta),
-            status: "NORMAL",
-            refundDisposition: null,
-          },
-        });
-
         let remainingPayment = amountToApply;
         const applied: Array<{
           orderId: string;
@@ -154,6 +147,8 @@ export async function POST(req: Request) {
           newBalance: number;
           newStatus: string;
         }> = [];
+        const batchId = randomUUID();
+        const createdPaymentIds: string[] = [];
 
         for (const ord of orders) {
           if (remainingPayment <= 0) break;
@@ -162,30 +157,29 @@ export async function POST(req: Request) {
           const remainingO = Math.max(0, totalO - paid);
           if (remainingO <= 0) continue;
           const applyAmt = Math.min(remainingPayment, remainingO);
-          const newAmountPaid = paid + applyAmt;
-          const newBalanceO = Math.max(0, totalO - newAmountPaid);
-          const newStatusO =
-            newBalanceO <= 0
-              ? "PAID"
-              : newAmountPaid > 0
-              ? "PARTIALLY_PAID"
-              : "UNPAID";
-
-          const updatedO = await tx.order.update({
-            where: { id: ord.id },
+          const payment = await tx.payment.create({
             data: {
-              amountPaid: newAmountPaid,
-              balance: newBalanceO,
-              status: newStatusO,
+              userId,
+              orderId: ord.id,
+              amount: applyAmt,
+              note: JSON.stringify({
+                ...meta,
+                batchId,
+                applied: [{ orderId: ord.id, applied: applyAmt }],
+              }),
+              status: "NORMAL",
+              refundDisposition: null,
             },
           });
+          createdPaymentIds.push(payment.id);
 
+          const updatedO = await recomputeOrderTotalsFromPayments(tx, ord.id);
           applied.push({
             orderId: updatedO.id,
             applied: applyAmt,
-            newAmountPaid,
-            newBalance: newBalanceO,
-            newStatus: newStatusO,
+            newAmountPaid: Number(updatedO.amountPaid ?? 0),
+            newBalance: Number(updatedO.balance ?? 0),
+            newStatus: String(updatedO.status),
           });
           remainingPayment -= applyAmt;
         }
@@ -205,21 +199,26 @@ export async function POST(req: Request) {
         );
         const balanceAfter = Math.max(0, totalDueAfter - totalPaidAfter);
 
-        try {
-          const withApplied = {
-            ...meta,
-            applied,
-            postTotals: {
-              totalDue: totalDueAfter,
-              totalPaid: totalPaidAfter,
-              balance: balanceAfter,
-            },
-          };
-          await tx.payment.update({
-            where: { id: creditPayment.id },
-            data: { note: JSON.stringify(withApplied) },
-          });
-        } catch {}
+        if (createdPaymentIds.length > 0) {
+          try {
+            const withApplied = {
+              ...meta,
+              batchId,
+              applied,
+              postTotals: {
+                totalDue: totalDueAfter,
+                totalPaid: totalPaidAfter,
+                balance: balanceAfter,
+              },
+            };
+            for (const id of createdPaymentIds) {
+              await tx.payment.update({
+                where: { id },
+                data: { note: JSON.stringify(withApplied) },
+              });
+            }
+          } catch {}
+        }
       }
 
       const refreshed = await tx.order.findUnique({
@@ -248,6 +247,16 @@ export async function POST(req: Request) {
     // If store credit (and/or previous payments) fully cover this order,
     // there is nothing left to charge via MoMo.
     if (!(chargeAmount > 0)) {
+      try {
+        await notifyOrderEvent({
+          kind: "order_created",
+          userId,
+          orderId: order.id,
+          total,
+        });
+      } catch (e) {
+        console.warn("notifyOrderEvent (checkout-momo zero balance) error:", e);
+      }
       return NextResponse.json({
         ok: true,
         applied: true,
@@ -264,6 +273,7 @@ export async function POST(req: Request) {
       status: "pending" as const,
       phone,
       orderId: order.id,
+      purpose: "order_checkout" as const,
     };
     const payment = await prisma.payment.create({ data: { userId, orderId: order.id, amount: chargeAmount, note: JSON.stringify(meta) } });
 
@@ -320,6 +330,17 @@ export async function POST(req: Request) {
           data: { note: JSON.stringify(note) },
         });
       });
+      try {
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId,
+          amount: chargeAmount,
+          orderId: order.id,
+          subject: "Order Confirmation & Receipt",
+        });
+      } catch (e) {
+        console.warn("notifyPaymentEvent (checkout-momo test) error:", e);
+      }
       return NextResponse.json({
         ok: true,
         applied: true,

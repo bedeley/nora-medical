@@ -4,6 +4,8 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { notifyOrderEvent } from "@/lib/notifications";
+import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { randomUUID } from "crypto";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -267,16 +269,6 @@ export async function POST(req: Request) {
           },
         };
 
-        const payment = await tx.payment.create({
-          data: {
-            userId,
-            amount: amountToApply,
-            note: JSON.stringify(meta),
-            status: "NORMAL",
-            refundDisposition: null,
-          },
-        });
-
         let remainingPayment = amountToApply;
         const applied: Array<{
           orderId: string;
@@ -285,6 +277,8 @@ export async function POST(req: Request) {
           newBalance: number;
           newStatus: string;
         }> = [];
+        const batchId = randomUUID();
+        const createdPaymentIds: string[] = [];
 
         for (const o of orders) {
           if (remainingPayment <= 0) break;
@@ -293,29 +287,29 @@ export async function POST(req: Request) {
           const remainingO = Math.max(0, totalO - paid);
           if (remainingO <= 0) continue;
           const applyAmt = Math.min(remainingPayment, remainingO);
-          const newAmountPaid = paid + applyAmt;
-          const newBalanceO = Math.max(0, totalO - newAmountPaid);
-          const newStatusO =
-            newBalanceO <= 0
-              ? "PAID"
-              : newAmountPaid > 0
-              ? "PARTIALLY_PAID"
-              : "UNPAID";
-
-          const updatedO = await tx.order.update({
-            where: { id: o.id },
+          const payment = await tx.payment.create({
             data: {
-              amountPaid: newAmountPaid,
-              balance: newBalanceO,
-              status: newStatusO,
+              userId,
+              orderId: o.id,
+              amount: applyAmt,
+              note: JSON.stringify({
+                ...meta,
+                batchId,
+                applied: [{ orderId: o.id, applied: applyAmt }],
+              }),
+              status: "NORMAL",
+              refundDisposition: null,
             },
           });
+          createdPaymentIds.push(payment.id);
+
+          const updatedO = await recomputeOrderTotalsFromPayments(tx, o.id);
           applied.push({
             orderId: updatedO.id,
             applied: applyAmt,
-            newAmountPaid,
-            newBalance: newBalanceO,
-            newStatus: newStatusO,
+            newAmountPaid: Number(updatedO.amountPaid ?? 0),
+            newBalance: Number(updatedO.balance ?? 0),
+            newStatus: String(updatedO.status),
           });
           remainingPayment -= applyAmt;
         }
@@ -335,21 +329,26 @@ export async function POST(req: Request) {
         );
         const balanceAfter = Math.max(0, totalDueAfter - totalPaidAfter);
 
-        try {
-          const withApplied = {
-            ...meta,
-            applied,
-            postTotals: {
-              totalDue: totalDueAfter,
-              totalPaid: totalPaidAfter,
-              balance: balanceAfter,
-            },
-          };
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: { note: JSON.stringify(withApplied) },
-          });
-        } catch {}
+        if (createdPaymentIds.length > 0) {
+          try {
+            const withApplied = {
+              ...meta,
+              batchId,
+              applied,
+              postTotals: {
+                totalDue: totalDueAfter,
+                totalPaid: totalPaidAfter,
+                balance: balanceAfter,
+              },
+            };
+            for (const id of createdPaymentIds) {
+              await tx.payment.update({
+                where: { id },
+                data: { note: JSON.stringify(withApplied) },
+              });
+            }
+          } catch {}
+        }
       }
 
       return newOrder;

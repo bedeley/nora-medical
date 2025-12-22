@@ -16,7 +16,6 @@ function logDatabaseTargetOnce() {
     // Example output:
     // [Prisma] Using DB host ep-summer-pond-... db neondb (stage=development)
     // [Prisma] Using DB host ep-jolly-base-... db neondb (stage=production)
-    // eslint-disable-next-line no-console
     console.log(
       `[Prisma] Using DB host ${host} db ${dbName} (stage=${stage})`,
     );

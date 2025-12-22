@@ -4,6 +4,8 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { notifyPaymentEvent } from "@/lib/notifications";
+import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -69,20 +71,23 @@ export async function PATCH(
         },
       });
 
-      const newAmountPaid = Number(order.amountPaid) + amount;
-      const newBalance = Math.max(0, Number(order.total) - newAmountPaid);
-
-      const updated = await tx.order.update({
-        where: { id: orderId },
-        data: {
-          amountPaid: newAmountPaid,
-          balance: newBalance,
-          status: newBalance <= 0 ? "PAID" : "PARTIALLY_PAID",
-        },
-      });
-
+      const updated = await recomputeOrderTotalsFromPayments(tx, orderId);
       return updated;
     });
+
+    try {
+      if (result.userId) {
+        await notifyPaymentEvent({
+          kind: "payment_recorded",
+          userId: result.userId,
+          amount,
+          orderId,
+          subject: "Payment received — updated receipt",
+        });
+      }
+    } catch (e) {
+      console.warn("notifyPaymentEvent (admin order payment) error:", e);
+    }
 
     return NextResponse.json({
       success: true,

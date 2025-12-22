@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { verifyTotp } from "@/lib/totp";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { signMfaCookie } from "@/lib/mfa";
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
@@ -29,9 +30,16 @@ export async function POST(req: Request) {
 
   const res = NextResponse.json({ ok: true });
   const maxAge = 60 * 60 * 8; // 8 hours
+  const token = await signMfaCookie(userId, Date.now() + maxAge * 1000);
+  if (!token) {
+    return NextResponse.json(
+      { error: "MFA cookie secret not configured" },
+      { status: 500 }
+    );
+  }
   res.headers.append(
     "Set-Cookie",
-    `mfa=ok; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
+    `mfa=${token}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
   );
   return res;
 }

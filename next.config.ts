@@ -1,3 +1,4 @@
+import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 
 const isProd = process.env.NODE_ENV === "production";
@@ -9,6 +10,9 @@ const scriptSrc = isProd
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  turbopack: {
+    root: __dirname,
+  },
   images: {
     dangerouslyAllowSVG: false,
     // Enable Next/Vercel image optimization; add domains/patterns as needed.
@@ -57,4 +61,11 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(
+  nextConfig,
+  {
+    silent: true,
+    disableLogger: true,
+    sourcemaps: { disable: true },
+  }
+);

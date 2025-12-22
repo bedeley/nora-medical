@@ -97,8 +97,8 @@ const productEditSchema = z.object({
   description: z.string().min(5).optional(),
   imageUrl: urlOrPath.optional(),
   price: z.coerce.number().nonnegative().optional(),
-  cost: z.coerce.number().nonnegative().optional(),
   stock: z.coerce.number().int().nonnegative().optional(),
+  editReason: z.string().min(5, "Please add a brief reason for this change."),
 });
 
 function AdminProductsContent() {
@@ -359,7 +359,12 @@ function AdminProductsContent() {
                             </DropdownMenuItem>
                           ) : (
                             <DropdownMenuItem
+                              disabled={Number(p.stock || 0) > 0}
                               onClick={async () => {
+                                if (Number(p.stock || 0) > 0) {
+                                  toast.error("Cannot archive a product with stock greater than 0.");
+                                  return;
+                                }
                                 const res = await fetch(`/api/products/${p.id}`, {
                                   method: "PATCH",
                                   headers: { "Content-Type": "application/json" },
@@ -376,12 +381,19 @@ function AdminProductsContent() {
                                 }
                               }}
                             >
-                              Archive
+                              {Number(p.stock || 0) > 0 ? "Archive (stock must be 0)" : "Archive"}
                             </DropdownMenuItem>
                           )}
-                          <DropdownMenuItem variant="destructive" onClick={() => setDeleteId(p.id)}>
-                            Delete
-                          </DropdownMenuItem>
+                          {(p.orderCount ?? 0) === 0 && (
+                            <DropdownMenuItem variant="destructive" onClick={() => setDeleteId(p.id)}>
+                              Delete
+                            </DropdownMenuItem>
+                          )}
+                          {(p.orderCount ?? 0) > 0 && (
+                            <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                              Delete hidden (order history)
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
@@ -441,15 +453,20 @@ function AdminProductsContent() {
                 <p className="font-semibold">{p.stock}</p>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 pt-1">
-              <Button size="sm" variant="secondary" className="flex-1 min-w-[120px]" onClick={() => setEditId(p.id)}>
+            <div className="grid gap-2 pt-1 sm:grid-cols-2">
+              <Button size="sm" variant="secondary" className="w-full" onClick={() => setEditId(p.id)}>
                 Edit
               </Button>
               <Button
                 size="sm"
                 variant="outline"
-                className="flex-1 min-w-[120px]"
+                className="w-full"
+                disabled={!p.archived && Number(p.stock || 0) > 0}
                 onClick={async () => {
+                  if (!p.archived && Number(p.stock || 0) > 0) {
+                    toast.error("Cannot archive a product with stock greater than 0.");
+                    return;
+                  }
                   const res = await fetch(`/api/products/${p.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
@@ -464,16 +481,27 @@ function AdminProductsContent() {
                   }
                 }}
               >
-                {p.archived ? "Unarchive" : "Archive"}
+                {p.archived
+                  ? "Unarchive"
+                  : Number(p.stock || 0) > 0
+                  ? "Archive (stock must be 0)"
+                  : "Archive"}
               </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="flex-1 min-w-[120px]"
-                onClick={() => setDeleteId(p.id)}
-              >
-                Delete
-              </Button>
+              {(p.orderCount ?? 0) === 0 && (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="w-full sm:col-span-2"
+                  onClick={() => setDeleteId(p.id)}
+                >
+                  Delete
+                </Button>
+              )}
+              {(p.orderCount ?? 0) > 0 && (
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  Delete hidden because this product has order history.
+                </p>
+              )}
             </div>
           </div>
         ))}
@@ -804,6 +832,7 @@ type AdminProduct = {
   cost: number | string;
   stock: number;
   archived?: boolean;
+  orderCount?: number;
   updatedAt: string | Date;
 };
 
@@ -833,8 +862,8 @@ function EditProductDialog({
       description: product.description ?? undefined,
       imageUrl: product.imageUrl ?? undefined,
       price: product.price,
-      cost: product.cost,
       stock: product.stock,
+      editReason: "",
     },
   });
 
@@ -859,8 +888,9 @@ function EditProductDialog({
   const onSubmit = async (values: z.input<typeof productEditSchema>) => {
     try {
       setSaving(true);
-      const payload: Partial<Pick<AdminProduct, "name" | "description" | "imageUrl" | "price" | "cost" | "stock">> =
-        {};
+      const payload: Partial<Pick<AdminProduct, "name" | "description" | "imageUrl" | "price" | "stock">> & {
+        editReason?: string;
+      } = {};
       if (typeof values.name === "string" && values.name.trim() !== "") {
         const capitalized = toTitleCase(values.name.trim());
         payload.name = capitalized;
@@ -874,15 +904,21 @@ function EditProductDialog({
       if (values.price !== undefined && values.price !== null && !Number.isNaN(Number(values.price))) {
         payload.price = Number(values.price);
       }
-      if (values.cost !== undefined && values.cost !== null && !Number.isNaN(Number(values.cost))) {
-        payload.cost = Number(values.cost);
-      }
       if (values.stock !== undefined && values.stock !== null && !Number.isNaN(Number(values.stock))) {
         payload.stock = Number(values.stock);
       }
+      if (typeof values.editReason === "string" && values.editReason.trim() !== "") {
+        payload.editReason = values.editReason.trim();
+      }
       // If nothing to update, bail early
-      if (Object.keys(payload).length === 0) {
+      const { editReason, ...changes } = payload;
+      if (Object.keys(changes).length === 0) {
         toast.info("No changes to save");
+        setSaving(false);
+        return;
+      }
+      if (!editReason) {
+        toast.error("Please add a brief reason for this change.");
         setSaving(false);
         return;
       }
@@ -898,6 +934,7 @@ function EditProductDialog({
       }
       queryClient.invalidateQueries({ queryKey: ["admin","products"] });
       toast.success(`${payload.name} updated`);
+      form.setValue("editReason", "");
       setActualOpen(false);
     } catch (e) {
       console.error(e);
@@ -912,7 +949,7 @@ function EditProductDialog({
       <DialogTrigger asChild>
         {trigger || <Button size="sm" variant="secondary">Edit</Button>}
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Edit Product</DialogTitle>
         </DialogHeader>
@@ -988,16 +1025,18 @@ function EditProductDialog({
               <p className="text-xs text-red-600">{String(form.formState.errors.price.message)}</p>
             )}
 
-            <Label>Cost</Label>
+            <Label>Cost (auto-calculated)</Label>
             <Input
               type="number"
               step="0.01"
-              {...form.register("cost", { valueAsNumber: true })}
-              className={form.formState.errors.cost ? "border-red-500" : undefined}
+              value={Number(product.cost || 0)}
+              readOnly
+              disabled
+              className="bg-muted"
             />
-            {form.formState.errors.cost && (
-              <p className="text-xs text-red-600">{String(form.formState.errors.cost.message)}</p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              Cost is the weighted average from purchases and cannot be edited here.
+            </p>
 
             <Label>Stock</Label>
             <Input
@@ -1007,6 +1046,18 @@ function EditProductDialog({
             />
             {form.formState.errors.stock && (
               <p className="text-xs text-red-600">{String(form.formState.errors.stock.message)}</p>
+            )}
+
+            <Label>Reason for change</Label>
+            <Input
+              placeholder="e.g., correcting description / stock audit / price update"
+              {...form.register("editReason")}
+              className={form.formState.errors.editReason ? "border-red-500" : undefined}
+            />
+            {form.formState.errors.editReason && (
+              <p className="text-xs text-red-600">
+                {String(form.formState.errors.editReason.message)}
+              </p>
             )}
 
             <div className="flex justify-end pt-3">
@@ -1060,7 +1111,7 @@ function DeleteProductDialog({ id, name, trigger, open: controlledOpen, onOpenCh
           <Button size="sm" variant="destructive" className="text-white">Delete</Button>
         )}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
           <DialogTitle>Delete {name}?</DialogTitle>
         </DialogHeader>

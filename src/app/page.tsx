@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 export default async function HomePage() {
   const session = await getServerSession(authOptions);
   const featured = await prisma.product.findMany({
+    where: { archived: false },
     orderBy: { createdAt: "desc" },
     take: 8,
   });

@@ -8,6 +8,8 @@ import { rateLimit } from "@/lib/rate-limit";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 import { notifyPaymentEvent } from "@/lib/notifications";
 import { recordAuditLog } from "@/lib/audit-log";
+import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { randomUUID } from "crypto";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -136,20 +138,6 @@ export async function POST(req: Request) {
           ? RefundDestination.CREDIT
           : null;
 
-      const payment = await tx.payment.create({
-        data: {
-          userId,
-          orderId,
-          amount: normalizedAmount,
-          note: JSON.stringify({
-            ...meta,
-            refundDisposition: refundDisposition || undefined,
-          }),
-          status: PaymentStatus[normalizedStatus],
-          refundDisposition: refundDispositionValue || null,
-        },
-      });
-
       // Apply payment either to a single order or spread across open orders
       const applied: Array<{
         orderId: string;
@@ -158,8 +146,24 @@ export async function POST(req: Request) {
         newBalance: number;
         newStatus: string;
       }> = [];
+      const createdPayments: Array<{ id: string; orderId: string | null }> = [];
+      const batchId = randomUUID();
 
       if (orderId) {
+        const payment = await tx.payment.create({
+          data: {
+            userId,
+            orderId,
+            amount: normalizedAmount,
+            note: JSON.stringify({
+              ...meta,
+              refundDisposition: refundDisposition || undefined,
+            }),
+            status: PaymentStatus[normalizedStatus],
+            refundDisposition: refundDispositionValue || null,
+          },
+        });
+        createdPayments.push({ id: payment.id, orderId: payment.orderId });
         const order = await tx.order.findUnique({ where: { id: orderId } });
         if (!order) throw new Error("Order not found after payment create");
         if (order.status === "CANCELLED") throw new Error("Cannot apply payment to cancelled order");
@@ -174,20 +178,14 @@ export async function POST(req: Request) {
           applyAmt = -refundable; // negative application reduces amountPaid
         }
 
-        const newAmountPaid = Math.max(0, currentPaid + applyAmt);
-        const newBalance = Math.max(0, total - newAmountPaid);
-        const newStatus = newBalance <= 0 ? "PAID" : newAmountPaid > 0 ? "PARTIALLY_PAID" : "UNPAID";
-
-        const updated = await tx.order.update({
-          where: { id: orderId },
-          data: {
-            amountPaid: newAmountPaid,
-            balance: newBalance,
-            status: newStatus,
-          },
+        const updated = await recomputeOrderTotalsFromPayments(tx, orderId);
+        applied.push({
+          orderId: updated.id,
+          applied: applyAmt,
+          newAmountPaid: Number(updated.amountPaid ?? 0),
+          newBalance: Number(updated.balance ?? 0),
+          newStatus: String(updated.status),
         });
-
-        applied.push({ orderId: updated.id, applied: applyAmt, newAmountPaid, newBalance, newStatus });
       } else {
         if (normalizedAmount < 0) {
           throw new Error("Negative payments require selecting an Order ID");
@@ -211,19 +209,29 @@ export async function POST(req: Request) {
           const remaining = Math.max(0, total - paid);
           if (remaining <= 0) continue;
           const applyAmt = Math.min(remainingPayment, remaining);
-          const newAmountPaid = paid + applyAmt;
-          const newBalance = Math.max(0, total - newAmountPaid);
-          const newStatus = newBalance <= 0 ? "PAID" : newAmountPaid > 0 ? "PARTIALLY_PAID" : "UNPAID";
-
-          const updated = await tx.order.update({
-            where: { id: o.id },
+          const payment = await tx.payment.create({
             data: {
-              amountPaid: newAmountPaid,
-              balance: newBalance,
-              status: newStatus,
+              userId,
+              orderId: o.id,
+              amount: applyAmt,
+              note: JSON.stringify({
+                ...meta,
+                batchId,
+                applied: [{ orderId: o.id, applied: applyAmt }],
+              }),
+              status: PaymentStatus[normalizedStatus],
+              refundDisposition: refundDispositionValue || null,
             },
           });
-          applied.push({ orderId: updated.id, applied: applyAmt, newAmountPaid, newBalance, newStatus });
+          createdPayments.push({ id: payment.id, orderId: payment.orderId });
+          const updated = await recomputeOrderTotalsFromPayments(tx, o.id);
+          applied.push({
+            orderId: updated.id,
+            applied: applyAmt,
+            newAmountPaid: Number(updated.amountPaid ?? 0),
+            newBalance: Number(updated.balance ?? 0),
+            newStatus: String(updated.status),
+          });
           remainingPayment -= applyAmt;
         }
       }
@@ -254,16 +262,18 @@ export async function POST(req: Request) {
             balance: balanceAfter,
           },
         };
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: { note: JSON.stringify(withApplied) },
-        });
+        if (orderId && createdPayments[0]) {
+          await tx.payment.update({
+            where: { id: createdPayments[0].id },
+            data: { note: JSON.stringify(withApplied) },
+          });
+        }
       } catch {}
 
       let creditEntry: unknown = null;
       if (isRefund && refundDispositionValue === RefundDestination.CREDIT) {
         const creditNote = {
-          sourceRefundId: payment.id,
+          sourceRefundId: createdPayments[0]?.id,
           method: "adjustment",
           reason: "Refund held as credit",
           status: "normal",
@@ -278,7 +288,13 @@ export async function POST(req: Request) {
         });
       }
 
-      return { payment, applied, credit: creditEntry };
+      return {
+        payment: createdPayments[0] ?? null,
+        payments: createdPayments,
+        applied,
+        credit: creditEntry,
+        batchId,
+      };
     });
 
     // Customer-facing notifications:
@@ -286,11 +302,26 @@ export async function POST(req: Request) {
       // Only notify for customer-related payments (positive normal payments,
       // and refunds that create store credit).
       if (!isRefund && normalizedAmount > 0) {
-        await notifyPaymentEvent({
-          kind: "payment_recorded",
-          userId,
-          amount: normalizedAmount,
-        });
+        if (result.applied && result.applied.length > 0) {
+          for (const entry of result.applied) {
+            if (!entry.orderId || entry.applied <= 0) continue;
+            await notifyPaymentEvent({
+              kind: "payment_recorded",
+              userId,
+              amount: entry.applied,
+              orderId: entry.orderId,
+              subject: "Payment received — updated receipt",
+            });
+          }
+        } else {
+          await notifyPaymentEvent({
+            kind: "payment_recorded",
+            userId,
+            amount: normalizedAmount,
+            orderId: orderId || undefined,
+            subject: "Payment received — updated receipt",
+          });
+        }
       } else if (
         isRefund &&
         refundMode === "CREDIT" &&
@@ -312,7 +343,7 @@ export async function POST(req: Request) {
         actorId: user.id,
         action: isRefund ? "PAYMENT_REFUND" : "PAYMENT_CREATE",
         entityType: "PAYMENT",
-        entityId: result.payment.id,
+        entityId: result.payments?.[0]?.id ?? "batch",
         meta: {
           userId,
           orderId,
@@ -321,6 +352,7 @@ export async function POST(req: Request) {
           status: normalizedStatus,
           refundDisposition: refundDisposition || null,
           location,
+          batchId: result.batchId || null,
         },
       });
     } catch {

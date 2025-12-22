@@ -11,6 +11,13 @@ const daysAgo = (n: number) => {
 };
 
 async function main() {
+  const allowSeed = (process.env.SEED_ALLOW || "").trim() === "1";
+  if (process.env.NODE_ENV === "production" && !allowSeed) {
+    throw new Error(
+      "Refusing to seed in production. Set SEED_ALLOW=1 to override."
+    );
+  }
+
   // Clean database (order matters due to FKs)
   await prisma.$transaction([
     prisma.inventoryMovement.deleteMany({}),

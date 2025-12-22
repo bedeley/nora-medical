@@ -99,6 +99,24 @@ export default function CommunicationsSettingsPage() {
       </Card>
       <Card className="mb-6">
         <CardHeader>
+          <CardTitle>Health Check Alerts</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-2 text-sm text-muted-foreground">
+          <p>
+            Use the Admin Health Check to catch data issues early. Start with a weekly review,
+            then move to daily once you have steady order volume.
+          </p>
+          <p>
+            If mismatches appear, run <strong>Run Fix</strong> or <strong>Backfill</strong>,
+            then re-check until the alert clears.
+          </p>
+          <p>
+            Auto alerts are enabled via the admin banner and email once cron is configured.
+          </p>
+        </CardContent>
+      </Card>
+      <Card className="mb-6">
+        <CardHeader>
           <CardTitle>Setup Guides</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-2 text-sm">

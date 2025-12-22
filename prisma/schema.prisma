@@ -51,6 +51,7 @@ model User {
   payments         Payment[]
   balance          Balance?
   auditLogs        AuditLog[]
+  stockAlerts      StockAlert[]
 }
 
 model UserOtp {
@@ -82,6 +83,7 @@ model Product {
   cartItems   CartItem[]
   purchases   Purchase[]
   movements   InventoryMovement[]
+  stockAlerts StockAlert[]
 }
 
 model Cart {
@@ -139,6 +141,8 @@ model OrderItem {
   deliveredQuantity Int @default(0)
   // Total units from this line that have been returned
   returnedQuantity Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Payment {
@@ -152,6 +156,26 @@ model Payment {
   status    PaymentStatus   @default(NORMAL)
   refundDisposition RefundDestination?
   createdAt DateTime @default(now())
+}
+
+model StockAlert {
+  id         String   @id @default(cuid())
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  email      String?
+  phone      String?
+  createdAt  DateTime @default(now())
+  notifiedAt DateTime?
+
+  @@index([productId, notifiedAt])
+  @@index([userId])
+  @@index([email])
+  @@index([phone])
+  @@unique([productId, userId])
+  @@unique([productId, email])
+  @@unique([productId, phone])
 }
 
 model Balance {

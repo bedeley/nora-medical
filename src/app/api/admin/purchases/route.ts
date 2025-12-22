@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import { notifyBackInStock } from "@/lib/stock-alerts";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -154,7 +155,7 @@ export async function POST(req: Request) {
         data: { productId, delta: quantity, reason: "PURCHASE", purchaseId: purchase.id },
       });
 
-      return { purchaseId: purchase.id, newStock, newCost: Number(newCost) };
+      return { purchaseId: purchase.id, oldStock, newStock, newCost: Number(newCost) };
     });
 
     try {
@@ -174,6 +175,14 @@ export async function POST(req: Request) {
       });
     } catch {
       // best-effort
+    }
+
+    try {
+      if (Number(result.oldStock || 0) <= 0 && Number(result.newStock || 0) > 0) {
+        await notifyBackInStock(productId);
+      }
+    } catch (e) {
+      console.warn("Back-in-stock notification error:", e);
     }
 
     return NextResponse.json({ ok: true, ...result });

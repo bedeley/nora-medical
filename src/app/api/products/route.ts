@@ -48,15 +48,50 @@ export const productSchema = z.object({
     .refine((v) => v >= 0, { message: "Stock cannot be negative" }),
 });
 
+type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirst>> & {
+  createdAt: Date;
+  updatedAt: Date;
+  _count?: { orderItems?: number };
+};
+
+function serializeProduct(p: ProductRow, includePrivate: boolean) {
+  const base = {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    imageUrl: p.imageUrl,
+    price: Number(p.price),
+    stock: p.stock,
+    createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
+  };
+  if (!includePrivate) return base;
+  return {
+    ...base,
+    cost: Number(p.cost),
+    stock: p.stock,
+    archived: p.archived,
+    orderCount: p._count?.orderItems ?? 0,
+  };
+}
+
 /**
  * ✅ GET /api/products
  * Supports ?q=searchTerm, ?page, ?pageSize
  */
 export async function GET(request: Request) {
+  const session = await getServerSession(authOptions);
+  const user = session?.user as AuthenticatedUser | undefined;
+  const role = user?.role;
+  const includePrivate = ["ADMIN", "STAFF", "ACCOUNTANT"].includes(String(role || ""));
+
   const { searchParams } = new URL(request.url);
   const q = searchParams.get("q") || "";
   const page = Number(searchParams.get("page") || 1);
-  const pageSize = Number(searchParams.get("pageSize") || 12);
+  const pageSizeRaw = Number(searchParams.get("pageSize") || 12);
+  const pageSize = Number.isFinite(pageSizeRaw)
+    ? Math.min(Math.max(Math.floor(pageSizeRaw), 1), 100)
+    : 12;
   const sort = (searchParams.get("sort") || "createdAt") as
     | "createdAt"
     | "updatedAt";
@@ -79,13 +114,11 @@ export async function GET(request: Request) {
       const items = await prisma.product.findMany({
         where: { id: { in: ids } },
         orderBy: { createdAt: "desc" },
+        include: includePrivate ? { _count: { select: { orderItems: true } } } : undefined,
       });
-      const safeItems = items.map((p: typeof items[number]) => ({
-        ...p,
-        price: Number(p.price),
-        createdAt: p.createdAt.toISOString(),
-        updatedAt: p.updatedAt.toISOString(),
-      }));
+      const safeItems = items.map((p: typeof items[number]) =>
+        serializeProduct(p, includePrivate)
+      );
       return NextResponse.json({
         items: safeItems,
         total: safeItems.length,
@@ -126,17 +159,15 @@ export async function GET(request: Request) {
         orderBy: { [sort]: "desc" },
         skip: (page - 1) * pageSize,
         take: pageSize,
+        include: includePrivate ? { _count: { select: { orderItems: true } } } : undefined,
       }),
       prisma.product.count({ where }),
     ]);
 
     // ✅ Normalize Prisma Decimal/Date
-    const safeItems = items.map((p: typeof items[number]) => ({
-      ...p,
-      price: Number(p.price),
-      createdAt: p.createdAt.toISOString(),
-      updatedAt: p.updatedAt.toISOString(),
-    }));
+    const safeItems = items.map((p: typeof items[number]) =>
+      serializeProduct(p, includePrivate)
+    );
 
     return NextResponse.json({
       items: safeItems,

@@ -56,7 +56,11 @@ export async function POST(
     const result = await prisma.$transaction(async (tx: TxClient) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
-        include: { items: true },
+        include: {
+          items: {
+            include: { product: { select: { name: true } } },
+          },
+        },
       });
       if (!order) {
         throw new Error("Order not found");
@@ -80,6 +84,7 @@ export async function POST(
       if (!item) {
         throw new Error("Order item not found");
       }
+      const itemName = item.product?.name || "Item";
 
       const alreadyReturned = Number(item.returnedQuantity ?? 0);
       const deliveredQuantity = Number(
@@ -275,6 +280,8 @@ export async function POST(
         credit: creditEntry,
         refund: actualRefund,
         appliedToBalance: reduceTotalBy,
+        itemName,
+        quantity,
       };
     });
 
@@ -285,6 +292,9 @@ export async function POST(
             kind: "store_credit_issued",
             userId: result.order.userId!,
             amount: result.refund,
+            orderId: result.order.id,
+            itemName: result.itemName,
+            quantity: result.quantity,
           });
         } else {
           await notifyPaymentEvent({

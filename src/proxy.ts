@@ -2,15 +2,17 @@ import { withAuth } from "next-auth/middleware";
 import { NextResponse } from "next/server";
 import type { NextRequestWithAuth } from "next-auth/middleware";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
+import { verifyMfaCookie } from "@/lib/mfa";
 
 type AuthToken = {
   role?: string;
   mfaRequired?: boolean;
   adminExpiresAt?: number;
+  sub?: string;
 };
 
 export default withAuth(
-  function middleware(req: NextRequestWithAuth) {
+  async function middleware(req: NextRequestWithAuth) {
     const { pathname } = req.nextUrl;
     const user = req.nextauth?.token as AuthToken | undefined;
 
@@ -27,7 +29,9 @@ export default withAuth(
       const mfaRequired = Boolean(user?.mfaRequired);
       if (mfaRequired) {
         const cookie = req.cookies.get("mfa")?.value;
-        if (cookie !== "ok" && !pathname.startsWith("/admin/mfa")) {
+        const userId = user?.sub || "";
+        const ok = cookie && userId ? await verifyMfaCookie(cookie, userId) : false;
+        if (!ok && !pathname.startsWith("/admin/mfa")) {
           return NextResponse.redirect(new URL("/admin/mfa", req.url));
         }
       }

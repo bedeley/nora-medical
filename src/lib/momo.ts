@@ -257,8 +257,8 @@ export function verifyMomoSignature(rawBody: string, headers: Headers): boolean 
   const secret = (process.env.MOMO_WEBHOOK_SECRET || "").trim();
   const headerName = (process.env.MOMO_WEBHOOK_SIGNATURE_HEADER || "x-momo-signature").toLowerCase();
   if (!secret) {
-    // No secret configured: accept callback but log that verification is off.
-    return true;
+    // No secret configured: accept only in non-live stages.
+    return !isLiveStage();
   }
 
   let signature =

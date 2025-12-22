@@ -18,7 +18,7 @@ export async function sendEmail(to: string, subject: string, text: string, html?
   const looksUnconfigured = (v: string) => {
     const s = (v || "").trim().toLowerCase();
     if (!s) return true;
-    return s.includes("xxxxx") || s.includes("yourdomain.com") || s.startsWith("re_") || s.startsWith("sg.");
+    return s.includes("xxxxx") || s.includes("yourdomain.com");
   };
 
   // By default, simulate in development to prevent provider 401/denied errors.
@@ -72,7 +72,12 @@ export async function sendEmail(to: string, subject: string, text: string, html?
 
     // When we reach here, either production or dev with simulation disabled.
     // Treat obviously placeholder values as unconfigured and fail clearly.
-    if (looksUnconfigured(sendgridKey) || looksUnconfigured(resendKey) || looksUnconfigured(sendgridFrom) || looksUnconfigured(resendFrom)) {
+    if (
+      looksUnconfigured(sendgridKey) ||
+      looksUnconfigured(resendKey) ||
+      looksUnconfigured(sendgridFrom) ||
+      looksUnconfigured(resendFrom)
+    ) {
       return { ok: false, error: "Email provider not configured" };
     }
     return { ok: false, error: "Email provider not configured" };

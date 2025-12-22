@@ -62,7 +62,8 @@ export async function POST(
       }
 
       const totalQty = item.quantity;
-      let deliveredQuantity = item.deliveredQuantity ?? 0;
+      const previousDeliveredQuantity = item.deliveredQuantity ?? 0;
+      let deliveredQuantity = previousDeliveredQuantity;
 
       if (mode === "reset") {
         deliveredQuantity = 0;
@@ -73,10 +74,11 @@ export async function POST(
         if (!Number.isInteger(requested) || requested < 0) {
           throw new Error("Invalid delivered quantity");
         }
-        if (requested > totalQty) {
-          throw new Error("Delivered quantity cannot exceed ordered quantity");
+        const remaining = Math.max(0, totalQty - deliveredQuantity);
+        if (requested > remaining) {
+          throw new Error("Delivered quantity cannot exceed remaining quantity");
         }
-        deliveredQuantity = requested;
+        deliveredQuantity += requested;
       }
 
       const updatedItem = await tx.orderItem.update({
@@ -129,6 +131,7 @@ export async function POST(
         item: updatedItem,
         previousStatus,
         newStatus,
+        deliveryChanged: deliveredQuantity !== previousDeliveredQuantity,
       };
     });
 
@@ -148,24 +151,25 @@ export async function POST(
       // best-effort
     }
 
-    // Notify customer if overall delivery status changed in a meaningful way
+    // Notify customer if delivery status or delivered quantity changed
     try {
-      if (
-        result.userId &&
-        result.newStatus &&
-        result.newStatus !== result.previousStatus &&
-        (result.newStatus === "DELIVERED" ||
-          result.newStatus === "PARTIALLY_DELIVERED")
-      ) {
-        await notifyOrderEvent({
-          kind: "order_delivery_updated",
-          userId: result.userId,
-          orderId: result.orderId,
-          deliveryStatus: result.newStatus as
-            | "DELIVERED"
-            | "PARTIALLY_DELIVERED"
-            | "RETURNED",
+      if (result.userId && (result.deliveryChanged || result.newStatus !== result.previousStatus)) {
+        const order = await prisma.order.findUnique({
+          where: { id: result.orderId },
+          select: { deliveryStatus: true },
         });
+        const status = String(order?.deliveryStatus || result.newStatus || "").toUpperCase();
+        if (status === "DELIVERED" || status === "PARTIALLY_DELIVERED" || status === "RETURNED") {
+          await notifyOrderEvent({
+            kind: "order_delivery_updated",
+            userId: result.userId,
+            orderId: result.orderId,
+            deliveryStatus: status as
+              | "DELIVERED"
+              | "PARTIALLY_DELIVERED"
+              | "RETURNED",
+          });
+        }
       }
     } catch (e) {
       console.warn("notifyOrderEvent (item delivery) error:", e);

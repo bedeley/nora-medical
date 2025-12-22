@@ -131,7 +131,7 @@ export const authOptions: AuthOptions = {
     }),
   ],
 
-  debug: process.env.NODE_ENV !== "production",
+  debug: process.env.NEXTAUTH_DEBUG === "1",
   logger: {
     error(code, metadata) {
       if (code === "JWT_SESSION_ERROR") return; // stale/invalid cookie; treat as signed out

@@ -178,12 +178,16 @@ export default function ReceiptPage() {
   })();
 
   return (
-    <div className="mx-auto max-w-2xl p-6 print:p-0">
+    <div className="min-h-screen bg-muted/30 py-6 print:bg-white print:py-0">
+      <div className="mx-auto w-full max-w-3xl px-4 print:px-0">
       {/* Screen-only actions */}
       <div className="flex flex-col gap-3 items-start justify-between mb-4 print:hidden sm:flex-row sm:items-center">
         <div className="flex items-center gap-2">
           <Button variant="secondary" onClick={() => { window.location.href = '/orders'; }}>Back to Orders</Button>
-          <h1 className="text-xl font-semibold">Receipt</h1>
+          <div className="space-y-0.5">
+            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Receipt</p>
+            <h1 className="text-xl font-semibold">Order {formatIdReadable(order.id)}</h1>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2 sm:justify-end w-full sm:w-auto">
           <Button variant="outline" onClick={() => window.print()}>Print</Button>
@@ -201,29 +205,34 @@ export default function ReceiptPage() {
         </div>
       </div>
 
-      <div className="border rounded p-6 print:border-0">
+      <div className="border rounded-xl bg-card p-6 shadow-sm print:border-0 print:shadow-none">
         {/* Brand header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-6">
           <div className="flex items-center gap-3">
-            <Image src="/logo.svg" alt="Noralls Medical Supplies" width={150} height={48} />
+            <Image src="/logo.svg" alt="Noralls Medical Supplies" width={140} height={44} />
+            <div className="text-xs text-muted-foreground">
+              <p className="font-semibold text-foreground">Noralls Medical Supplies</p>
+              <p>Tel: {ADMIN_PHONE}</p>
+            </div>
           </div>
-          <div className="text-right text-xs">
-            <p className="font-semibold">Noralls Medical Supplies</p>
-            <p className="text-muted-foreground">Tel: {ADMIN_PHONE}</p>
-            <p className="text-muted-foreground">
-              Order {formatIdReadable(order.id)}
-            </p>
+          <div className="text-right text-xs text-muted-foreground">
+            <p className="text-foreground font-semibold">Receipt</p>
+            <p>Order {formatIdReadable(order.id)}</p>
+            <p>{formatDateTimeGH(order.createdAt)}</p>
           </div>
         </div>
-        <div className="mt-4 grid grid-cols-2 text-sm">
-          <div className="space-y-0.5">
-            <p>Customer: {order.user?.name || ''}</p>
-            {order.user?.email ? <p className="text-muted-foreground">{order.user.email}</p> : null}
+        <div className="mt-6 grid gap-4 rounded-lg border bg-muted/30 p-4 text-sm sm:grid-cols-2">
+          <div className="space-y-1">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer</p>
+            <p className="font-medium">{order.user?.name || "—"}</p>
+            {order.user?.email ? (
+              <p className="text-muted-foreground">{order.user.email}</p>
+            ) : null}
           </div>
-          <div className="text-right space-y-0.5">
-            <p>Date: {formatDateTimeGH(order.createdAt)}</p>
-            <p>Status: {order.status}</p>
-            <p>Delivery: {deliveryLabel}</p>
+          <div className="space-y-1 sm:text-right">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Order Status</p>
+            <p className="font-medium">{order.status}</p>
+            <p className="text-muted-foreground">Delivery: {deliveryLabel}</p>
           </div>
         </div>
 
@@ -232,7 +241,7 @@ export default function ReceiptPage() {
           {/* Mobile: stacked item cards for clearer separation */}
           <div className="grid gap-3 md:hidden">
             {order.items.map((it) => (
-              <div key={it.id} className="border rounded-md p-3 text-sm">
+              <div key={it.id} className="border rounded-lg p-3 text-sm bg-muted/20">
                 <div className="font-medium">
                   {it.product?.name || "Item"}
                 </div>
@@ -283,28 +292,6 @@ export default function ReceiptPage() {
                       );
                     })()}
                   </div>
-                  {Number(it.returnedQuantity ?? 0) > 0 && (
-                    <div className="flex justify-between col-span-2">
-                      <span className="text-muted-foreground">Returns</span>
-                      {(() => {
-                        const returned = Number(it.returnedQuantity ?? 0);
-                        const delivered = Number(it.deliveredQuantity ?? 0);
-                        const qty = Number(it.quantity || 0);
-                        if (returned >= delivered && delivered > 0) {
-                          return (
-                            <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
-                              All delivered units returned ({returned})
-                            </span>
-                          );
-                        }
-                        return (
-                          <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
-                            {returned} of {qty} returned
-                          </span>
-                        );
-                      })()}
-                    </div>
-                  )}
                 </div>
               </div>
             ))}
@@ -312,60 +299,49 @@ export default function ReceiptPage() {
 
           {/* Desktop/tablet: keep tabular layout */}
           <div className="hidden md:block">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left py-2">Item</th>
-                  <th className="text-right py-2">Qty</th>
-                  <th className="text-right py-2">Delivered</th>
-                  <th className="text-right py-2">Price</th>
-                  <th className="text-right py-2">Total</th>
-                  <th className="text-right py-2">Returns</th>
-                </tr>
-              </thead>
-              <tbody>
-                {order.items.map((it) => (
-                  <tr key={it.id} className="border-b last:border-0">
-                    <td className="py-2">{it.product?.name || "Item"}</td>
-                    <td className="text-right py-2">{it.quantity}</td>
-                    <td className="text-right py-2">
-                      {(() => {
-                        const delivered = Number(it.deliveredQuantity ?? 0);
-                        const qty = Number(it.quantity || 0);
-                        if (!qty) return "0";
-                        if (delivered <= 0) return "0";
-                        if (delivered >= qty) return `${qty}`;
-                        return `${delivered}/${qty}`;
-                      })()}
-                    </td>
-                    <td className="text-right py-2">
-                      {formatCurrency(Number(it.price))}
-                    </td>
-                    <td className="text-right py-2">
-                      {formatCurrency(Number(it.price) * it.quantity)}
-                    </td>
-                    <td className="text-right py-2 text-xs">
-                      {(() => {
-                        const returned = Number(it.returnedQuantity ?? 0);
-                        const delivered = Number(it.deliveredQuantity ?? 0);
-                        const qty = Number(it.quantity || 0);
-                        if (returned <= 0) return "—";
-                        if (returned >= delivered && delivered > 0) {
-                          return `All delivered returned (${returned})`;
-                        }
-                        return `${returned} of ${qty} returned`;
-                      })()}
-                    </td>
+            <div className="overflow-hidden rounded-lg border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="text-left py-2 px-3">Item</th>
+                    <th className="text-right py-2 px-3">Qty</th>
+                    <th className="text-right py-2 px-3">Delivered</th>
+                    <th className="text-right py-2 px-3">Price</th>
+                    <th className="text-right py-2 px-3">Total</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y">
+                  {order.items.map((it) => (
+                    <tr key={it.id} className="bg-background">
+                      <td className="py-2 px-3">{it.product?.name || "Item"}</td>
+                      <td className="text-right py-2 px-3">{it.quantity}</td>
+                      <td className="text-right py-2 px-3">
+                        {(() => {
+                          const delivered = Number(it.deliveredQuantity ?? 0);
+                          const qty = Number(it.quantity || 0);
+                          if (!qty) return "0";
+                          if (delivered <= 0) return "0";
+                          if (delivered >= qty) return `${qty}`;
+                          return `${delivered}/${qty}`;
+                        })()}
+                      </td>
+                      <td className="text-right py-2 px-3">
+                        {formatCurrency(Number(it.price))}
+                      </td>
+                      <td className="text-right py-2 px-3">
+                        {formatCurrency(Number(it.price) * it.quantity)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
         <div className="mt-6 text-sm">
           <div className="flex justify-end">
-            <div className="w-64">
+            <div className="w-full max-w-xs rounded-lg border bg-muted/20 p-4">
               <div className="flex justify-between py-1">
                 <span>Total</span>
                 <span>{formatCurrency(lineTotal)}</span>
@@ -420,6 +396,7 @@ export default function ReceiptPage() {
           <p className="mt-4 text-center text-xs text-muted-foreground">Thank you for your payment.</p>
         ) : null}
       </div>
+    </div>
     </div>
   );
 }

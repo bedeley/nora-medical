@@ -460,11 +460,15 @@ export default function CartPage() {
             .json()
             .catch(async () => ({ error: await res.text().catch(() => "") }));
           const msg = j?.error || "Failed to update cart";
-          throw new Error(msg);
+          toast.error(msg);
+          return;
         }
         queryClient.invalidateQueries({ queryKey: ["cart"] });
       }
       toast.info("Cart updated");
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to update cart";
+      toast.error(msg);
     } finally {
       setUpdatingIds((s) => {
         const n = new Set(s);

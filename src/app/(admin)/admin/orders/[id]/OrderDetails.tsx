@@ -24,7 +24,16 @@ interface OrderDetailsProps {
   orderId: string;
 }
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const message =
+      (data as { error?: string })?.error || "Failed to load order details.";
+    throw new Error(message);
+  }
+  return data;
+};
 
 type OrderItem = {
   id: string;
@@ -87,7 +96,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       </div>
     );
 
-  if (error || !data)
+  if (error || !data || !data.data)
     return (
       <p className="text-center text-red-500 py-10">
         Failed to load order details.
@@ -106,6 +115,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     0,
   );
   const returnAdjustment = Math.max(0, lineTotal - Number(order.total || 0));
+  const allDelivered = order.items.every(
+    (item) => (item.deliveredQuantity ?? 0) >= item.quantity
+  );
 
   const paymentBreakdown = (() => {
     const payments = order.payments || [];
@@ -192,6 +204,37 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     }
 
     return { hasPaymentRecorded, hasStoreCreditIssued, hasStoreCreditRefunded };
+  })();
+
+  const paymentLedger = (() => {
+    const payments = order.payments || [];
+    const rows = payments.map((p) => {
+      let method = "unknown";
+      let provider = "";
+      let reference = "";
+      if (p.note) {
+        try {
+          const meta = JSON.parse(p.note as string) as {
+            method?: string;
+            provider?: string;
+            reference?: string;
+          };
+          if (meta.method) method = meta.method;
+          if (meta.provider) provider = meta.provider;
+          if (meta.reference) reference = meta.reference;
+        } catch {
+          // ignore malformed notes
+        }
+      }
+      return {
+        ...p,
+        method,
+        provider,
+        reference,
+        createdAt: new Date(p.createdAt),
+      };
+    });
+    return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   })();
 
   async function updateStatus(
@@ -537,6 +580,43 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           <p className={`text-sm ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
             <strong>Outstanding Balance:</strong> {formatCurrency(balance)}
           </p>
+          <div className="mt-3">
+            <h3 className="text-sm font-semibold">Payments Ledger</h3>
+            {paymentLedger.length === 0 ? (
+              <p className="text-xs text-muted-foreground mt-1">
+                No payments recorded for this order yet.
+              </p>
+            ) : (
+              <div className="mt-2 overflow-x-auto">
+                <table className="min-w-full text-xs whitespace-nowrap">
+                  <thead className="text-muted-foreground">
+                    <tr>
+                      <th className="text-left py-1 pr-4">Date</th>
+                      <th className="text-left py-1 pr-4">Method</th>
+                      <th className="text-left py-1 pr-4">Provider</th>
+                      <th className="text-left py-1 pr-4">Reference</th>
+                      <th className="text-right py-1 pr-4">Amount</th>
+                      <th className="text-right py-1 pr-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paymentLedger.map((p) => (
+                      <tr key={p.id} className="border-t">
+                        <td className="py-1 pr-4">{p.createdAt.toLocaleString()}</td>
+                        <td className="py-1 pr-4">{p.method}</td>
+                        <td className="py-1 pr-4">{p.provider || "-"}</td>
+                        <td className="py-1 pr-4">{p.reference || "-"}</td>
+                        <td className="py-1 pr-4 text-right">
+                          {formatCurrency(Number(p.amount || 0))}
+                        </td>
+                        <td className="py-1 pr-4 text-right">{p.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
           {returnAdjustment > 0.005 && (
             <p className="text-xs text-muted-foreground mt-1">
               Note: Subtotal is lower than the original total because returned items reduced this order by{" "}
@@ -657,7 +737,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       className="px-2"
                       disabled={
                         order.status === "CANCELLED" ||
-                        deliveryItemSubmitting
+                        deliveryItemSubmitting ||
+                        (item.deliveredQuantity ?? 0) >= item.quantity
                       }
                       onClick={() => {
                         setDeliveryItem(item);
@@ -673,7 +754,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       className="px-2"
                       disabled={
                         order.status === "CANCELLED" ||
-                        deliveryItemSubmitting
+                        deliveryItemSubmitting ||
+                        (item.deliveredQuantity ?? 0) >= item.quantity
                       }
                       onClick={() => {
                         setDeliveryItem(item);
@@ -735,41 +817,19 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
           <div className="flex flex-wrap gap-2 w-full md:w-auto md:justify-end">
             <Button
-              variant={order.deliveryStatus === "PARTIALLY_DELIVERED" ? "default" : "outline"}
-              size="sm"
-              disabled={
-                deliveryUpdating ||
-                deleting ||
-                order.deliveryStatus === "RETURNED" ||
-                order.status === "CANCELLED"
-              }
-              onClick={() => updateDelivery("PARTIALLY_DELIVERED")}
-            >
-              {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
-              Mark Partial Delivery
-            </Button>
-            <Button
               variant={order.deliveryStatus === "DELIVERED" ? "default" : "outline"}
               size="sm"
               disabled={
                 deliveryUpdating ||
                 deleting ||
                 order.deliveryStatus === "RETURNED" ||
-                order.status === "CANCELLED"
+                order.status === "CANCELLED" ||
+                allDelivered
               }
               onClick={() => updateDelivery("DELIVERED")}
             >
               {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
               Mark Delivered
-            </Button>
-            <Button
-              variant={order.deliveryStatus === "RETURNED" ? "default" : "outline"}
-              size="sm"
-              disabled={deliveryUpdating || deleting || order.status === "CANCELLED"}
-              onClick={() => updateDelivery("RETURNED")}
-            >
-              {deliveryUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
-              Mark Returned
             </Button>
           </div>
           <Button
@@ -889,7 +949,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
             <DialogTitle>
               {deliveryMode === "partial"

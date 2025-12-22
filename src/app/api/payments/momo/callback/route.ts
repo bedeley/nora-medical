@@ -147,10 +147,17 @@ export async function POST(req: Request) {
     // Notify customer about successful MoMo payment
     try {
       if (userIdForNotification) {
+        const purpose = String((note?.purpose as string | undefined) ?? "");
+        const subject =
+          purpose === "order_checkout"
+            ? "Order Confirmation & Receipt"
+            : "Payment received — updated receipt";
         await notifyPaymentEvent({
           kind: "payment_recorded",
           userId: userIdForNotification,
           amount,
+          orderId: payment.orderId || undefined,
+          subject,
         });
       }
     } catch (e) {

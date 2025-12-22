@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -22,6 +23,8 @@ interface Product {
 }
 
 export default function ProductPage() {
+  const smsEnabled =
+    (process.env.NEXT_PUBLIC_SMS_NOTIFICATIONS_ENABLED || "").toLowerCase() === "1";
   const { data: session } = useSession();
   const router = useRouter();
   const params = useParams();
@@ -30,6 +33,10 @@ export default function ProductPage() {
   // Keep image state hook stable across renders
   const [imgSrc, setImgSrc] = useState<string>("/placeholder.png");
   const queryClient = useQueryClient();
+  const [notifyEmail, setNotifyEmail] = useState("");
+  const [notifyPhone, setNotifyPhone] = useState("");
+  const [notifyLoading, setNotifyLoading] = useState(false);
+  const [notifyDone, setNotifyDone] = useState(false);
 
   // ✅ Fetch product from API (treat non-2xx as errors)
   const { data, error, isLoading } = useQuery<Product>({
@@ -50,6 +57,13 @@ export default function ProductPage() {
   useEffect(() => {
     setImgSrc(data?.imageUrl || "/placeholder.png");
   }, [data]);
+
+  useEffect(() => {
+    const sessionEmail = String(session?.user?.email || "");
+    const sessionPhone = String((session?.user as { phone?: string })?.phone || "");
+    if (!notifyEmail && sessionEmail) setNotifyEmail(sessionEmail);
+    if (!notifyPhone && sessionPhone) setNotifyPhone(sessionPhone);
+  }, [session, notifyEmail, notifyPhone]);
 
   // ✅ Early return for loading/error states
   if (isLoading)
@@ -113,6 +127,37 @@ export default function ProductPage() {
     }
   }
 
+  async function subscribeBackInStock() {
+    if (notifyLoading) return;
+    if (!notifyEmail && !notifyPhone) {
+      toast.error("Enter an email or phone number.");
+      return;
+    }
+    try {
+      setNotifyLoading(true);
+      const res = await fetch(`/api/products/${product.id}/stock-alerts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: notifyEmail || undefined,
+          phone: notifyPhone || undefined,
+        }),
+      });
+      const j = await res.json().catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        toast.error(j?.error || "Could not subscribe to stock alerts.");
+        return;
+      }
+      setNotifyDone(true);
+      toast.success("You will be notified when this item is back in stock.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Could not subscribe to stock alerts.");
+    } finally {
+      setNotifyLoading(false);
+    }
+  }
+
   return (
     <section className="container mx-auto py-10">
       <div className="grid md:grid-cols-2 gap-10 items-start">
@@ -159,6 +204,46 @@ export default function ProductPage() {
           >
             {loading ? "Adding..." : "Add to Cart"}
           </Button>
+
+          {stock <= 0 && (
+            <div className="mt-6 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm">
+              <p className="font-medium text-slate-900">
+                Get notified when this item is back in stock
+              </p>
+              <p className="mt-1 text-slate-600">
+                Leave your email (and optionally your phone) and we’ll alert you when it’s available.
+              </p>
+              <div className={`mt-3 grid gap-2 ${smsEnabled ? "sm:grid-cols-2" : ""}`}>
+                <Input
+                  type="email"
+                  placeholder="Email address"
+                  value={notifyEmail}
+                  onChange={(e) => setNotifyEmail(e.target.value)}
+                />
+                {smsEnabled && (
+                  <Input
+                    type="tel"
+                    placeholder="Phone (optional)"
+                    value={notifyPhone}
+                    onChange={(e) => setNotifyPhone(e.target.value)}
+                  />
+                )}
+              </div>
+              <Button
+                className="mt-3 w-full sm:w-auto"
+                variant="outline"
+                onClick={subscribeBackInStock}
+                disabled={notifyLoading || notifyDone}
+              >
+                {notifyDone ? "You're on the list" : notifyLoading ? "Subscribing..." : "Notify me"}
+              </Button>
+              {!smsEnabled && (
+                <p className="mt-2 text-xs text-slate-500">
+                  SMS alerts will be available once SMS is configured.
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="border-t mt-6 pt-4 text-sm text-muted-foreground">
             <p>

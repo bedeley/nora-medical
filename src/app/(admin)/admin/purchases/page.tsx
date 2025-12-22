@@ -49,6 +49,7 @@ function AdminPurchasesContent() {
   const [infoOpen, setInfoOpen] = useState(false);
   const [selected, setSelected] = useState<PurchaseRow | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const lastFormProductId = useRef<string>("");
 
   useEffect(() => {
     if (initialized.current) return;
@@ -126,6 +127,34 @@ function AdminPurchasesContent() {
     const pid = sp.get("product");
     if (pid) setForm((f) => ({ ...f, productId: pid }));
   }, [searchParams]);
+
+  // Keep the purchases filter in sync with the selected product,
+  // but only when the filter is empty or was previously synced.
+  useEffect(() => {
+    const next = form.productId;
+    if (!initialized.current) return;
+    if (!next) {
+      if (filters.product && filters.product === lastFormProductId.current) {
+        setFilters((prev) => ({ ...prev, product: "" }));
+      }
+      lastFormProductId.current = "";
+      return;
+    }
+    if (!filters.product || filters.product === lastFormProductId.current) {
+      setFilters((prev) => ({ ...prev, product: next }));
+    }
+    lastFormProductId.current = next;
+  }, [form.productId, filters.product]);
+
+  // If the filter is cleared to "All products", clear the form product
+  // when it was previously synced to avoid stale selections.
+  useEffect(() => {
+    if (!initialized.current) return;
+    if (!filters.product && form.productId && form.productId === lastFormProductId.current) {
+      setForm((prev) => ({ ...prev, productId: "" }));
+      lastFormProductId.current = "";
+    }
+  }, [filters.product, form.productId]);
 
   // Load current average cost when product changes
   useEffect(() => {
@@ -338,7 +367,14 @@ function AdminPurchasesContent() {
               id="productFilter"
               className="border rounded-md h-9 w-full bg-background capitalize"
               value={filters.product}
-              onChange={(e) => setFilters({ ...filters, product: e.target.value })}
+              onChange={(e) => {
+                const next = e.target.value;
+                setFilters({ ...filters, product: next });
+                if (!next) {
+                  setForm((prev) => ({ ...prev, productId: "" }));
+                  lastFormProductId.current = "";
+                }
+              }}
             >
               <option value="">All products</option>
               {products.map((p) => (

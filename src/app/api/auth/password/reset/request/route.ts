@@ -87,7 +87,7 @@ export async function POST(req: Request) {
     if (channel === "whatsapp" && !rawIdentifier.includes("@")) {
       user = await findUserByPhone(rawIdentifier);
       if (!user) {
-        return NextResponse.json({ error: "No account found with that phone number" }, { status: 400 });
+        return NextResponse.json({ ok: true });
       }
     } else {
       if (!emailRegex.test(rawIdentifier.toLowerCase())) {
