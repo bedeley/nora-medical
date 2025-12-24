@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
 
 export async function PATCH(
   req: Request,
@@ -51,11 +52,35 @@ export async function PATCH(
       );
     }
 
+    const existing = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, email: true, role: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+
     const user = await prisma.user.update({
       where: { id },
       data: { role: Role[targetRole] },
       select: { id: true, email: true, role: true },
     });
+
+    try {
+      await recordAuditLog({
+        actorId: sessionUser.id,
+        action: "USER_ROLE_UPDATE",
+        entityType: "USER",
+        entityId: user.id,
+        meta: {
+          email: user.email,
+          from: existing.role,
+          to: user.role,
+        },
+      });
+    } catch {
+      // best-effort
+    }
 
     return NextResponse.json({ user });
   } catch (e: unknown) {

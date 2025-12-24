@@ -36,12 +36,12 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const userId = params.id;
+  const body = await req.json().catch(() => null) as { userId?: string } | null;
+  const userId = String(params.id || body?.userId || "").trim();
   if (!userId) {
     return NextResponse.json({ error: "Missing customer id" }, { status: 400 });
   }
 
-  const body = await req.json().catch(() => null);
   const parsed = refundSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid refund payload" }, { status: 400 });
@@ -53,6 +53,10 @@ export async function POST(
     const payments = await prisma.payment.findMany({
       where: { userId },
       select: { amount: true, status: true, refundDisposition: true, note: true },
+    });
+    const customer = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
     });
 
     // Compute store credit using the same semantics as /api/balance:
@@ -175,10 +179,13 @@ export async function POST(
         entityType: "PAYMENT",
         entityId: payment.id,
         meta: {
+          customerName: customer?.name ?? null,
+          customerEmail: customer?.email ?? null,
           customerId: userId,
           amount,
           method,
           reference,
+          note: note || null,
         },
       });
     } catch {

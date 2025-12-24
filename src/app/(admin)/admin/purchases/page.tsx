@@ -39,6 +39,7 @@ function AdminPurchasesContent() {
   const initialized = useRef(false);
 
   const [filters, setFilters] = useState({ start: "", end: "", supplier: "", q: "", product: "" });
+  const [filtersReady, setFiltersReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PurchaseRow[]>([]);
   const [page, setPage] = useState(1);
@@ -62,6 +63,7 @@ function AdminPurchasesContent() {
       product: sp.get("product") || "",
     });
     initialized.current = true;
+    setFiltersReady(true);
   }, [searchParams]);
 
   useEffect(() => {
@@ -76,14 +78,14 @@ function AdminPurchasesContent() {
     router.replace(next, { scroll: false });
   }, [filters, pathname, router]);
 
-  async function fetchProducts() {
+  const fetchProducts = useCallback(async () => {
     try {
       const res = await fetch(`/api/products?pageSize=200&includeArchived=1`);
       const data = await res.json();
       const list: Product[] = (data.items || []).map((p: { id: string; name: string }) => ({ id: p.id, name: p.name }));
       setProducts(list);
     } catch {}
-  }
+  }, []);
 
   const fetchPurchases = useCallback(async () => {
     try {
@@ -117,9 +119,10 @@ function AdminPurchasesContent() {
   }, [filters.start, filters.end, filters.supplier, filters.q, filters.product]);
 
   useEffect(() => {
+    if (!filtersReady) return;
     fetchProducts();
     fetchPurchases();
-  }, [fetchPurchases]);
+  }, [fetchProducts, fetchPurchases, filtersReady]);
 
   // Preselect product from URL if provided
   useEffect(() => {

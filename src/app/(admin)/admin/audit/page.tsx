@@ -241,10 +241,40 @@ export default function AdminAuditPage() {
                   <TableCell>
                     {row.meta ? (
                       <div className="max-w-xs break-words text-[11px] text-muted-foreground">
-                        {Object.entries(row.meta)
-                          .slice(0, 4)
-                          .map(([k, v]) => {
+                        {(() => {
+                          const entries = Object.entries(row.meta).filter(([k]) => {
+                            if (k === "productId" && row.meta?.name) return false;
+                            if (
+                              k === "customerId" &&
+                              (row.meta?.customerName || row.meta?.customerEmail)
+                            ) return false;
+                            return true;
+                          });
+                          const reasonIdx = entries.findIndex(([k]) => k === "reason");
+                          if (reasonIdx > 0) {
+                            const [reasonEntry] = entries.splice(reasonIdx, 1);
+                            entries.unshift(reasonEntry);
+                          }
+                          return entries.slice(0, 5).map(([k, v]) => {
                             let display = String(v);
+                            const isChanges = k === "changes" && v && typeof v === "object";
+                            if (isChanges) {
+                              const entries = Object.entries(v as Record<string, { from?: unknown; to?: unknown }>);
+                              display = entries
+                                .map(([field, change]) => {
+                                  const from = change?.from ?? null;
+                                  const to = change?.to ?? null;
+                                  return `${field}: ${String(from)} -> ${String(to)}`;
+                                })
+                                .join(", ");
+                            }
+                            if (!isChanges && v && typeof v === "object") {
+                              try {
+                                display = JSON.stringify(v);
+                              } catch {
+                                display = String(v);
+                              }
+                            }
                             if (typeof v === "string" && /id$/i.test(k)) {
                               display = formatIdReadable(v);
                             } else if (
@@ -260,8 +290,9 @@ export default function AdminAuditPage() {
                                 <span>{display}</span>
                               </div>
                             );
-                          })}
-                        {Object.keys(row.meta).length > 4 ? (
+                          });
+                        })()}
+                        {Object.keys(row.meta).length > 5 ? (
                           <div className="italic">…</div>
                         ) : null}
                       </div>

@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
@@ -80,6 +81,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const [deliveryUpdating, setDeliveryUpdating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
   const [returningItem, setReturningItem] = useState<OrderItem | null>(null);
   const [returnQuantity, setReturnQuantity] = useState<string>("1");
   const [returnSubmitting, setReturnSubmitting] = useState(false);
@@ -239,9 +241,16 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
 
   async function updateStatus(
     newStatus: string,
-    opts?: { restockReturned?: boolean },
+    opts?: { restockReturned?: boolean; cancelReason?: string },
   ) {
     try {
+      if (newStatus === "CANCELLED") {
+        const reason = String(opts?.cancelReason || "").trim();
+        if (reason.length < 5) {
+          toast.error("Please add a brief cancellation reason.");
+          return;
+        }
+      }
       setUpdating(true);
       const res = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
@@ -249,6 +258,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         body: JSON.stringify({
           status: newStatus,
           ...(opts?.restockReturned ? { restockReturned: true } : {}),
+          ...(opts?.cancelReason ? { cancelReason: opts.cancelReason } : {}),
         }),
       });
 
@@ -840,7 +850,15 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           </Button>
         </div>
       </CardFooter>
-      <Dialog open={confirmCancel} onOpenChange={(o) => { if (!o) setConfirmCancel(false); }}>
+      <Dialog
+        open={confirmCancel}
+        onOpenChange={(o) => {
+          if (!o) {
+            setConfirmCancel(false);
+            setCancelReason("");
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Cancel Order</DialogTitle>
@@ -856,10 +874,21 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 RETURN inventory movement will be recorded. This does not automatically
                 refund any payments.
               </p>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Cancellation reason</label>
+                <Input
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="e.g., duplicate order / customer request"
+                />
+              </div>
               <DialogFooter>
                 <Button
                   variant="outline"
-                  onClick={() => setConfirmCancel(false)}
+                  onClick={() => {
+                    setConfirmCancel(false);
+                    setCancelReason("");
+                  }}
                   disabled={updating}
                 >
                   Close
@@ -868,7 +897,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   variant="secondary"
                   onClick={() => {
                     setConfirmCancel(false);
-                    updateStatus("CANCELLED");
+                    updateStatus("CANCELLED", { cancelReason });
+                    setCancelReason("");
                   }}
                   disabled={updating}
                 >
@@ -878,7 +908,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   variant="destructive"
                   onClick={() => {
                     setConfirmCancel(false);
-                    updateStatus("CANCELLED", { restockReturned: true });
+                    updateStatus("CANCELLED", { restockReturned: true, cancelReason });
+                    setCancelReason("");
                   }}
                   disabled={updating}
                 >
@@ -892,10 +923,21 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 Are you sure you want to mark this order as cancelled? This does not
                 automatically refund payments.
               </p>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Cancellation reason</label>
+                <Input
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  placeholder="e.g., customer request / stock issue"
+                />
+              </div>
               <DialogFooter>
                 <Button
                   variant="outline"
-                  onClick={() => setConfirmCancel(false)}
+                  onClick={() => {
+                    setConfirmCancel(false);
+                    setCancelReason("");
+                  }}
                   disabled={updating}
                 >
                   No
@@ -904,7 +946,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                   variant="destructive"
                   onClick={() => {
                     setConfirmCancel(false);
-                    updateStatus("CANCELLED");
+                    updateStatus("CANCELLED", { cancelReason });
+                    setCancelReason("");
                   }}
                   disabled={updating}
                 >

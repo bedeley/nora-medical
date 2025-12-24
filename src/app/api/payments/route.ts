@@ -339,9 +339,15 @@ export async function POST(req: Request) {
 
     // Audit log: admin payment or refund
     try {
+      const auditAction =
+        normalizedStatus === "VOID"
+          ? "PAYMENT_VOID"
+          : isRefund
+          ? "PAYMENT_REFUND"
+          : "PAYMENT_CREATE";
       await recordAuditLog({
         actorId: user.id,
-        action: isRefund ? "PAYMENT_REFUND" : "PAYMENT_CREATE",
+        action: auditAction,
         entityType: "PAYMENT",
         entityId: result.payments?.[0]?.id ?? "batch",
         meta: {
@@ -353,6 +359,7 @@ export async function POST(req: Request) {
           refundDisposition: refundDisposition || null,
           location,
           batchId: result.batchId || null,
+          note: note || null,
         },
       });
     } catch {

@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const KNOWN_FEATURES = [
   {
@@ -64,12 +65,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unknown feature key" }, { status: 400 });
   }
 
+  const existing = await prisma.featureFlag.findUnique({ where: { key } });
+
   await prisma.featureFlag.upsert({
     where: { key },
     update: { enabled },
     create: { key, enabled },
   });
 
+  try {
+    await recordAuditLog({
+      actorId: user?.id,
+      action: "FEATURE_FLAG_UPDATE",
+      entityType: "FEATURE_FLAG",
+      entityId: key,
+      meta: {
+        key,
+        from: existing?.enabled ?? null,
+        to: enabled,
+      },
+    });
+  } catch {
+    // best-effort
+  }
+
   return NextResponse.json({ ok: true });
 }
-

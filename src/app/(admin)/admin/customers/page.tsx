@@ -1073,6 +1073,10 @@ function AdminCustomersContent() {
               <Button
                 onClick={async () => {
                   if (!refundCredit) return;
+                  if (!refundCredit.userId) {
+                    toast.error("Missing customer id");
+                    return;
+                  }
                   const value = Number(refundAmount);
                   if (!value || isNaN(value) || value <= 0) {
                     toast.error("Enter a valid refund amount");
@@ -1092,6 +1096,7 @@ function AdminCustomersContent() {
                         method: refundMethod,
                         reference: refundRef || undefined,
                         note: refundNote || undefined,
+                        userId: refundCredit.userId,
                       }),
                     });
                     if (!res.ok) {

@@ -195,6 +195,7 @@ const updateSchema = z.object({
     .optional(),
   // When cancelling a RETURNED order, optionally restock items into inventory.
   restockReturned: z.boolean().optional(),
+  cancelReason: z.string().min(5).max(200).optional(),
 });
 
 // PATCH /api/orders/[id] — update status (admin only)
@@ -242,6 +243,7 @@ export async function PATCH(
     const newStatus = parsed.data.status;
     const newDelivery = parsed.data.deliveryStatus;
     const restockReturned = parsed.data.restockReturned === true;
+    const cancelReason = parsed.data.cancelReason?.trim();
     let amountPaid = Number(current.amountPaid ?? 0);
     const total = Number(current.total ?? 0);
     let balance = Number(current.balance ?? Math.max(0, total - amountPaid));
@@ -257,6 +259,12 @@ export async function PATCH(
         // Keep existing amounts but normalize balance from amountPaid
         balance = Math.max(0, total - amountPaid);
       } else if (newStatus === "CANCELLED") {
+        if (!cancelReason) {
+          return NextResponse.json(
+            { error: "Please provide a brief cancellation reason." },
+            { status: 400 },
+          );
+        }
         // Prevent cancelling a delivered order unless it has been marked as RETURNED
         const currentDelivery = current.deliveryStatus || "NOT_DELIVERED";
         if (
@@ -424,8 +432,25 @@ export async function PATCH(
           previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
           newDeliveryStatus: parsed.data.deliveryStatus || current.deliveryStatus || "NOT_DELIVERED",
           restockReturned,
+          cancelReason: cancelReason || null,
         },
       });
+      if (newStatus === "CANCELLED") {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "ORDER_CANCEL",
+          entityType: "ORDER",
+          entityId: updated.id,
+          meta: {
+            previousStatus: current.status,
+            newStatus,
+            previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
+            newDeliveryStatus: parsed.data.deliveryStatus || current.deliveryStatus || "NOT_DELIVERED",
+            restockReturned,
+            reason: cancelReason || null,
+          },
+        });
+      }
     } catch {
       // audit logging is best-effort
     }

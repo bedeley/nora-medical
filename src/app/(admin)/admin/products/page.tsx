@@ -181,6 +181,19 @@ function AdminProductsContent() {
   }, [searchInput]);
 
   const queryClient = useQueryClient();
+
+  const getArchiveReason = (action: "archive" | "unarchive") => {
+    const label = action === "archive" ? "archive" : "unarchive";
+    const reason = window.prompt(`Please add a brief reason to ${label} this product (min 5 chars).`);
+    if (reason == null) return null;
+    const trimmed = reason.trim();
+    if (trimmed.length < 5) {
+      toast.error("Please add a brief reason for this change.");
+      return null;
+    }
+    return trimmed;
+  };
+
   const { data, error, isLoading } = useClientQuery({
     queryKey: ["admin","products", { search, page, pageSize, includeArchived }],
     queryFn: () => fetcher(`/api/products?q=${encodeURIComponent(search)}&page=${page}&pageSize=${pageSize}&sort=updatedAt&includeArchived=${includeArchived ? "1" : "0"}&startsWith=1`),
@@ -339,10 +352,12 @@ function AdminProductsContent() {
                           {p.archived ? (
                             <DropdownMenuItem
                               onClick={async () => {
+                                const editReason = getArchiveReason("unarchive");
+                                if (!editReason) return;
                                 const res = await fetch(`/api/products/${p.id}`, {
                                   method: "PATCH",
                                   headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ archived: false }),
+                                  body: JSON.stringify({ archived: false, editReason }),
                                 });
                                 if (!res.ok) {
                                   const j = await res
@@ -365,10 +380,12 @@ function AdminProductsContent() {
                                   toast.error("Cannot archive a product with stock greater than 0.");
                                   return;
                                 }
+                                const editReason = getArchiveReason("archive");
+                                if (!editReason) return;
                                 const res = await fetch(`/api/products/${p.id}`, {
                                   method: "PATCH",
                                   headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ archived: true }),
+                                  body: JSON.stringify({ archived: true, editReason }),
                                 });
                                 if (!res.ok) {
                                   const j = await res
@@ -467,10 +484,12 @@ function AdminProductsContent() {
                     toast.error("Cannot archive a product with stock greater than 0.");
                     return;
                   }
+                  const editReason = getArchiveReason(p.archived ? "unarchive" : "archive");
+                  if (!editReason) return;
                   const res = await fetch(`/api/products/${p.id}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ archived: !p.archived }),
+                    body: JSON.stringify({ archived: !p.archived, editReason }),
                   });
                   if (!res.ok) {
                     const j = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
@@ -621,6 +640,7 @@ function isTextInput(el: EventTarget | null): boolean {
 // Add Product Dialog
 function AddProductDialog() {
   const queryClient = useQueryClient();
+
   const [open, setOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -848,6 +868,7 @@ function EditProductDialog({
   onOpenChange?: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+
   const [open, setOpen] = useState(false);
   const actualOpen = controlledOpen !== undefined ? controlledOpen : open;
   const setActualOpen = onOpenChange || setOpen;
@@ -949,7 +970,7 @@ function EditProductDialog({
       <DialogTrigger asChild>
         {trigger || <Button size="sm" variant="secondary">Edit</Button>}
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none sm:max-w-lg">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-h-[85vh] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Edit Product</DialogTitle>
         </DialogHeader>
@@ -1082,6 +1103,7 @@ function EditProductDialog({
 // Delete Dialog
 function DeleteProductDialog({ id, name, trigger, open: controlledOpen, onOpenChange }: { id: string; name: string; trigger?: React.ReactElement; open?: boolean; onOpenChange?: (open: boolean) => void }) {
   const queryClient = useQueryClient();
+
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const actualOpen = controlledOpen !== undefined ? controlledOpen : open;

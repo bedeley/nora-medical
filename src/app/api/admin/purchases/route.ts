@@ -132,7 +132,10 @@ export async function POST(req: Request) {
     }
 
     const result = await prisma.$transaction(async (tx: TxClient) => {
-      const product = await tx.product.findUnique({ where: { id: productId }, select: { stock: true, cost: true } });
+      const product = await tx.product.findUnique({
+        where: { id: productId },
+        select: { stock: true, cost: true, name: true },
+      });
       if (!product) throw new Error("Product not found");
       const oldStock = Number(product.stock || 0);
       const oldCost = Number(product.cost || 0);
@@ -155,7 +158,13 @@ export async function POST(req: Request) {
         data: { productId, delta: quantity, reason: "PURCHASE", purchaseId: purchase.id },
       });
 
-      return { purchaseId: purchase.id, oldStock, newStock, newCost: Number(newCost) };
+      return {
+        purchaseId: purchase.id,
+        oldStock,
+        newStock,
+        newCost: Number(newCost),
+        productName: product.name,
+      };
     });
 
     try {
@@ -165,11 +174,33 @@ export async function POST(req: Request) {
         entityType: "PURCHASE",
         entityId: result.purchaseId,
         meta: {
+          name: result.productName,
           productId,
           quantity,
           unitCost,
           newStock: result.newStock,
           newCost: result.newCost,
+          supplier,
+        },
+      });
+    } catch {
+      // best-effort
+    }
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "PRODUCT_STOCK_UPDATE",
+        entityType: "PRODUCT",
+        entityId: productId,
+        meta: {
+          name: result.productName,
+          from: result.oldStock,
+          to: result.newStock,
+          delta: quantity,
+          reason: "PURCHASE",
+          unitCost,
+          newCost: result.newCost,
+          purchaseId: result.purchaseId,
           supplier,
         },
       });

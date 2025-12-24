@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
 
 /**
  * ✅ Zod schema for new product creation
@@ -256,6 +257,23 @@ export async function POST(request: Request) {
       createdAt: product.createdAt.toISOString(),
       updatedAt: product.updatedAt.toISOString(),
     };
+
+    try {
+      await recordAuditLog({
+        actorId: user?.id,
+        action: "PRODUCT_CREATE",
+        entityType: "PRODUCT",
+        entityId: product.id,
+        meta: {
+          name: product.name,
+          price: Number(product.price),
+          cost: Number(product.cost),
+          stock: product.stock,
+        },
+      });
+    } catch {
+      // best-effort
+    }
 
     return NextResponse.json(safeProduct);
   } catch (error) {

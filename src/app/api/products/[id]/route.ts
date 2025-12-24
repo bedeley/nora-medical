@@ -6,6 +6,7 @@ import { productSchema } from "../route";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { notifyBackInStock } from "@/lib/stock-alerts";
+import { recordAuditLog } from "@/lib/audit-log";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -90,7 +91,7 @@ const productUpdateSchema = productSchema
   .extend({
     imageUrl: urlOrPath.optional(),
     archived: z.boolean().optional(),
-    editReason: z.string().min(5),
+    editReason: z.string().min(5).optional(),
   });
 
 /**
@@ -127,11 +128,33 @@ export async function PATCH(
     const { editReason, ...rawData } = parsed.data;
     const updateData =
       rawData as Parameters<typeof prisma.product.update>[0]["data"];
+    if (
+      !editReason &&
+      (typeof updateData.name !== "undefined" ||
+        typeof updateData.description !== "undefined" ||
+        typeof updateData.imageUrl !== "undefined" ||
+        typeof updateData.price !== "undefined" ||
+        typeof updateData.stock !== "undefined")
+    ) {
+      return NextResponse.json(
+        { error: "Please add a brief reason for this change." },
+        { status: 400 },
+      );
+    }
     const existing = await prisma.product.findUnique({
       where: { id: params.id },
-      select: { stock: true },
+      select: {
+        stock: true,
+        archived: true,
+        name: true,
+        description: true,
+        imageUrl: true,
+        price: true,
+      },
     });
     const oldStock = Number(existing?.stock ?? 0);
+    const oldArchived = Boolean(existing?.archived);
+    const oldPrice = Number(existing?.price ?? 0);
     if (updateData.archived === true) {
       const stockToCheck =
         typeof updateData.stock !== "undefined"
@@ -157,9 +180,10 @@ export async function PATCH(
       updatedAt: updated.updatedAt.toISOString(),
     };
 
+    const newStock = Number(updated.stock ?? 0);
+    const reason = String(editReason || "").trim().slice(0, 140);
+
     try {
-      const newStock = Number(updated.stock ?? 0);
-      const reason = String(editReason || "").trim().slice(0, 140);
       if (typeof updateData.stock !== "undefined") {
         const delta = newStock - oldStock;
         if (delta !== 0) {
@@ -177,6 +201,64 @@ export async function PATCH(
       }
     } catch (e) {
       console.warn("Back-in-stock notification error:", e);
+    }
+
+    try {
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+      const nonStockChanges: Record<string, { from: unknown; to: unknown }> = {};
+      if (typeof updateData.name !== "undefined" && updateData.name !== existing?.name) {
+        changes.name = { from: existing?.name ?? null, to: updated.name };
+        nonStockChanges.name = changes.name;
+      }
+      if (typeof updateData.description !== "undefined" && updateData.description !== existing?.description) {
+        changes.description = { from: existing?.description ?? null, to: updated.description };
+        nonStockChanges.description = changes.description;
+      }
+      if (typeof updateData.imageUrl !== "undefined" && updateData.imageUrl !== existing?.imageUrl) {
+        changes.imageUrl = { from: existing?.imageUrl ?? null, to: updated.imageUrl };
+        nonStockChanges.imageUrl = changes.imageUrl;
+      }
+      if (typeof updateData.price !== "undefined" && Number(updateData.price) !== oldPrice) {
+        changes.price = { from: oldPrice, to: Number(updated.price) };
+        nonStockChanges.price = changes.price;
+      }
+      if (typeof updateData.stock !== "undefined" && newStock !== oldStock) {
+        changes.stock = { from: oldStock, to: newStock };
+      }
+      if (typeof updateData.archived !== "undefined" && updated.archived !== oldArchived) {
+        changes.archived = { from: oldArchived, to: Boolean(updated.archived) };
+        nonStockChanges.archived = changes.archived;
+      }
+      if (changes.stock) {
+        await recordAuditLog({
+          actorId: user?.id,
+          action: "PRODUCT_STOCK_UPDATE",
+          entityType: "PRODUCT",
+          entityId: updated.id,
+          meta: {
+            name: updated.name,
+            from: oldStock,
+            to: newStock,
+            delta: newStock - oldStock,
+            reason: editReason || null,
+          },
+        });
+      }
+      if (Object.keys(nonStockChanges).length > 0) {
+        await recordAuditLog({
+          actorId: user?.id,
+          action: "PRODUCT_UPDATE",
+          entityType: "PRODUCT",
+          entityId: updated.id,
+          meta: {
+            name: updated.name,
+            changes: nonStockChanges,
+            reason: editReason || null,
+          },
+        });
+      }
+    } catch {
+      // best-effort audit logging
     }
 
     return NextResponse.json({ success: true, data: safeProduct });
@@ -212,6 +294,7 @@ export async function DELETE(
     const params = await context.params;
     const product = await prisma.product.findUnique({
       where: { id: params.id },
+      select: { id: true, name: true, price: true, stock: true },
     });
 
     if (!product) {
@@ -235,6 +318,22 @@ export async function DELETE(
       await tx.stockAlert.deleteMany({ where: { productId: params.id } });
       await tx.product.delete({ where: { id: params.id } });
     });
+
+    try {
+      await recordAuditLog({
+        actorId: user?.id,
+        action: "PRODUCT_DELETE",
+        entityType: "PRODUCT",
+        entityId: product.id,
+        meta: {
+          name: product.name,
+          price: Number(product.price),
+          stock: product.stock,
+        },
+      });
+    } catch {
+      // best-effort
+    }
 
     return NextResponse.json({ success: true, deletedId: params.id });
   } catch (error) {
