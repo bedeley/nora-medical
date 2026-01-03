@@ -13,6 +13,7 @@ export default function TermsPage() {
           Please read these terms carefully. By using this site or placing an order with Noralls Medical Supplies, you
           agree to the terms set out below.
         </p>
+        <p className="text-xs text-muted-foreground mt-2">Effective date: Jan 1, 2025</p>
       </header>
 
       <article className="prose prose-slate dark:prose-invert max-w-none">
@@ -58,7 +59,13 @@ export default function TermsPage() {
           specific delivery dates are not guaranteed unless expressly agreed in writing.
         </p>
 
-        <h2>5. Returns, Store Credit &amp; Warranty</h2>
+        <h2>5. Cancellations</h2>
+        <p>
+          Order cancellation requests should be submitted as soon as possible. If an order has already been processed
+          or dispatched, cancellation may not be possible or may be handled as a return in line with our returns policy.
+        </p>
+
+        <h2>6. Returns, Store Credit &amp; Warranty</h2>
         <p>
           Return eligibility depends on product type, condition, and applicable regulations. In general, opened
           consumables and products that cannot be safely restocked may be non‑returnable.
@@ -74,14 +81,14 @@ export default function TermsPage() {
           </li>
         </ul>
 
-        <h2>6. Acceptable Use</h2>
+        <h2>7. Acceptable Use</h2>
         <p>
           You agree not to misuse this site, interfere with its security or normal operation, attempt unauthorized
           access to other accounts or systems, or use the platform in any way that could harm Noralls Medical Supplies
           or other users.
         </p>
 
-        <h2>7. Limitation of Liability</h2>
+        <h2>8. Limitation of Liability</h2>
         <p>
           To the maximum extent permitted by law, Noralls Medical Supplies is not liable for any indirect, incidental,
           special, or consequential damages arising from your use of this site or the products supplied. Our aggregate
@@ -89,23 +96,24 @@ export default function TermsPage() {
           order.
         </p>
 
-        <h2>8. Changes to These Terms</h2>
+        <h2>9. Changes to These Terms</h2>
         <p>
           We may update these terms from time to time to reflect changes in our services or applicable requirements.
           When we do so, we will update the effective date on this page. Continued use of the site after changes take
           effect constitutes acceptance of the updated terms.
         </p>
 
-        <h2>9. Governing Law</h2>
+        <h2>10. Governing Law</h2>
         <p>
           These terms, and any dispute or claim arising out of or in connection with them, are governed by the laws of
           the Republic of Ghana. Where a matter cannot be resolved amicably, it may be brought before the competent
           courts of Ghana.
         </p>
 
-        <h2>10. Contact</h2>
+        <h2>11. Contact</h2>
         <p>
-          If you have questions about these terms or how they apply to your account or orders, please visit our{" "}
+          For terms or legal questions, email{" "}
+          <a href="mailto:norallsmedser@gmail.com">norallsmedser@gmail.com</a>. You can also visit our{" "}
           <a href="/contact">Contact</a> page and we will be happy to assist.
         </p>
       </article>

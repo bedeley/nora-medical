@@ -7,6 +7,7 @@ import { assertSameOrigin } from "@/lib/origin";
 import { isR2Configured, uploadImageToR2 } from "@/lib/r2-storage";
 import { isLiveStage } from "@/lib/env";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,6 +63,10 @@ export async function POST(req: Request) {
     }
     if (!assertSameOrigin(req)) {
       return new Response(JSON.stringify({ error: "Bad origin" }), { status: 403 });
+    }
+    const limited = await rateLimit(req, "admin-upload", 60_000, 60);
+    if (!limited.ok) {
+      return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
     }
 
     const formData = await req.formData();

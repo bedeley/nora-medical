@@ -8,12 +8,13 @@ import { notifyPaymentEvent } from "@/lib/notifications";
 import { recordAuditLog } from "@/lib/audit-log";
 import { isFeatureEnabled } from "@/lib/features";
 import { assertSameOrigin } from "@/lib/origin";
+import { rateLimit } from "@/lib/rate-limit";
 
 const refundSchema = z.object({
   amount: z.number().positive(),
   method: z.enum(["cash", "transfer"]),
   reference: z.string().optional(),
-  note: z.string().optional(),
+  note: z.string().min(5, "Please provide a brief reason.").optional(),
 });
 
 export async function POST(
@@ -34,6 +35,10 @@ export async function POST(
   const isAccountant = role === "ACCOUNTANT";
   if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const limited = await rateLimit(req, "admin-refund-credit", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const body = await req.json().catch(() => null) as { userId?: string } | null;

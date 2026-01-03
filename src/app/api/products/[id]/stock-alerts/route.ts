@@ -86,6 +86,28 @@ export async function POST(
       return NextResponse.json({ ok: true, status: "updated" });
     }
 
+    const softDeleted = await prisma.stockAlert.findFirst({
+      where: {
+        productId,
+        OR: orFilters,
+        deletedAt: { not: null },
+      },
+    });
+
+    if (softDeleted) {
+      await prisma.stockAlert.update({
+        where: { id: softDeleted.id },
+        data: {
+          userId,
+          email: emailValue,
+          phone: phoneValue,
+          notifiedAt: null,
+          deletedAt: null,
+        },
+      });
+      return NextResponse.json({ ok: true, status: "restored" });
+    }
+
     await prisma.stockAlert.create({
       data: {
         productId,

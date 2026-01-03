@@ -46,7 +46,7 @@ export async function GET(req: Request) {
     const rows = await prisma.inventoryMovement.findMany({
       where,
       include: {
-        product: { select: { name: true } },
+        product: { select: { name: true, sku: true } },
         purchase: { select: { supplier: true, unitCost: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -58,12 +58,13 @@ export async function GET(req: Request) {
       delta: number;
       reason: string;
       createdAt: Date;
-      product?: { name?: string | null } | null;
+      product?: { name?: string | null; sku?: string | null } | null;
       purchase?: { supplier?: string | null; unitCost?: unknown } | null;
     }) => ({
       id: r.id,
       productId: r.productId,
       productName: r.product?.name ?? "",
+      productSku: r.product?.sku ?? null,
       delta: r.delta,
       reason: r.reason,
       supplier: r.purchase?.supplier ?? "",
@@ -73,12 +74,13 @@ export async function GET(req: Request) {
     }));
 
     if (format === "csv") {
-      const header = ["Date", "Product", "Delta", "Reason", "Supplier", "Unit Cost"];
+      const header = ["Date", "Product", "SKU", "Delta", "Reason", "Supplier", "Unit Cost"];
       const lines = [header.join(",")];
       for (const r of items) {
         lines.push([
           new Date(r.createdAt).toISOString(),
           JSON.stringify(r.productName),
+          JSON.stringify(r.productSku || ""),
           String(r.delta),
           JSON.stringify(r.reason),
           JSON.stringify(r.supplier || ""),
@@ -89,7 +91,7 @@ export async function GET(req: Request) {
         (s: number, r: { delta: unknown }) => s + Number(r.delta || 0),
         0
       );
-      lines.push(["Net", "", String(net), "", "", ""].join(","));
+      lines.push(["Net", "", "", String(net), "", "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {
         headers: {

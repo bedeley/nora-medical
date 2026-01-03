@@ -7,17 +7,30 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 
-const expenseUpdateSchema = z.object({
-  category: z.string().min(2).optional(),
-  amount: z.number().positive().optional(),
-  note: z.string().optional(),
-});
+const expenseUpdateSchema = z
+  .object({
+    category: z.string().min(2).optional(),
+    amount: z.number().optional(),
+    vendor: z.string().optional(),
+    reason: z.string().optional(),
+    note: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.reason || data.reason.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "Reason is required for updates.",
+      });
+    }
+  });
 
 export async function PATCH(_req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  let expenseId = params?.id;
   const user = session.user as AuthenticatedUser;
   const role = user.role;
   const isAdmin = role === "ADMIN";
@@ -31,6 +44,13 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
 
   try {
     const body = await _req.json();
+    if (!expenseId || expenseId === "undefined" || expenseId === "null") {
+      const fallback = typeof body?.id === "string" ? body.id.trim() : "";
+      expenseId = fallback || undefined;
+    }
+    if (!expenseId) {
+      return NextResponse.json({ error: "Missing expense id" }, { status: 400 });
+    }
     const parsed = expenseUpdateSchema.safeParse({
       ...body,
       amount: body.amount === undefined ? undefined : Number(body.amount),
@@ -42,8 +62,42 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
       );
     }
 
+    const existing = await prisma.expense.findUnique({
+      where: { id: expenseId },
+      select: { createdAt: true, isReversal: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Expense not found" }, { status: 404 });
+    }
+    if (existing.isReversal) {
+      return NextResponse.json(
+        { error: "Reversal entries are locked. Please create a new adjustment instead." },
+        { status: 403 }
+      );
+    }
+    const ageMs = Date.now() - new Date(existing.createdAt).getTime();
+    const limitMs = 48 * 60 * 60 * 1000;
+    if (ageMs > limitMs) {
+      return NextResponse.json(
+        { error: "Edits are locked after 48 hours. Please create a reversal instead." },
+        { status: 403 }
+      );
+    }
+    if (parsed.data.amount !== undefined && !existing.isReversal && parsed.data.amount <= 0) {
+      return NextResponse.json(
+        { error: "Amount must be positive for expenses." },
+        { status: 400 }
+      );
+    }
+    if (parsed.data.amount !== undefined && existing.isReversal && parsed.data.amount >= 0) {
+      return NextResponse.json(
+        { error: "Reversal amount must be negative." },
+        { status: 400 }
+      );
+    }
+
     const updated = await prisma.expense.update({
-      where: { id: params.id },
+      where: { id: expenseId },
       data: parsed.data,
     });
 
@@ -52,7 +106,7 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
         actorId: user.id,
         action: "EXPENSE_UPDATE",
         entityType: "EXPENSE",
-        entityId: params.id,
+        entityId: expenseId,
         meta: parsed.data,
       });
     } catch {
@@ -62,8 +116,9 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
     return NextResponse.json(updated);
   } catch (err) {
     console.error("Error updating expense:", err);
+    const message = err instanceof Error ? err.message : "Failed to update expense";
     return NextResponse.json(
-      { error: "Failed to update expense" },
+      { error: message },
       { status: 500 }
     );
   }
@@ -84,7 +139,31 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
   if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
 
   try {
-    await prisma.expense.delete({ where: { id: params.id } });
+    const existing = await prisma.expense.findUnique({
+      where: { id: params.id },
+      select: { createdAt: true, isReversal: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Expense not found" }, { status: 404 });
+    }
+    if (existing.isReversal) {
+      return NextResponse.json(
+        { error: "Reversal entries cannot be deleted. Please create a new adjustment instead." },
+        { status: 403 }
+      );
+    }
+    const ageMs = Date.now() - new Date(existing.createdAt).getTime();
+    const limitMs = 48 * 60 * 60 * 1000;
+    if (ageMs > limitMs) {
+      return NextResponse.json(
+        { error: "Deletes are locked after 48 hours. Please create a reversal instead." },
+        { status: 403 }
+      );
+    }
+    await prisma.expense.update({
+      where: { id: params.id },
+      data: { deletedAt: new Date() },
+    });
 
     try {
       await recordAuditLog({
@@ -102,6 +181,59 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     console.error("Error deleting expense:", err);
     return NextResponse.json(
       { error: "Failed to delete expense" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(_req: Request, { params }: { params: { id: string } }) {
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  const isAdmin = role === "ADMIN";
+  const isAccountant = role === "ACCOUNTANT";
+  if (!isAdmin && !isAccountant) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  const limited = await rateLimit(_req, "admin-expense-restore", 60_000, 60);
+  if (!limited.ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+
+  try {
+    const existing = await prisma.expense.findUnique({
+      where: { id: params.id },
+      select: { id: true, deletedAt: true },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Expense not found" }, { status: 404 });
+    }
+    if (!existing.deletedAt) {
+      return NextResponse.json({ error: "Expense is not deleted" }, { status: 400 });
+    }
+    await prisma.expense.update({
+      where: { id: params.id },
+      data: { deletedAt: null },
+    });
+
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "EXPENSE_RESTORE",
+        entityType: "EXPENSE",
+        entityId: params.id,
+      });
+    } catch {
+      // best-effort
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("Error restoring expense:", err);
+    return NextResponse.json(
+      { error: "Failed to restore expense" },
       { status: 500 }
     );
   }

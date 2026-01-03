@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PaymentStatus } from "@/lib/prisma-enums";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { rateLimit } from "@/lib/rate-limit";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -12,6 +13,10 @@ export async function POST(req: Request) {
   const user = session?.user as AuthenticatedUser | undefined;
   if (!session || user?.role !== "ADMIN") {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const limited = await rateLimit(req, "admin-health-backfill", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const body = await req.json().catch(() => null);

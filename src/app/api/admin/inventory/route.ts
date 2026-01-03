@@ -10,7 +10,7 @@ type InventoryPurchase = {
   note: string | null;
 };
 
-export async function GET() {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   const role = user?.role;
@@ -19,7 +19,29 @@ export async function GET() {
   if (!session || (!isAdmin && !isStaff)) {
     return new Response("Forbidden", { status: 403 });
   }
+  const { searchParams } = new URL(req.url);
+  const includeArchived = searchParams.get("includeArchived") === "1";
+  const lowStockThreshold = 5;
+  const lookbackDays = 30;
+  const since = new Date();
+  since.setDate(since.getDate() - lookbackDays);
+  since.setHours(0, 0, 0, 0);
+
+  const orderItemSums = await prisma.orderItem.groupBy({
+    by: ["productId"],
+    where: {
+      createdAt: { gte: since },
+      order: { status: { not: "CANCELLED" } },
+    },
+    _sum: { quantity: true },
+  });
+  const salesByProduct = new Map<string, number>();
+  for (const row of orderItemSums) {
+    if (!row.productId) continue;
+    salesByProduct.set(row.productId, Number(row._sum.quantity ?? 0));
+  }
   const products = await prisma.product.findMany({
+    where: includeArchived ? undefined : { archived: false },
     orderBy: { updatedAt: "desc" },
     include: {
       purchases: {
@@ -70,8 +92,17 @@ export async function GET() {
       lastPurchaseCost = baseCost;
     }
 
+    const soldLast30 = salesByProduct.get(p.id) ?? 0;
+    const avgDailySales = soldLast30 > 0 ? soldLast30 / lookbackDays : 0;
+    const daysOfStock = avgDailySales > 0 ? Number(p.stock || 0) / avgDailySales : null;
+    const weeksCover = daysOfStock !== null ? daysOfStock / 7 : null;
+    const reorderPoint = avgDailySales > 0 ? Math.ceil(avgDailySales * 7) : lowStockThreshold;
+    const targetStock = avgDailySales > 0 ? Math.ceil(avgDailySales * 14) : lowStockThreshold * 2;
+    const suggestedReorder = Math.max(0, targetStock - Number(p.stock || 0));
+
     return {
       id: p.id,
+      sku: p.sku ?? null,
       name: p.name,
       price: Number(p.price),
       cost: baseCost,
@@ -82,6 +113,12 @@ export async function GET() {
       lastPurchaseSupplier,
       lastPurchaseNote,
       avgPurchaseCost,
+      soldLast30,
+      avgDailySales,
+      daysOfStock,
+      weeksCover,
+      reorderPoint,
+      suggestedReorder,
     };
   });
   return Response.json({ rows });

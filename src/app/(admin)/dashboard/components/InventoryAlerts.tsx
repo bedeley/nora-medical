@@ -1,6 +1,7 @@
 "use client";
 
 import { useClientQuery } from "@/hooks/use-client-query";
+import Link from "next/link";
 import { formatCurrency } from "@/lib/currency";
 import { AlertTriangle, CheckCircle, Download } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -113,9 +114,17 @@ export default function InventoryAlerts() {
 
       <CardContent>
         {data.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No low-stock products detected.
-          </p>
+          <div className="text-sm text-muted-foreground">
+            <p>No low-stock products detected.</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button asChild size="sm" variant="outline">
+                <Link href="/admin/inventory">View inventory</Link>
+              </Button>
+              <Button asChild size="sm" variant="ghost">
+                <Link href="/admin/purchases">Add purchase</Link>
+              </Button>
+            </div>
+          </div>
         ) : (
           <Table>
             <TableHeader>

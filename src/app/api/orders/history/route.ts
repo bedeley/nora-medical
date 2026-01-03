@@ -8,6 +8,7 @@ export async function GET(req: Request) {
 
   const me = session.user as AuthenticatedUser;
   const url = new URL(req.url);
+  const format = url.searchParams.get("format") || "";
   const reqUrlUserId = url.searchParams.get("userId") || "";
   const isPrivileged = me.role === "ADMIN" || me.role === "STAFF" || me.role === "ACCOUNTANT";
   const userId = isPrivileged && reqUrlUserId ? reqUrlUserId : me.id;
@@ -95,6 +96,42 @@ export async function GET(req: Request) {
       })),
     };
   });
+
+  if (format.toLowerCase() === "csv") {
+    const escapeCsv = (value: string | number | null | undefined) => {
+      const text = value === null || value === undefined ? "" : String(value);
+      if (text.includes(",") || text.includes("\"") || text.includes("\n")) {
+        return `"${text.replace(/\"/g, "\"\"")}"`;
+      }
+      return text;
+    };
+    const header = [
+      "Order ID",
+      "Date",
+      "Status",
+      "Delivery Status",
+      "Total",
+      "Paid",
+      "Balance",
+    ];
+    const rows = data.map((o) => [
+      escapeCsv(o.id),
+      escapeCsv(o.createdAt),
+      escapeCsv(o.status),
+      escapeCsv(o.deliveryStatus ?? ""),
+      escapeCsv(o.total),
+      escapeCsv(o.amountPaid),
+      escapeCsv(o.balance),
+    ]);
+    const csv = [header.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    return new Response(csv, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": "attachment; filename=\"orders-statement.csv\"",
+      },
+    });
+  }
 
   return Response.json({ orders: data });
 }

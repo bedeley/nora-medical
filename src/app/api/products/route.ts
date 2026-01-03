@@ -5,6 +5,9 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
+import { formatSku, normalizeSkuPrefix, parseSkuNumber } from "@/lib/sku";
+import { PRODUCT_CATEGORIES } from "@/lib/product-categories";
 
 /**
  * ✅ Zod schema for new product creation
@@ -27,10 +30,24 @@ const urlOrPath = z
     }
   );
 
+const categorySchema = z.preprocess(
+  (val) => (val == null ? "" : String(val)),
+  z
+    .string()
+    .min(1, { message: "You must select a category." })
+    .refine(
+      (value) => PRODUCT_CATEGORIES.includes(value as (typeof PRODUCT_CATEGORIES)[number]),
+      { message: "Please select a valid category." }
+    )
+);
+
 export const productSchema = z.object({
   name: z.string().min(2, { message: "Name is required" }),
   description: z.string().min(5, { message: "Description is too short" }),
   imageUrl: urlOrPath,
+  category: categorySchema,
+  brand: z.string().min(2, { message: "Brand is required" }),
+  supplier: z.string().min(2, { message: "Supplier is required" }),
   price: z
     .union([z.string(), z.number()])
     .transform((v) => Number(v))
@@ -53,14 +70,20 @@ type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirst>> & {
   createdAt: Date;
   updatedAt: Date;
   _count?: { orderItems?: number };
+  brand?: string | null;
+  supplier?: string | null;
 };
 
 function serializeProduct(p: ProductRow, includePrivate: boolean) {
   const base = {
     id: p.id,
+    sku: p.sku ?? null,
     name: p.name,
     description: p.description,
     imageUrl: p.imageUrl,
+    category: p.category ?? null,
+    brand: p.brand ?? null,
+    supplier: (p as { supplier?: string | null }).supplier ?? null,
     price: Number(p.price),
     stock: p.stock,
     createdAt: p.createdAt.toISOString(),
@@ -96,6 +119,12 @@ export async function GET(request: Request) {
   const sort = (searchParams.get("sort") || "createdAt") as
     | "createdAt"
     | "updatedAt";
+  const sortDirRaw = (searchParams.get("sortDir") || "desc").toLowerCase();
+  const sortDir = sortDirRaw === "asc" ? "asc" : "desc";
+  const rawCategory = (searchParams.get("category") || "").toLowerCase();
+  const category = PRODUCT_CATEGORIES.includes(rawCategory as (typeof PRODUCT_CATEGORIES)[number])
+    ? rawCategory
+    : "";
 
   try {
     const idsParam = searchParams.get("ids");
@@ -128,13 +157,20 @@ export async function GET(request: Request) {
       });
     }
 
-    const includeArchived = searchParams.get("includeArchived") === "1";
-    const startsWith = searchParams.get("startsWith") === "1";
+  const includeArchived = searchParams.get("includeArchived") === "1";
+  const startsWith = searchParams.get("startsWith") === "1";
+  const stockFilter = (searchParams.get("stockFilter") || "").toLowerCase();
     const nameFilter =
       q && startsWith
         ? { name: { startsWith: q, mode: "insensitive" as const } }
         : q
         ? { name: { contains: q, mode: "insensitive" as const } }
+        : null;
+    const skuFilter =
+      q && startsWith
+        ? { sku: { startsWith: q, mode: "insensitive" as const } }
+        : q
+        ? { sku: { contains: q, mode: "insensitive" as const } }
         : null;
 
     const where = {
@@ -143,6 +179,7 @@ export async function GET(request: Request) {
           ? {
               OR: [
                 nameFilter,
+                ...(skuFilter ? [skuFilter] : []),
                 ...(startsWith
                   ? []
                   : [{ description: { contains: q, mode: "insensitive" as const } }]),
@@ -150,6 +187,12 @@ export async function GET(request: Request) {
             }
           : {},
         includeArchived ? {} : { archived: false },
+        stockFilter === "out"
+          ? { stock: { lte: 0 } }
+          : stockFilter === "low"
+          ? { stock: { lte: 5, gt: 0 } }
+          : {},
+        category ? { category } : {},
       ],
     } satisfies NonNullable<Parameters<typeof prisma.product.findMany>[0]>["where"];
 
@@ -157,7 +200,7 @@ export async function GET(request: Request) {
       prisma.product.findMany({
         where,
         // Allow sorting by updatedAt (for admin) or createdAt (default)
-        orderBy: { [sort]: "desc" },
+        orderBy: { [sort]: sortDir },
         skip: (page - 1) * pageSize,
         take: pageSize,
         include: includePrivate ? { _count: { select: { orderItems: true } } } : undefined,
@@ -193,6 +236,10 @@ export async function POST(request: Request) {
   if (!assertSameOrigin(request)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
+  const limited = await rateLimit(request, "admin-product-create", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
 
   const session = await getServerSession(authOptions);
 
@@ -217,11 +264,39 @@ export async function POST(request: Request) {
         name: parsed.data.name,
         description: parsed.data.description,
         imageUrl: parsed.data.imageUrl,
+        category: parsed.data.category,
+        brand: parsed.data.brand,
+        supplier: parsed.data.supplier,
         price: parsed.data.price,
         cost: parsed.data.cost,
         stock: parsed.data.stock,
       },
     });
+
+    const prefix = normalizeSkuPrefix(product.name, 3);
+    const existingSkus = await prisma.product.findMany({
+      where: { sku: { startsWith: `${prefix}-`, mode: "insensitive" } },
+      select: { sku: true },
+    });
+    const maxSuffix = existingSkus.reduce((max, row) => {
+      const parsed = parseSkuNumber(prefix, row.sku);
+      if (parsed == null) return max;
+      return Math.max(max, parsed);
+    }, 0);
+
+    let productWithSku = product;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const nextSku = formatSku(prefix, maxSuffix + 1 + attempt, 3);
+      try {
+        productWithSku = await prisma.product.update({
+          where: { id: product.id },
+          data: { sku: nextSku },
+        });
+        break;
+      } catch (err) {
+        if (attempt >= 4) throw err;
+      }
+    }
 
     // If an initial stock and cost are provided, record a baseline purchase and inventory movement
     try {
@@ -252,10 +327,10 @@ export async function POST(request: Request) {
     }
 
     const safeProduct = {
-      ...product,
-      price: Number(product.price),
-      createdAt: product.createdAt.toISOString(),
-      updatedAt: product.updatedAt.toISOString(),
+      ...productWithSku,
+      price: Number(productWithSku.price),
+      createdAt: productWithSku.createdAt.toISOString(),
+      updatedAt: productWithSku.updatedAt.toISOString(),
     };
 
     try {
@@ -266,6 +341,9 @@ export async function POST(request: Request) {
         entityId: product.id,
         meta: {
           name: product.name,
+          category: parsed.data.category,
+          brand: parsed.data.brand,
+          supplier: parsed.data.supplier,
           price: Number(product.price),
           cost: Number(product.cost),
           stock: product.stock,

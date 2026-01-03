@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/email";
 import { assertSameOrigin } from "@/lib/origin";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(
   req: Request,
@@ -20,6 +21,10 @@ export async function POST(
   const isAccountant = role === "ACCOUNTANT";
   if (!session || (!isAdmin && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const limited = await rateLimit(req, "admin-statement-email", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const url = new URL(req.url);

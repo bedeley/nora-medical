@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { notifyPaymentEvent } from "@/lib/notifications";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { rateLimit } from "@/lib/rate-limit";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -20,6 +21,10 @@ export async function PATCH(
 ) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-order-payment", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const session = await getServerSession(authOptions);

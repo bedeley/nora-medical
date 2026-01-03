@@ -107,13 +107,13 @@ button:hover,
 }
 
 /* Global link colors */
-a[href] {
+a[href]:not([data-slot="button"]) {
   color: var(--color-link);
   text-decoration-color: currentColor;
   text-underline-offset: 4px;
 }
 
-a[href]:hover {
+a[href]:not([data-slot="button"]):hover {
   color: var(--color-link-hover);
   text-decoration: underline;
 }
@@ -172,6 +172,29 @@ body.hide-chrome [data-chrome-toaster] {
 
 [data-slot="admin-page"] [data-slot="table-header"] tr {
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.16);
+}
+
+/* Admin tables: sticky headers for long lists */
+[data-slot="admin-page"] [data-slot="table-head"] {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--color-card);
+}
+
+/* Prevent admin table cells from overlapping when columns are narrow */
+[data-slot="admin-page"] [data-slot="table-head"],
+[data-slot="admin-page"] [data-slot="table-cell"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Admin purchases table: sticky headers for native table */
+.admin-purchases-table th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--color-card);
 }
 
 /* Admin cards: borderless with slightly stronger shadow */

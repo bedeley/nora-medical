@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/email";
+import { rateLimit } from "@/lib/rate-limit";
 
 function num(v: unknown) {
   return Number(v || 0);
@@ -30,6 +31,10 @@ export async function POST(req: Request) {
 
   if (!hasAdminAccess && !hasCronAccess) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const limited = await rateLimit(req, "admin-health-alerts", 60_000, 10);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const key = `daily-${todayKey()}`;

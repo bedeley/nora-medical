@@ -6,6 +6,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { formatCurrency } from "@/lib/currency";
 import {
@@ -65,18 +66,29 @@ function AdminBalancesContent() {
 
   if (error) {
     return (
-      <section>
-        <h1 className="text-2xl font-semibold mb-4">Customer Balances</h1>
+      <section className="container mx-auto py-8">
+        <h1 className="text-2xl font-semibold mb-2">Customer Balances</h1>
         <p className="text-red-600">Failed to load balances.</p>
       </section>
     );
   }
 
   return (
-    <section>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-semibold">Customer Balances</h1>
-        <div className="flex items-center gap-2 text-sm">
+    <section className="container mx-auto py-8 space-y-6">
+      <header className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Customer Balances</h1>
+          <p className="text-sm text-muted-foreground">
+            Review outstanding balances across customers.
+          </p>
+        </div>
+      </header>
+
+      <Card className="shadow-sm">
+        <CardHeader className="py-3">
+          <CardTitle className="text-base font-semibold">Filters</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2 text-sm">
           <label htmlFor="refresh-interval" className="text-muted-foreground">
             Refresh:
           </label>
@@ -109,9 +121,18 @@ function AdminBalancesContent() {
           >
             Copy Link
           </Button>
-        </div>
-      </div>
-      <Table>
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-sm">
+        <CardHeader className="flex items-center justify-between py-3">
+          <CardTitle className="text-base font-semibold">Balances</CardTitle>
+          <span className="text-xs text-muted-foreground">
+            {isLoading || !data ? "—" : `${data.length} customers`}
+          </span>
+        </CardHeader>
+        <CardContent className="p-0 overflow-x-auto">
+          <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Customer</TableHead>
@@ -132,7 +153,25 @@ function AdminBalancesContent() {
           ) : data.length === 0 ? (
             <TableRow>
               <TableCell colSpan={6} className="text-center py-6">
-                No balances found.
+                <div className="flex flex-col items-center gap-3 text-sm text-muted-foreground">
+                  <span>No balances found.</span>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.location.reload()}
+                    >
+                      Refresh
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => window.location.assign("/admin/customers")}
+                    >
+                      View customers
+                    </Button>
+                  </div>
+                </div>
               </TableCell>
             </TableRow>
           ) : (
@@ -158,7 +197,9 @@ function AdminBalancesContent() {
             ))
           )}
         </TableBody>
-      </Table>
+          </Table>
+        </CardContent>
+      </Card>
     </section>
   );
 }
@@ -167,8 +208,8 @@ export default function AdminBalancesPage() {
   return (
     <Suspense
       fallback={
-        <section>
-          <h1 className="text-2xl font-semibold mb-4">Customer Balances</h1>
+        <section className="container mx-auto py-8">
+          <h1 className="text-2xl font-semibold mb-2">Customer Balances</h1>
           <p className="text-sm text-muted-foreground">Loading balances…</p>
         </section>
       }

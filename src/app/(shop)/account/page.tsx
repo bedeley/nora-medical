@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/currency";
+import { chipToneBorderClass, chipToneClass, deliveryStatusTone, orderStatusTone } from "@/lib/status-chips";
 
 type AccountMe = {
   id: string;
@@ -17,11 +18,14 @@ type AccountMe = {
   name?: string | null;
   phone?: string | null;
   phoneVerifiedAt?: string | null;
+  createdAt?: string | null;
+  lastLoginAt?: string | null;
 };
 
 type OrderHistoryItem = {
   id: string;
   status: string;
+  deliveryStatus?: string | null;
   total: number | string;
   amountPaid?: number | string;
   balance?: number | string;
@@ -48,6 +52,7 @@ function AccountContent() {
     enabled: !!session,
     refetchInterval: 15000,
   });
+  const recentOrders = (data?.orders || []).slice(0, 3);
   const { data: me } = useQuery<AccountMe>({
     queryKey: ["account", "me"],
     queryFn: () => fetcher("/api/account/me"),
@@ -63,6 +68,8 @@ function AccountContent() {
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState(""); // phone verification code
   const [verifying, setVerifying] = useState(false); // phone verification flag
+  const [phoneError, setPhoneError] = useState("");
+  const [otpError, setOtpError] = useState("");
   const [emailOtp, setEmailOtp] = useState("");
   const [emailOtpError, setEmailOtpError] = useState<string | null>(null);
   const [emailVerifying, setEmailVerifying] = useState(false);
@@ -98,20 +105,47 @@ function AccountContent() {
   // Treat phoneVerifiedAt as the generic "account verified via code" flag,
   // regardless of whether the code arrived via email or phone.
   const isEmailVerified = Boolean(me?.phoneVerifiedAt);
+  const normalizePhone = (input: string) => (input || "").trim().replace(/[^\d+]/g, "");
+  const isValidPhone = (input: string) => /^\+?\d{10,15}$/.test(normalizePhone(input));
 
   if (session)
     return (
       <section className="container mx-auto py-12">
         <h1 className="text-2xl font-semibold mb-2">Account</h1>
-        <p className="text-muted-foreground">Signed in as {session.user?.email}</p>
-        <p className="mt-1 text-sm">
-          Email verification:{" "}
-          {isEmailVerified ? (
-            <span className="text-green-600 font-medium">Verified</span>
-          ) : (
-            <span className="text-red-600 font-medium">Not verified</span>
-          )}
-        </p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <Card className="border">
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground">Signed in as</p>
+              <p className="font-semibold">{me?.name || session.user?.email}</p>
+              <p className="text-sm text-muted-foreground">{session.user?.email}</p>
+            </CardContent>
+          </Card>
+          <Card className="border">
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground">Last login</p>
+              <p className="font-semibold">
+                {me?.lastLoginAt ? new Date(me.lastLoginAt).toLocaleString() : "—"}
+              </p>
+              <p className="text-xs text-muted-foreground">Customer since</p>
+              <p className="text-sm text-muted-foreground">
+                {me?.createdAt ? new Date(me.createdAt).toLocaleDateString() : "—"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border">
+            <CardContent className="pt-4">
+              <p className="text-xs text-muted-foreground">Email verification</p>
+              {isEmailVerified ? (
+                <p className="font-semibold text-green-600">Verified</p>
+              ) : (
+                <p className="font-semibold text-red-600">Not verified</p>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                Keep your email verified for account security.
+              </p>
+            </CardContent>
+          </Card>
+        </div>
         {!isEmailVerified && me?.id && (
           <div className="mt-2 space-y-2 max-w-md">
             <div className="flex flex-wrap gap-2 items-center">
@@ -215,73 +249,119 @@ function AccountContent() {
           </div>
         )}
         {searchParams?.get("verify") === "1" && !isEmailVerified && (
-          <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 p-3 text-sm">
+          <div className={`mt-3 rounded-md border p-3 text-sm ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
             Your account is not fully verified yet. Please verify your email address using the link sent to your inbox.
           </div>
         )}
         {hasOutstanding && isEmailVerified && (
-          <div className="mt-3 rounded-md border border-primary/20 bg-primary/10 text-primary p-3 text-sm">
+          <div className={`mt-3 rounded-md border p-3 text-sm ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
             You have unpaid orders. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to complete payment.
           </div>
         )}
         {balance && (
-          <div className="mt-4 max-w-md">
-            <Card className="border-none shadow-sm rounded-none">
-              <CardContent className="py-3">
-                <p className="text-xs text-muted-foreground mb-1">
-                  Quick summary of your account today:
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <Card className="border">
+              <CardContent className="pt-4">
+                <p className="text-xs text-muted-foreground">Outstanding balance</p>
+                <p className={balance.balance > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
+                  {balance.balance > 0 ? formatCurrency(balance.balance) : "None"}
                 </p>
-                <div className="flex justify-between text-sm">
-                  <span>Outstanding balance</span>
-                  <span className={balance.balance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
-                    {balance.balance > 0 ? formatCurrency(balance.balance) : "None"}
-                  </span>
-                </div>
-                {typeof balance.unappliedFunds === "number" && balance.unappliedFunds > 0 && (
-                  <div className="flex justify-between text-sm mt-1">
-                    <span>Store credit</span>
-                    <span className="font-medium text-emerald-700">
-                      {formatCurrency(balance.unappliedFunds)}
-                    </span>
-                  </div>
-                )}
+              </CardContent>
+            </Card>
+            <Card className="border">
+              <CardContent className="pt-4">
+                <p className="text-xs text-muted-foreground">Store credit</p>
+                <p className="text-lg font-semibold text-emerald-700">
+                  {typeof balance.unappliedFunds === "number" && balance.unappliedFunds > 0
+                    ? formatCurrency(balance.unappliedFunds)
+                    : "None"}
+                </p>
               </CardContent>
             </Card>
           </div>
         )}
         <div className="mt-4 max-w-md">
           <p className="text-sm text-muted-foreground">
-            To see whether you currently owe anything or have store credit on your
-            account, use the{" "}
-            <Link href="/account/balance" className="underline">
-              My balance
-            </Link>{" "}
-            page. For detailed order-by-order history, use{" "}
-            <Link href="/orders" className="underline">
-              Order history
-            </Link>
-            .
+            For detailed order history or balance details, use the buttons below.
           </p>
         </div>
         {isEmailVerified && (
-          <div className="mt-4 flex gap-3">
-            <Link href="/orders" className="hidden sm:inline underline">
-              Order history
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link href="/orders" className="inline-flex">
+              <Button variant="default">Order history</Button>
             </Link>
-            <Link href="/account/balance" className="hidden sm:inline underline">
-              My balance
+            <Link href="/account/balance" className="inline-flex">
+              <Button variant="outline">My balance</Button>
             </Link>
+          </div>
+        )}
+
+        {recentOrders.length > 0 && (
+          <div className="mt-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">Recent Orders</h2>
+              <Link href="/orders" className="text-sm text-primary underline">
+                View all
+              </Link>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              {recentOrders.map((order) => {
+                const delivery = String(order.deliveryStatus || "").replaceAll("_", " ");
+                const status = String(order.status || "").replaceAll("_", " ");
+                const deliveryKey = String(order.deliveryStatus || "");
+                const statusKey = String(order.status || "");
+                const deliveryClass = chipToneClass(deliveryStatusTone(deliveryKey));
+                const statusClass = chipToneClass(orderStatusTone(statusKey));
+                return (
+                  <Card key={order.id} className="border">
+                    <CardContent className="pt-4 space-y-1">
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(order.createdAt).toLocaleString()}
+                      </p>
+                      <p className="font-semibold">Order {order.id.slice(0, 8)}</p>
+                      <p className="text-sm text-muted-foreground">
+                        Total {formatCurrency(Number(order.total || 0))}
+                      </p>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <span className={`rounded-full px-2 py-0.5 ${deliveryClass}`}>
+                          {delivery || "Delivery —"}
+                        </span>
+                        <span className={`rounded-full px-2 py-0.5 ${statusClass}`}>
+                          {status || "Status —"}
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
           </div>
         )}
 
         <div className="mt-8 max-w-md">
           <h2 className="text-lg font-semibold mb-2">Contact Phone</h2>
-          <p className="text-sm text-muted-foreground mb-2">We use your phone to confirm orders and send receipts.</p>
+          <p className="text-sm text-muted-foreground mb-2">
+            Why we need your phone: we use it to confirm orders and send receipts.
+          </p>
           <div className="flex items-center gap-2">
-            <Input id="phone-input" placeholder="Enter your phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <Input
+              id="phone-input"
+              placeholder="Enter your phone"
+              value={phone}
+              onChange={(e) => {
+                setPhone(e.target.value);
+                if (phoneError) setPhoneError("");
+              }}
+              aria-invalid={!!phoneError}
+              className={phoneError ? "border-red-500" : undefined}
+            />
             <Button
               onClick={async () => {
                 if (savingRef.current) return;
+                if (!phone.trim() || !isValidPhone(phone)) {
+                  setPhoneError("Enter a valid phone number.");
+                  return;
+                }
                 savingRef.current = true;
                 try {
                   const res = await fetch("/api/account/phone", {
@@ -305,6 +385,7 @@ function AccountContent() {
               }}
             >Save</Button>
           </div>
+          {phoneError && <p className="mt-1 text-xs text-red-600">{phoneError}</p>}
           <div className="mt-3 text-sm">
             <p>
               Verification status:{" "}
@@ -325,6 +406,10 @@ function AccountContent() {
                   variant="outline"
                   onClick={async () => {
                     try {
+                      if (!phone.trim() || !isValidPhone(phone)) {
+                        setPhoneError("Enter a valid phone number.");
+                        return;
+                      }
                       setVerifying(true);
                       const r = await fetch("/api/account/phone/verify/request", { method: "POST" });
                       const j = await r.json().catch(() => ({} as { error?: string; channel?: string }));
@@ -345,12 +430,21 @@ function AccountContent() {
                 <Input
                   placeholder="Enter code"
                   value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D+/g, '').slice(0, 6))}
-                  className="max-w-[140px]"
+                  onChange={(e) => {
+                    setOtp(e.target.value.replace(/\D+/g, '').slice(0, 6));
+                    if (otpError) setOtpError("");
+                  }}
+                  className={`max-w-[140px] ${otpError ? "border-red-500" : ""}`}
+                  aria-invalid={!!otpError}
                 />
+                {otpError && <p className="text-xs text-red-600">{otpError}</p>}
                 <Button
                   onClick={async () => {
                     try {
+                      if (otp.trim().length < 4) {
+                        setOtpError("Enter the verification code.");
+                        return;
+                      }
                       setVerifying(true);
                       const r = await fetch("/api/account/phone/verify/confirm", {
                         method: "POST",
@@ -421,23 +515,27 @@ function ChangePasswordForm() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<{ current?: string; next?: string; confirm?: string }>({});
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!currentPassword || !newPassword || !confirmPassword) {
-      toast.error("Fill in all password fields.");
-      return;
+    const nextErrors: { current?: string; next?: string; confirm?: string } = {};
+    if (!currentPassword) nextErrors.current = "Current password is required.";
+    if (!newPassword) nextErrors.next = "New password is required.";
+    if (!confirmPassword) nextErrors.confirm = "Confirm your new password.";
+    if (newPassword && newPassword.length < 6) {
+      nextErrors.next = "New password must be at least 6 characters.";
     }
-    if (newPassword !== confirmPassword) {
-      toast.error("New passwords do not match.");
-      return;
+    if (newPassword && confirmPassword && newPassword !== confirmPassword) {
+      nextErrors.confirm = "New passwords do not match.";
     }
-    if (newPassword.length < 6) {
-      toast.error("New password must be at least 6 characters.");
+    if (Object.values(nextErrors).some(Boolean)) {
+      setErrors(nextErrors);
       return;
     }
     setLoading(true);
     try {
+      setErrors({});
       const res = await fetch("/api/account/password", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -451,6 +549,7 @@ function ChangePasswordForm() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+      setErrors({});
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to change password";
@@ -468,8 +567,14 @@ function ChangePasswordForm() {
           type="password"
           autoComplete="current-password"
           value={currentPassword}
-          onChange={(e) => setCurrentPassword(e.target.value)}
+          onChange={(e) => {
+            setCurrentPassword(e.target.value);
+            if (errors.current) setErrors((prev) => ({ ...prev, current: "" }));
+          }}
+          aria-invalid={!!errors.current}
+          className={errors.current ? "border-red-500" : undefined}
         />
+        {errors.current && <p className="text-xs text-red-600">{errors.current}</p>}
       </div>
       <div className="space-y-1">
         <label className="text-sm text-muted-foreground">New password</label>
@@ -477,8 +582,14 @@ function ChangePasswordForm() {
           type="password"
           autoComplete="new-password"
           value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
+          onChange={(e) => {
+            setNewPassword(e.target.value);
+            if (errors.next) setErrors((prev) => ({ ...prev, next: "" }));
+          }}
+          aria-invalid={!!errors.next}
+          className={errors.next ? "border-red-500" : undefined}
         />
+        {errors.next && <p className="text-xs text-red-600">{errors.next}</p>}
       </div>
       <div className="space-y-1">
         <label className="text-sm text-muted-foreground">Confirm new password</label>
@@ -486,8 +597,14 @@ function ChangePasswordForm() {
           type="password"
           autoComplete="new-password"
           value={confirmPassword}
-          onChange={(e) => setConfirmPassword(e.target.value)}
+          onChange={(e) => {
+            setConfirmPassword(e.target.value);
+            if (errors.confirm) setErrors((prev) => ({ ...prev, confirm: "" }));
+          }}
+          aria-invalid={!!errors.confirm}
+          className={errors.confirm ? "border-red-500" : undefined}
         />
+        {errors.confirm && <p className="text-xs text-red-600">{errors.confirm}</p>}
       </div>
       <Button type="submit" disabled={loading}>
         {loading ? "Updating..." : "Update password"}

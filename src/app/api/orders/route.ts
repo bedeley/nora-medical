@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { assertSameOrigin } from "@/lib/origin";
 import { notifyOrderEvent } from "@/lib/notifications";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { randomUUID } from "crypto";
+import { computeReceiptHash } from "@/lib/receipt-hash";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -23,34 +25,97 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const allParam = url.searchParams.get("all");
   const allowAll = isAdmin && allParam === "1"; // opt-in to all orders view
+  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+  const pageSize = Math.max(
+    1,
+    Math.min(100, Number(url.searchParams.get("pageSize") || 25)),
+  );
+  const filter = url.searchParams.get("filter");
+  const deliveryFilter = url.searchParams.get("dFilter");
+  const q = (url.searchParams.get("q") || "").trim();
+  const start = url.searchParams.get("start");
+  const end = url.searchParams.get("end");
+  const minTotal = url.searchParams.get("minTotal");
+  const maxTotal = url.searchParams.get("maxTotal");
+  const paymentMethod = url.searchParams.get("paymentMethod");
+  const userIdParam = url.searchParams.get("userId");
+  const sortKey = url.searchParams.get("sortKey");
+  const sortDir = url.searchParams.get("sortDir") === "asc" ? "asc" : "desc";
 
   try {
-    const orders = await prisma.order.findMany({
-      where: allowAll ? {} : { userId: user.id },
-      include: {
-        items: { include: { product: true } },
-        user: { select: { id: true, name: true, email: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const where: Prisma.OrderWhereInput = allowAll ? {} : { userId: user.id };
 
-    const safeOrders = orders.map((o: {
-      id: string;
-      total: unknown;
-      amountPaid: unknown;
-      status: string;
-      deliveryStatus: string | null;
-      deliveredAt: Date | null;
-      createdAt: Date;
-      userId: string | null;
-      user: { id: string; name: string | null; email: string | null } | null;
-      items: Array<{
-        id: string;
-        quantity: number;
-        price: unknown;
-        product: { id: string; name: string; imageUrl: string | null };
-      }>;
-    }) => {
+    if (allowAll && userIdParam) {
+      where.userId = userIdParam;
+    }
+    if (filter && filter !== "ALL") {
+      where.status = filter;
+    }
+    if (deliveryFilter && deliveryFilter !== "ALL") {
+      where.deliveryStatus = deliveryFilter;
+    }
+    if (start || end) {
+      where.createdAt = {};
+      if (start) where.createdAt.gte = new Date(`${start}T00:00:00`);
+      if (end) where.createdAt.lte = new Date(`${end}T23:59:59`);
+    }
+    if (minTotal || maxTotal) {
+      where.total = {};
+      if (minTotal) where.total.gte = Number(minTotal);
+      if (maxTotal) where.total.lte = Number(maxTotal);
+    }
+    if (q) {
+      where.OR = [
+        { id: { contains: q } },
+        { invoiceNumber: { contains: q, mode: "insensitive" } },
+        { user: { name: { contains: q, mode: "insensitive" } } },
+        { user: { email: { contains: q, mode: "insensitive" } } },
+        { user: { phone: { contains: q, mode: "insensitive" } } },
+      ];
+    }
+    if (paymentMethod && paymentMethod !== "ALL") {
+      const token = `"method":"${paymentMethod}"`;
+      where.payments = { some: { note: { contains: token } } };
+    }
+
+    const orderBy: Prisma.OrderOrderByWithRelationInput = (() => {
+      switch (sortKey) {
+        case "total":
+          return { total: sortDir };
+        case "amountPaid":
+          return { amountPaid: sortDir };
+        case "balance":
+          return { balance: sortDir };
+        case "createdAt":
+          return { createdAt: sortDir };
+        case "customer":
+          return { user: { name: sortDir } };
+        case "invoice":
+          return { invoiceNumber: sortDir };
+        default:
+          return { createdAt: "desc" as const };
+      }
+    })();
+
+    const [orders, total, aggregates] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: {
+          items: { include: { product: true } },
+          user: { select: { id: true, name: true, email: true, phone: true } },
+        },
+        orderBy,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      prisma.order.count({ where }),
+      prisma.order.aggregate({
+        where,
+        _sum: { total: true, amountPaid: true, balance: true },
+      }),
+    ]);
+
+    const safeOrders = orders.map((o) => {
       const total = Number(o.total);
       let amountPaid = Number(o.amountPaid ?? 0);
       const epsilon = 0.01;
@@ -81,13 +146,10 @@ export async function GET(req: Request) {
         amountPaid,
         balance,
         createdAt: o.createdAt.toISOString(),
+        updatedAt: o.updatedAt.toISOString(),
+        invoiceNumber: o.invoiceNumber || null,
         user: o.user,
-        items: o.items.map((i: {
-          id: string;
-          quantity: number;
-          price: unknown;
-          product: { id: string; name: string; imageUrl: string | null };
-        }) => ({
+        items: o.items.map((i) => ({
           id: i.id,
           quantity: i.quantity,
           price: Number(i.price),
@@ -100,7 +162,17 @@ export async function GET(req: Request) {
       };
     });
 
-    return NextResponse.json(safeOrders);
+    return NextResponse.json({
+      items: safeOrders,
+      total,
+      page,
+      pageSize,
+      totals: {
+        total: Number(aggregates._sum.total || 0),
+        paid: Number(aggregates._sum.amountPaid || 0),
+        balance: Number(aggregates._sum.balance || 0),
+      },
+    });
   } catch (error) {
     console.error("Error fetching orders:", error);
     return NextResponse.json(
@@ -161,6 +233,9 @@ export async function POST(req: Request) {
       const newOrder = await tx.order.create({
         data: {
           userId,
+          subtotal: total,
+          taxRate: 0,
+          taxAmount: 0,
           total,
           amountPaid: 0,
           balance: total,
@@ -180,6 +255,26 @@ export async function POST(req: Request) {
           costAtSale: Number(ci.product.cost ?? 0),
           quantity: ci.quantity,
         })),
+      });
+
+      const invoiceNumber = `INV-${newOrder.id}`;
+      const receiptHash = computeReceiptHash({
+        orderId: newOrder.id,
+        invoiceNumber,
+        subtotal: total,
+        taxRate: 0,
+        taxAmount: 0,
+        total,
+        createdAt: newOrder.createdAt.toISOString(),
+        items: cart.items.map((ci: { productId: string; quantity: number; product: { price: unknown } }) => ({
+          productId: ci.productId,
+          quantity: ci.quantity,
+          price: Number(ci.product.price),
+        })),
+      });
+      await tx.order.update({
+        where: { id: newOrder.id },
+        data: { invoiceNumber, receiptHash },
       });
 
       // Decrement stock

@@ -12,6 +12,7 @@ type UserSummary = {
   role: string;
   archived: boolean;
   phoneVerifiedAt: Date | null;
+  lastLoginAt: Date | null;
   createdAt: Date;
 };
 
@@ -46,7 +47,7 @@ type CustomerRow = {
   cart: CartSummary | null;
 };
 
-export async function GET() {
+export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   const role = user?.role;
@@ -58,9 +59,12 @@ export async function GET() {
   }
 
   try {
+    const { searchParams } = new URL(req.url);
+    const includeArchived = searchParams.get("includeArchived") === "1";
     const results = await Promise.allSettled([
       prisma.user.findMany({
         where: {
+          archived: includeArchived ? undefined : false,
           OR: [
             { role: "CUSTOMER" },
             { role: "ADMIN" },
@@ -76,6 +80,7 @@ export async function GET() {
           role: true,
           archived: true,
           phoneVerifiedAt: true,
+          lastLoginAt: true,
           createdAt: true,
         },
         orderBy: { createdAt: "desc" },

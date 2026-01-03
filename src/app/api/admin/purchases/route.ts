@@ -12,7 +12,7 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A)
 type PurchasesWhere = {
   productId?: string;
   supplier?: { contains: string; mode: "insensitive" };
-  note?: { contains: string; mode: "insensitive" };
+  OR?: { note?: { contains: string; mode: "insensitive" }; reason?: { contains: string; mode: "insensitive" } }[];
   createdAt?: { gte?: Date; lte?: Date };
 };
 
@@ -34,7 +34,12 @@ export async function GET(req: Request) {
     const where: PurchasesWhere = {};
     if (product) where.productId = product;
     if (supplier) where.supplier = { contains: supplier, mode: "insensitive" };
-    if (q) where.note = { contains: q, mode: "insensitive" };
+    if (q) {
+      where.OR = [
+        { note: { contains: q, mode: "insensitive" } },
+        { reason: { contains: q, mode: "insensitive" } },
+      ];
+    }
     if (start || end) {
       where.createdAt = {};
       if (start) where.createdAt.gte = new Date(start);
@@ -47,7 +52,7 @@ export async function GET(req: Request) {
 
     const rows = await prisma.purchase.findMany({
       where,
-      include: { product: { select: { name: true } } },
+      include: { product: { select: { name: true, sku: true } } },
       orderBy: { createdAt: "desc" },
     });
 
@@ -57,38 +62,43 @@ export async function GET(req: Request) {
       quantity: number;
       unitCost: unknown;
       supplier?: string | null;
+      reason?: string | null;
       note?: string | null;
       createdAt: Date;
-      product?: { name?: string | null } | null;
+      product?: { name?: string | null; sku?: string | null } | null;
     }) => ({
       id: r.id,
       productId: r.productId,
       productName: r.product?.name ?? "",
+      productSku: r.product?.sku ?? null,
       quantity: r.quantity,
       unitCost: Number(r.unitCost),
       total: Number(r.unitCost) * r.quantity,
       supplier: r.supplier || "",
+      reason: r.reason || "",
       note: r.note || "",
       createdAt: r.createdAt,
     }));
 
     if (format === "csv") {
-      const header = ["Date", "Product", "Qty", "Unit Cost", "Total", "Supplier", "Note"];
+      const header = ["Date", "Product", "SKU", "Qty", "Unit Cost", "Total", "Supplier", "Reason", "Note"];
       const lines = [header.join(",")];
       for (const r of items) {
         lines.push([
           new Date(r.createdAt).toISOString(),
           JSON.stringify(r.productName),
+          JSON.stringify(r.productSku || ""),
           String(r.quantity),
           r.unitCost.toFixed(2),
           r.total.toFixed(2),
           JSON.stringify(r.supplier || ""),
+          JSON.stringify(r.reason || ""),
           JSON.stringify(r.note || ""),
         ].join(","));
       }
       const totalQty = items.reduce((s: number, r: { quantity: number }) => s + r.quantity, 0);
       const totalVal = items.reduce((s: number, r: { total: number }) => s + r.total, 0);
-      lines.push(["Totals", "", String(totalQty), "", totalVal.toFixed(2), "", ""].join(","));
+      lines.push(["Totals", "", "", String(totalQty), "", totalVal.toFixed(2), "", "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {
         headers: {
@@ -126,6 +136,7 @@ export async function POST(req: Request) {
     const quantity = Number(body.quantity);
     const unitCost = Number(body.unitCost);
     const supplier = (body.supplier || "").trim() || null;
+    const reason = (body.reason || "").trim() || null;
     const note = (body.note || "").trim() || null;
     if (!productId || !Number.isInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCost) || unitCost < 0) {
       return NextResponse.json({ error: "Invalid input" }, { status: 400 });
@@ -146,7 +157,7 @@ export async function POST(req: Request) {
       const newCost = denom > 0 ? ((oldCost * effectiveOldStock + unitCost * quantity) / denom) : unitCost;
 
       const purchase = await tx.purchase.create({
-        data: { productId, quantity, unitCost, supplier, note },
+        data: { productId, quantity, unitCost, supplier, reason, note },
       });
 
       await tx.product.update({
@@ -181,6 +192,8 @@ export async function POST(req: Request) {
           newStock: result.newStock,
           newCost: result.newCost,
           supplier,
+          reason,
+          note,
         },
       });
     } catch {
@@ -202,6 +215,8 @@ export async function POST(req: Request) {
           newCost: result.newCost,
           purchaseId: result.purchaseId,
           supplier,
+          purchaseReason: reason,
+          note,
         },
       });
     } catch {

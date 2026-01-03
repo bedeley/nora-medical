@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 
 // POST /api/admin/carts/[userId]/clear — clear a specific user's cart (admin only)
 export async function POST(
@@ -24,6 +25,10 @@ export async function POST(
   const isStaff = role === "STAFF";
   if (!isAdmin && !isStaff) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const limited = await rateLimit(req, "admin-cart-clear", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   try {

@@ -23,7 +23,7 @@ export default function Footer() {
           </div>
           <div className="space-y-1">
             <p className="font-medium text-foreground/80">Account</p>
-            <Link href="/account" className="block">Sign in</Link>
+            <Link href="/login" className="block">Sign in</Link>
             <Link href="/orders" className="block">Orders</Link>
           </div>
           <div className="space-y-1">

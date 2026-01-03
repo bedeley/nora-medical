@@ -4,8 +4,11 @@ export const dynamic = "force-dynamic";
 
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatCurrency, formatDateGH } from "@/lib/currency";
+import { formatCurrency } from "@/lib/currency";
+import { chipToneBorderClass, chipToneClass, orderStatusTone } from "@/lib/status-chips";
+import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { formatIdReadable } from "@/lib/utils";
@@ -143,9 +146,29 @@ export default function AdminCustomerReadOnlyView() {
     0,
   );
   const balance = Math.max(0, ordersTotal - paidTotal);
+  const displayBalance = Number(accountSummary?.balance ?? balance);
+  const hasOutstanding = (() => {
+    const summaryBalance = Number(accountSummary?.balance ?? 0);
+    if (summaryBalance > 0) return true;
+    return nonCancelledOrders.some((o) => Number(o.computedBalance ?? 0) > 0);
+  })();
+  const creditAvailable = Math.max(
+    0,
+    Number(accountSummary?.storeCredit ?? 0),
+  );
 
   const customerName = (customerMeta?.name || "").trim() || null;
   const customerEmail = (customerMeta?.email || "").trim() || null;
+  const orderQuery = new URLSearchParams();
+  orderQuery.set("userId", String(userId));
+  if (customerEmail) {
+    orderQuery.set("q", customerEmail);
+  } else if (customerName) {
+    orderQuery.set("q", customerName);
+  }
+  const getStatusBadge = (status: string) => chipToneClass(orderStatusTone(status));
+  const formatBalance = (value: number) =>
+    value > 0 ? formatCurrency(value) : "None";
 
   if (error) {
     const msg = (error as Error).message || "Error";
@@ -188,62 +211,92 @@ export default function AdminCustomerReadOnlyView() {
             here are not possible; use other admin tools to manage balances and orders.
           </p>
         </div>
-        <Link
-          href={`/admin/customers?focus=${encodeURIComponent(String(userId))}`}
-          className="text-xs underline"
-        >
-          Back to Customers
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link
+              href={`/admin/audit?customerId=${encodeURIComponent(
+                String(userId),
+              )}`}
+            >
+              Audit log
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link
+              href={`/api/admin/customers/${encodeURIComponent(
+                String(userId),
+              )}/statement?format=pdf`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Statement PDF
+            </Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link
+              href={`/api/admin/customers/${encodeURIComponent(
+                String(userId),
+              )}/statement?format=csv`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Statement CSV
+            </Link>
+          </Button>
+          <Link
+            href={`/admin/customers?focus=${encodeURIComponent(String(userId))}`}
+            className="text-xs underline"
+          >
+            Back to Customers
+          </Link>
+        </div>
       </header>
 
       <Card className="!border-none !shadow-md !rounded-none">
         <CardHeader className="py-3">
-          <CardTitle className="text-sm">Balance Snapshot</CardTitle>
+          <CardTitle className="text-sm">My Balance</CardTitle>
         </CardHeader>
         <CardContent className="py-3 text-sm space-y-1">
-          <div className="flex justify-between">
-            <span>Total Due</span>
-            <span className="font-medium">
-              {formatCurrency(ordersTotal)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span>Total Paid</span>
-            <span className="font-medium text-green-700">
-              {formatCurrency(paidTotal)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span>Balance</span>
-            <span
-              className={
-                balance > 0
-                  ? "font-semibold text-red-600"
-                  : "font-medium text-green-700"
-              }
-            >
-              {formatCurrency(balance)}
-            </span>
-          </div>
-          {accountSummary && (
-            <div className="flex justify-between">
-              <span>Store credit</span>
-              <span
-                className={
-                  accountSummary.storeCredit > 0
-                    ? "font-semibold text-emerald-700"
-                    : "font-medium text-muted-foreground"
-                }
-              >
-                {formatCurrency(accountSummary.storeCredit)}
-              </span>
+          {hasOutstanding && (
+            <div className={`mb-3 border p-3 text-xs !rounded-none ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
+              You have an outstanding balance. Please call{" "}
+              <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+                {ADMIN_PHONE}
+              </a>{" "}
+              to arrange payment.
             </div>
           )}
-          <p className="text-[11px] text-muted-foreground mt-2">
-            This summary is derived from all non-cancelled orders for this customer. Store
-            credit reflects credits from returns/adjustments minus amounts auto‑applied to
-            orders and any cash payouts of credit.
+          <p className="text-xs text-muted-foreground">
+            This page shows whether you currently have any outstanding balance or store credit on
+            your account. For detailed history, use your order list below.
           </p>
+          <div className="flex justify-between">
+            <span>Outstanding balance</span>
+            <span className={displayBalance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
+              {formatBalance(displayBalance)}
+            </span>
+          </div>
+          {creditAvailable > 0 && (
+            <div className="mt-3">
+              <p className={`text-xs rounded border px-2 py-1 ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
+                Store credit available:{" "}
+                <span className="font-semibold">
+                  {formatCurrency(creditAvailable)}
+                </span>
+                . This credit will be used automatically when you place new orders. If you would
+                like it applied to an existing outstanding balance, please call{" "}
+                <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+                  {ADMIN_PHONE}
+                </a>
+                .
+              </p>
+            </div>
+          )}
+          {accountSummary?.updatedAt ? (
+            <p className="text-[11px] text-muted-foreground mt-2">
+              Last synced: {new Date(accountSummary.updatedAt).toLocaleString()}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -253,38 +306,52 @@ export default function AdminCustomerReadOnlyView() {
         </CardHeader>
         <CardContent className="py-3">
           {orders.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No orders found for this customer.
-            </p>
+            <div className="text-xs">
+              <p className="text-muted-foreground">No orders found for this customer.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href={`/admin/orders?${orderQuery.toString()}`}
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                >
+                  View orders
+                </Link>
+                <Link
+                  href="/admin/customers"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                >
+                  Back to customers
+                </Link>
+              </div>
+            </div>
           ) : (
             <div className="overflow-x-auto">
-              <Table className="text-xs">
+              <Table className="account-balance-table">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Date</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Delivery</TableHead>
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead className="text-right">Paid</TableHead>
                     <TableHead className="text-right">Balance</TableHead>
+                    <TableHead className="text-right">Status</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {orders.map((o) => (
+                  {orders.slice(0, 5).map((o) => (
                     <TableRow key={o.id}>
-                      <TableCell>{formatDateGH(o.createdAt)}</TableCell>
-                      <TableCell>{o.status}</TableCell>
-                      <TableCell>
-                        {String(o.deliveryStatus || "NOT_DELIVERED").replace(/_/g, " ")}
-                      </TableCell>
+                      <TableCell>{new Date(o.createdAt).toLocaleDateString()}</TableCell>
                       <TableCell className="text-right">
                         {formatCurrency(Number(o.total ?? 0))}
                       </TableCell>
                       <TableCell className="text-right">
                         {formatCurrency(Number(o.totalPaid ?? 0))}
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className={`text-right ${Number(o.computedBalance ?? 0) > 0 ? "text-red-600" : "text-green-700"}`}>
                         {formatCurrency(Number(o.computedBalance ?? 0))}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${getStatusBadge(o.status)}`}>
+                          {String(o.status || "").toUpperCase()}
+                        </span>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -292,6 +359,11 @@ export default function AdminCustomerReadOnlyView() {
               </Table>
             </div>
           )}
+          <div className="text-right mt-2">
+            <Link href={`/admin/orders?${orderQuery.toString()}`} className="underline text-sm">
+              View all orders
+            </Link>
+          </div>
         </CardContent>
       </Card>
     </section>

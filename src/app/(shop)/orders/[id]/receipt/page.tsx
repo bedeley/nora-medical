@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogClose } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useQuery as useRQ } from "@tanstack/react-query";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import Image from "next/image";
 import { ADMIN_PHONE } from "@/lib/config";
 import { formatIdReadable } from "@/lib/utils";
+import { chipToneClass, deliveryStatusTone } from "@/lib/status-chips";
+import { useSession } from "next-auth/react";
 
 type ReceiptOrder = {
   id: string;
@@ -48,9 +50,16 @@ const fetcher = async (u: string) => {
 export default function ReceiptPage() {
   const params = useParams();
   const orderId = String((params as { id?: string }).id || "");
+  const searchParams = useSearchParams();
+  const receiptToken =
+    searchParams?.get("receipt") || searchParams?.get("receiptHash") || "";
+  const receiptQuery = receiptToken
+    ? `?receipt=${encodeURIComponent(receiptToken)}`
+    : "";
+  const { data: session } = useSession();
   const { data, error } = useQuery({
-    queryKey: ["order", orderId],
-    queryFn: () => fetcher(`/api/orders/${orderId}`),
+    queryKey: ["order", orderId, receiptToken],
+    queryFn: () => fetcher(`/api/orders/${orderId}${receiptQuery}`),
     enabled: !!orderId,
   });
   const order = (data as { data?: ReceiptOrder } | undefined)?.data;
@@ -182,20 +191,36 @@ export default function ReceiptPage() {
       <div className="mx-auto w-full max-w-3xl px-4 print:px-0">
       {/* Screen-only actions */}
       <div className="flex flex-col gap-3 items-start justify-between mb-4 print:hidden sm:flex-row sm:items-center">
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={() => { window.location.href = '/orders'; }}>Back to Orders</Button>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 w-full">
+          <Button
+            variant="secondary"
+            className="w-full sm:w-auto"
+            onClick={() => {
+              if (!session) {
+                window.location.href = `/login?callbackUrl=${encodeURIComponent("/orders")}`;
+                return;
+              }
+              window.location.href = "/orders";
+            }}
+          >
+            Back to Orders
+          </Button>
           <div className="space-y-0.5">
             <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Receipt</p>
-            <h1 className="text-xl font-semibold">Order {formatIdReadable(order.id)}</h1>
+            <h1 className="text-xl font-semibold break-words">
+              Order {formatIdReadable(order.id)}
+            </h1>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 sm:justify-end w-full sm:w-auto">
-          <Button variant="outline" onClick={() => window.print()}>Print</Button>
+        <div className="flex flex-col gap-2 w-full sm:w-auto sm:flex-row sm:justify-end">
+          <Button variant="outline" className="w-full sm:w-auto" onClick={() => window.print()}>
+            Print
+          </Button>
           <Dialog>
             <DialogTrigger asChild>
-              <Button variant="outline">Email Receipt</Button>
+              <Button variant="outline" className="w-full sm:w-auto">Email Receipt</Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
               <DialogHeader>
                 <DialogTitle>Email Receipt</DialogTitle>
               </DialogHeader>
@@ -207,17 +232,23 @@ export default function ReceiptPage() {
 
       <div className="border rounded-xl bg-card p-6 shadow-sm print:border-0 print:shadow-none">
         {/* Brand header */}
-        <div className="flex items-start justify-between gap-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
           <div className="flex items-center gap-3">
-            <Image src="/logo.svg" alt="Noralls Medical Supplies" width={140} height={44} />
+            <Image
+              src="/logo.svg"
+              alt="Noralls Medical Supplies"
+              width={140}
+              height={44}
+              className="h-8 w-auto"
+            />
             <div className="text-xs text-muted-foreground">
               <p className="font-semibold text-foreground">Noralls Medical Supplies</p>
               <p>Tel: {ADMIN_PHONE}</p>
             </div>
           </div>
-          <div className="text-right text-xs text-muted-foreground">
+          <div className="text-left sm:text-right text-xs text-muted-foreground">
             <p className="text-foreground font-semibold">Receipt</p>
-            <p>Order {formatIdReadable(order.id)}</p>
+            <p className="break-words">Order {formatIdReadable(order.id)}</p>
             <p>{formatDateTimeGH(order.createdAt)}</p>
           </div>
         </div>
@@ -239,7 +270,7 @@ export default function ReceiptPage() {
         {/* Items list: mobile-friendly cards + desktop table */}
         <div className="mt-6">
           {/* Mobile: stacked item cards for clearer separation */}
-          <div className="grid gap-3 md:hidden">
+          <div className="grid gap-3 md:hidden print:hidden">
             {order.items.map((it) => (
               <div key={it.id} className="border rounded-lg p-3 text-sm bg-muted/20">
                 <div className="font-medium">
@@ -266,16 +297,17 @@ export default function ReceiptPage() {
                       const delivered = Number(it.deliveredQuantity ?? 0);
                       const qty = Number(it.quantity || 0);
                       let label = "Not delivered yet";
-                      let cls = "bg-slate-100 text-slate-700";
+                      let statusKey = "NOT_DELIVERED";
                       let extra: string | null = null;
                       if (delivered >= qty && qty > 0) {
                         label = "Delivered";
-                        cls = "bg-emerald-100 text-emerald-700";
+                        statusKey = "DELIVERED";
                       } else if (delivered > 0) {
                         label = "Partial";
+                        statusKey = "PARTIALLY_DELIVERED";
                         extra = `${delivered}/${qty}`;
-                        cls = "bg-amber-100 text-amber-800";
                       }
+                      const cls = chipToneClass(deliveryStatusTone(statusKey));
                       return (
                         <div className="flex flex-col items-end gap-0.5 w-full">
                           <span
@@ -298,7 +330,7 @@ export default function ReceiptPage() {
           </div>
 
           {/* Desktop/tablet: keep tabular layout */}
-          <div className="hidden md:block">
+          <div className="hidden md:block print:block">
             <div className="overflow-hidden rounded-lg border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">

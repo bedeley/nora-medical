@@ -74,7 +74,12 @@ export async function POST(req: Request) {
 
     if (!init.ok) {
       // Cleanup the pending record to avoid confusion
-      try { await prisma.payment.delete({ where: { id: payment.id } }); } catch {}
+      try {
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: { deletedAt: new Date() },
+        });
+      } catch {}
       return NextResponse.json({ error: init.error }, { status: 502 });
     }
 

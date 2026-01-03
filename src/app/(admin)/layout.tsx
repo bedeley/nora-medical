@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { chipToneClass } from "@/lib/status-chips";
 import type { ReactNode } from "react";
 
 export default function AdminGroupLayout({
@@ -66,6 +67,7 @@ export default function AdminGroupLayout({
             MoMo Payments
           </Link>
           <Link href="/admin/settings/communications" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/communications") ? "bg-muted" : ""}`}>Comms</Link>
+          <Link href="/admin/settings/homepage" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/homepage") ? "bg-muted" : ""}`}>Homepage</Link>
           <Link href="/admin/settings/features" className={`px-2 py-1 rounded whitespace-nowrap ${pathname.startsWith("/admin/settings/features") ? "bg-muted" : ""}`}>Features</Link>
         </nav>
       </header>
@@ -74,7 +76,7 @@ export default function AdminGroupLayout({
         healthSummary.orderBalanceMismatches > 0 ||
         healthSummary.stockMismatches > 0 ||
         healthSummary.legacyAutoApply > 0) ? (
-        <div className="border-b bg-amber-50 text-amber-900">
+        <div className={`border-b ${chipToneClass("warning")}`}>
           <div className="container mx-auto py-2 text-xs flex flex-wrap items-center gap-2">
             <span className="font-semibold">Health Check alert:</span>
             {healthSummary.paymentMismatches > 0 ? (

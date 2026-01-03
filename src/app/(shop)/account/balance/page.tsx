@@ -2,9 +2,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/currency";
 import { ADMIN_PHONE, ADMIN_PHONE_TEL } from "@/lib/config";
+import { chipToneBorderClass, chipToneClass, orderStatusTone } from "@/lib/status-chips";
 import {
   Table,
   TableBody,
@@ -40,15 +43,19 @@ type OrdersHistory = {
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export default function AccountBalancePage() {
+  const { status } = useSession();
+  const isAuthed = status === "authenticated";
   const { data, error, isLoading } = useQuery<Balance>({
     queryKey: ["balance", "self"],
     queryFn: () => fetcher("/api/balance?self=1"),
     refetchInterval: 10000,
+    enabled: isAuthed,
   });
   const { data: ordersData } = useQuery<OrdersHistory>({
     queryKey: ["orders", "history"],
     queryFn: () => fetcher("/api/orders/history"),
     refetchInterval: 15000,
+    enabled: isAuthed,
   });
   const hasOutstanding = (() => {
     const bal = Number(data?.balance ?? 0);
@@ -65,16 +72,49 @@ export default function AccountBalancePage() {
     Number(data?.unappliedFunds ?? 0),
   );
 
+  if (status === "unauthenticated") {
+    if (typeof window !== "undefined") {
+      window.location.href = `/login?callbackUrl=${encodeURIComponent(
+        "/account/balance",
+      )}`;
+    }
+    return null;
+  }
+
   return (
     <section className="container mx-auto py-10 account-balance-page">
-      <Card className="max-w-xl mx-auto !border-none !shadow-md !rounded-none">
+      <Card className="max-w-3xl mx-auto border shadow-sm">
         <CardHeader className="py-3">
           <CardTitle>My Balance</CardTitle>
         </CardHeader>
         <CardContent className="py-3">
           {hasOutstanding && !isLoading && !error && (
-            <div className="mb-3 border border-primary/20 bg-primary/10 text-primary p-3 text-sm !rounded-none">
-              You have an outstanding balance. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to arrange payment.
+            <div className={`mb-3 flex flex-col gap-2 rounded-md border p-3 text-sm ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
+              <div>
+                You have an outstanding balance. Please call{" "}
+                <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+                  {ADMIN_PHONE}
+                </a>{" "}
+                to arrange payment.
+              </div>
+              <div>
+                <Button asChild size="sm" className="text-white">
+                  <Link href="/orders">Pay outstanding</Link>
+                </Button>
+              </div>
+            </div>
+          )}
+          {!hasOutstanding && !isLoading && !error && data && (
+            <div className={`mb-3 rounded-md border p-3 text-sm ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
+              <div>You are all caught up. No outstanding balance at this time.</div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button asChild size="sm" variant="outline">
+                  <Link href="/products">Browse products</Link>
+                </Button>
+                <Button asChild size="sm" variant="ghost">
+                  <Link href="/contact">Contact support</Link>
+                </Button>
+              </div>
             </div>
           )}
           {isLoading ? (
@@ -84,18 +124,38 @@ export default function AccountBalancePage() {
           ) : (
             <div className="grid gap-2 text-sm">
               <p className="text-xs text-muted-foreground">
-                This page shows whether you currently have any outstanding balance or store credit
-                on your account. For detailed history, use your order list below.
+                This page shows your current balance and store credit. For full history, review
+                your recent orders below.
               </p>
-              <div className="flex justify-between">
-                <span>Outstanding balance</span>
-                <span className={data.balance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
-                  {data.balance > 0 ? formatCurrency(data.balance) : "None"}
-                </span>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Card className="border">
+                  <CardContent className="pt-4">
+                    <p className="text-xs text-muted-foreground">Outstanding balance</p>
+                    <p className={data.balance > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
+                      {data.balance > 0 ? formatCurrency(data.balance) : "None"}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border">
+                  <CardContent className="pt-4">
+                    <p className="text-xs text-muted-foreground">Store credit</p>
+                    <p className="text-lg font-semibold text-emerald-700">
+                      {creditAvailable > 0 ? formatCurrency(creditAvailable) : "None"}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border">
+                  <CardContent className="pt-4">
+                    <p className="text-xs text-muted-foreground">Last updated</p>
+                    <p className="text-sm font-semibold">
+                      {new Date(data.updatedAt).toLocaleString()}
+                    </p>
+                  </CardContent>
+                </Card>
               </div>
               {creditAvailable > 0 && (
                 <div className="mt-3">
-                  <p className="text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">
+                  <p className={`text-xs rounded border px-2 py-1 ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
                     Store credit available:{" "}
                     <span className="font-semibold">
                       {formatCurrency(creditAvailable)}
@@ -113,9 +173,12 @@ export default function AccountBalancePage() {
                   </p>
                 </div>
               )}
-              <p className="text-xs text-muted-foreground mt-2">
-                Updated: {new Date(data.updatedAt).toLocaleString()}
-              </p>
+              {creditAvailable > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Automatic use: store credit applies to your oldest unpaid
+                  order at checkout.
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -123,60 +186,67 @@ export default function AccountBalancePage() {
 
       {/* Recent orders */}
       <div className="max-w-3xl mx-auto mt-8">
-        <h2 className="text-lg font-semibold mb-3">Recent Orders</h2>
-        {!ordersData?.orders?.length ? (
-          <p className="text-sm text-muted-foreground">
-            No recent orders. <Link href="/products" className="underline">Start shopping</Link>
-          </p>
-        ) : (
-          <Table className="account-balance-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead>Date</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="text-right">Paid</TableHead>
-                <TableHead className="text-right">Balance</TableHead>
-                <TableHead className="text-right">Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ordersData.orders.slice(0, 5).map((o) => {
-                const totalPaid = Number(o.amountPaid ?? 0);
-                const balance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
-                return (
-                  <TableRow key={o.id}>
-                    <TableCell>{new Date(o.createdAt).toLocaleDateString()}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(Number(o.total))}</TableCell>
-                    <TableCell className="text-right">{formatCurrency(totalPaid)}</TableCell>
-                    <TableCell className={`text-right ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
-                      {formatCurrency(balance)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {(() => {
-                        const sc =
-                          o.status === "PAID"
-                            ? "bg-green-100 text-green-700"
-                            : o.status === "PARTIALLY_PAID"
-                            ? "bg-yellow-100 text-yellow-800"
-                            : o.status === "CANCELLED"
-                            ? "bg-gray-200 text-gray-700"
-                            : "bg-red-100 text-red-700";
-                        return (
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
-                            {o.status}
-                          </span>
-                        );
-                      })()}
-                    </TableCell>
+        <Card className="border shadow-sm">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-lg">Recent Orders</CardTitle>
+            <Link href="/orders" className="text-sm text-primary underline">
+              View all
+            </Link>
+          </CardHeader>
+          <CardContent>
+            {!ordersData?.orders?.length ? (
+              <div className="text-sm">
+                <p className="text-muted-foreground">No recent orders yet.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button asChild size="sm">
+                    <Link href="/products">Start shopping</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/contact">Contact us</Link>
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Table className="account-balance-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Paid</TableHead>
+                    <TableHead className="text-right">Balance</TableHead>
+                    <TableHead className="text-right">Status</TableHead>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-        <div className="text-right mt-2">
-          <Link href="/orders" className="underline text-sm">View all orders</Link>
-        </div>
+                </TableHeader>
+                <TableBody>
+                  {ordersData.orders.slice(0, 5).map((o) => {
+                    const totalPaid = Number(o.amountPaid ?? 0);
+                    const balance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+                    return (
+                      <TableRow key={o.id}>
+                        <TableCell>{new Date(o.createdAt).toLocaleDateString()}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(Number(o.total))}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(totalPaid)}</TableCell>
+                        <TableCell className={`text-right ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
+                          {formatCurrency(balance)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {(() => {
+                            const sc = chipToneClass(orderStatusTone(o.status));
+                            return (
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${sc}`}>
+                                {o.status}
+                              </span>
+                            );
+                          })()}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </section>
   );

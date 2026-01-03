@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function PATCH(
   req: Request,
@@ -15,6 +16,10 @@ export async function PATCH(
   }
   if (!assertSameOrigin(req)) {
     return new Response("Bad origin", { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-user-archive", 60_000, 60);
+  if (!limited.ok) {
+    return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
   }
 
   const userId = params.id;

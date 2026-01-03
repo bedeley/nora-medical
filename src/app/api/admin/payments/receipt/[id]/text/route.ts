@@ -37,10 +37,22 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const to = explicitTo || payment.user?.phone || "";
     if (!to) return NextResponse.json({ error: "No destination phone number provided" }, { status: 400 });
 
-    // Determine origin for receipt URL
     const url = new URL(req.url);
     const base = process.env.NEXT_PUBLIC_BASE_URL || `${url.protocol}//${url.host}`;
-    const receiptUrl = `${base}/admin/payments/receipt/${payment.id}`;
+    let receiptUrl = "";
+    if (payment.orderId) {
+      const order = await prisma.order.findUnique({
+        where: { id: payment.orderId },
+        select: { id: true, receiptHash: true },
+      });
+      if (order) {
+        const token = order.receiptHash ? `?receipt=${encodeURIComponent(order.receiptHash)}` : "";
+        receiptUrl = `${base}/orders/${order.id}/receipt${token}`;
+      }
+    }
+    if (!receiptUrl) {
+      receiptUrl = `${base}/login?callbackUrl=${encodeURIComponent("/orders")}`;
+    }
 
     // Build short message
     let meta: Record<string, unknown> | null = null;

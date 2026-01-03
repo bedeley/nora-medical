@@ -37,6 +37,8 @@ model User {
   phoneVerifiedAt  DateTime?
   twoFactorEnabled Boolean   @default(false)
   twoFactorSecret  String?
+  lastLoginAt      DateTime?
+  deletedAt        DateTime?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   sessions         Session[]
@@ -52,6 +54,11 @@ model User {
   balance          Balance?
   auditLogs        AuditLog[]
   stockAlerts      StockAlert[]
+  preferences      UserPreference[]
+  savedCartItems   SavedCartItem[]
+
+  @@index([deletedAt])
+  @@index([lastLoginAt])
 }
 
 model UserOtp {
@@ -70,20 +77,31 @@ model UserOtp {
 
 model Product {
   id          String              @id @default(cuid())
+  sku         String?             @unique
   name        String
   description String
   imageUrl    String
+  category    String?
+  brand       String?
+  supplier    String?
   price       Decimal             @db.Decimal(10, 2)
   cost        Decimal             @default(0) @db.Decimal(10, 2)
   stock       Int                 @default(0)
   archived    Boolean             @default(false)
+  deletedAt   DateTime?
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
   orderItems  OrderItem[]
   cartItems   CartItem[]
+  savedCartItems SavedCartItem[]
   purchases   Purchase[]
   movements   InventoryMovement[]
   stockAlerts StockAlert[]
+
+  @@index([deletedAt])
+  @@index([category])
+  @@index([brand])
+  @@index([supplier])
 }
 
 model Cart {
@@ -107,6 +125,21 @@ model CartItem {
   @@unique([cartId, productId])
 }
 
+model SavedCartItem {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
+}
+
 model Order {
   id             String      @id @default(cuid())
   userId         String?
@@ -114,17 +147,25 @@ model Order {
   placedBy       User?       @relation("OrderPlacedBy", fields: [placedById], references: [id])
   placedById     String?
   adminNote      String?
+  invoiceNumber  String?     @unique
+  subtotal       Decimal     @default(0) @db.Decimal(10, 2)
+  taxRate        Decimal     @default(0) @db.Decimal(5, 2)
+  taxAmount      Decimal     @default(0) @db.Decimal(10, 2)
   total          Decimal
   amountPaid     Decimal     @default(0) // ✅ how much the customer has paid
   balance        Decimal     @default(0) // ✅ computed field (total - amountPaid)
   status         String      @default("UNPAID")
+  receiptHash    String?
   // Delivery tracking
   deliveryStatus String      @default("NOT_DELIVERED") // NOT_DELIVERED | PARTIALLY_DELIVERED | DELIVERED
   deliveredAt    DateTime?
+  deletedAt      DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   payments       Payment[]
   items          OrderItem[]
+
+  @@index([deletedAt])
 }
 
 model OrderItem {
@@ -155,6 +196,7 @@ model Payment {
   note      String?
   status    PaymentStatus   @default(NORMAL)
   refundDisposition RefundDestination?
+  deletedAt DateTime?
   createdAt DateTime @default(now())
 }
 
@@ -166,6 +208,7 @@ model StockAlert {
   userId     String?
   email      String?
   phone      String?
+  deletedAt  DateTime?
   createdAt  DateTime @default(now())
   notifiedAt DateTime?
 
@@ -176,6 +219,7 @@ model StockAlert {
   @@unique([productId, userId])
   @@unique([productId, email])
   @@unique([productId, phone])
+  @@index([deletedAt])
 }
 
 model Balance {
@@ -206,12 +250,35 @@ model Account {
   @@unique([provider, providerAccountId])
 }
 
+model UserPreference {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  key       String
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, key])
+  @@index([userId])
+  @@index([key])
+}
+
 model Expense {
   id        String   @id @default(cuid())
   category  String
   amount    Decimal  @db.Decimal(10, 2)
+  vendor    String?
+  reason    String?
   note      String?
+  isReversal Boolean @default(false)
+  reversalOfId String?
+  reversalOf Expense? @relation("ExpenseReversal", fields: [reversalOfId], references: [id])
+  reversals Expense[] @relation("ExpenseReversal")
+  deletedAt DateTime?
   createdAt DateTime @default(now())
+
+  @@index([reversalOfId])
 }
 
 model Session {
@@ -229,12 +296,15 @@ model Purchase {
   quantity  Int
   unitCost  Decimal            @db.Decimal(10, 2)
   supplier  String?
+  reason    String?
   note      String?
+  deletedAt DateTime?
   createdAt DateTime           @default(now())
   movement  InventoryMovement?
 
   @@index([productId])
   @@index([createdAt])
+  @@index([deletedAt])
 }
 
 model InventoryMovement {
@@ -245,10 +315,12 @@ model InventoryMovement {
   reason     String
   purchase   Purchase? @relation(fields: [purchaseId], references: [id])
   purchaseId String?   @unique
+  deletedAt  DateTime?
   createdAt  DateTime  @default(now())
 
   @@index([productId])
   @@index([createdAt])
+  @@index([deletedAt])
 }
 
 model AuditLog {
@@ -259,16 +331,25 @@ model AuditLog {
   entityType String
   entityId   String
   meta       String?
+  deletedAt  DateTime?
   createdAt  DateTime @default(now())
 
   @@index([actorId])
   @@index([entityType, entityId])
   @@index([createdAt])
+  @@index([deletedAt])
 }
 
 model FeatureFlag {
   key      String   @id
   enabled  Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+}
+
+model SiteSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 

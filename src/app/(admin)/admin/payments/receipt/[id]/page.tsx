@@ -98,10 +98,12 @@ export default function PaymentReceiptPage() {
   const createdAt = format(new Date(payment.createdAt), "PPpp");
 
   return (
-    <section className="p-6 max-w-2xl mx-auto">
+    <section className="container mx-auto py-8 max-w-2xl">
       <header className="mb-4">
         <h1 className="text-xl font-semibold">Payment Receipt</h1>
-        <p className="text-sm text-muted-foreground">Receipt #{payment.id.slice(0,8)} • {createdAt}</p>
+        <p className="text-sm text-muted-foreground">
+          Receipt #{payment.id.slice(0,8)} • {createdAt}
+        </p>
       </header>
 
       <div className="grid grid-cols-2 gap-4 text-sm mb-4">

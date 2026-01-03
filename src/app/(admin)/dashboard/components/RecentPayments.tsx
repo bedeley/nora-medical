@@ -1,6 +1,7 @@
 "use client";
 
 import { useClientQuery } from "@/hooks/use-client-query";
+import Link from "next/link";
 import { formatCurrency } from "@/lib/currency";
 import {
   Table,
@@ -119,54 +120,68 @@ export default function RecentPayments() {
       </CardHeader>
 
       <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Customer</TableHead>
-              <TableHead>Email</TableHead>
-              <TableHead>Amount</TableHead>
-              <TableHead>Order</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Date</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.map((p) => {
-              const total = Number(p.order?.total ?? 0);
-              const paid = Number(p.amount ?? 0);
-              const ratio = total ? paid / total : 0;
-              const status =
-                ratio >= 1 ? "Paid" : ratio > 0 ? "Partial" : "Pending";
+        {data.length === 0 ? (
+          <div className="text-sm">
+            <p className="text-muted-foreground">No payments recorded yet.</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button asChild size="sm">
+                <Link href="/admin/orders">View orders</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline">
+                <Link href="/admin/customers">Open customers</Link>
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Customer</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead>Order</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Date</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((p) => {
+                const total = Number(p.order?.total ?? 0);
+                const paid = Number(p.amount ?? 0);
+                const ratio = total ? paid / total : 0;
+                const status =
+                  ratio >= 1 ? "Paid" : ratio > 0 ? "Partial" : "Pending";
 
-              return (
-                <TableRow key={p.id}>
-                  <TableCell>{p.user?.name ?? "Unknown"}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {p.user?.email}
-                  </TableCell>
-                  <TableCell>{formatCurrency(Number(p.amount || 0))}</TableCell>
-                  <TableCell>{p.order?.id.slice(0, 6) ?? "—"}</TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={
-                        status === "Paid"
-                          ? "success"
-                          : status === "Partial"
-                          ? "warning"
-                          : "destructive"
-                      }
-                    >
-                      {status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {new Date(p.createdAt).toLocaleString()}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                return (
+                  <TableRow key={p.id}>
+                    <TableCell>{p.user?.name ?? "Unknown"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {p.user?.email}
+                    </TableCell>
+                    <TableCell>{formatCurrency(Number(p.amount || 0))}</TableCell>
+                    <TableCell>{p.order?.id.slice(0, 6) ?? "—"}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          status === "Paid"
+                            ? "success"
+                            : status === "Partial"
+                            ? "warning"
+                            : "destructive"
+                        }
+                      >
+                        {status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {new Date(p.createdAt).toLocaleString()}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
       </CardContent>
     </Card>
   );

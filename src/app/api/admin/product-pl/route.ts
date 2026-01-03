@@ -2,7 +2,15 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { parseISO, isValid, startOfDay, endOfDay, startOfWeek, startOfMonth, startOfYear } from "date-fns";
+import {
+  parseISO,
+  isValid,
+  startOfDay,
+  endOfDay,
+  startOfWeek,
+  startOfMonth,
+  subMonths,
+} from "date-fns";
 import PDFDocument from "pdfkit";
 
 type Row = {
@@ -32,7 +40,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const start = searchParams.get("start");
     const end = searchParams.get("end");
-    const range = (searchParams.get("range") as "day" | "week" | "month" | "year" | null) || null;
+    const range = (searchParams.get("range") as "day" | "week" | "month" | "year" | "all" | null) || null;
     const orderDir = (searchParams.get("order") as "asc" | "desc") || "desc";
     const formatType = searchParams.get("format");
     const q = searchParams.get("q") || "";
@@ -43,19 +51,21 @@ export async function GET(request: Request) {
     let gte: Date | undefined;
     let lte: Date | undefined;
     const now = new Date();
-    if (start && isValid(parseISO(start))) gte = startOfDay(parseISO(start));
-    if (end && isValid(parseISO(end))) lte = endOfDay(parseISO(end));
-    if (!gte && !lte && range) {
+    if (!range) {
+      if (start && isValid(parseISO(start))) gte = startOfDay(parseISO(start));
+      if (end && isValid(parseISO(end))) lte = endOfDay(parseISO(end));
+    }
+    if (!gte && !lte && range && range !== "all") {
       if (range === "day") gte = startOfDay(now);
       if (range === "week") gte = startOfWeek(now, { weekStartsOn: 1 });
       if (range === "month") gte = startOfMonth(now);
-      if (range === "year") gte = startOfYear(now);
+      if (range === "year") gte = startOfDay(subMonths(now, 12));
       lte = endOfDay(now);
     }
 
     const where = {
       order: {
-        NOT: { status: "CANCELED" },
+        status: { notIn: ["CANCELLED", "CANCELED"] },
         ...(gte || lte ? { createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } } : {}),
       },
       ...(q
@@ -210,7 +220,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json({
-      range: range || (gte || lte ? "custom" : "month"),
+      range: range || (gte || lte ? "custom" : "all"),
       start: gte ? gte.toISOString() : null,
       end: lte ? lte.toISOString() : null,
       total,

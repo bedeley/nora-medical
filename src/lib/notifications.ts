@@ -7,6 +7,15 @@ import { formatCurrency } from "@/lib/currency";
 import { isFeatureEnabled } from "@/lib/features";
 import { ADMIN_PHONE } from "@/lib/config";
 
+function buildOrderReceiptUrl(orderId: string, receiptHash?: string | null) {
+  const base =
+    (process.env.NEXT_PUBLIC_BASE_URL || "").replace(/\/$/, "") ||
+    (process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
+  if (!base) return "";
+  const token = receiptHash ? `?receipt=${encodeURIComponent(receiptHash)}` : "";
+  return `${base}/orders/${orderId}/receipt${token}`;
+}
+
 const SMS_NOTIFICATIONS_ENABLED =
   (process.env.SMS_NOTIFICATIONS_ENABLED || "").toLowerCase() === "1";
 
@@ -145,6 +154,7 @@ async function getOrderReceiptSummary(orderId: string) {
     where: { id: orderId },
     select: {
       id: true,
+      receiptHash: true,
       total: true,
       amountPaid: true,
       balance: true,
@@ -190,6 +200,7 @@ async function getOrderReceiptSummary(orderId: string) {
 
   return {
     orderId: order.id,
+    receiptHash: order.receiptHash || null,
     createdAt: order.createdAt,
     total,
     paid,
@@ -226,6 +237,13 @@ function buildReceiptEmail(
   ];
   for (const row of summary.rows) {
     lines.push(`- ${row.name}: ${row.quantity} x ${formatCurrency(row.price)}`);
+  }
+  const receiptUrl = buildOrderReceiptUrl(
+    summary.orderId,
+    summary.receiptHash,
+  );
+  if (receiptUrl) {
+    lines.push("", `View receipt: ${receiptUrl}`);
   }
   lines.push(
     "",
@@ -273,6 +291,15 @@ function buildReceiptEmail(
             </div>
           </div>
 
+        ${
+          receiptUrl
+            ? `
+        <div style="margin-top:16px;border:1px solid #e6e8eb;border-radius:8px;padding:12px;background:#f9fafb;font-size:13px;">
+          <div style="font-size:11px;letter-spacing:1px;color:#6b7280;text-transform:uppercase;">Receipt link</div>
+          <a href="${receiptUrl}" style="display:block;margin-top:6px;color:#0f766e;word-break:break-all;">${receiptUrl}</a>
+        </div>`
+            : ""
+        }
         <div style="margin-top:16px;border:1px solid #e6e8eb;border-radius:8px;padding:12px;background:#f9fafb;font-size:13px;">
           <div style="font-size:11px;letter-spacing:1px;color:#6b7280;text-transform:uppercase;">Customer</div>
           <div style="font-weight:600;">${name || "Customer"}</div>
@@ -369,11 +396,12 @@ export async function notifyOrderEvent(event: OrderEvent) {
       ].join("\n");
       await maybeSendEmail(email, subject, text);
     }
+    const receiptUrl = buildOrderReceiptUrl(event.orderId, summary?.receiptHash);
     await maybeSendSms(
       phone,
       `Noralls: order received. Total ${prettyTotal}${
         prettyPaid ? `; paid so far ${prettyPaid}` : ""
-      }. Pay via MoMo or call ${ADMIN_PHONE} if needed.`,
+      }.${receiptUrl ? ` Receipt: ${receiptUrl}` : ""} Pay via MoMo or call ${ADMIN_PHONE} if needed.`,
     );
     return;
   }
@@ -552,9 +580,12 @@ export async function notifyPaymentEvent(event: PaymentEvent) {
       const text = lines.join("\n");
       await maybeSendEmail(email, subject, text);
     }
+    const receiptUrl = event.orderId
+      ? buildOrderReceiptUrl(event.orderId, summary?.receiptHash)
+      : "";
     await maybeSendSms(
       phone,
-      `Noralls Medical Supplies: payment received and applied to your account.`,
+      `Noralls Medical Supplies: payment received and applied to your account.${receiptUrl ? ` Receipt: ${receiptUrl}` : ""}`,
     );
     return;
   }

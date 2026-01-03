@@ -7,6 +7,7 @@ import { useClientQuery } from "@/hooks/use-client-query";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -26,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
+import { chipToneClass } from "@/lib/status-chips";
 import { RefreshCcw, HelpCircle, MoreVertical } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import Link from "next/link";
@@ -46,6 +48,7 @@ export type CustomerRow = {
     email: string;
     name?: string | null;
     role?: string | null;
+    phone?: string | null;
   };
   phoneVerified?: boolean;
   whatsappReady?: boolean;
@@ -89,6 +92,9 @@ type PaymentRow = {
   meta?: {
     status?: string;
     refundDisposition?: string;
+    method?: string;
+    reference?: string;
+    location?: string;
   } | null;
   status: string | null;
   refundDisposition: string | null;
@@ -103,6 +109,9 @@ function AdminCustomersContent() {
   const queryClient = useQueryClient();
   const [confirmClear, setConfirmClear] = useState<{ id: string; email?: string|null } | null>(null);
   const [deliveryFilter, setDeliveryFilter] = useState<string>("all");
+  const [balanceFilter, setBalanceFilter] = useState<"all" | "due">("all");
+  const [creditFilter, setCreditFilter] = useState<"all" | "credit">("all");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { data, error, isFetching: isValidating } = useClientQuery({
     queryKey: ["admin", "customers"],
     queryFn: () => fetcher("/api/admin/customers"),
@@ -135,16 +144,19 @@ function AdminCustomersContent() {
   const [refundRef, setRefundRef] = useState("");
   const [refundNote, setRefundNote] = useState("");
   const [refundSubmitting, setRefundSubmitting] = useState(false);
+  const [refundErrors, setRefundErrors] = useState<{ amount?: string; note?: string }>({});
   const [viewCart, setViewCart] = useState<{ user: CustomerRow["user"]; cart: CustomerRow["cart"] } | null>(null);
   const [addPaymentFor, setAddPaymentFor] = useState<{ userId: string; email: string | null } | null>(null);
   const [addPaymentAmount, setAddPaymentAmount] = useState<string>("");
   const [addPaymentMethod, setAddPaymentMethod] = useState<"cash" | "transfer">("cash");
   const [addPaymentNote, setAddPaymentNote] = useState<string>("");
   const [addPaymentSubmitting, setAddPaymentSubmitting] = useState(false);
+  const [addPaymentErrors, setAddPaymentErrors] = useState<{ amount?: string }>({});
   const [adjustFor, setAdjustFor] = useState<{ userId: string; email: string | null } | null>(null);
   const [adjustAmount, setAdjustAmount] = useState<string>("");
   const [adjustNote, setAdjustNote] = useState<string>("");
   const [adjustSubmitting, setAdjustSubmitting] = useState(false);
+  const [adjustErrors, setAdjustErrors] = useState<{ amount?: string }>({});
   const searchParams = useSearchParams();
   const focusId = searchParams.get("focus") || "";
 
@@ -169,15 +181,99 @@ function AdminCustomersContent() {
     () => (data?.rows || []) as CustomerRow[],
     [data],
   );
+  const getCustomerBalance = (r: CustomerRow) =>
+    Number(r.ordersTotal || 0) - Number(r.paidTotal || 0);
+  const getCustomerCredit = (r: CustomerRow) => {
+    const direct = Number(r.storeCredit ?? NaN);
+    if (Number.isFinite(direct)) return Math.max(0, direct);
+    const payments = Number(r.paymentsTotal || 0);
+    const paid = Number(r.paidTotal || 0);
+    return Math.max(0, payments - paid);
+  };
+
   const filteredRows = useMemo(() => {
-    return rows.filter((r) => {
-      const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
-      if (deliveryFilter === "pending") return (d.pending || 0) > 0;
-      if (deliveryFilter === "partial") return (d.partial || 0) > 0;
-      if (deliveryFilter === "delivered") return (d.delivered || 0) > 0;
-      return true;
+    return rows
+      .filter((r) => {
+        const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
+        if (deliveryFilter === "pending") return (d.pending || 0) > 0;
+        if (deliveryFilter === "partial") return (d.partial || 0) > 0;
+        if (deliveryFilter === "delivered") return (d.delivered || 0) > 0;
+        return true;
+      })
+      .filter((r) => {
+        if (balanceFilter === "due") {
+          const balance = getCustomerBalance(r);
+          if (balance <= 0.005) return false;
+        }
+        if (creditFilter === "credit") {
+          const credit = getCustomerCredit(r);
+          if (credit <= 0.005) return false;
+        }
+        return true;
+      });
+  }, [rows, deliveryFilter, balanceFilter, creditFilter]);
+  const visibleIds = filteredRows.map((r) => r.user.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const selectedCount = selectedIds.size;
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
     });
-  }, [rows, deliveryFilter]);
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const exportSelected = () => {
+    const selected = filteredRows.filter((r) => selectedIds.has(r.user.id));
+    if (selected.length === 0) {
+      toast.error("Select at least one customer to export.");
+      return;
+    }
+    const header = ["CustomerId", "Name", "Email", "OrdersTotal", "PaidTotal", "StoreCredit", "Balance"];
+    const lines = [header.join(",")];
+    for (const r of selected) {
+      const balance = Number(r.ordersTotal || 0) - Number(r.paidTotal || 0);
+      const credit = Math.max(
+        0,
+        r.storeCredit ?? Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
+      );
+      lines.push([
+        JSON.stringify(r.user.id),
+        JSON.stringify(r.user.name || ""),
+        JSON.stringify(r.user.email || ""),
+        String(Number(r.ordersTotal || 0)),
+        String(Number(r.paidTotal || 0)),
+        String(Number(credit || 0)),
+        String(Number(balance || 0)),
+      ].join(","));
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `customers_${Date.now()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   async function createUserPayment(params: {
     userId: string;
@@ -216,8 +312,14 @@ function AdminCustomersContent() {
   const renderActionsMenu = (r: CustomerRow, buttonClass = "") => (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" className={`flex items-center gap-1 ${buttonClass}`}>
-          Actions <MoreVertical className="ml-1 h-4 w-4" />
+        <Button
+          variant="outline"
+          size="icon"
+          className={`h-9 w-9 ${buttonClass}`}
+          aria-label="Customer actions"
+          title="Customer actions"
+        >
+          <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -532,7 +634,7 @@ function AdminCustomersContent() {
     const unauthorized = /unauthorized/i.test(msg);
     return (
       <div className="container mx-auto py-8 max-w-3xl">
-        <h1 className="text-2xl font-semibold mb-4">Customer Cart</h1>
+        <h1 className="text-2xl font-semibold mb-4">Customers</h1>
         <div className="rounded-md border p-6 text-sm">
           {unauthorized ? (
             <p>Admin access required. Please sign in with an admin account.</p>
@@ -546,259 +648,328 @@ function AdminCustomersContent() {
 
   return (
     <>
-    <div className="grid gap-4">
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-semibold">Customer Cart</h2>
-          </div>
-          <div className="flex flex-col gap-2 w-full lg:w-auto">
-            <div className="flex flex-wrap gap-3">
-              <div className="flex flex-col gap-1 min-w-[150px] flex-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">Month</label>
-                <input
-                  type="month"
-                  className="h-9 rounded-md border px-2 text-sm w-full"
-                  value={exportMonth}
-                  onChange={(e) => setExportMonth(e.target.value)}
-                />
-              </div>
-              <div className="flex flex-col gap-1 min-w-[150px] flex-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">Method</label>
-                <Select value={exportMethod || "all"} onValueChange={(v) => setExportMethod(v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="card">Card</SelectItem>
-                    <SelectItem value="transfer">Transfer</SelectItem>
-                    <SelectItem value="adjustment">Adjustment</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1 min-w-[150px] flex-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">Status</label>
-                <Select value={exportStatus || "all"} onValueChange={(v) => setExportStatus(v === "all" ? "" : v)}>
-                  <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="normal">Normal</SelectItem>
-                    <SelectItem value="refund">Refund</SelectItem>
-                    <SelectItem value="void">Void</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1 min-w-[180px] flex-1 sm:flex-none">
-                <label className="text-xs text-muted-foreground">Delivery</label>
-                <Select value={deliveryFilter} onValueChange={setDeliveryFilter}>
-                  <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All deliveries" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="pending">Not Delivered</SelectItem>
-                    <SelectItem value="partial">Partially Delivered</SelectItem>
-                    <SelectItem value="delivered">Delivered</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                className="h-9 w-full sm:w-auto"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const params = new URLSearchParams({ month: exportMonth });
-                  if (exportMethod) params.set("method", exportMethod);
-                  if (exportStatus) params.set("status", exportStatus);
-                  if (deliveryFilter && deliveryFilter !== "all") {
-                    const d = deliveryFilter === "pending" ? "not-delivered" : deliveryFilter;
-                    params.set("delivery", d);
-                  }
-                  window.open(`/api/admin/payments/export?${params.toString()}`, "_blank");
-                }}
-              >
-                Export CSV
-              </Button>
-              <Button
-                className="h-9 w-full sm:w-auto"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const params = new URLSearchParams({ month: exportMonth });
-                  if (exportMethod) params.set("method", exportMethod);
-                  if (exportStatus) params.set("status", exportStatus);
-                  if (deliveryFilter && deliveryFilter !== "all") {
-                    const d = deliveryFilter === "pending" ? "not-delivered" : deliveryFilter;
-                    params.set("delivery", d);
-                  }
-                  window.open(`/admin/payments/export/print?${params.toString()}`, "_blank");
-                }}
-              >
-                Export PDF
-              </Button>
-              <Button
-                className="h-9 w-full sm:w-9"
-                variant="outline"
-                size="icon"
-                onClick={async () => {
-                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-                  queryClient.invalidateQueries({ queryKey: ["admin", "payments", "summary"] });
-                }}
-                aria-label="Refresh"
-                title="Refresh"
-              >
-                <RefreshCcw className={`h-4 w-4 ${mounted && refreshing ? "animate-spin" : ""}`} />
-              </Button>
-              {paymentsSummary && (
-                <div className="w-full sm:w-auto">
-                  <PaymentsSummaryButton
-                    month={exportMonth}
-                    method={exportMethod}
-                    status={exportStatus}
-                    total={Number(paymentsSummary.total || 0)}
-                    count={Number(paymentsSummary.count || 0)}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
+    <section className="container mx-auto py-8 space-y-6">
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Customers</h1>
+          <p className="text-sm text-muted-foreground">
+            Monitor balances, credits, and delivery status.
+          </p>
         </div>
-        {data?.partial && (data as { errors?: Array<{ step: string; error: string }> })?.errors?.length ? (
-          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-            Some data could not be loaded:
-            <ul className="list-disc pl-5 space-y-0.5 mt-1">
-              {(data.errors as Array<{ step: string; error: string }>).map((err, idx: number) => (
-                <li key={idx}>
-                  <span className="font-semibold">{err.step}:</span> {err.error}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            className="h-9 w-full sm:w-auto"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const params = new URLSearchParams({ month: exportMonth });
+              if (exportMethod) params.set("method", exportMethod);
+              if (exportStatus) params.set("status", exportStatus);
+              if (deliveryFilter && deliveryFilter !== "all") {
+                const d = deliveryFilter === "pending" ? "not-delivered" : deliveryFilter;
+                params.set("delivery", d);
+              }
+              window.open(`/api/admin/payments/export?${params.toString()}`, "_blank");
+            }}
+          >
+            Export CSV
+          </Button>
+          <Button
+            className="h-9 w-full sm:w-auto"
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const params = new URLSearchParams({ month: exportMonth });
+              if (exportMethod) params.set("method", exportMethod);
+              if (exportStatus) params.set("status", exportStatus);
+              if (deliveryFilter && deliveryFilter !== "all") {
+                const d = deliveryFilter === "pending" ? "not-delivered" : deliveryFilter;
+                params.set("delivery", d);
+              }
+              window.open(`/admin/payments/export/print?${params.toString()}`, "_blank");
+            }}
+          >
+            Export PDF
+          </Button>
+          <Button
+            className="h-9 w-full sm:w-9"
+            variant="outline"
+            size="icon"
+            onClick={async () => {
+              queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+              queryClient.invalidateQueries({ queryKey: ["admin", "payments", "summary"] });
+            }}
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <RefreshCcw className={`h-4 w-4 ${mounted && refreshing ? "animate-spin" : ""}`} />
+          </Button>
+          {paymentsSummary && (
+            <div className="w-full sm:w-auto">
+              <PaymentsSummaryButton
+                month={exportMonth}
+                method={exportMethod}
+                status={exportStatus}
+                total={Number(paymentsSummary.total || 0)}
+                count={Number(paymentsSummary.count || 0)}
+              />
+            </div>
+          )}
+        </div>
       </div>
+
+      <Card className="shadow-md !border-none mb-6 w-full">
+        <CardHeader className="flex items-center justify-between space-y-0 py-3">
+          <CardTitle className="text-base font-semibold">Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap items-center gap-2 pb-3">
+            <Button
+              size="sm"
+              variant={balanceFilter === "all" ? "default" : "outline"}
+              onClick={() => setBalanceFilter("all")}
+            >
+              All customers
+            </Button>
+            <Button
+              size="sm"
+              variant={balanceFilter === "due" ? "default" : "outline"}
+              onClick={() => {
+                setBalanceFilter("due");
+                setCreditFilter("all");
+              }}
+            >
+              Balance due
+            </Button>
+            <Button
+              size="sm"
+              variant={creditFilter === "all" ? "default" : "outline"}
+              onClick={() => setCreditFilter("all")}
+            >
+              All credits
+            </Button>
+            <Button
+              size="sm"
+              variant={creditFilter === "credit" ? "default" : "outline"}
+              onClick={() => {
+                setCreditFilter("credit");
+                setBalanceFilter("all");
+              }}
+            >
+              Has store credit
+            </Button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Month</label>
+              <input
+                type="month"
+                className="h-9 rounded-md border px-2 text-sm w-full"
+                value={exportMonth}
+                onChange={(e) => setExportMonth(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Method</label>
+              <Select value={exportMethod || "all"} onValueChange={(v) => setExportMethod(v === "all" ? "" : v)}>
+                <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="card">Card</SelectItem>
+                  <SelectItem value="transfer">Transfer</SelectItem>
+                  <SelectItem value="adjustment">Adjustment</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Status</label>
+              <Select value={exportStatus || "all"} onValueChange={(v) => setExportStatus(v === "all" ? "" : v)}>
+                <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="refund">Refund</SelectItem>
+                  <SelectItem value="void">Void</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-muted-foreground">Delivery</label>
+              <Select value={deliveryFilter} onValueChange={setDeliveryFilter}>
+                <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All deliveries" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="pending">Not Delivered</SelectItem>
+                  <SelectItem value="partial">Partially Delivered</SelectItem>
+                  <SelectItem value="delivered">Delivered</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4">
         {/* Record Payment card removed in favor of Actions-based Add Payment & Adjustment */}
-        <div className="hidden md:block overflow-x-auto">
-          <Table className="w-full table-auto min-w-[1120px] admin-customers-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[260px] text-left">User</TableHead>
-                <TableHead className="w-[140px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Orders</span>
-                    <Tooltip content="Total value of all orders">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Orders total"
+        {selectedCount > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">{selectedCount} selected</span>
+              <Button variant="ghost" size="sm" onClick={clearSelection}>
+                Clear
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={exportSelected}>
+                Export CSV ({selectedCount})
+              </Button>
+            </div>
+          </div>
+        )}
+        <Card className="shadow-md !border-none w-full min-w-0">
+          <CardHeader className="flex items-center justify-between py-3">
+            <CardTitle className="text-base font-semibold">Customers</CardTitle>
+            <span className="text-xs text-muted-foreground">
+              {filteredRows.length} shown
+            </span>
+          </CardHeader>
+          <CardContent className="p-0 overflow-x-hidden">
+            <div className="hidden md:block min-w-0 overflow-x-auto">
+              <Table className="w-full table-auto admin-customers-table border-collapse">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[36px] text-center">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={allVisibleSelected}
+                        onChange={toggleSelectAllVisible}
+                        aria-label="Select all visible customers"
                       />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[160px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Paid</span>
-                    <Tooltip content="Payments applied to orders (sum of amountPaid across non-cancelled orders)">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Paid total"
-                      />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[140px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Payments</span>
-                    <Tooltip content="Net cash/MoMo payments (excluding internal credit moves).">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Payments total"
-                      />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[160px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Store Credit</span>
-                    <Tooltip content="Store credit held for this customer (credit from returns and adjustments not yet applied or refunded).">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Store credit"
-                      />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[140px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Refunded</span>
-                    <Tooltip content="Cash physically returned to the customer.">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Refunded cash"
-                      />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[140px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Balance</span>
-                    <Tooltip content="Outstanding = Orders - Paid">
-                      <HelpCircle
-                        className="h-3.5 w-3.5 text-muted-foreground"
-                        aria-label="Balance"
-                      />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[180px] text-center">
-                  <div className="inline-flex items-center justify-center gap-1">
-                    <span>Cart</span>
-                    <Tooltip content="Live cart total and items currently in their basket">
-                      <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Cart totals" />
-                    </Tooltip>
-                  </div>
-                </TableHead>
-                <TableHead className="w-[220px] text-center">Delivery</TableHead>
-                <TableHead className="w-[220px] text-center">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-              <TableBody>
-              {filteredRows.map((r: CustomerRow) => {
-                const isFocused =
-                  focusId && String(r.user.id) === String(focusId);
-                const displayLabel =
-                  (r.user.name && r.user.name.trim()) ||
-                  (r.user.email && r.user.email.trim()) ||
-                  formatIdReadable(r.user.id) ||
-                  "Unnamed customer";
-                return (
-                <TableRow
-                  key={r.user.id}
-                  className={
-                    isFocused
-                      ? "bg-amber-50 hover:bg-amber-100"
-                      : undefined
-                  }
-                >
-                  <TableCell className="max-w-[320px] text-left">
-                    <span className="truncate font-medium">
-                      {displayLabel}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.paidTotal || 0)}</TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">
-                    {formatCurrency(r.paymentsTotal ?? 0)}
-                  </TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">
+                    </TableHead>
+                    <TableHead className="w-[260px] text-left">User</TableHead>
+                    <TableHead className="w-[140px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Orders</span>
+                        <Tooltip content="Total value of all orders">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Orders total"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[160px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Paid</span>
+                        <Tooltip content="Payments applied to orders (sum of amountPaid across non-cancelled orders)">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Paid total"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[140px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Payments</span>
+                        <Tooltip content="Net cash/MoMo payments (excluding internal credit moves).">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Payments total"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[160px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Store Credit</span>
+                        <Tooltip content="Store credit held for this customer (credit from returns and adjustments not yet applied or refunded).">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Store credit"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[140px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Refunded</span>
+                        <Tooltip content="Cash physically returned to the customer.">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Refunded cash"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[140px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Balance</span>
+                        <Tooltip content="Outstanding = Orders - Paid">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Balance"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[180px] text-center">
+                      <div className="inline-flex items-center justify-center gap-1">
+                        <span>Cart</span>
+                        <Tooltip content="Live cart total and items currently in their basket">
+                          <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Cart totals" />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[220px] text-center">Delivery</TableHead>
+                    <TableHead className="w-[220px] text-center">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredRows.map((r: CustomerRow) => {
+                    const isFocused =
+                      focusId && String(r.user.id) === String(focusId);
+                    const displayLabel =
+                      (r.user.name && r.user.name.trim()) ||
+                      (r.user.email && r.user.email.trim()) ||
+                      formatIdReadable(r.user.id) ||
+                      "Unnamed customer";
+                    return (
+                        <TableRow
+                          key={r.user.id}
+                          className={
+                            isFocused
+                              ? "bg-amber-50 hover:bg-amber-100"
+                              : undefined
+                          }
+                        >
+                        <TableCell className="text-center">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4"
+                            checked={selectedIds.has(r.user.id)}
+                            onChange={() => toggleSelected(r.user.id)}
+                            aria-label={`Select ${r.user.email}`}
+                          />
+                        </TableCell>
+                        <TableCell className="max-w-[320px] text-left">
+                          <div className="space-y-0.5">
+                            <span className="truncate font-medium">{displayLabel}</span>
+                            <div className="text-xs text-muted-foreground">
+                              {r.user.phone || r.user.email || ""}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.paidTotal || 0)}</TableCell>
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
+                          {formatCurrency(r.paymentsTotal ?? 0)}
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
                     {(() => {
-                      const delta = Math.max(
-                        0,
-                        r.storeCredit ??
-                          Math.max(
-                            0,
-                            (r.paymentsTotal ?? 0) - (r.paidTotal || 0),
-                          ),
-                      );
+                      const delta = getCustomerCredit(r);
                       const cls =
                         delta > 0.005
                           ? "text-amber-700"
@@ -808,135 +979,194 @@ function AdminCustomersContent() {
                       );
                     })()}
                   </TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">
+                  <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
                     <span
                       className={
-                        (r.refundedCash ?? 0) > 0 ? "text-red-700" : "text-muted-foreground"
+                        (r.refundedCash ?? 0) > 0 ? "text-amber-700" : "text-muted-foreground"
                       }
                     >
                       {formatCurrency(r.refundedCash || 0)}
                     </span>
                   </TableCell>
-                  <TableCell className="text-center whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency((r.ordersTotal || 0) - (r.paidTotal || 0))}</TableCell>
-                  <TableCell className="text-center whitespace-nowrap px-2 text-sm">
-                    {r.cart?.totalItems ? (
-                      <div className="flex flex-col leading-tight">
-                        <span className="font-medium">{formatCurrency(r.cart.total || 0)}</span>
-                        <span className="text-xs text-muted-foreground">{r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"}</span>
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground text-xs">Empty</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center whitespace-nowrap">
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
                     {(() => {
-                      const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
-                      return (
-                        <span className="text-xs">
-                          <span className="bg-green-100 text-green-800 rounded px-1.5 py-0.5 mr-1">
-                            Full {d.delivered || 0}
-                          </span>
-                          <span className="bg-yellow-100 text-yellow-800 rounded px-1.5 py-0.5 mr-1">
-                            Partial {d.partial || 0}
-                          </span>
-                          <span className="bg-gray-100 text-gray-800 rounded px-1.5 py-0.5">
-                            Pending {d.pending || 0}
-                          </span>
-                        </span>
-                      );
+                      const balance = getCustomerBalance(r);
+                      const cls = balance > 0.005 ? "text-red-700" : "text-muted-foreground";
+                      return <span className={cls}>{formatCurrency(balance)}</span>;
                     })()}
                   </TableCell>
-              <TableCell className="text-center w-[220px] min-w-[220px] overflow-visible whitespace-normal">
-                <div className="flex w-full justify-center">
-                  {renderActionsMenu(r)}
-                </div>
-              </TableCell>
-            </TableRow>
-          )})}
-          {filteredRows.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={10} className="text-center text-sm text-muted-foreground py-6">
-                No customers found.
-              </TableCell>
-            </TableRow>
-          )}
-        </TableBody>
-      </Table>
-    </div>
-        <div className="md:hidden space-y-4">
-          {filteredRows.map((r: CustomerRow) => {
-            const outstanding = Math.max(
-              0,
-              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
-            );
-            const credit = Math.max(
-              0,
-              r.storeCredit ??
-                Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
-            );
-            const delivery = r.delivery || { delivered: 0, partial: 0, pending: 0 };
-            return (
-              <div key={r.user.id} className="rounded-lg !border-0 shadow-md p-4 space-y-3 text-sm">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold break-all">{r.user.email}</p>
-                    <p className="text-xs text-muted-foreground">{r.user.name || "Unnamed customer"}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="text-xs uppercase text-muted-foreground">Orders</p>
-                    <p className="font-mono">{formatCurrency(r.ordersTotal || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-muted-foreground">Paid</p>
-                    <p className="font-mono">{formatCurrency(r.paidTotal || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-muted-foreground">Store Credit</p>
-                    <p className="font-mono">{formatCurrency(Math.max(0, credit))}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase text-muted-foreground">Balance</p>
-                    <p className="font-mono">{formatCurrency(outstanding)}</p>
-                  </div>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {r.cart?.totalItems ? (
-                    <>
-                      Cart: {r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"} · {formatCurrency(r.cart.total || 0)}
-                    </>
-                  ) : (
-                    <>Cart empty</>
+                        <TableCell className="text-center whitespace-nowrap px-2 text-sm">
+                          {r.cart?.totalItems ? (
+                            <div className="flex flex-col leading-tight">
+                              <span className="font-medium">{formatCurrency(r.cart.total || 0)}</span>
+                              <span className="text-xs text-muted-foreground">{r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"}</span>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">Empty</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center whitespace-nowrap">
+                          {(() => {
+                            const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
+                            return (
+                              <span className="text-xs">
+                                <span className={`${chipToneClass("success")} rounded px-1.5 py-0.5 mr-1`}>
+                                  Full {d.delivered || 0}
+                                </span>
+                                <span className={`${chipToneClass("warning")} rounded px-1.5 py-0.5 mr-1`}>
+                                  Partial {d.partial || 0}
+                                </span>
+                                <span className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>
+                                  Pending {d.pending || 0}
+                                </span>
+                              </span>
+                            );
+                          })()}
+                        </TableCell>
+                        <TableCell className="text-center w-[220px] min-w-[220px] overflow-visible whitespace-normal">
+                          <div className="flex w-full justify-center">
+                            {renderActionsMenu(r)}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                  {filteredRows.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={11} className="text-center text-sm text-muted-foreground py-6">
+                        <div className="flex flex-col items-center gap-3">
+                          <span>No customers found for the current filters.</span>
+                          <div className="flex flex-wrap justify-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setDeliveryFilter("all");
+                                setBalanceFilter("all");
+                                setCreditFilter("all");
+                              }}
+                            >
+                              Clear filters
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                              }}
+                            >
+                              Refresh
+                            </Button>
+                          </div>
+                        </div>
+                      </TableCell>
+                    </TableRow>
                   )}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="md:hidden space-y-4 border-t p-4">
+              {filteredRows.map((r: CustomerRow) => {
+            const outstanding = Math.max(0, getCustomerBalance(r));
+            const credit = Math.max(0, getCustomerCredit(r));
+                const delivery = r.delivery || { delivered: 0, partial: 0, pending: 0 };
+                return (
+                  <div key={r.user.id} className="rounded-lg !border-0 shadow-md p-4 space-y-3 text-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 mt-1"
+                        checked={selectedIds.has(r.user.id)}
+                        onChange={() => toggleSelected(r.user.id)}
+                        aria-label={`Select ${r.user.email}`}
+                      />
+                      <div className="min-w-0">
+                        <p className="font-semibold break-all">{r.user.name || r.user.email || "Customer"}</p>
+                        <p className="text-xs text-muted-foreground">{r.user.phone || r.user.email || ""}</p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Orders</p>
+                        <p className="font-mono">{formatCurrency(r.ordersTotal || 0)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Paid</p>
+                        <p className="font-mono">{formatCurrency(r.paidTotal || 0)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Store Credit</p>
+                        <p className="font-mono">{formatCurrency(Math.max(0, credit))}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Balance</p>
+                        <p className={`font-mono ${outstanding > 0.005 ? "text-red-700" : "text-muted-foreground"}`}>
+                          {formatCurrency(outstanding)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {r.cart?.totalItems ? (
+                        <>
+                          Cart: {r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"} · {formatCurrency(r.cart.total || 0)}
+                        </>
+                      ) : (
+                        <>Cart empty</>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-xs">
+                      <span className={`${chipToneClass("success")} rounded px-1.5 py-0.5`}>
+                        Full {delivery.delivered || 0}
+                      </span>
+                      <span className={`${chipToneClass("warning")} rounded px-1.5 py-0.5`}>
+                        Partial {delivery.partial || 0}
+                      </span>
+                      <span className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>
+                        Pending {delivery.pending || 0}
+                      </span>
+                    </div>
+                    <div className="flex justify-end">
+                      {renderActionsMenu(r, "w-full justify-center")}
+                    </div>
+                  </div>
+                );
+              })}
+              {filteredRows.length === 0 && (
+                <div className="text-center text-sm text-muted-foreground">
+                  <p>No customers match the selected filters.</p>
+                  <div className="mt-2 flex flex-wrap justify-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setDeliveryFilter("all");
+                        setBalanceFilter("all");
+                        setCreditFilter("all");
+                      }}
+                    >
+                      Clear filters
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                      }}
+                    >
+                      Refresh
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2 text-xs">
-                  <span className="bg-green-100 text-green-800 rounded px-1.5 py-0.5">
-                    Full {delivery.delivered || 0}
-                  </span>
-                  <span className="bg-yellow-100 text-yellow-800 rounded px-1.5 py-0.5">
-                    Partial {delivery.partial || 0}
-                  </span>
-                  <span className="bg-gray-100 text-gray-800 rounded px-1.5 py-0.5">
-                    Pending {delivery.pending || 0}
-                  </span>
-                </div>
-                <div className="flex justify-end">
-                  {renderActionsMenu(r, "w-full justify-center")}
-                </div>
-              </div>
-            );
-          })}
-          {filteredRows.length === 0 && (
-            <p className="text-center text-sm text-muted-foreground">No customers match the selected filters.</p>
-          )}
-        </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
       </div>
-    </div>
+    </section>
     <Dialog open={!!viewCart} onOpenChange={(open) => { if (!open) setViewCart(null); }}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Cart for {viewCart?.user?.email || "customer"}</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Cart for {viewCart?.user?.email || "customer"}</DialogTitle>
         </DialogHeader>
         {viewCart?.cart?.items?.length ? (
           <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
@@ -966,9 +1196,9 @@ function AdminCustomersContent() {
       </DialogContent>
     </Dialog>
     <Dialog open={!!confirmClear} onOpenChange={(o) => { if (!o) setConfirmClear(null); }}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
-          <DialogTitle>Delete Cart</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Delete Cart</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
           Are you sure you want to delete this customer&apos;s cart
@@ -1006,11 +1236,12 @@ function AdminCustomersContent() {
         setRefundCredit(null);
         setRefundAmount("");
         setRefundAll(true);
+        setRefundErrors({});
       }
     }}>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
-          <DialogTitle>Refund Store Credit</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Refund Store Credit</DialogTitle>
         </DialogHeader>
         {refundCredit && (
           <div className="space-y-3 text-sm">
@@ -1044,9 +1275,15 @@ function AdminCustomersContent() {
                 min={0}
                 step="0.01"
                 value={refundAmount}
-                onChange={(e) => setRefundAmount(e.target.value)}
+                onChange={(e) => {
+                  setRefundAmount(e.target.value);
+                  if (refundErrors.amount) setRefundErrors((prev) => ({ ...prev, amount: "" }));
+                }}
                 disabled={refundAll}
+                aria-invalid={!!refundErrors.amount}
+                className={refundErrors.amount ? "border-red-500" : undefined}
               />
+              {refundErrors.amount && <p className="text-xs text-red-600">{refundErrors.amount}</p>}
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">Method</label>
@@ -1064,10 +1301,16 @@ function AdminCustomersContent() {
               onChange={(e) => setRefundRef(e.target.value)}
             />
             <Input
-              placeholder="Note (optional)"
+              placeholder="Reason (min 5 chars)"
               value={refundNote}
-              onChange={(e) => setRefundNote(e.target.value)}
+              onChange={(e) => {
+                setRefundNote(e.target.value);
+                if (refundErrors.note) setRefundErrors((prev) => ({ ...prev, note: "" }));
+              }}
+              aria-invalid={!!refundErrors.note}
+              className={refundErrors.note ? "border-red-500" : undefined}
             />
+            {refundErrors.note && <p className="text-xs text-red-600">{refundErrors.note}</p>}
             <DialogFooter>
               <Button variant="outline" onClick={() => setRefundCredit(null)} disabled={refundSubmitting}>Cancel</Button>
               <Button
@@ -1079,11 +1322,15 @@ function AdminCustomersContent() {
                   }
                   const value = Number(refundAmount);
                   if (!value || isNaN(value) || value <= 0) {
-                    toast.error("Enter a valid refund amount");
+                    setRefundErrors((prev) => ({ ...prev, amount: "Enter a valid refund amount." }));
+                    return;
+                  }
+                  if (refundNote.trim().length < 5) {
+                    setRefundErrors((prev) => ({ ...prev, note: "Please add a brief reason (min 5 chars)." }));
                     return;
                   }
                   if (value > refundCredit.credit + 0.0001) {
-                    toast.error("Amount exceeds customer's credit");
+                    setRefundErrors((prev) => ({ ...prev, amount: "Amount exceeds customer's credit." }));
                     return;
                   }
                   try {
@@ -1106,6 +1353,7 @@ function AdminCustomersContent() {
                     toast.success("Credit refunded successfully");
                     setRefundCredit(null);
                     setRefundAmount("");
+                    setRefundErrors({});
                     queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
                   } catch (e: unknown) {
                     const message =
@@ -1133,12 +1381,13 @@ function AdminCustomersContent() {
           setAddPaymentAmount("");
           setAddPaymentMethod("cash");
           setAddPaymentNote("");
+          setAddPaymentErrors({});
         }
       }}
     >
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
-          <DialogTitle>Add Payment (apply to oldest orders)</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Add Payment (apply to oldest orders)</DialogTitle>
         </DialogHeader>
         {addPaymentFor && (() => {
           const row = rows.find((r) => r.user.id === addPaymentFor.userId);
@@ -1169,8 +1418,14 @@ function AdminCustomersContent() {
                   step="0.01"
                   placeholder="Amount to apply"
                   value={addPaymentAmount}
-                  onChange={(e) => setAddPaymentAmount(e.target.value)}
+                  onChange={(e) => {
+                    setAddPaymentAmount(e.target.value);
+                    if (addPaymentErrors.amount) setAddPaymentErrors((prev) => ({ ...prev, amount: "" }));
+                  }}
+                  aria-invalid={!!addPaymentErrors.amount}
+                  className={addPaymentErrors.amount ? "border-red-500" : undefined}
                 />
+                {addPaymentErrors.amount && <p className="text-xs text-red-600">{addPaymentErrors.amount}</p>}
                 <Button
                   type="button"
                   variant="outline"
@@ -1231,13 +1486,11 @@ function AdminCustomersContent() {
                       : 0;
                     const value = Number(addPaymentAmount);
                     if (!value || isNaN(value) || value <= 0) {
-                      toast.error("Enter a valid payment amount");
+                      setAddPaymentErrors((prev) => ({ ...prev, amount: "Enter a valid payment amount." }));
                       return;
                     }
                     if (value > outstanding + 0.0001) {
-                      toast.error(
-                        "Amount exceeds customer's outstanding balance",
-                      );
+                      setAddPaymentErrors((prev) => ({ ...prev, amount: "Amount exceeds outstanding balance." }));
                       return;
                     }
                     try {
@@ -1254,6 +1507,7 @@ function AdminCustomersContent() {
                       setAddPaymentAmount("");
                       setAddPaymentMethod("cash");
                       setAddPaymentNote("");
+                      setAddPaymentErrors({});
                       queryClient.invalidateQueries({
                         queryKey: ["admin", "customers"],
                       });
@@ -1285,12 +1539,13 @@ function AdminCustomersContent() {
           setAdjustFor(null);
           setAdjustAmount("");
           setAdjustNote("");
+          setAdjustErrors({});
         }
       }}
     >
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
-          <DialogTitle>Adjustment (back-office)</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Adjustment (back-office)</DialogTitle>
         </DialogHeader>
         {adjustFor && (() => {
           const row = rows.find((r) => r.user.id === adjustFor.userId);
@@ -1320,8 +1575,14 @@ function AdminCustomersContent() {
                 step="0.01"
                 placeholder="Adjustment amount"
                 value={adjustAmount}
-                onChange={(e) => setAdjustAmount(e.target.value)}
+                onChange={(e) => {
+                  setAdjustAmount(e.target.value);
+                  if (adjustErrors.amount) setAdjustErrors((prev) => ({ ...prev, amount: "" }));
+                }}
+                aria-invalid={!!adjustErrors.amount}
+                className={adjustErrors.amount ? "border-red-500" : undefined}
               />
+              {adjustErrors.amount && <p className="text-xs text-red-600">{adjustErrors.amount}</p>}
               <Input
                 placeholder="Reason / note (recommended)"
                 value={adjustNote}
@@ -1343,7 +1604,7 @@ function AdminCustomersContent() {
                     if (!adjustFor) return;
                     const value = Number(adjustAmount);
                     if (!value || isNaN(value) || value <= 0) {
-                      toast.error("Enter a valid adjustment amount");
+                      setAdjustErrors((prev) => ({ ...prev, amount: "Enter a valid adjustment amount." }));
                       return;
                     }
                     try {
@@ -1360,6 +1621,7 @@ function AdminCustomersContent() {
                       setAdjustFor(null);
                       setAdjustAmount("");
                       setAdjustNote("");
+                      setAdjustErrors({});
                       queryClient.invalidateQueries({
                         queryKey: ["admin", "customers"],
                       });
@@ -1387,7 +1649,7 @@ function AdminCustomersContent() {
     <Dialog open={!!explain} onOpenChange={(o) => { if (!o) setExplain(null); }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Explain Totals {explain?.email ? `for ${explain.email}` : ""}</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Explain Totals {explain?.email ? `for ${explain.email}` : ""}</DialogTitle>
         </DialogHeader>
         {explain && (
           <ExplainTotals
@@ -1412,7 +1674,7 @@ export default function AdminCustomersPage() {
     <Suspense
       fallback={
         <section className="container mx-auto py-8 max-w-4xl">
-          <h1 className="text-2xl font-semibold mb-4">Customer Cart</h1>
+          <h1 className="text-2xl font-semibold mb-4">Customers</h1>
           <p className="text-sm text-muted-foreground">Loading customers…</p>
         </section>
       }
@@ -1504,9 +1766,9 @@ function PaymentsSummaryButton(props: { month: string; method: string; status: s
         </Tooltip>
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none max-w-lg">
           <DialogHeader>
-            <DialogTitle>Payments Summary</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Payments Summary</DialogTitle>
           </DialogHeader>
           <div className="text-xs text-muted-foreground mb-2">
             Month: <strong>{month}</strong> • Method: <strong>{method || 'All'}</strong> • Status: <strong>{status || 'All'}</strong>
@@ -1566,6 +1828,7 @@ function ExplainTotals({
   refundedCash: number;
   balance: number;
 }) {
+  const queryClient = useQueryClient();
   const { data: payData, error: payErr, isFetching: fetchingPayments } = useClientQuery({
     queryKey: ["admin", "payments", "by-user", userId],
     queryFn: async () => {
@@ -1585,19 +1848,39 @@ function ExplainTotals({
     },
   });
 
-  const list: PaymentRow[] = payData?.payments ?? [];
+  const list: PaymentRow[] = useMemo(() => payData?.payments ?? [], [payData]);
   const paymentsSum = Number(payData?.total ?? paymentsTotal ?? 0);
   const paidSum = Number(ordData?.paidTotal ?? paidTotal ?? 0);
   const ordersSum = Number(ordData?.ordersTotal ?? ordersTotal ?? 0);
   const balanceSum = Number(ordData?.balance ?? balance ?? 0);
   const ledgerGap = Math.max(0, paymentsSum - paidSum);
+  const [ledgerRange, setLedgerRange] = useState<"all" | "30" | "90">("all");
+
+  const ledgerList = useMemo(() => {
+    if (ledgerRange === "all") return list;
+    const days = ledgerRange === "30" ? 30 : 90;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    return list.filter((p) => new Date(p.createdAt).getTime() >= cutoff);
+  }, [list, ledgerRange]);
+
+  const formatMethod = (p: PaymentRow) => {
+    const raw =
+      p.meta?.method ||
+      (p.meta?.reference === "AUTO_APPLY" ? "Auto apply" : "") ||
+      (p.status || "");
+    const value = String(raw || "").toLowerCase();
+    if (!value) return "—";
+    if (value === "momo") return "MoMo";
+    if (value === "auto apply") return "Auto apply";
+    return value.replace(/^\w/, (c) => c.toUpperCase());
+  };
 
   return (
     <div className="grid gap-4">
-      {/* Section A: snapshot – matches Customer Cart row */}
-      <div>
+      {/* Section A: snapshot – matches Customers row */}
+      <div className="border-b pb-3">
         <h4 className="text-sm font-semibold mb-2">
-          Current summary (matches Customer Cart row)
+          Current summary (matches Customers row)
         </h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
           <div className="rounded border p-3 text-center break-words">
@@ -1620,19 +1903,19 @@ function ExplainTotals({
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Store credit (available)</div>
-            <div className="font-mono tabular-nums font-semibold">
+            <div className="font-mono tabular-nums font-semibold text-amber-700">
               {formatCurrency(storeCredit)}
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Refunded (cash)</div>
-            <div className="font-mono tabular-nums font-semibold">
+            <div className="font-mono tabular-nums font-semibold text-rose-700">
               {formatCurrency(refundedCash)}
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Balance (orders – paid)</div>
-            <div className="font-mono tabular-nums font-semibold">
+            <div className="font-mono tabular-nums font-semibold text-red-700">
               {formatCurrency(balanceSum)}
             </div>
           </div>
@@ -1641,7 +1924,21 @@ function ExplainTotals({
 
       {/* Section B: lifetime ledger */}
       <div>
-        <h4 className="text-sm font-semibold mb-2">Lifetime payment ledger</h4>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h4 className="text-sm font-semibold">Lifetime payment ledger</h4>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Show:</span>
+            <Button size="sm" variant={ledgerRange === "30" ? "default" : "outline"} onClick={() => setLedgerRange("30")}>
+              Last 30
+            </Button>
+            <Button size="sm" variant={ledgerRange === "90" ? "default" : "outline"} onClick={() => setLedgerRange("90")}>
+              Last 90
+            </Button>
+            <Button size="sm" variant={ledgerRange === "all" ? "default" : "outline"} onClick={() => setLedgerRange("all")}>
+              All
+            </Button>
+          </div>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Lifetime payments total</div>
@@ -1657,7 +1954,12 @@ function ExplainTotals({
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">
-              Ledger gap (payments – amountPaid)
+              <div className="inline-flex items-center gap-1">
+                <span>Unapplied funds (payments – amountPaid)</span>
+                <Tooltip content="Payments that did not land on an order yet (e.g., store credit issuance or adjustments).">
+                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Unapplied funds" />
+                </Tooltip>
+              </div>
             </div>
             <div className="font-mono tabular-nums font-semibold text-amber-700">
               {formatCurrency(ledgerGap)}
@@ -1665,7 +1967,7 @@ function ExplainTotals({
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Refunded (cash)</div>
-            <div className="font-mono tabular-nums font-semibold text-red-700">
+            <div className="font-mono tabular-nums font-semibold text-rose-700">
               {formatCurrency(
                 list
                   .filter((p) => {
@@ -1686,9 +1988,23 @@ function ExplainTotals({
             </div>
           </div>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
+            <span className={`h-2 w-2 rounded-full ${chipToneClass("warning")}`} />
+            Store credit / unapplied
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className={`h-2 w-2 rounded-full ${chipToneClass("danger")}`} />
+            Refunds (cash)
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className={`h-2 w-2 rounded-full ${chipToneClass("danger")}`} />
+            Balance due
+          </span>
+        </div>
         <p className="mt-2 text-xs text-muted-foreground">
           Lifetime figures include all historical payments, refunds, and credit
-          movements. The “ledger gap” reflects amounts that did not end up as{" "}
+          movements. “Unapplied funds” reflects amounts that did not end up as{" "}
           <code>amountPaid</code> on orders (for example, store-credit issuance
           and internal adjustments). Current store credit and balance are shown
           in the summary above.
@@ -1697,20 +2013,27 @@ function ExplainTotals({
 
       {/* Per-payment breakdown */}
       <div className="rounded border overflow-hidden">
+        <div className="px-3 pt-3 text-xs text-muted-foreground">
+          {ledgerRange === "all" ? "Showing all ledger entries." : `Showing last ${ledgerRange} days.`}
+        </div>
         <div className="max-h-[420px] overflow-y-auto">
           <Table className="w-full table-auto">
             <TableHeader className="sticky top-0 bg-background">
               <TableRow>
                 <TableHead className="text-left">Date</TableHead>
+                <TableHead className="text-left">Method</TableHead>
                 <TableHead className="text-center">Amount</TableHead>
                 <TableHead className="text-left">Applied breakdown</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {list.map((p) => (
+              {ledgerList.map((p) => (
                 <TableRow key={p.id}>
                   <TableCell className="text-left text-sm">
                     {new Date(p.createdAt).toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-left text-xs">
+                    {formatMethod(p)}
                   </TableCell>
                   <TableCell className="text-center font-mono tabular-nums">
                     {formatCurrency(Number(p.amount || 0))}
@@ -1736,17 +2059,38 @@ function ExplainTotals({
                   </TableCell>
                 </TableRow>
               ))}
-              {list.length === 0 && (
+              {ledgerList.length === 0 && (
                 <TableRow>
                   <TableCell
-                    colSpan={3}
+                    colSpan={4}
                     className="text-center text-sm text-muted-foreground py-4"
                   >
-                    {fetchingPayments || fetchingOrders
-                      ? "Loading..."
-                      : payErr || ordErr
-                      ? "Failed to load details"
-                      : "No payments found"}
+                    {fetchingPayments || fetchingOrders ? (
+                      "Loading..."
+                    ) : payErr || ordErr ? (
+                      "Failed to load details"
+                    ) : (
+                      <div className="flex flex-col items-center gap-2">
+                        <span>No payments found.</span>
+                        <div className="flex flex-wrap justify-center gap-2">
+                          <Button asChild size="sm" variant="outline">
+                            <Link href={`/admin/orders?userId=${encodeURIComponent(userId)}`}>
+                              View orders
+                            </Link>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              queryClient.invalidateQueries({ queryKey: ["admin", "payments", "by-user", userId] });
+                              queryClient.invalidateQueries({ queryKey: ["admin", "orders", "summary", userId] });
+                            }}
+                          >
+                            Refresh
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               )}

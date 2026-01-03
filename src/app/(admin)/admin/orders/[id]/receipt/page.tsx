@@ -10,16 +10,22 @@ import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import Image from "next/image";
 import { ADMIN_PHONE } from "@/lib/config";
-import { formatIdReadable } from "@/lib/utils";
+import { formatIdReadable, formatInvoiceNumber } from "@/lib/utils";
+import { chipToneClass, deliveryStatusTone } from "@/lib/status-chips";
 
 type ReceiptOrder = {
   id: string;
+  invoiceNumber?: string | null;
+  subtotal?: number | string;
+  taxRate?: number | string;
+  taxAmount?: number | string;
   status: string;
   total: number | string;
   amountPaid?: number | string;
   balance?: number | string;
   createdAt: string | Date;
   deliveryStatus?: string | null;
+  receiptHash?: string | null;
   user?: { name?: string | null; email?: string | null } | null;
   items: Array<{
     id: string;
@@ -69,14 +75,16 @@ export default function ReceiptPage() {
   if (error) return <p className="p-6 text-center text-red-600">Failed to load receipt.</p>;
   if (!order) return <p className="p-6 text-center">Loading receipt...</p>;
 
-  const subtotal = Number(order.total || 0);
+  const subtotal = Number(order.subtotal ?? order.total ?? 0);
+  const taxAmount = Number(order.taxAmount ?? 0);
+  const taxRate = Number(order.taxRate ?? 0);
   const lineTotal = (order.items || []).reduce(
     (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
     0,
   );
   const returnAdjustment = Math.max(0, lineTotal - subtotal);
   const paid = Number(order.amountPaid || 0);
-  const balance = Math.max(0, subtotal - paid);
+  const balance = Math.max(0, Number(order.total || subtotal) - paid);
 
   const storeCreditApplied = (() => {
     const payments = order.payments || [];
@@ -183,7 +191,7 @@ export default function ReceiptPage() {
   })();
 
   return (
-    <div className="mx-auto max-w-2xl p-6 print:p-0">
+    <div className="container mx-auto py-8 max-w-2xl print:p-0">
       {/* Screen-only actions */}
       <div className="flex items-center justify-between mb-4 print:hidden">
         <h1 className="text-xl font-semibold">Receipt</h1>
@@ -213,16 +221,20 @@ export default function ReceiptPage() {
 
       <div className="border rounded p-6 print:border-0">
         {/* Brand header for print */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
             <Image src="/logo.svg" alt="Noralls Medical Supplies" width={150} height={48} />
+            <p className="text-sm font-semibold">Noralls Medical Supplies</p>
+            <p className="text-xs text-muted-foreground">Tel: {ADMIN_PHONE}</p>
           </div>
           <div className="text-right text-xs">
-            <p className="font-semibold">Noralls Medical Supplies</p>
-            <p className="text-muted-foreground">Tel: {ADMIN_PHONE}</p>
-            <p className="text-muted-foreground">
-              Order {formatIdReadable(order.id)}
+            <p className="uppercase tracking-[0.2em] text-muted-foreground">Receipt</p>
+            <p className="text-sm font-semibold">
+              {formatInvoiceNumber(order.invoiceNumber)
+                ? `INV: ${formatInvoiceNumber(order.invoiceNumber)}`
+                : `Order ${formatIdReadable(order.id)}`}
             </p>
+            <p className="text-muted-foreground">{formatDateTimeGH(order.createdAt)}</p>
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 text-sm">
@@ -241,7 +253,7 @@ export default function ReceiptPage() {
         {/* Items list: mobile-friendly cards + desktop table */}
         <div className="mt-6">
           {/* Mobile: stacked item cards for clearer separation */}
-          <div className="grid gap-3 md:hidden">
+          <div className="grid gap-3 md:hidden print:hidden">
             {order.items.map((it) => (
               <div key={it.id} className="border rounded-md p-3 text-sm">
                 <div className="font-medium">
@@ -268,16 +280,17 @@ export default function ReceiptPage() {
                       const delivered = Number(it.deliveredQuantity ?? 0);
                       const qty = Number(it.quantity || 0);
                       let label = "Not delivered yet";
-                      let cls = "bg-slate-100 text-slate-700";
+                      let statusKey = "NOT_DELIVERED";
                       let extra: string | null = null;
                       if (delivered >= qty && qty > 0) {
                         label = "Delivered";
-                        cls = "bg-emerald-100 text-emerald-700";
+                        statusKey = "DELIVERED";
                       } else if (delivered > 0) {
                         label = "Partial";
+                        statusKey = "PARTIALLY_DELIVERED";
                         extra = `${delivered}/${qty}`;
-                        cls = "bg-amber-100 text-amber-800";
                       }
+                      const cls = chipToneClass(deliveryStatusTone(statusKey));
                       return (
                         <div className="flex flex-col items-end gap-0.5 w-full">
                           <span
@@ -303,13 +316,13 @@ export default function ReceiptPage() {
                         const qty = Number(it.quantity || 0);
                         if (returned >= delivered && delivered > 0) {
                           return (
-                            <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                            <span className={`px-2 py-0.5 rounded-full text-[11px] ${chipToneClass("neutral")}`}>
                               All delivered units returned ({returned})
                             </span>
                           );
                         }
                         return (
-                          <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-200 text-gray-700">
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] ${chipToneClass("neutral")}`}>
                             {returned} of {qty} returned
                           </span>
                         );
@@ -322,7 +335,7 @@ export default function ReceiptPage() {
           </div>
 
           {/* Desktop/tablet: keep tabular layout */}
-          <div className="hidden md:block">
+          <div className="hidden md:block print:block">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b">
@@ -376,12 +389,18 @@ export default function ReceiptPage() {
           <div className="flex justify-end">
             <div className="w-64">
               <div className="flex justify-between py-1">
-                <span>Total</span>
-                <span>{formatCurrency(lineTotal)}</span>
-              </div>
-              <div className="flex justify-between py-1">
                 <span>Subtotal</span>
                 <span>{formatCurrency(subtotal)}</span>
+              </div>
+              {taxAmount > 0 && (
+                <div className="flex justify-between py-1">
+                  <span>Tax {taxRate ? `(${taxRate}%)` : ""}</span>
+                  <span>{formatCurrency(taxAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between py-1">
+                <span>Total</span>
+                <span>{formatCurrency(Number(order.total || subtotal))}</span>
               </div>
               <div className="flex justify-between py-1">
                 <span>Paid</span>
@@ -421,6 +440,11 @@ export default function ReceiptPage() {
                   {formatCurrency(returnAdjustment)}.
                 </p>
               )}
+              {order.receiptHash ? (
+                <p className="mt-2 text-[10px] text-muted-foreground break-all">
+                  Receipt hash: {order.receiptHash}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>

@@ -6,6 +6,7 @@ import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { randomUUID } from "crypto";
+import { rateLimit } from "@/lib/rate-limit";
 
 type TxClient = Parameters<(typeof prisma)["$transaction"]>[0] extends (
   arg: infer A,
@@ -31,6 +32,10 @@ export async function POST(
   const isAccountant = role === "ACCOUNTANT";
   if (!isAdmin && !isAccountant) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-credit-apply", 60_000, 30);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const params = await context.params;

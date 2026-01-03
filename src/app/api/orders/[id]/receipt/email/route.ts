@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/email";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
+import { formatInvoiceNumber } from "@/lib/utils";
 
 const schema = z.object({ to: z.string().email().optional() });
 
@@ -58,9 +59,17 @@ export async function POST(
       "";
     if (!to) return NextResponse.json({ error: "No email available" }, { status: 400 });
 
-    const total = Number(order.total || 0);
+    const subtotal = Number((order as { subtotal?: unknown }).subtotal ?? order.total ?? 0);
+    const taxAmount = Number((order as { taxAmount?: unknown }).taxAmount ?? 0);
+    const taxRate = Number((order as { taxRate?: unknown }).taxRate ?? 0);
+    const total = Number(order.total ?? subtotal + taxAmount);
     const paid = Number(order.amountPaid || 0);
     const balance = Math.max(0, total - paid);
+    const base = process.env.NEXT_PUBLIC_BASE_URL || `${url.protocol}//${url.host}`;
+    const receiptToken = (order as { receiptHash?: string | null }).receiptHash;
+    const receiptUrl = receiptToken
+      ? `${base}/orders/${order.id}/receipt?receipt=${encodeURIComponent(receiptToken)}`
+      : `${base}/login?callbackUrl=${encodeURIComponent(`/orders/${order.id}/receipt`)}`;
     const deliveryLabel = (() => {
       const raw = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
       if (raw === "DELIVERED") return "Delivered";
@@ -89,17 +98,22 @@ export async function POST(
     const html = `
       <div style="margin:0;padding:24px;background-color:#f6f7f9;">
         <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e6e8eb;border-radius:12px;padding:24px;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111827;">
-          <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;">
-            <div>
-              <div style="font-size:14px;font-weight:700;letter-spacing:0.2px;">Noralls Medical Supplies</div>
-              <div style="font-size:12px;color:#6b7280;">Tel: ${process.env.NEXT_PUBLIC_ADMIN_PHONE || "N/A"}</div>
-            </div>
-            <div style="text-align:right;">
-              <div style="font-size:12px;text-transform:uppercase;letter-spacing:2px;color:#6b7280;">Receipt</div>
-              <div style="font-size:14px;font-weight:600;">Order ${order.id}</div>
-              <div style="font-size:12px;color:#6b7280;">${order.createdAt.toISOString()}</div>
-            </div>
-          </div>
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr>
+              <td style="vertical-align:top;">
+                <div style="font-size:14px;font-weight:700;letter-spacing:0.2px;">Noralls Medical Supplies</div>
+                <div style="font-size:12px;color:#6b7280;line-height:1.5;">Tel: ${process.env.NEXT_PUBLIC_ADMIN_PHONE || "N/A"}</div>
+              </td>
+              <td align="right" style="vertical-align:top;">
+                <div style="font-size:12px;text-transform:uppercase;letter-spacing:2px;color:#6b7280;">Receipt</div>
+                <div style="font-size:14px;font-weight:600;line-height:1.4;">${(() => {
+                  const formatted = formatInvoiceNumber((order as { invoiceNumber?: string | null }).invoiceNumber);
+                  return formatted ? `INV: ${formatted}` : `Order ${order.id}`;
+                })()}</div>
+                <div style="font-size:12px;color:#6b7280;line-height:1.5;">${order.createdAt.toISOString()}</div>
+              </td>
+            </tr>
+          </table>
 
           <div style="margin-top:16px;border:1px solid #e6e8eb;border-radius:8px;padding:12px;background:#f9fafb;font-size:13px;display:flex;justify-content:space-between;gap:12px;">
             <div>
@@ -138,6 +152,15 @@ export async function POST(
           <div style="margin-top:16px;display:flex;justify-content:flex-end;">
             <div style="min-width:220px;border:1px solid #e6e8eb;border-radius:8px;padding:12px;background:#f9fafb;font-size:13px;">
               <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                <span>Subtotal</span>
+                <strong>${subtotal.toFixed(2)}</strong>
+              </div>
+              ${taxAmount > 0 ? `
+              <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                <span>Tax ${taxRate ? `(${taxRate}%)` : ""}</span>
+                <strong>${taxAmount.toFixed(2)}</strong>
+              </div>` : ""}
+              <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
                 <span>Total</span>
                 <strong>${total.toFixed(2)}</strong>
               </div>
@@ -152,16 +175,24 @@ export async function POST(
             </div>
           </div>
 
+          <div style="margin-top:12px;font-size:12px;color:#0f766e;">
+            <a href="${receiptUrl}" style="color:#0f766e;word-break:break-all;">View receipt</a>
+          </div>
+          ${(order as { receiptHash?: string | null }).receiptHash ? `
+          <p style="margin-top:12px;font-size:11px;color:#6b7280;">
+            Receipt hash: ${(order as { receiptHash?: string | null }).receiptHash}
+          </p>` : ""}
           <p style="margin-top:16px;font-size:12px;color:#6b7280;">
             Thank you for your business. If you have any questions about this order, reply to this email or call us.
           </p>
         </div>
       </div>`;
 
+    const text = `Receipt for order ${order.id}. View receipt: ${receiptUrl}`;
     const res = await sendEmail(
       to,
       `Receipt for Order ${order.id}`,
-      `Order ${order.id} total ${total.toFixed(2)}`,
+      text,
       html,
     );
     if (!res.ok)

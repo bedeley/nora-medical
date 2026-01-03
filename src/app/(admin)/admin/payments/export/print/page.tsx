@@ -79,8 +79,13 @@ function PaymentsPrintContent() {
   }, [parsed, amountIndex]);
 
   return (
-    <section className="p-6 print-container">
-      <h1 className="text-2xl font-semibold mb-4">Payments Export {month ? `(${month})` : ""}</h1>
+    <section className="container mx-auto py-8 print-container">
+      <div className="mb-4">
+        <h1 className="text-2xl font-semibold">Payments Export {month ? `(${month})` : ""}</h1>
+        <p className="text-sm text-muted-foreground">
+          Printable view of the current export filters.
+        </p>
+      </div>
       <div className="text-sm text-muted-foreground mb-2">
         {method && <span className="mr-2">Method: {method}</span>}
         {status && <span className="mr-2">Status: {status}</span>}
@@ -157,7 +162,7 @@ export default function PaymentsPrintPage() {
   return (
     <Suspense
       fallback={
-        <section className="p-6">
+        <section className="container mx-auto py-8">
           <h1 className="text-2xl font-semibold mb-4">Payments Export</h1>
           <p className="text-sm text-muted-foreground">Loading export…</p>
         </section>

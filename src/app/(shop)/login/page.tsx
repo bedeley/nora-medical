@@ -14,6 +14,7 @@ function LoginContent() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [loginErrors, setLoginErrors] = useState<{ email?: string; password?: string }>({});
   const [loading, setLoading] = useState(false);
   const [showReset, setShowReset] = useState(false);
   const [resetIdentifier, setResetIdentifier] = useState("");
@@ -23,6 +24,7 @@ function LoginContent() {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [resetError, setResetError] = useState<string | null>(null);
+  const [resetFieldErrors, setResetFieldErrors] = useState<{ identifier?: string; code?: string; password?: string }>({});
   const [codeRequested, setCodeRequested] = useState(false);
   const phoneVerificationEnabled =
     (process.env.NEXT_PUBLIC_PHONE_VERIFICATION_ENABLED || "").toLowerCase() ===
@@ -44,6 +46,14 @@ function LoginContent() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+    const nextErrors: { email?: string; password?: string } = {};
+    if (!email.trim()) nextErrors.email = "Email or username is required.";
+    if (!password.trim()) nextErrors.password = "Password is required.";
+    if (Object.values(nextErrors).some(Boolean)) {
+      setLoginErrors(nextErrors);
+      return;
+    }
+    setLoginErrors({});
     setLoading(true);
     const res = await signIn("credentials", {
       redirect: false,
@@ -69,6 +79,7 @@ function LoginContent() {
   async function requestResetCode() {
     setResetError(null);
     setResetMessage(null);
+    setResetFieldErrors({});
     const effectiveChannel =
       phoneVerificationEnabled && resetChannel === "whatsapp"
         ? "whatsapp"
@@ -77,6 +88,13 @@ function LoginContent() {
       resetIdentifier || (effectiveChannel === "email" ? email : "")
     ).trim();
     if (!identifier) {
+      setResetFieldErrors((prev) => ({
+        ...prev,
+        identifier:
+          effectiveChannel === "whatsapp"
+            ? "Enter the phone number associated with your account."
+            : "Enter the email associated with your account.",
+      }));
       setResetError(
         effectiveChannel === "whatsapp"
           ? "Enter the phone number associated with your account."
@@ -118,11 +136,17 @@ function LoginContent() {
   async function confirmReset() {
     setResetError(null);
     setResetMessage(null);
+    setResetFieldErrors({});
     if (!codeRequested) {
       setResetError("Request a reset code first.");
       return;
     }
     if (!resetCode.trim() || !newPassword.trim()) {
+      setResetFieldErrors((prev) => ({
+        ...prev,
+        code: !resetCode.trim() ? "Enter the reset code." : "",
+        password: !newPassword.trim() ? "Enter a new password." : "",
+      }));
       setResetError("Enter the code and a new password.");
       return;
     }
@@ -134,6 +158,13 @@ function LoginContent() {
       resetIdentifier || (effectiveChannel === "email" ? email : "")
     ).trim();
     if (!identifier) {
+      setResetFieldErrors((prev) => ({
+        ...prev,
+        identifier:
+          effectiveChannel === "whatsapp"
+            ? "Enter the phone number associated with your account."
+            : "Enter the email associated with your account.",
+      }));
       setResetError(
         effectiveChannel === "whatsapp"
           ? "Enter the phone number associated with your account."
@@ -185,18 +216,30 @@ function LoginContent() {
           type="text"
           placeholder="Email or username"
           value={email}
-          onChange={(e) => setEmail(e.target.value)}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            if (loginErrors.email) setLoginErrors((prev) => ({ ...prev, email: "" }));
+          }}
           autoComplete="username"
           required
+          aria-invalid={!!loginErrors.email}
+          className={loginErrors.email ? "border-red-500" : undefined}
         />
+        {loginErrors.email && <p className="text-xs text-red-600">{loginErrors.email}</p>}
         <Input
           type="password"
           placeholder="Password"
           value={password}
-          onChange={(e) => setPassword(e.target.value)}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            if (loginErrors.password) setLoginErrors((prev) => ({ ...prev, password: "" }));
+          }}
           autoComplete="current-password"
           required
+          aria-invalid={!!loginErrors.password}
+          className={loginErrors.password ? "border-red-500" : undefined}
         />
+        {loginErrors.password && <p className="text-xs text-red-600">{loginErrors.password}</p>}
         {(err || initialReasonMessage) && (
           <p className="text-sm text-red-600">
             {err || initialReasonMessage}
@@ -261,8 +304,18 @@ function LoginContent() {
                   : "Account email"
               }
               value={resetIdentifier}
-              onChange={(e) => setResetIdentifier(e.target.value)}
+              onChange={(e) => {
+                setResetIdentifier(e.target.value);
+                if (resetFieldErrors.identifier) {
+                  setResetFieldErrors((prev) => ({ ...prev, identifier: "" }));
+                }
+              }}
+              aria-invalid={!!resetFieldErrors.identifier}
+              className={resetFieldErrors.identifier ? "border-red-500" : undefined}
             />
+            {resetFieldErrors.identifier && (
+              <p className="text-xs text-red-600">{resetFieldErrors.identifier}</p>
+            )}
             <Button type="button" variant="outline" onClick={requestResetCode} disabled={requestingReset}>
               {requestingReset
                 ? "Sending..."
@@ -276,15 +329,41 @@ function LoginContent() {
               <Input
                 placeholder="Reset code"
                 value={resetCode}
-                onChange={(e) => setResetCode(e.target.value.replace(/\s+/g, "").slice(0, 6))}
+                onChange={(e) => {
+                  setResetCode(e.target.value.replace(/\s+/g, "").slice(0, 6));
+                  if (resetFieldErrors.code) setResetFieldErrors((prev) => ({ ...prev, code: "" }));
+                }}
+                aria-invalid={!!resetFieldErrors.code}
+                className={resetFieldErrors.code ? "border-red-500" : undefined}
               />
               <Input
                 type="password"
                 placeholder="New password"
                 value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
+                onChange={(e) => {
+                  setNewPassword(e.target.value);
+                  if (resetFieldErrors.password) {
+                    setResetFieldErrors((prev) => ({ ...prev, password: "" }));
+                  }
+                }}
+                aria-invalid={!!resetFieldErrors.password}
+                className={resetFieldErrors.password ? "border-red-500" : undefined}
               />
             </div>
+            {(resetFieldErrors.code || resetFieldErrors.password) && (
+              <div className="grid gap-1 sm:grid-cols-2">
+                <div>
+                  {resetFieldErrors.code && (
+                    <p className="text-xs text-red-600">{resetFieldErrors.code}</p>
+                  )}
+                </div>
+                <div>
+                  {resetFieldErrors.password && (
+                    <p className="text-xs text-red-600">{resetFieldErrors.password}</p>
+                  )}
+                </div>
+              </div>
+            )}
             <Button type="button" onClick={confirmReset} disabled={confirmingReset || !codeRequested}>
               {confirmingReset ? "Updating..." : "Update password"}
             </Button>

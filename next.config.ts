@@ -1,5 +1,6 @@
 import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
+import type { RemotePattern } from "next/dist/shared/lib/image-config";
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -7,6 +8,20 @@ const isProd = process.env.NODE_ENV === "production";
 const scriptSrc = isProd
   ? "script-src 'self' 'unsafe-inline'"
   : "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:";
+
+const r2PublicBase = process.env.R2_PUBLIC_BASE_URL;
+let r2PublicHostname: string | null = null;
+if (r2PublicBase) {
+  try {
+    r2PublicHostname = new URL(r2PublicBase).hostname;
+  } catch {
+    r2PublicHostname = null;
+  }
+}
+
+const r2ExtraPatterns: RemotePattern[] = r2PublicHostname
+  ? [{ protocol: "https", hostname: r2PublicHostname }]
+  : [];
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
@@ -22,15 +37,9 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "plus.unsplash.com" },
       { protocol: "https", hostname: "source.unsplash.com" },
       { protocol: "https", hostname: "pub-*.r2.dev" },
+      { protocol: "https", hostname: "*.r2.cloudflarestorage.com" },
+      ...r2ExtraPatterns,
     ],
-  },
-  async rewrites() {
-    return [
-      {
-        source: "/uploads/:path*",
-        destination: "/placeholder.png",
-      },
-    ];
   },
   async headers() {
     return [
@@ -50,9 +59,12 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "font-src 'self' data:",
               "connect-src 'self' https: wss:",
+              "object-src 'none'",
+              "frame-src 'none'",
               "frame-ancestors 'self'",
               "base-uri 'self'",
               "form-action 'self'",
+              "upgrade-insecure-requests",
             ].join("; "),
           },
         ],

@@ -2,10 +2,17 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -16,10 +23,11 @@ import {
   CardFooter,
 } from "@/components/ui/card";
 import Image from "next/image";
-import { Loader2, Package, Trash2, Printer, MessageSquareText } from "lucide-react";
+import { Loader2, Package, Printer, MessageSquareText } from "lucide-react";
 import { ADMIN_PHONE } from "@/lib/config";
 import { formatCurrency } from "@/lib/currency";
 import { formatIdReadable } from "@/lib/utils";
+import { chipToneBorderClass, chipToneClass, orderStatusTone } from "@/lib/status-chips";
 
 interface OrderDetailsProps {
   orderId: string;
@@ -54,6 +62,7 @@ type OrderPayload = {
   amountPaid?: number;
   balance?: number;
   createdAt: string | Date;
+  updatedAt?: string | Date;
   adminNote?: string | null;
   user?: { name: string | null; email: string | null } | null;
   items: OrderItem[];
@@ -82,14 +91,35 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
+  const [cancelError, setCancelError] = useState("");
   const [returningItem, setReturningItem] = useState<OrderItem | null>(null);
   const [returnQuantity, setReturnQuantity] = useState<string>("1");
   const [returnSubmitting, setReturnSubmitting] = useState(false);
+  const [returnQtyError, setReturnQtyError] = useState("");
   const [restockReturnToStock, setRestockReturnToStock] = useState(true);
   const [deliveryItem, setDeliveryItem] = useState<OrderItem | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<"delivered" | "partial">("delivered");
   const [deliveryQty, setDeliveryQty] = useState<string>("1");
   const [deliveryItemSubmitting, setDeliveryItemSubmitting] = useState(false);
+  const [deliveryQtyError, setDeliveryQtyError] = useState("");
+
+  useEffect(() => {
+    if (!confirmCancel) {
+      setCancelError("");
+    }
+  }, [confirmCancel]);
+
+  useEffect(() => {
+    if (!returningItem) {
+      setReturnQtyError("");
+    }
+  }, [returningItem]);
+
+  useEffect(() => {
+    if (!deliveryItem) {
+      setDeliveryQtyError("");
+    }
+  }, [deliveryItem]);
 
   if (isLoading)
     return (
@@ -238,6 +268,31 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     });
     return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   })();
+  const ledgerTotal = paymentLedger.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const timelineEvents = (() => {
+    const events: Array<{ time: Date; label: string; detail?: string }> = [];
+    const createdAt = new Date(order.createdAt);
+    events.push({ time: createdAt, label: "Order created" });
+    if (order.deliveredAt && order.deliveryStatus !== "NOT_DELIVERED") {
+      events.push({
+        time: new Date(order.deliveredAt),
+        label: `Delivery updated (${order.deliveryStatus})`,
+      });
+    }
+    for (const p of paymentLedger) {
+      const amount = Number(p.amount || 0);
+      const status = String(p.status || "").toUpperCase();
+      const isRefund = status === "REFUND" || amount < 0;
+      const method = p.method || "unknown";
+      const ref = p.reference ? ` · Ref ${p.reference}` : "";
+      events.push({
+        time: p.createdAt,
+        label: isRefund ? "Payment refund" : "Payment received",
+        detail: `${formatCurrency(Math.abs(amount))} via ${method}${ref}`,
+      });
+    }
+    return events.sort((a, b) => b.time.getTime() - a.time.getTime());
+  })();
 
   async function updateStatus(
     newStatus: string,
@@ -247,11 +302,12 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       if (newStatus === "CANCELLED") {
         const reason = String(opts?.cancelReason || "").trim();
         if (reason.length < 5) {
-          toast.error("Please add a brief cancellation reason.");
+          setCancelError("Please add a brief cancellation reason.");
           return;
         }
       }
       setUpdating(true);
+      setCancelError("");
       const res = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -323,7 +379,22 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         return;
       }
 
-      toast.success("Order deleted successfully");
+      const deletedId = orderId;
+      toast.warning("Order deleted", {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            const restore = await fetch(`/api/orders/${deletedId}`, { method: "POST" });
+            if (!restore.ok) {
+              const j = await restore.json().catch(async () => ({ error: await restore.text().catch(() => "") }));
+              toast.error(j?.error || "Failed to restore order");
+              return;
+            }
+            toast.success("Order restored");
+            router.push(`/admin/orders/${deletedId}`);
+          },
+        },
+      });
       router.push("/admin/orders");
     } catch (err) {
       console.error(err);
@@ -337,9 +408,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     if (!returningItem) return;
     const qty = Number(returnQuantity);
     if (!Number.isInteger(qty) || qty <= 0) {
-      toast.error("Enter a valid quantity to return.");
+      setReturnQtyError("Enter a valid quantity to return.");
       return;
     }
+    setReturnQtyError("");
     try {
       setReturnSubmitting(true);
       const res = await fetch(`/api/admin/orders/${orderId}/return-item`, {
@@ -378,14 +450,15 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     if (mode === "partial") {
       qty = Number(deliveryQty);
       if (!Number.isInteger(qty) || qty < 0) {
-        toast.error("Enter a valid delivered quantity.");
+        setDeliveryQtyError("Enter a valid delivered quantity.");
         return;
       }
       if (qty > deliveryItem.quantity) {
-        toast.error("Delivered quantity cannot exceed ordered quantity.");
+        setDeliveryQtyError("Delivered quantity cannot exceed ordered quantity.");
         return;
       }
     }
+    setDeliveryQtyError("");
     try {
       setDeliveryItemSubmitting(true);
       const res = await fetch(`/api/admin/orders/${orderId}/item-delivery`, {
@@ -420,7 +493,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   return (
     <Card className="max-w-4xl mx-auto w-full">
       <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <CardTitle className="flex items-center gap-2 min-w-0 max-w-full">
+        <CardTitle className="text-lg font-semibold flex items-center gap-2 min-w-0 max-w-full">
           <Package className="w-5 h-5 text-primary shrink-0" />
           <span className="truncate">
             Order {formatIdReadable(order.id)}
@@ -428,13 +501,29 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         </CardTitle>
 
         <div className="flex flex-wrap gap-2 justify-start sm:justify-end w-full">
-          {["PENDING_PAYMENT", "PAID", "CANCELLED"].map((s) => (
-            <Button
-              key={s}
-              variant={order.status === s ? "default" : "outline"}
-              size="sm"
-              onClick={() => {
-                if (s === "CANCELLED") {
+          <span className="text-[11px] text-muted-foreground self-center">
+            Updated {new Date(order.updatedAt || order.createdAt).toLocaleString()}
+          </span>
+          <span
+            className={`inline-flex items-center px-2 py-1 text-xs rounded-full border ${
+              chipToneClass(orderStatusTone(order.status))
+            }`}
+          >
+            {order.status}
+          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={updating || deleting || order.status === "CANCELLED"}
+              >
+                Actions
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => {
                   const delivery = order.deliveryStatus || "NOT_DELIVERED";
                   if (
                     delivery === "DELIVERED" ||
@@ -446,36 +535,25 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                     return;
                   }
                   setConfirmCancel(true);
-                  return;
-                }
-                updateStatus(s);
-              }}
-              disabled={
-                updating ||
-                deleting ||
-                order.status === s ||
-                order.status === "CANCELLED"
-              }
-            >
-              {updating && order.status !== s ? (
-                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-              ) : null}
-              {s}
-            </Button>
-          ))}
-
+                }}
+                disabled={updating || deleting || order.status === "CANCELLED"}
+              >
+                Cancel order
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleting}
+              >
+                Delete order
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
-            variant="destructive"
+            variant="outline"
             size="sm"
-            disabled={deleting}
-            onClick={() => setConfirmDelete(true)}
+            onClick={() => router.push(`/admin/audit?entityType=ORDER&entityId=${order.id}`)}
           >
-            {deleting ? (
-              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-            ) : (
-              <Trash2 className="w-4 h-4 mr-1" />
-            )}
-            Delete
+            Audit Log
           </Button>
           <Button
             variant="outline"
@@ -538,6 +616,31 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           </div>
         )}
         <div>
+          {timelineEvents.length > 0 ? (
+            <div className="mb-4 rounded-lg border bg-muted/40 p-3">
+              <h3 className="text-sm font-semibold">Activity Timeline</h3>
+              <ul className="mt-2 space-y-2 text-xs">
+                {timelineEvents.map((event, idx) => (
+                  <li key={`${event.time.toISOString()}-${idx}`} className="flex items-start gap-2">
+                    <span className="mt-0.5 h-2 w-2 rounded-full bg-primary/70" />
+                    <div className="flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{event.label}</span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {event.time.toLocaleString()}
+                        </span>
+                      </div>
+                      {event.detail ? (
+                        <div className="text-[11px] text-muted-foreground">
+                          {event.detail}
+                        </div>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <p className="text-sm text-muted-foreground">
             <strong>Status:</strong> {order.status}
           </p>
@@ -587,15 +690,29 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               )}
             </p>
           )}
-          <p className={`text-sm ${balance > 0 ? "text-red-600" : "text-green-700"}`}>
-            <strong>Outstanding Balance:</strong> {formatCurrency(balance)}
-          </p>
+          <div
+            className={`mt-2 rounded-md border px-3 py-2 text-sm font-medium ${
+              balance > 0
+                ? `${chipToneClass("danger")} ${chipToneBorderClass("danger")}`
+                : `${chipToneClass("success")} ${chipToneBorderClass("success")}`
+            }`}
+          >
+            Outstanding Balance: {formatCurrency(balance)}
+          </div>
           <div className="mt-3">
             <h3 className="text-sm font-semibold">Payments Ledger</h3>
             {paymentLedger.length === 0 ? (
-              <p className="text-xs text-muted-foreground mt-1">
-                No payments recorded for this order yet.
-              </p>
+              <div className="text-xs text-muted-foreground mt-1">
+                <p>No payments recorded for this order yet.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button asChild size="sm">
+                    <Link href={`/admin/orders?q=${order.id}`}>Record payment</Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link href="/admin/orders">View all orders</Link>
+                  </Button>
+                </div>
+              </div>
             ) : (
               <div className="mt-2 overflow-x-auto">
                 <table className="min-w-full text-xs whitespace-nowrap">
@@ -626,6 +743,14 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 </table>
               </div>
             )}
+            {paymentLedger.length > 0 ? (
+              <p className="text-xs text-muted-foreground mt-2">
+                Ledger total: {formatCurrency(ledgerTotal)}{" "}
+                {Math.abs(ledgerTotal - amountPaid) < 0.01
+                  ? "— matches Amount Paid"
+                  : `— does not match Amount Paid (${formatCurrency(amountPaid)})`}
+              </p>
+            ) : null}
           </div>
           {returnAdjustment > 0.005 && (
             <p className="text-xs text-muted-foreground mt-1">
@@ -669,19 +794,43 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 <span className="font-medium">Payments received:</span>{" "}
                 {notificationSummary.hasPaymentRecorded
                   ? "At least one payment notification has been sent."
-                  : "No payment notifications detected yet."}
+                  : (
+                    <>
+                      No payment notifications detected yet.{" "}
+                      <Link href="/admin/settings/communications" className="underline">
+                        Check comms settings
+                      </Link>
+                      .
+                    </>
+                  )}
               </li>
               <li>
                 <span className="font-medium">Store credit issued:</span>{" "}
                 {notificationSummary.hasStoreCreditIssued
                   ? "Customer has been notified about store credit on their account."
-                  : "No store-credit notifications detected."}
+                  : (
+                    <>
+                      No store-credit notifications detected.{" "}
+                      <Link href="/admin/settings/communications" className="underline">
+                        Check comms settings
+                      </Link>
+                      .
+                    </>
+                  )}
               </li>
               <li>
                 <span className="font-medium">Store credit refunded:</span>{" "}
                 {notificationSummary.hasStoreCreditRefunded
                   ? "Customer has been notified about a credit refund."
-                  : "No credit-refund notifications detected."}
+                  : (
+                    <>
+                      No credit-refund notifications detected.{" "}
+                      <Link href="/admin/settings/communications" className="underline">
+                        Check comms settings
+                      </Link>
+                      .
+                    </>
+                  )}
               </li>
               <li>
                 <span className="font-medium">Delivery status:</span>{" "}
@@ -689,14 +838,22 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 order.deliveryStatus === "PARTIALLY_DELIVERED" ||
                 order.deliveryStatus === "RETURNED"
                   ? "Customer has been notified about the latest delivery update."
-                  : "No delivery notifications yet (status is Not Delivered)."}
+                  : (
+                    <>
+                      No delivery notifications yet (status is Not Delivered).{" "}
+                      <Link href="/admin/orders" className="underline">
+                        View orders
+                      </Link>
+                      .
+                    </>
+                  )}
               </li>
             </ul>
           </div>
         </div>
 
         <div className="border-t pt-4">
-          <h3 className="font-semibold mb-3">Items</h3>
+          <h3 className="text-sm font-semibold mb-3">Items</h3>
           <div className="grid gap-3">
             {order.items.map((item) => (
               <div
@@ -859,9 +1016,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
-            <DialogTitle>Cancel Order</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Cancel Order</DialogTitle>
           </DialogHeader>
           {order.deliveryStatus === "RETURNED" ? (
             <>
@@ -878,9 +1035,15 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 <label className="text-xs text-muted-foreground">Cancellation reason</label>
                 <Input
                   value={cancelReason}
-                  onChange={(e) => setCancelReason(e.target.value)}
+                  onChange={(e) => {
+                    setCancelReason(e.target.value);
+                    if (cancelError) setCancelError("");
+                  }}
                   placeholder="e.g., duplicate order / customer request"
+                  aria-invalid={!!cancelError}
+                  className={cancelError ? "border-red-500" : ""}
                 />
+                {cancelError && <p className="text-xs text-red-600">{cancelError}</p>}
               </div>
               <DialogFooter>
                 <Button
@@ -927,9 +1090,15 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 <label className="text-xs text-muted-foreground">Cancellation reason</label>
                 <Input
                   value={cancelReason}
-                  onChange={(e) => setCancelReason(e.target.value)}
+                  onChange={(e) => {
+                    setCancelReason(e.target.value);
+                    if (cancelError) setCancelError("");
+                  }}
                   placeholder="e.g., customer request / stock issue"
+                  aria-invalid={!!cancelError}
+                  className={cancelError ? "border-red-500" : ""}
                 />
+                {cancelError && <p className="text-xs text-red-600">{cancelError}</p>}
               </div>
               <DialogFooter>
                 <Button
@@ -959,9 +1128,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         </DialogContent>
       </Dialog>
       <Dialog open={confirmDelete} onOpenChange={(o) => { if (!o) setConfirmDelete(false); }}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
-            <DialogTitle>Delete Order</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Delete Order</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             This will permanently remove the order and its history. Continue?
@@ -994,7 +1163,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       >
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="text-base font-semibold">
               {deliveryMode === "partial"
                 ? "Update item partial delivery"
                 : "Mark item delivered"}
@@ -1017,9 +1186,16 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       min={0}
                       max={deliveryItem.quantity}
                       value={deliveryQty}
-                      onChange={(e) => setDeliveryQty(e.target.value)}
-                      className="w-full border rounded px-2 py-1 text-sm"
+                      onChange={(e) => {
+                        setDeliveryQty(e.target.value);
+                        if (deliveryQtyError) setDeliveryQtyError("");
+                      }}
+                      aria-invalid={!!deliveryQtyError}
+                      className={`w-full border rounded px-2 py-1 text-sm ${deliveryQtyError ? "border-red-500" : ""}`}
                     />
+                    {deliveryQtyError && (
+                      <p className="text-xs text-red-600 mt-1">{deliveryQtyError}</p>
+                    )}
                     <p className="text-[11px] text-muted-foreground mt-1">
                       Ordered: {deliveryItem.quantity}
                     </p>
@@ -1061,9 +1237,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
-            <DialogTitle>Return item</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Return item</DialogTitle>
           </DialogHeader>
           {returningItem && (
             <>
@@ -1087,9 +1263,16 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       )
                     }
                     value={returnQuantity}
-                    onChange={(e) => setReturnQuantity(e.target.value)}
-                    className="w-full border rounded px-2 py-1 text-sm"
+                    onChange={(e) => {
+                      setReturnQuantity(e.target.value);
+                      if (returnQtyError) setReturnQtyError("");
+                    }}
+                    aria-invalid={!!returnQtyError}
+                    className={`w-full border rounded px-2 py-1 text-sm ${returnQtyError ? "border-red-500" : ""}`}
                   />
+                  {returnQtyError && (
+                    <p className="text-xs text-red-600 mt-1">{returnQtyError}</p>
+                  )}
                   <p className="text-[11px] text-muted-foreground mt-1">
                     Available to return (delivered units not yet
                     returned):{" "}

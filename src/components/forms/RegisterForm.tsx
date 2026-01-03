@@ -13,6 +13,7 @@ type CreatedUserState = {
 
 export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) {
   const [err, setErr] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [createdUser, setCreatedUser] = useState<CreatedUserState | null>(null);
   const [otp, setOtp] = useState("");
@@ -22,16 +23,27 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setErr(null);
-    setLoading(true);
+    setFieldErrors({});
 
     const formData = new FormData(e.currentTarget);
     const payload = Object.fromEntries(formData);
     const parsed = registerSchema.safeParse(payload);
     if (!parsed.success) {
-      setErr("Please check your inputs (email or username is required).");
-      setLoading(false);
+      const flattened = parsed.error.flatten().fieldErrors;
+      const nextErrors: Record<string, string> = {};
+      if (flattened.name?.[0]) nextErrors.name = flattened.name[0];
+      if (flattened.email?.[0]) nextErrors.email = flattened.email[0];
+      if (flattened.username?.[0]) nextErrors.username = flattened.username[0];
+      if (flattened.email?.[0] && !String(payload.username || "").trim()) {
+        nextErrors.username = flattened.email[0];
+      }
+      if (flattened.phone?.[0]) nextErrors.phone = flattened.phone[0];
+      if (flattened.password?.[0]) nextErrors.password = flattened.password[0];
+      setFieldErrors(nextErrors);
+      setErr("Please check the highlighted fields.");
       return;
     }
+    setLoading(true);
     try {
       const r = await fetch("/api/users", {
         method: "POST",
@@ -57,6 +69,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
       });
       setOtp("");
       setOtpError(null);
+      setFieldErrors({});
       const form = e.currentTarget;
       form?.reset();
     } catch (error) {
@@ -164,26 +177,68 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
 
   return (
     <form key="register" onSubmit={onSubmit} className="grid gap-3">
-      <Input name="name" placeholder="Full name" required />
-      <Input name="email" type="email" placeholder="Email (optional if using username)" />
-      <Input
-        name="username"
-        placeholder="Username (optional if using email)"
-        autoComplete="username"
-      />
-      <Input
-        name="phone"
-        placeholder="Phone (for WhatsApp/SMS verification)"
-        inputMode="tel"
-        required
-        title="Enter your phone number"
-      />
-      <Input
-        name="password"
-        type="password"
-        placeholder="Password (min 6)"
-        required
-      />
+      <div className="grid gap-1">
+        <Input
+          name="name"
+          placeholder="Full name"
+          required
+          aria-invalid={!!fieldErrors.name}
+          className={fieldErrors.name ? "border-red-500" : undefined}
+        />
+        {fieldErrors.name && <p className="text-xs text-red-600">{fieldErrors.name}</p>}
+      </div>
+      <div className="grid gap-1">
+        <Input
+          name="email"
+          type="email"
+          placeholder="Email (optional if using username)"
+          aria-invalid={!!fieldErrors.email}
+          className={fieldErrors.email ? "border-red-500" : undefined}
+        />
+        {fieldErrors.email && <p className="text-xs text-red-600">{fieldErrors.email}</p>}
+      </div>
+      <div className="grid gap-1">
+        <Input
+          name="username"
+          placeholder="Username (optional if using email)"
+          autoComplete="username"
+          aria-invalid={!!fieldErrors.username}
+          className={fieldErrors.username ? "border-red-500" : undefined}
+          onChange={() => {
+            if (fieldErrors.username) {
+              setFieldErrors((prev) => {
+                const next = { ...prev };
+                delete next.username;
+                return next;
+              });
+            }
+          }}
+        />
+        {fieldErrors.username && <p className="text-xs text-red-600">{fieldErrors.username}</p>}
+      </div>
+      <div className="grid gap-1">
+        <Input
+          name="phone"
+          placeholder="Phone (for WhatsApp/SMS verification)"
+          inputMode="tel"
+          required
+          title="Enter your phone number"
+          aria-invalid={!!fieldErrors.phone}
+          className={fieldErrors.phone ? "border-red-500" : undefined}
+        />
+        {fieldErrors.phone && <p className="text-xs text-red-600">{fieldErrors.phone}</p>}
+      </div>
+      <div className="grid gap-1">
+        <Input
+          name="password"
+          type="password"
+          placeholder="Password (min 6)"
+          required
+          aria-invalid={!!fieldErrors.password}
+          className={fieldErrors.password ? "border-red-500" : undefined}
+        />
+        {fieldErrors.password && <p className="text-xs text-red-600">{fieldErrors.password}</p>}
+      </div>
       <p className="text-xs text-muted-foreground">
         We use your contact details only to manage your account and orders. We do not sell your data.
       </p>

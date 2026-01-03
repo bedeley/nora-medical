@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 
 const KNOWN_FEATURES = [
   {
@@ -52,6 +53,10 @@ export async function POST(req: Request) {
   }
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-feature-flag", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const body = (await req.json().catch(() => ({}))) as {

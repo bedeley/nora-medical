@@ -23,3 +23,14 @@ export function formatIdReadable(id: string | null | undefined, groupSize = 4): 
   }
   return parts.join("-");
 }
+
+export function formatInvoiceNumber(invoice: string | null | undefined): string {
+  if (!invoice) return "";
+  const raw = String(invoice).trim();
+  if (!raw) return "";
+  const match = raw.match(/^inv[-_ ]?/i);
+  const rest = match ? raw.slice(match[0].length) : raw;
+  const formatted = formatIdReadable(rest);
+  if (!formatted) return raw;
+  return formatted;
+}

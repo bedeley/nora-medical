@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
 import {
@@ -160,9 +161,17 @@ export default function SalesTrendChart() {
           <p className="text-muted-foreground text-sm">Loading chart...</p>
         )}
         {data && data.length === 0 && (
-          <p className="text-muted-foreground text-sm">
-            No sales data in this range.
-          </p>
+          <div className="text-muted-foreground text-sm">
+            <p>No sales data in this range.</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => handleRangeChange("30")}>
+                View last 30 days
+              </Button>
+              <Button asChild size="sm" variant="ghost">
+                <Link href="/admin/orders">View orders</Link>
+              </Button>
+            </div>
+          </div>
         )}
         {data && data.length > 0 && (
           <ResponsiveContainer>

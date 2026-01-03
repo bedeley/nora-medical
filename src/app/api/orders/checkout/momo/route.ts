@@ -6,6 +6,7 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo, isValidPhone, normalizePhoneGH } from "@/lib/momo";
 import { notifyOrderEvent, notifyPaymentEvent } from "@/lib/notifications";
+import { computeReceiptHash } from "@/lib/receipt-hash";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { randomUUID } from "crypto";
 
@@ -52,7 +53,16 @@ export async function POST(req: Request) {
     // return the refreshed order with its updated balance after credit.
     const order = await prisma.$transaction(async (tx: TxClient) => {
       const o = await tx.order.create({
-        data: { userId, total, amountPaid: 0, balance: total, status: "UNPAID" },
+        data: {
+          userId,
+          subtotal: total,
+          taxRate: 0,
+          taxAmount: 0,
+          total,
+          amountPaid: 0,
+          balance: total,
+          status: "UNPAID",
+        },
       });
       await tx.orderItem.createMany({
         data: cart.items.map(
@@ -70,6 +80,26 @@ export async function POST(req: Request) {
         await tx.inventoryMovement.create({ data: { productId: ci.productId, delta: -ci.quantity, reason: "SALE" } });
       }
       await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+
+      const invoiceNumber = `INV-${o.id}`;
+      const receiptHash = computeReceiptHash({
+        orderId: o.id,
+        invoiceNumber,
+        subtotal: total,
+        taxRate: 0,
+        taxAmount: 0,
+        total,
+        createdAt: o.createdAt.toISOString(),
+        items: cart.items.map((ci: { productId: string; quantity: number; product: { price: unknown } }) => ({
+          productId: ci.productId,
+          quantity: ci.quantity,
+          price: Number(ci.product.price),
+        })),
+      });
+      await tx.order.update({
+        where: { id: o.id },
+        data: { invoiceNumber, receiptHash },
+      });
 
       // Auto-apply store credit across open orders (oldest first), mirroring
       // the logic in /api/orders POST so behaviour is consistent regardless of
@@ -285,7 +315,12 @@ export async function POST(req: Request) {
       description: `Order ${order.id}`,
     });
     if (!init.ok) {
-      try { await prisma.payment.delete({ where: { id: payment.id } }); } catch {}
+      try {
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: { deletedAt: new Date() },
+        });
+      } catch {}
       return NextResponse.json({ error: init.error || "MoMo failed", orderId: order.id }, { status: 502 });
     }
 

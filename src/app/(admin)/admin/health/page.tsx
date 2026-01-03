@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/currency";
 import { Tooltip } from "@/components/ui/tooltip";
+import Link from "next/link";
 import { Info } from "lucide-react";
 import { BackfillAutoApplyButton, FixActionsMenu } from "@/components/admin/CopySqlButton";
 import ReconcileOrdersButton from "@/components/admin/ReconcileOrdersButton";
@@ -33,14 +34,14 @@ export default async function AdminHealthPage() {
   const user = session?.user as AuthenticatedUser | undefined;
   if (!session || user?.role !== "ADMIN") {
     return (
-      <div className="p-6">
+      <section className="container mx-auto py-8">
         <p className="text-sm text-muted-foreground">Unauthorized.</p>
-      </div>
+      </section>
     );
   }
 
   const products = await prisma.product.findMany({
-    select: { id: true, name: true, stock: true, cost: true, archived: true },
+    select: { id: true, name: true, stock: true, cost: true, archived: true, deletedAt: true },
     orderBy: { name: "asc" },
   });
   const movements = await prisma.inventoryMovement.groupBy({
@@ -57,8 +58,14 @@ export default async function AdminHealthPage() {
       stock: num(p.stock),
       movementSum: movementMap.get(p.id) ?? 0,
       archived: p.archived,
+      deletedAt: p.deletedAt,
     }))
-    .filter((p) => p.stock !== p.movementSum);
+    .filter((p) => {
+      if (p.deletedAt) {
+        return p.stock !== 0 || p.movementSum !== 0;
+      }
+      return p.stock !== p.movementSum;
+    });
 
   const orders = await prisma.order.findMany({
     select: { id: true, total: true, amountPaid: true, balance: true, status: true },
@@ -247,7 +254,7 @@ export default async function AdminHealthPage() {
   const accrualNetProfit = accrualGrossProfit - totalExpenses;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="container mx-auto py-8 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Health Check</h1>
         <p className="text-sm text-muted-foreground">
@@ -269,25 +276,25 @@ export default async function AdminHealthPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">In-stock products</CardTitle>
+              <CardTitle className="text-sm font-semibold">In-stock products</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{inStock.length}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Stock mismatches</CardTitle>
+              <CardTitle className="text-sm font-semibold">Stock mismatches</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{stockMismatches.length}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Balance mismatches</CardTitle>
+              <CardTitle className="text-sm font-semibold">Balance mismatches</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{orderBalanceIssues.length}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Payment mismatches</CardTitle>
+              <CardTitle className="text-sm font-semibold">Payment mismatches</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{paymentMismatches.length}</CardContent>
           </Card>
@@ -308,19 +315,19 @@ export default async function AdminHealthPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Order value (active)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Order value (active)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalOrderValue)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Paid (active)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Paid (active)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalPaid)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Outstanding balance</CardTitle>
+              <CardTitle className="text-sm font-semibold">Outstanding balance</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalBalance)}</CardContent>
           </Card>
@@ -341,31 +348,31 @@ export default async function AdminHealthPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Revenue (cash)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Revenue (cash)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(paymentsTotal)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">COGS (net)</CardTitle>
+              <CardTitle className="text-sm font-semibold">COGS (net)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(cogsTotal)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Expenses</CardTitle>
+              <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalExpenses)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Gross profit (cash)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Gross profit (cash)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(grossProfit)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Net profit (cash)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Net profit (cash)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(netProfit)}</CardContent>
           </Card>
@@ -386,31 +393,31 @@ export default async function AdminHealthPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Revenue (accrual)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Revenue (accrual)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalOrderValue)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">COGS (net)</CardTitle>
+              <CardTitle className="text-sm font-semibold">COGS (net)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(cogsTotal)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Expenses</CardTitle>
+              <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(totalExpenses)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Gross profit (accrual)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Gross profit (accrual)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(accrualGrossProfit)}</CardContent>
           </Card>
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Net profit (accrual)</CardTitle>
+              <CardTitle className="text-sm font-semibold">Net profit (accrual)</CardTitle>
             </CardHeader>
             <CardContent className="text-2xl font-semibold">{formatCurrency(accrualNetProfit)}</CardContent>
           </Card>
@@ -419,7 +426,7 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>In-stock products</CardTitle>
+          <CardTitle className="text-base font-semibold">In-stock products</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -443,7 +450,23 @@ export default async function AdminHealthPage() {
               {inStock.length === 0 && (
                 <tr>
                   <td colSpan={4} className="py-4 text-center text-muted-foreground">
-                    No products currently in stock.
+                    <div className="text-sm text-muted-foreground">
+                      <p>No products currently in stock.</p>
+                      <div className="mt-2 flex flex-wrap justify-center gap-2">
+                        <Link
+                          href="/admin/purchases"
+                          className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                        >
+                          Add purchase
+                        </Link>
+                        <Link
+                          href="/admin/products"
+                          className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                        >
+                          View products
+                        </Link>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               )}
@@ -454,11 +477,27 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Stock vs movement mismatches</CardTitle>
+          <CardTitle className="text-base font-semibold">Stock vs movement mismatches</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {stockMismatches.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No mismatches found.</p>
+            <div className="text-sm text-muted-foreground">
+              <p>No mismatches found.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href="/admin/movements"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View movements
+                </Link>
+                <Link
+                  href="/admin/inventory"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View inventory
+                </Link>
+              </div>
+            </div>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="text-muted-foreground">
@@ -471,11 +510,16 @@ export default async function AdminHealthPage() {
               </thead>
               <tbody>
                 {stockMismatches.map((p) => (
-                  <tr key={p.id} className="border-t">
+                  <tr
+                    key={p.id}
+                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
+                  >
                     <td className="py-2">{p.name}</td>
-                    <td className="py-2 text-right">{p.stock}</td>
-                    <td className="py-2 text-right">{p.movementSum}</td>
-                    <td className="py-2 text-right">{p.archived ? "Yes" : "No"}</td>
+                    <td className="py-2 text-right font-semibold">{p.stock}</td>
+                    <td className="py-2 text-right font-semibold">{p.movementSum}</td>
+                    <td className="py-2 text-right">
+                      {p.archived ? "Yes" : "No"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -486,11 +530,21 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Order balance mismatches</CardTitle>
+          <CardTitle className="text-base font-semibold">Order balance mismatches</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {orderBalanceIssues.length === 0 ? (
-            <p className="text-sm text-muted-foreground">All orders balance correctly.</p>
+            <div className="text-sm text-muted-foreground">
+              <p>All orders balance correctly.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href="/admin/orders"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View orders
+                </Link>
+              </div>
+            </div>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="text-muted-foreground">
@@ -504,12 +558,15 @@ export default async function AdminHealthPage() {
               </thead>
               <tbody>
                 {orderBalanceIssues.map((o) => (
-                  <tr key={o.id} className="border-t">
+                  <tr
+                    key={o.id}
+                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
+                  >
                     <td className="py-2">{o.id}</td>
-                    <td className="py-2 text-right">{formatCurrency(o.total)}</td>
-                    <td className="py-2 text-right">{formatCurrency(o.paid)}</td>
-                    <td className="py-2 text-right">{formatCurrency(o.balance)}</td>
-                    <td className="py-2 text-right">{formatCurrency(o.expected)}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(o.total)}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(o.paid)}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(o.balance)}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(o.expected)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -520,12 +577,28 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>Order payments mismatches</CardTitle>
+          <CardTitle className="text-base font-semibold">Order payments mismatches</CardTitle>
           <ReconcileOrdersButton orderIds={paymentMismatches.map((o) => o.id)} />
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {paymentMismatches.length === 0 ? (
-            <p className="text-sm text-muted-foreground">All orders match payment totals.</p>
+            <div className="text-sm text-muted-foreground">
+              <p>All orders match payment totals.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href="/admin/orders"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View orders
+                </Link>
+                <Link
+                  href="/admin/payments/momo"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View payments
+                </Link>
+              </div>
+            </div>
           ) : (
             <table className="min-w-full text-sm whitespace-nowrap">
               <thead className="text-muted-foreground">
@@ -540,11 +613,14 @@ export default async function AdminHealthPage() {
               </thead>
               <tbody>
                 {paymentMismatches.map((o) => (
-                  <tr key={o.id} className="border-t">
+                  <tr
+                    key={o.id}
+                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
+                  >
                     <td className="py-2 pr-4">{o.id}</td>
-                    <td className="py-2 pr-4 text-right">{formatCurrency(o.paid)}</td>
-                    <td className="py-2 pr-4 text-right">{formatCurrency(o.paidFromPayments)}</td>
-                    <td className="py-2 pr-4 text-right">
+                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(o.paid)}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(o.paidFromPayments)}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">
                       {formatCurrency(o.delta)}
                     </td>
                     <td className="py-2 pr-4">{o.likelyCause}</td>
@@ -559,11 +635,21 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Payments for mismatched orders</CardTitle>
+          <CardTitle className="text-base font-semibold">Payments for mismatched orders</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {mismatchPaymentsView.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No payment rows found.</p>
+            <div className="text-sm text-muted-foreground">
+              <p>No payment rows found.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href="/admin/payments/momo"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View payments
+                </Link>
+              </div>
+            </div>
           ) : (
             <table className="min-w-full text-sm whitespace-nowrap">
               <thead className="text-muted-foreground">
@@ -580,14 +666,17 @@ export default async function AdminHealthPage() {
               </thead>
               <tbody>
                 {mismatchPaymentsView.map((p) => (
-                  <tr key={p.id} className="border-t">
+                  <tr
+                    key={p.id}
+                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
+                  >
                     <td className="py-2 pr-4">{p.orderId}</td>
                     <td className="py-2 pr-4">{p.id}</td>
-                    <td className="py-2 pr-4 text-right">{formatCurrency(num(p.amount))}</td>
+                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(num(p.amount))}</td>
                     <td className="py-2 pr-4 text-right">{p.status}</td>
                     <td className="py-2 pr-4">{p.meta?.method ?? "-"}</td>
                     <td className="py-2 pr-4">{p.meta?.provider ?? "-"}</td>
-                    <td className="py-2 pr-4 text-right">
+                    <td className="py-2 pr-4 text-right font-semibold">
                       {p.appliedTotal == null ? "-" : formatCurrency(p.appliedTotal)}
                     </td>
                     <td className="py-2 pr-4 text-right">{p.createdAt.toLocaleString()}</td>
@@ -602,7 +691,7 @@ export default async function AdminHealthPage() {
       {paymentMismatches.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Mismatch diagnostics</CardTitle>
+            <CardTitle className="text-base font-semibold">Mismatch diagnostics</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             {paymentMismatches.map((o) => {
@@ -642,7 +731,12 @@ export default async function AdminHealthPage() {
                       <p>Rows: {linked.length}</p>
                       <p>Total: {formatCurrency(linkedTotal)}</p>
                       {linked.length === 0 && (
-                        <p className="text-muted-foreground">No linked payments.</p>
+                        <p className="text-muted-foreground">
+                          No linked payments.{" "}
+                          <Link href="/admin/payments/momo" className="underline">
+                            View payments
+                          </Link>
+                        </p>
                       )}
                     </div>
                     <div>
@@ -653,7 +747,10 @@ export default async function AdminHealthPage() {
                       <p>Applied: {formatCurrency(appliedTotal)}</p>
                       {noteLinked.length === 0 && (
                         <p className="text-muted-foreground">
-                          No payment notes reference this order.
+                          No payment notes reference this order.{" "}
+                          <Link href="/admin/payments/momo" className="underline">
+                            View payments
+                          </Link>
                         </p>
                       )}
                     </div>
@@ -668,7 +765,7 @@ export default async function AdminHealthPage() {
       {unlinkedAppliedPayments.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Unlinked applied payments</CardTitle>
+            <CardTitle className="text-base font-semibold">Unlinked applied payments</CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <table className="min-w-full text-sm whitespace-nowrap">
@@ -712,7 +809,7 @@ export default async function AdminHealthPage() {
       {legacyAutoApplyView.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Legacy AUTO_APPLY payments</CardTitle>
+          <CardTitle className="text-base font-semibold">Legacy AUTO_APPLY payments</CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <table className="min-w-full text-sm whitespace-nowrap">
@@ -755,7 +852,7 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Payment status totals</CardTitle>
+          <CardTitle className="text-base font-semibold">Payment status totals</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -789,7 +886,7 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>COGS coverage</CardTitle>
+          <CardTitle className="text-base font-semibold">COGS coverage</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {cogsMissing === 0 ? (
@@ -806,11 +903,21 @@ export default async function AdminHealthPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Negative stock</CardTitle>
+          <CardTitle className="text-base font-semibold">Negative stock</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {negativeStock.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No products with negative stock.</p>
+            <div className="text-sm text-muted-foreground">
+              <p>No products with negative stock.</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link
+                  href="/admin/inventory"
+                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+                >
+                  View inventory
+                </Link>
+              </div>
+            </div>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="text-muted-foreground">

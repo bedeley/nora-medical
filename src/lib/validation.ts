@@ -59,4 +59,12 @@ export const paymentSchema = z.object({
 }).refine(
   (data) => data.status !== "refund" || !!data.refundDisposition,
   { message: "Select how to handle the refund", path: ["refundDisposition"] }
+).refine(
+  (data) => {
+    const status = (data.status || "").toLowerCase();
+    if (status !== "refund" && status !== "void") return true;
+    const note = String(data.note || "").trim();
+    return note.length >= 5;
+  },
+  { message: "Please provide a brief reason for refunds/voids.", path: ["note"] },
 );

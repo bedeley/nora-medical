@@ -70,10 +70,16 @@ export default function FeatureSettingsPage() {
   const rows = data?.features || [];
 
   return (
-    <div className="container mx-auto py-8 max-w-2xl space-y-4">
-      <Card>
+    <div className="container mx-auto py-8 max-w-2xl space-y-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold">Feature Toggles</h1>
+        <p className="text-sm text-muted-foreground">
+          Enable or pause features without redeploying.
+        </p>
+      </header>
+      <Card className="shadow-sm">
         <CardHeader>
-          <CardTitle>Feature Toggles</CardTitle>
+          <CardTitle className="text-sm font-medium">Configuration</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <p className="text-xs text-muted-foreground">
@@ -82,9 +88,16 @@ export default function FeatureSettingsPage() {
             redeploying.
           </p>
           {rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {loading ? "Loading features…" : "No configurable features found."}
-            </p>
+            <div className="text-sm text-muted-foreground">
+              <p>{loading ? "Loading features…" : "No configurable features found."}</p>
+              {!loading && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={load}>
+                    Refresh
+                  </Button>
+                </div>
+              )}
+            </div>
           ) : (
             <div className="grid gap-3">
               {rows.map((row) => {
@@ -134,4 +147,3 @@ export default function FeatureSettingsPage() {
     </div>
   );
 }
-

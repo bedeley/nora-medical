@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -20,7 +21,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { formatCurrency } from "@/lib/currency";
+import { chipToneBorderClass, chipToneClass } from "@/lib/status-chips";
 import { toast } from "sonner";
+import { Tooltip } from "@/components/ui/tooltip";
 import Link from "next/link";
 // framer-motion removed to avoid layout jitter on /cart
 import { ADMIN_PHONE } from "@/lib/config";
@@ -32,6 +35,12 @@ import {
   removeGuestCartItem,
   type GuestCartItem,
 } from "@/lib/guest-cart";
+import {
+  addSavedCartItem,
+  getSavedCart,
+  removeSavedCartItem,
+  type SavedCartItem as GuestSavedItem,
+} from "@/lib/saved-cart";
 
 type CartItem = {
   id: string;
@@ -79,6 +88,7 @@ export default function CartPage() {
   const [momoPhone, setMomoPhone] = useState("");
   const [momoAmount, setMomoAmount] = useState("");
   const [momoProcessing, setMomoProcessing] = useState(false);
+  const [momoError, setMomoError] = useState("");
   const [confirmPlaceOrderOpen, setConfirmPlaceOrderOpen] = useState(false);
   const [confirmMomoOpen, setConfirmMomoOpen] = useState(false);
   const qtyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
@@ -122,11 +132,71 @@ export default function CartPage() {
     [guestRaw],
   );
 
+  // Automatically merge guest cart into server cart once user signs in
+  const [mergeAttempted, setMergeAttempted] = useState(false);
+  useEffect(() => {
+    if (!session) return;
+    if (!guestRaw.length) return;
+    if (mergeAttempted) return;
+    setMergeAttempted(true);
+
+    const doMerge = async () => {
+      try {
+        for (const item of guestRaw) {
+          const res = await fetch("/api/cart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              productId: item.productId,
+              quantity: item.quantity,
+            }),
+          });
+          if (!res.ok) {
+            // If any item fails, log and continue with others
+            console.error("Failed to merge guest cart item", item.productId);
+          }
+        }
+        clearGuestCart();
+        queryClient.invalidateQueries({ queryKey: ["cart"] });
+        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      } catch (e) {
+        console.error("Failed to merge guest cart", e);
+      }
+    };
+
+    void doMerge();
+  }, [session, guestRaw, mergeAttempted, queryClient]);
+
+  const isSignedIn = Boolean(session);
+
+  const { data: savedServerData } = useQuery({
+    queryKey: ["saved-cart"],
+    queryFn: () => fetch("/api/cart/saved").then((r) => r.json()),
+    enabled: isSignedIn,
+    refetchOnWindowFocus: false,
+  });
+
+  const { data: guestSavedRaw = [] } = useQuery<GuestSavedItem[]>({
+    queryKey: ["guest-saved-cart"],
+    queryFn: async () => getSavedCart(),
+    enabled: !isSignedIn,
+    refetchOnWindowFocus: false,
+  });
+
+  const guestSavedIds = useMemo(
+    () => guestSavedRaw.map((it) => it.productId),
+    [guestSavedRaw],
+  );
+  const allGuestProductIds = useMemo(
+    () => Array.from(new Set([...guestProductIds, ...guestSavedIds])),
+    [guestProductIds, guestSavedIds],
+  );
+
   const { data: guestProductsData } = useQuery({
-    queryKey: ["guest-cart-products", guestProductIds.join(",")],
-    enabled: guestProductIds.length > 0,
+    queryKey: ["guest-cart-products", allGuestProductIds.join(",")],
+    enabled: allGuestProductIds.length > 0,
     queryFn: async () => {
-      const ids = guestProductIds.join(",");
+      const ids = allGuestProductIds.join(",");
       if (!ids) {
         return {
           items: [] as Array<{
@@ -181,44 +251,43 @@ export default function CartPage() {
       .filter((it): it is CartItem => Boolean(it));
   }, [guestRaw, guestProductsData]);
 
-  // Automatically merge guest cart into server cart once user signs in
-  const [mergeAttempted, setMergeAttempted] = useState(false);
-  useEffect(() => {
-    if (!session) return;
-    if (!guestRaw.length) return;
-    if (mergeAttempted) return;
-    setMergeAttempted(true);
-
-    const doMerge = async () => {
-      try {
-        for (const item of guestRaw) {
-          const res = await fetch("/api/cart", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              productId: item.productId,
-              quantity: item.quantity,
-            }),
-          });
-          if (!res.ok) {
-            // If any item fails, log and continue with others
-            console.error("Failed to merge guest cart item", item.productId);
-          }
-        }
-        clearGuestCart();
-        queryClient.invalidateQueries({ queryKey: ["cart"] });
-        queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
-      } catch (e) {
-        console.error("Failed to merge guest cart", e);
-      }
-    };
-
-    void doMerge();
-  }, [session, guestRaw, mergeAttempted, queryClient]);
-
-  const isSignedIn = Boolean(session);
   const items: CartItem[] = isSignedIn ? serverItems : guestItems;
   const itemsSorted = items;
+
+  const savedItems: CartItem[] = useMemo(() => {
+    if (isSignedIn) {
+      const raw = (savedServerData?.items || []) as CartItem[];
+      return raw.map((it) => ({
+        ...it,
+        quantity: Number(it.quantity) || 1,
+      }));
+    }
+    if (!guestSavedRaw.length) return [];
+    const guestProducts = guestProductsData?.items ?? [];
+    const map = new Map(
+      guestProducts.map((p) => [
+        p.id,
+        {
+          id: String(p.id),
+          name: String(p.name),
+          imageUrl: p.imageUrl,
+          price: p.price,
+        },
+      ]),
+    );
+    return guestSavedRaw
+      .map((g) => {
+        const p = map.get(g.productId);
+        if (!p) return null;
+        return {
+          id: g.productId,
+          quantity: g.quantity,
+          updatedAt: g.updatedAt,
+          product: p,
+        } as CartItem;
+      })
+      .filter((it): it is CartItem => Boolean(it));
+  }, [isSignedIn, savedServerData, guestSavedRaw, guestProductsData]);
 
   const subtotal = items.reduce(
     (s, it) => s + Number(it.product.price) * it.quantity,
@@ -298,9 +367,10 @@ export default function CartPage() {
 
       const candidatePhone = momoPhone || me?.phone || "";
       if (!isValidPhone(candidatePhone)) {
-        toast.error("Invalid phone number");
+        setMomoError("Enter a valid phone number.");
         return;
       }
+      setMomoError("");
       const phone = normalizePhone(candidatePhone);
       // New single-call checkout endpoint that only creates the order
       const amountCandidate = (() => {
@@ -436,6 +506,44 @@ export default function CartPage() {
     }
   }
 
+  async function saveForLater(item: CartItem) {
+    if (isSignedIn) {
+      await fetch("/api/cart/saved", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: item.product.id, quantity: item.quantity }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["saved-cart"] });
+    } else {
+      addSavedCartItem(item.product.id, item.quantity);
+      queryClient.invalidateQueries({ queryKey: ["guest-saved-cart"] });
+    }
+    void removeItem(item.id, item.product.id, item.product.name, item.quantity);
+  }
+
+  async function moveToCart(item: CartItem) {
+    if (!isSignedIn) {
+      updateGuestCartItem(item.product.id, item.quantity);
+      queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+      removeSavedCartItem(item.product.id);
+      queryClient.invalidateQueries({ queryKey: ["guest-saved-cart"] });
+    } else {
+      await fetch("/api/cart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: item.product.id, quantity: item.quantity }),
+      });
+      await fetch("/api/cart/saved", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId: item.product.id }),
+      });
+      queryClient.invalidateQueries({ queryKey: ["cart"] });
+      queryClient.invalidateQueries({ queryKey: ["saved-cart"] });
+    }
+    toast.success(`${item.product.name} moved back to cart`);
+  }
+
   async function updateQty(id: string, quantity: number, productId?: string) {
     if (!Number.isFinite(quantity) || quantity < 1) return;
     try {
@@ -492,6 +600,11 @@ export default function CartPage() {
   async function clearCart() {
     try {
       setClearing(true);
+      const snapshot = items.map((it) => ({
+        productId: it.product.id,
+        quantity: it.quantity,
+        name: it.product.name,
+      }));
       if (!isSignedIn) {
         clearGuestCart();
         queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
@@ -509,7 +622,28 @@ export default function CartPage() {
       }
       setTempQty({});
       setUpdatingIds(new Set());
-      toast.info("Cart cleared");
+      toast.warning("Cart cleared", {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            if (!snapshot.length) return;
+            if (!isSignedIn) {
+              snapshot.forEach((it) => updateGuestCartItem(it.productId, it.quantity));
+              queryClient.invalidateQueries({ queryKey: ["guest-cart"] });
+            } else {
+              for (const it of snapshot) {
+                await fetch("/api/cart", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ productId: it.productId, quantity: it.quantity }),
+                });
+              }
+              queryClient.invalidateQueries({ queryKey: ["cart"] });
+            }
+            toast.success("Cart restored");
+          },
+        },
+      });
     } finally {
       setClearing(false);
     }
@@ -535,18 +669,23 @@ export default function CartPage() {
     );
 
   return (
-    <section className="grid gap-6">
-      <header className="flex justify-between items-center">
-        <h1 className="text-2xl font-semibold">Your Cart</h1>
+    <section className="container mx-auto py-8 grid gap-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold">Your Cart</h1>
+          <Link href="/products" className="text-sm text-muted-foreground hover:underline">
+            Continue shopping
+          </Link>
+        </div>
 
         {/* ✅ Clear Cart confirmation dialog */}
         <Dialog>
           <DialogTrigger asChild>
-            <Button variant="destructive" size="sm" disabled={clearing}>
-              Clear Cart
+            <Button variant="ghost" size="sm" disabled={clearing} className="text-red-600 hover:text-red-700">
+              Clear cart
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
             <DialogHeader>
               <DialogTitle>Clear all items?</DialogTitle>
             </DialogHeader>
@@ -573,8 +712,10 @@ export default function CartPage() {
         </Dialog>
       </header>
 
-      {/* Mobile: stacked card layout to avoid horizontal scrolling */}
-      <div className="grid gap-3 md:hidden">
+      <div className="grid gap-6 lg:grid-cols-[1.6fr_0.9fr] items-start">
+        <div className="grid gap-4">
+          {/* Mobile: stacked card layout to avoid horizontal scrolling */}
+          <div className="grid gap-3 md:hidden">
         {itemsSorted.map((it) => (
           <div key={it.id} className="flex gap-3 border-t pt-3 first:border-t-0">
             <Image
@@ -596,16 +737,32 @@ export default function CartPage() {
                   {formatCurrency(Number(it.product.price))} each
                 </div>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">Qty</span>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-muted-foreground">Qty</span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => {
+                      const next = Math.max(1, it.quantity - 1);
+                      if (next !== it.quantity) {
+                        setTempQty((prev) => ({ ...prev, [it.id]: String(next) }));
+                        scheduleQtyUpdate(it.id, next, it.product.id);
+                      }
+                    }}
+                    disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
+                    aria-label="Decrease quantity"
+                  >
+                    -
+                  </Button>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Input
                         type="text"
                         inputMode="numeric"
                         pattern="[0-9]*"
-                        className="w-20 cursor-pointer"
+                        className="w-16 cursor-pointer text-center"
                         value={tempQty[it.id] ?? String(it.quantity)}
                         onFocus={(e) => {
                           try {
@@ -700,12 +857,39 @@ export default function CartPage() {
                       ))}
                     </DropdownMenuContent>
                   </DropdownMenu>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => {
+                      const next = Math.min(100, it.quantity + 1);
+                      if (next !== it.quantity) {
+                        setTempQty((prev) => ({ ...prev, [it.id]: String(next) }));
+                        scheduleQtyUpdate(it.id, next, it.product.id);
+                      }
+                    }}
+                    disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
+                    aria-label="Increase quantity"
+                  >
+                    +
+                  </Button>
                 </div>
-                <div className="text-sm font-semibold">
+                <div className="text-sm font-semibold whitespace-nowrap">
                   {formatCurrency(Number(it.product.price) * it.quantity)}
                 </div>
               </div>
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Tooltip content="Save for later">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground"
+                    onClick={() => void saveForLater(it)}
+                    disabled={removingIds.has(it.id)}
+                  >
+                    Save for later
+                  </Button>
+                </Tooltip>
                 <Dialog>
                   <DialogTrigger asChild>
                     <Button
@@ -716,7 +900,7 @@ export default function CartPage() {
                       Remove
                     </Button>
                   </DialogTrigger>
-                  <DialogContent>
+                  <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
                     <DialogHeader>
                       <DialogTitle>Remove item?</DialogTitle>
                     </DialogHeader>
@@ -751,11 +935,11 @@ export default function CartPage() {
             </div>
           </div>
         ))}
-      </div>
+          </div>
 
-      {/* Desktop: tabular layout */}
-      <div className="hidden md:block overflow-x-auto">
-        <table className="w-full text-sm border-collapse">
+          {/* Desktop: tabular layout */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="text-left border-b">
               <th>Item</th>
@@ -788,88 +972,133 @@ export default function CartPage() {
                   </td>
                   <td>{formatCurrency(Number(it.product.price))}</td>
                   <td>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          className="w-20 cursor-pointer"
-                          value={tempQty[it.id] ?? String(it.quantity)}
-                          onFocus={(e) => {
-                            try { (e.target as HTMLInputElement).select(); } catch {}
-                            setTempQty((prev) => ({ ...prev, [it.id]: String(it.quantity) }));
-                          }}
-                          onClick={(e) => {
-                            // Select on click as well
-                            try { (e.target as HTMLInputElement).select(); } catch {}
-                          }}
-                          onChange={(e) => {
-                            const raw = e.target.value || "";
-                            let digits = raw.replace(/\D+/g, "").slice(0, 3); // max 3 chars
-                            if (digits) {
-                              const capped = Math.min(100, Number(digits));
-                              digits = String(capped);
-                            }
-                            setTempQty((prev) => ({ ...prev, [it.id]: digits }));
-                            const next = Number(digits);
-                            if (digits && Number.isFinite(next) && next >= 1 && next <= 100) {
-                              scheduleQtyUpdate(it.id, next, it.product.id);
-                            }
-                          }}
-                          onBlur={async () => {
-                            const cur = tempQty[it.id];
-                            if (cur) {
-                              const existing = qtyTimers.current[it.id];
-                              if (existing) { try { clearTimeout(existing); } catch {} }
-                              const v = Math.min(100, Math.max(1, Number(cur)));
-                              await updateQty(it.id, v, it.product.id);
-                              queryClient.invalidateQueries({ queryKey: ["cart"] });
-                            }
-                            setTempQty((prev) => {
-                              const n = { ...prev };
-                              delete n[it.id];
-                              return n;
-                            });
-                          }}
-                          disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
-                        />
-                      </DropdownMenuTrigger>
-                       <DropdownMenuContent align="start" side="bottom" className="max-h-60 overflow-y-auto">
-                        {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
-                          <DropdownMenuItem
-                            key={n}
-                            onClick={async () => {
-                              setTempQty((prev) => ({ ...prev, [it.id]: String(n) }));
-                              const existing = qtyTimers.current[it.id];
-                              if (existing) { try { clearTimeout(existing); } catch {} }
-                              await updateQty(it.id, n, it.product.id);
-                              queryClient.invalidateQueries({ queryKey: ["cart"] });
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => {
+                          const next = Math.max(1, it.quantity - 1);
+                          if (next !== it.quantity) {
+                            setTempQty((prev) => ({ ...prev, [it.id]: String(next) }));
+                            scheduleQtyUpdate(it.id, next, it.product.id);
+                          }
+                        }}
+                        disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
+                        aria-label="Decrease quantity"
+                      >
+                        -
+                      </Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            className="w-20 cursor-pointer"
+                            value={tempQty[it.id] ?? String(it.quantity)}
+                            onFocus={(e) => {
+                              try { (e.target as HTMLInputElement).select(); } catch {}
+                              setTempQty((prev) => ({ ...prev, [it.id]: String(it.quantity) }));
+                            }}
+                            onClick={(e) => {
+                              // Select on click as well
+                              try { (e.target as HTMLInputElement).select(); } catch {}
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value || "";
+                              let digits = raw.replace(/\D+/g, "").slice(0, 3); // max 3 chars
+                              if (digits) {
+                                const capped = Math.min(100, Number(digits));
+                                digits = String(capped);
+                              }
+                              setTempQty((prev) => ({ ...prev, [it.id]: digits }));
+                              const next = Number(digits);
+                              if (digits && Number.isFinite(next) && next >= 1 && next <= 100) {
+                                scheduleQtyUpdate(it.id, next, it.product.id);
+                              }
+                            }}
+                            onBlur={async () => {
+                              const cur = tempQty[it.id];
+                              if (cur) {
+                                const existing = qtyTimers.current[it.id];
+                                if (existing) { try { clearTimeout(existing); } catch {} }
+                                const v = Math.min(100, Math.max(1, Number(cur)));
+                                await updateQty(it.id, v, it.product.id);
+                                queryClient.invalidateQueries({ queryKey: ["cart"] });
+                              }
                               setTempQty((prev) => {
-                                const x = { ...prev };
-                                delete x[it.id];
-                                return x;
+                                const n = { ...prev };
+                                delete n[it.id];
+                                return n;
                               });
                             }}
-                          >
-                            {n}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                            disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
+                          />
+                        </DropdownMenuTrigger>
+                         <DropdownMenuContent align="start" side="bottom" className="max-h-60 overflow-y-auto">
+                          {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                            <DropdownMenuItem
+                              key={n}
+                              onClick={async () => {
+                                setTempQty((prev) => ({ ...prev, [it.id]: String(n) }));
+                                const existing = qtyTimers.current[it.id];
+                                if (existing) { try { clearTimeout(existing); } catch {} }
+                                await updateQty(it.id, n, it.product.id);
+                                queryClient.invalidateQueries({ queryKey: ["cart"] });
+                                setTempQty((prev) => {
+                                  const x = { ...prev };
+                                  delete x[it.id];
+                                  return x;
+                                });
+                              }}
+                            >
+                              {n}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => {
+                          const next = Math.min(100, it.quantity + 1);
+                          if (next !== it.quantity) {
+                            setTempQty((prev) => ({ ...prev, [it.id]: String(next) }));
+                            scheduleQtyUpdate(it.id, next, it.product.id);
+                          }
+                        }}
+                        disabled={updatingIds.has(it.id) || removingIds.has(it.id)}
+                        aria-label="Increase quantity"
+                      >
+                        +
+                      </Button>
+                    </div>
                   </td>
                   <td className="font-semibold">
                     {formatCurrency(Number(it.product.price) * it.quantity)}
                   </td>
                   <td>
                     <div className="flex items-center gap-2">
+                      <Tooltip content="Save for later">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground"
+                          onClick={() => void saveForLater(it)}
+                          disabled={removingIds.has(it.id)}
+                        >
+                          Save
+                        </Button>
+                      </Tooltip>
                       <Dialog>
                         <DialogTrigger asChild>
                           <Button variant="destructive" size="sm" disabled={removingIds.has(it.id)}>
                             Remove
                           </Button>
                         </DialogTrigger>
-                        <DialogContent>
+                        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
                           <DialogHeader>
                             <DialogTitle>Remove item?</DialogTitle>
                           </DialogHeader>
@@ -904,40 +1133,61 @@ export default function CartPage() {
                 </tr>
               ))}
           </tbody>
-        </table>
-      </div>
+            </table>
+          </div>
+        </div>
 
-      <div className="flex justify-end text-sm">
-        <div className="min-w-[280px] grid gap-1">
-          <div className="flex justify-between">
-            <span>Items</span>
-            <span>{items.length}</span>
-          </div>
-          <div className="flex justify-between font-semibold">
-            <span>Total</span>
-            <span>{formatCurrency(subtotal)}</span>
-          </div>
-          <div className="mt-3 grid gap-2">
-            {!isSignedIn && items.length > 0 && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                You can add items as a guest, but you need to{" "}
-                <Link href="/login" className="underline font-medium">
-                  sign in or create an account
-                </Link>{" "}
-                to place your order.
-              </p>
-            )}
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-muted-foreground">
-                Call <strong>{ADMIN_PHONE}</strong> to arrange payment or pay now with MoMo.
-              </p>
+        <aside className="lg:sticky lg:top-24 h-fit">
+          <Card className="shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">Order summary</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3 text-sm">
+              <div className="flex justify-between">
+                <span>Items</span>
+                <span>{items.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Subtotal</span>
+                <span>{formatCurrency(subtotal)}</span>
+              </div>
+              <div className="flex justify-between font-semibold">
+                <span>Total</span>
+                <span>{formatCurrency(subtotal)}</span>
+              </div>
+              {!isSignedIn && items.length > 0 && (
+                <p className={`text-xs rounded border px-2 py-1 ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
+                  You can add items as a guest, but you need to{" "}
+                  <Link href="/login" className="underline font-medium">
+                    sign in or create an account
+                  </Link>{" "}
+                  to place your order.
+                </p>
+              )}
+              {creditAvailable > 0 && (
+                <div className={`rounded-md border p-3 text-xs space-y-1 ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
+                  <p className="font-medium">
+                    Store credit available:{" "}
+                    <span className="font-semibold">
+                      {formatCurrency(creditAvailable)}
+                    </span>
+                    .
+                  </p>
+                  <p>
+                    Credit will apply automatically once the order is created.
+                  </p>
+                </div>
+              )}
+              <div className="text-xs text-muted-foreground">
+                Need help? Call <strong>{ADMIN_PHONE}</strong> (Mon–Fri, 9am–5pm).
+              </div>
               <Dialog open={confirmPlaceOrderOpen} onOpenChange={setConfirmPlaceOrderOpen}>
                 <DialogTrigger asChild>
-                  <Button disabled={!items.length || placing}>
+                  <Button className="w-full" disabled={!items.length || placing}>
                     Place Order
                   </Button>
                 </DialogTrigger>
-                <DialogContent>
+                <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
                   <DialogHeader>
                     <DialogTitle>Review and confirm order</DialogTitle>
                   </DialogHeader>
@@ -955,22 +1205,6 @@ export default function CartPage() {
                         <span className="font-semibold">{formatCurrency(subtotal)}</span>
                       </div>
                     </div>
-                    {creditAvailable > 0 && (
-                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 space-y-1">
-                        <p className="font-medium">
-                          Store credit available:{" "}
-                          <span className="font-semibold">
-                            {formatCurrency(creditAvailable)}
-                          </span>
-                          .
-                        </p>
-                        <p>
-                          For this order, your store credit will be applied
-                          automatically once the order is created. Any remaining
-                          balance will still need to be paid with cash or MoMo.
-                        </p>
-                      </div>
-                    )}
                     {itemsSorted.length > 0 && (
                       <div className="text-xs text-muted-foreground">
                         <span className="font-medium">Includes:</span>{" "}
@@ -999,28 +1233,34 @@ export default function CartPage() {
                   </div>
                 </DialogContent>
               </Dialog>
-            </div>
-            <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end">
-              <Input
-                placeholder="MoMo number"
-                value={momoPhone}
-                onChange={(e) => setMomoPhone(e.target.value)}
-                className="max-w-xs"
-              />
-              <Input
-                placeholder="Amount (optional)"
-                inputMode="decimal"
-                value={momoAmount}
-                onChange={(e) => setMomoAmount(e.target.value)}
-                className="w-36"
-              />
-              <Dialog open={confirmMomoOpen} onOpenChange={setConfirmMomoOpen}>
-                <DialogTrigger asChild>
-                  <Button disabled={!items.length || momoProcessing}>
-                    {momoProcessing ? 'Processing…' : 'Place Order + Pay with MoMo'}
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
+              <div className="grid gap-2">
+                <div className="text-xs text-muted-foreground">
+                  Pay now with MoMo
+                </div>
+                <Input
+                  placeholder="MoMo number"
+                  value={momoPhone}
+                  onChange={(e) => {
+                    setMomoPhone(e.target.value);
+                    if (momoError) setMomoError("");
+                  }}
+                  aria-invalid={!!momoError}
+                  className={`w-full ${momoError ? "border-red-500" : ""}`}
+                />
+                <Input
+                  placeholder="Amount (optional)"
+                  inputMode="decimal"
+                  value={momoAmount}
+                  onChange={(e) => setMomoAmount(e.target.value)}
+                  className="w-full"
+                />
+                <Dialog open={confirmMomoOpen} onOpenChange={setConfirmMomoOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="w-full" disabled={!items.length || momoProcessing}>
+                      {momoProcessing ? 'Processing…' : 'Place Order + Pay with MoMo'}
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
                   <DialogHeader>
                     <DialogTitle>Confirm MoMo payment</DialogTitle>
                   </DialogHeader>
@@ -1054,7 +1294,7 @@ export default function CartPage() {
                       </div>
                     </div>
                     {creditAvailable > 0 && (
-                      <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 space-y-1">
+                      <div className={`rounded-md border p-3 text-xs space-y-1 ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
                         <p className="font-medium">
                           Store credit available:{" "}
                           <span className="font-semibold">
@@ -1086,10 +1326,37 @@ export default function CartPage() {
                     </DialogClose>
                   </div>
                 </DialogContent>
-              </Dialog>
-            </div>
-          </div>
-        </div>
+                </Dialog>
+                {momoError && <p className="text-xs text-red-600">{momoError}</p>}
+                <div className="text-xs text-muted-foreground">
+                  Secure checkout · Payments protected · Support available
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          {savedItems.length > 0 && (
+            <Card className="shadow-sm mt-4">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base font-semibold">Saved for later</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-3 text-sm">
+                {savedItems.map((item) => (
+                  <div key={item.product.id} className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{item.product.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatCurrency(Number(item.product.price))}
+                      </p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={() => void moveToCart(item)}>
+                      Move to cart
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+        </aside>
       </div>
     </section>
   );

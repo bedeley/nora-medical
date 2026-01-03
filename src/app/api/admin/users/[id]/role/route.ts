@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function PATCH(
   req: Request,
@@ -25,6 +26,10 @@ export async function PATCH(
   }
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-user-role", 60_000, 30);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const id = params.id;

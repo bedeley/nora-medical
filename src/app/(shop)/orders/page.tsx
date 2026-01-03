@@ -24,6 +24,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { formatCurrency, formatDateGH } from "@/lib/currency";
+import { chipToneBorderClass, chipToneClass, deliveryStatusTone, orderStatusTone, paymentStatusTone } from "@/lib/status-chips";
 import { formatIdReadable } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -73,7 +74,7 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 function OrdersContent() {
   const queryClient = useQueryClient();
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
 
   const { data, error, isLoading } = useClientQuery({
     queryKey: ["orders", "history"],
@@ -98,6 +99,7 @@ function OrdersContent() {
 
   const [status, setStatus] = useState<string>("ALL");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [detailsOpen, setDetailsOpen] = useState<Record<string, boolean>>({});
   const searchParams = useSearchParams();
   const justPlaced = searchParams?.get("placed") === "1";
 
@@ -131,14 +133,85 @@ function OrdersContent() {
     [orders]
   );
 
-  if (!session)
-    return (
-      <div className="text-center py-20">
-        <p className="text-muted-foreground">
-          Please sign in to view your order history.
-        </p>
-      </div>
-    );
+  const creditAvailable = Math.max(0, Number(balanceData?.unappliedFunds ?? 0));
+  const cashRefunds = Math.max(0, Number(balanceData?.cashRefunds ?? 0));
+  const notices = useMemo(() => {
+    const items: Array<{ tone: "info" | "success" | "warning"; text: React.ReactNode }> = [];
+    if (justPlaced || hasOutstanding) {
+      items.push({
+        tone: "warning",
+        text: justPlaced ? (
+          <>
+            Order placed successfully. Please call{" "}
+            <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+              {ADMIN_PHONE}
+            </a>{" "}
+            to confirm and complete payment.
+          </>
+        ) : (
+          <>
+            You have unpaid orders. Please call{" "}
+            <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+              {ADMIN_PHONE}
+            </a>{" "}
+            to complete payment.
+          </>
+        ),
+      });
+    }
+    if (creditAvailable > 0) {
+      items.push({
+        tone: "info",
+        text: (
+          <>
+            Store credit available:{" "}
+            <span className="font-semibold">{formatCurrency(creditAvailable)}</span>. This will be used automatically
+            toward your oldest unpaid or partially‑paid orders when you place new orders. If you would like credit
+            applied to an existing balance right away, please contact the store admin.
+          </>
+        ),
+      });
+    }
+    if (cashRefunds > 0) {
+      items.push({
+        tone: "success",
+        text: (
+          <>
+            Cash refunds issued so far:{" "}
+            <span className="font-semibold">{formatCurrency(cashRefunds)}</span>.
+          </>
+        ),
+      });
+    }
+    return items;
+  }, [justPlaced, hasOutstanding, creditAvailable, cashRefunds]);
+  const anyExpanded = useMemo(() => Object.values(detailsOpen).some(Boolean), [detailsOpen]);
+
+  useEffect(() => {
+    if (!orders.length) return;
+    setDetailsOpen((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const order of orders) {
+        if (order.balance > 0 && order.status !== "CANCELLED") {
+          if (!next[order.id]) {
+            next[order.id] = true;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [orders]);
+
+  if (sessionStatus === "unauthenticated") {
+    if (typeof window !== "undefined") {
+      window.location.href = `/login?callbackUrl=${encodeURIComponent(
+        "/orders",
+      )}`;
+    }
+    return null;
+  }
 
   if (isLoading)
     return (
@@ -159,46 +232,41 @@ function OrdersContent() {
   if (!orders.length)
     return (
       <div className="text-center py-20 text-muted-foreground">
-        You haven&apos;t placed any orders yet.
+        <p>You haven&apos;t placed any orders yet.</p>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Button asChild size="sm">
+            <Link href="/products">Start shopping</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/contact">Contact us</Link>
+          </Button>
+        </div>
       </div>
     );
 
-  const creditAvailable = Math.max(0, Number(balanceData?.unappliedFunds ?? 0));
-  const cashRefunds = Math.max(0, Number(balanceData?.cashRefunds ?? 0));
-
   return (
     <section className="orders-page mx-auto w-full max-w-5xl space-y-4 px-3 sm:px-4 lg:px-0">
-      {(justPlaced || hasOutstanding) && (
-        <div className="rounded-md border border-primary/20 bg-primary/10 text-primary p-3 text-sm">
-          {justPlaced ? (
-            <>Order placed successfully. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to confirm and complete payment.</>
-          ) : (
-            <>You have unpaid orders. Please call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to complete payment.</>
-          )}
-        </div>
-      )}
-      {(creditAvailable > 0 || cashRefunds > 0) && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-900 p-3 text-sm space-y-1">
-          {creditAvailable > 0 && (
-            <div>
-              <p>
-                Store credit available:{" "}
-                <span className="font-semibold">
-                  {formatCurrency(creditAvailable)}
-                </span>
-                . This will be used automatically toward your oldest unpaid or
-                partially-paid orders when you place new orders. If you would
-                like credit applied to an existing balance right away, please
-                contact the store admin.
-              </p>
-            </div>
-          )}
-          {cashRefunds > 0 && (
-            <p>
-              Cash refunds issued so far: <span className="font-semibold">{formatCurrency(cashRefunds)}</span>.
-            </p>
-          )}
-        </div>
+      {notices.length > 0 && (
+        <Card className="border">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Account notices</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {notices.map((notice, idx) => {
+              const cls =
+                notice.tone === "warning"
+                  ? `${chipToneClass("warning")} ${chipToneBorderClass("warning")}`
+                  : notice.tone === "success"
+                  ? `${chipToneClass("success")} ${chipToneBorderClass("success")}`
+                  : `${chipToneClass("info")} ${chipToneBorderClass("info")}`;
+              return (
+                <div key={idx} className={`rounded-md border px-3 py-2 ${cls}`}>
+                  {notice.text}
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
@@ -207,7 +275,7 @@ function OrdersContent() {
             View your past orders and payment activity
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger className="w-[180px]">
               <SelectValue placeholder="Filter by payment status" />
@@ -218,22 +286,47 @@ function OrdersContent() {
               <SelectItem value="PAID">Paid</SelectItem>
             </SelectContent>
           </Select>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (anyExpanded) {
+                setDetailsOpen({});
+                return;
+              }
+              const next: Record<string, boolean> = {};
+              for (const order of orders) {
+                next[order.id] = true;
+              }
+              setDetailsOpen(next);
+            }}
+          >
+            {anyExpanded ? "Collapse all" : "Expand all"}
+          </Button>
         </div>
       </div>
 
-      {/* Summary cards (hide lifetime totals; show only count and outstanding) */}
-      <div className="grid gap-2 sm:grid-cols-2 text-xs">
-        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
-          <CardContent className="!py-2">
-            <p className="text-[11px] text-muted-foreground">Orders</p>
+      {/* Summary cards */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Card className="border">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Orders</p>
             <p className="text-lg font-semibold">{summary.totalOrders}</p>
           </CardContent>
         </Card>
-        <Card className="!py-1.5 !border-none !shadow-sm !rounded-none">
-          <CardContent className="!py-2">
-            <p className="text-[11px] text-muted-foreground">Outstanding</p>
+        <Card className="border">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Outstanding</p>
             <p className={`text-lg font-semibold ${summary.outstanding > 0 ? "text-red-600" : "text-green-700"}`}>
               {formatCurrency(summary.outstanding)}
+            </p>
+          </CardContent>
+        </Card>
+        <Card className="border">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Store credit</p>
+            <p className="text-lg font-semibold text-emerald-700">
+              {creditAvailable > 0 ? formatCurrency(creditAvailable) : "None"}
             </p>
           </CardContent>
         </Card>
@@ -282,10 +375,10 @@ function OrdersContent() {
         return (
           <Card
             key={order.id}
-            className="text-xs !py-1.5 !border-none !shadow-sm !rounded-none"
+            className="text-xs border shadow-sm"
           >
-            <CardHeader className="!py-1.5 !px-3">
-              <CardTitle className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between text-[13px]">
+            <CardHeader className="pb-2">
+              <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-[13px]">
                 <span className="flex items-center gap-2 min-w-0">
                   <span className="truncate max-w-[160px]">
                     Order {formatIdReadable(order.id)}
@@ -297,8 +390,9 @@ function OrdersContent() {
                         try { const m = JSON.parse(p.note); return m?.method === 'momo' && m?.status === 'pending'; } catch { return false; }
                       });
                       if (pending) {
+                        const pendingClass = chipToneClass(paymentStatusTone("PENDING"));
                         return (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                          <span className={`text-[11px] px-2 py-0.5 rounded-full ${pendingClass}`}>
                             MoMo Pending
                           </span>
                         );
@@ -307,16 +401,9 @@ function OrdersContent() {
                     return null;
                   })()}
                 </span>
-                <div className="flex flex-wrap items-center gap-1 sm:gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {(() => {
-                    const sc =
-                      order.status === "PAID"
-                        ? "bg-green-100 text-green-700"
-                        : order.status === "PARTIALLY_PAID"
-                        ? "bg-yellow-100 text-yellow-800"
-                        : order.status === "CANCELLED"
-                        ? "bg-gray-200 text-gray-700"
-                        : "bg-red-100 text-red-700";
+                    const sc = chipToneClass(orderStatusTone(order.status));
                     return (
                       <span className={`text-[11px] px-2 py-0.5 rounded-full ${sc}`}>
                         {order.status}
@@ -326,16 +413,13 @@ function OrdersContent() {
                   {(() => {
                     const ds = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
                     let label = "Not delivered";
-                    let cls = "bg-slate-100 text-slate-700";
+                    const cls = chipToneClass(deliveryStatusTone(ds));
                     if (ds === "DELIVERED") {
                       label = "Delivered";
-                      cls = "bg-emerald-100 text-emerald-700";
                     } else if (ds === "PARTIALLY_DELIVERED") {
                       label = "Partially delivered";
-                      cls = "bg-amber-100 text-amber-800";
                     } else if (ds === "RETURNED") {
                       label = "Returned";
-                      cls = "bg-gray-200 text-gray-700";
                     }
                     return (
                       <span className={`text-[11px] px-2 py-0.5 rounded-full ${cls}`}>
@@ -343,10 +427,31 @@ function OrdersContent() {
                       </span>
                     );
                   })()}
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full border ${
+                      order.balance > 0
+                        ? `${chipToneClass("danger")} ${chipToneBorderClass("danger")}`
+                        : `${chipToneClass("success")} ${chipToneBorderClass("success")}`
+                    }`}
+                  >
+                    Balance {formatCurrency(Number(order.balance))}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setDetailsOpen((prev) => ({
+                        ...prev,
+                        [order.id]: !prev[order.id],
+                      }))
+                    }
+                  >
+                    {detailsOpen[order.id] ? "Hide details" : "View details"}
+                  </Button>
                 </div>
               </CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-1 !px-3 !py-1.5">
+            <CardContent className="grid gap-2">
               {uniqueProducts.length > 0 && (
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-1.5">
                   <div className="flex items-start gap-2">
@@ -425,6 +530,8 @@ function OrdersContent() {
                   </Button>
                 </div>
               )}
+              {detailsOpen[order.id] && (
+                <>
               <div className="flex justify-between">
                 <span>Total</span>
                 <span>{formatCurrency(lineTotal)}</span>
@@ -470,21 +577,23 @@ function OrdersContent() {
                           </span>
                         </span>
                         <div className="flex flex-col items-start sm:items-end gap-0.5">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] leading-tight sm:text-[11px] sm:whitespace-nowrap ${
-                              delivered >= qty && qty > 0
-                                ? "bg-emerald-100 text-emerald-700"
-                                : delivered > 0
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-slate-100 text-slate-700"
-                            }`}
-                          >
+                          {(() => {
+                            let statusKey = "NOT_DELIVERED";
+                            if (delivered >= qty && qty > 0) statusKey = "DELIVERED";
+                            else if (delivered > 0) statusKey = "PARTIALLY_DELIVERED";
+                            const deliveryClass = chipToneClass(deliveryStatusTone(statusKey));
+                            return (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] leading-tight sm:text-[11px] sm:whitespace-nowrap ${deliveryClass}`}
+                              >
                             {delivered >= qty && qty > 0
                               ? "Delivered"
                               : delivered > 0
                               ? `Partially delivered (${delivered}/${qty})`
                               : "Not delivered yet"}
-                          </span>
+                              </span>
+                            );
+                          })()}
                           {returned > 0 && (
                             <span className="text-[10px] text-muted-foreground">
                               {returned >= delivered && delivered > 0
@@ -527,10 +636,17 @@ function OrdersContent() {
               </div>
 
               {Number(order.balance) > 0 && order.status !== "CANCELLED" && (
-                <div className="mt-2 grid gap-2">
-                  <p className="text-xs text-primary bg-primary/10 border border-primary/20 rounded px-2 py-1">
-                    You can pay your outstanding balance via Mobile Money (MoMo)
-                    or call <a href={ADMIN_PHONE_TEL} className="underline font-medium">{ADMIN_PHONE}</a> to arrange payment.
+                <div className="mt-2 grid gap-2 rounded-md border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold">Pay outstanding balance</p>
+                    <p className="text-sm text-red-600 font-semibold">{formatCurrency(Number(order.balance))}</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Use Mobile Money (MoMo) or call{" "}
+                    <a href={ADMIN_PHONE_TEL} className="underline font-medium">
+                      {ADMIN_PHONE}
+                    </a>{" "}
+                    to arrange payment.
                   </p>
                   <MomoPayInline
                     orderId={order.id}
@@ -538,12 +654,12 @@ function OrdersContent() {
                     defaultPhone={String(me?.phone || "")}
                     onSuccess={() => queryClient.invalidateQueries({ queryKey: ["orders","history"] })}
                   />
-                    <MomoPendingList
-                      payments={order.payments}
-                      onSettled={() =>
-                        queryClient.invalidateQueries({ queryKey: ["orders", "history"] })
-                      }
-                    />
+                  <MomoPendingList
+                    payments={order.payments}
+                    onSettled={() =>
+                      queryClient.invalidateQueries({ queryKey: ["orders", "history"] })
+                    }
+                  />
                 </div>
               )}
 
@@ -624,7 +740,21 @@ function OrdersContent() {
                       cashPaid <= 0 &&
                       creditFromReturns <= 0
                     ) {
-                      return <p>No summarized payment information available.</p>;
+                      return (
+                        <div className="text-sm text-muted-foreground">
+                          <p>
+                            No payment summary yet. If you just paid, it may take a moment to appear.
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Button asChild size="sm" variant="outline">
+                              <Link href="/contact">Contact support</Link>
+                            </Button>
+                            <Button asChild size="sm" variant="ghost">
+                              <Link href="/orders">Refresh page</Link>
+                            </Button>
+                          </div>
+                        </div>
+                      );
                     }
                     return (
                       <>
@@ -666,6 +796,8 @@ function OrdersContent() {
                     </div>
                   )}
                 </div>
+              )}
+              </>
               )}
 
               {/* Reorder shortcut */}
@@ -735,6 +867,8 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
   const [loading, setLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [phoneError, setPhoneError] = useState("");
+  const [amountError, setAmountError] = useState("");
 
   const normalizePhone = (input: string) => {
     const s = (input || "").trim().replace(/[^\d+]/g, "");
@@ -762,14 +896,16 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
       setLoading(true);
       const phoneToUse = normalizePhone(phone);
       if (!isValidPhone(phoneToUse)) {
-        toast.error("Enter a valid phone number");
+        setPhoneError("Enter a valid phone number.");
         return;
       }
       const amt = parsedAmount;
       if (!(amt > 0)) {
-        toast.error("Enter a valid amount");
+        setAmountError(`Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}`);
         return;
       }
+      setPhoneError("");
+      setAmountError("");
       const res = await fetch("/api/payments/momo/initiate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -852,10 +988,15 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
           inputMode="tel"
           placeholder="MoMo number (e.g., 0241234567 or +23324...)"
           value={phone}
-          onChange={(e) => { setPhone(e.target.value); }}
+          onChange={(e) => {
+            setPhone(e.target.value);
+            if (phoneError) setPhoneError("");
+          }}
           onBlur={() => setNormalized(normalizePhone(phone))}
-          className="max-w-xs"
+          className={`max-w-xs ${phoneError ? "border-red-500" : ""}`}
+          aria-invalid={!!phoneError}
         />
+        {phoneError && <span className="text-xs text-red-600">{phoneError}</span>}
         {(phone || normalized || showSavedPhoneChoice) && (
           <div className="flex flex-wrap gap-2 text-xs">
             {phone && !isValidPhone(phone) && (
@@ -893,11 +1034,15 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
               const raw = e.target.value || "";
               const cleaned = raw.replace(/[^0-9.,]/g, "");
               setAmtStr(cleaned);
+              if (amountError) setAmountError("");
             }}
-            className="w-full pl-10"
+            className={`w-full pl-10 ${amountError ? "border-red-500" : ""}`}
+            aria-invalid={!!amountError}
           />
         </div>
-        {amountInvalid ? (
+        {amountError ? (
+          <span className="text-xs text-red-600">{amountError}</span>
+        ) : amountInvalid ? (
           <span className="text-xs text-red-600">
             {`Enter 0.01 - ${formatCurrency(Number(maxAmount) || 0)}`}
           </span>
@@ -926,7 +1071,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
               {loading ? 'Processing...' : 'Pay with MoMo'}
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
             <DialogHeader>
               <DialogTitle>Confirm MoMo payment</DialogTitle>
             </DialogHeader>
@@ -1007,7 +1152,7 @@ function MomoPendingList({ payments, onSettled }: { payments: Array<{ id: string
     .filter((x): x is { id: string; providerRef: string } => Boolean(x));
   if (!pending.length) return null;
   return (
-    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+    <div className={`text-xs rounded border px-2 py-1 ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
       MoMo payment pending confirmation...
       {pending.map((p) => (
         <MomoPendingWatcher key={p.id} paymentId={p.id} onSettled={onSettled} />

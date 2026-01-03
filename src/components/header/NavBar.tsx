@@ -5,8 +5,8 @@ import Image from "next/image";
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useQuery } from "@tanstack/react-query";
 import ThemeToggle from "@/components/header/ThemeToggle";
-import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import {
   ShoppingCart,
@@ -37,8 +37,12 @@ import type { AuthenticatedUser } from "@/lib/auth";
 export default function NavBar() {
   const { data: session } = useSession();
   const pathname = usePathname();
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setMobileOpen(false);
@@ -50,12 +54,47 @@ export default function NavBar() {
 
   useEffect(() => {
     if (!mounted) return;
+    if (pathname !== "/products") {
+      setSearchQuery("");
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    setSearchQuery(params.get("q") || "");
+  }, [pathname, mounted]);
+
+  useEffect(() => {
+    if (!mounted) return;
     const original = document.body.style.overflow;
-    document.body.style.overflow = mobileOpen ? "hidden" : original || "";
+    if (mobileOpen) {
+      document.body.style.overflow = "hidden";
+      document.body.style.overflowX = "hidden";
+      document.documentElement.style.overflowX = "hidden";
+      document.documentElement.style.width = "100%";
+    } else {
+      document.body.style.overflow = original || "";
+      document.body.style.overflowX = "";
+      document.documentElement.style.overflowX = "";
+      document.documentElement.style.width = "";
+    }
     return () => {
       document.body.style.overflow = original;
+      document.body.style.overflowX = "";
+      document.documentElement.style.overflowX = "";
+      document.documentElement.style.width = "";
     };
   }, [mobileOpen, mounted]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    closeButtonRef.current?.focus();
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mobileOpen]);
 
   const { data: cartData } = useQuery({
     queryKey: ["cart"],
@@ -96,6 +135,30 @@ export default function NavBar() {
     );
   }, [session, cartData, guestCart]);
 
+  const scheduleSearch = (value: string) => {
+    setSearchQuery(value);
+    if (!mounted) return;
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      const params =
+        pathname === "/products"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams();
+      if (value.trim()) {
+        params.set("q", value.trim());
+      } else {
+        params.delete("q");
+      }
+      const query = params.toString();
+      const href = `/products${query ? `?${query}` : ""}`;
+      if (pathname === "/products") {
+        router.replace(href);
+      } else {
+        router.push(href);
+      }
+    }, 250);
+  };
+
   const displayName = session?.user?.name
     ? String(session.user.name).replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     : "Account";
@@ -122,14 +185,21 @@ export default function NavBar() {
 
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container mx-auto flex items-center gap-3 py-2 px-4 relative">
-        <Link href="/" className="flex items-center gap-2">
-          <Image src="/logo.svg" alt="Noralls Medical Supplies" width={140} height={40} priority />
+      <div className="container mx-auto flex items-center gap-3 py-2 px-4 relative min-w-0 max-[360px]:gap-2 max-[360px]:px-3">
+        <Link href="/" className="flex items-center gap-2 flex-shrink-0 min-w-0">
+          <Image
+            src="/logo.svg"
+            alt="Noralls Medical Supplies"
+            width={140}
+            height={40}
+            sizes="(max-width: 360px) 90px, (max-width: 640px) 110px, 140px"
+            className="h-7 w-auto sm:h-8 max-[360px]:h-6"
+            priority
+          />
           <span className="hidden sm:inline text-sm font-semibold tracking-tight">
             Noralls Medical Supplies
           </span>
         </Link>
-
         {/* Desktop navigation */}
         <div
           className={`ml-auto hidden md:flex items-center gap-4 min-w-0 ${
@@ -138,13 +208,17 @@ export default function NavBar() {
         >
           <Link
             href="/products"
-            className="text-sm font-medium hover:underline whitespace-nowrap"
+            className={`text-sm font-medium hover:underline whitespace-nowrap ${
+              isCurrent("/products") ? "text-primary font-semibold" : ""
+            }`}
           >
             Products
           </Link>
           <Link
             href="/about"
-            className="text-sm font-medium hover:underline whitespace-nowrap"
+            className={`text-sm font-medium hover:underline whitespace-nowrap ${
+              isCurrent("/about") ? "text-primary font-semibold" : ""
+            }`}
           >
             About
           </Link>
@@ -152,12 +226,19 @@ export default function NavBar() {
             action="/products"
             method="GET"
             className="hidden lg:flex items-center"
+            onSubmit={(event) => {
+              event.preventDefault();
+              scheduleSearch(searchQuery);
+            }}
           >
             <Input
               type="search"
               name="q"
               placeholder="Search products…"
+              aria-label="Search products"
               className="w-44 xl:w-60 text-xs"
+              value={searchQuery}
+              onChange={(event) => scheduleSearch(event.target.value)}
             />
           </form>
           <a
@@ -199,9 +280,9 @@ export default function NavBar() {
                       {displayName}
                     </span>
                     {isBackOffice && (
-                      <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
-                        Admin
-                      </span>
+                    <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
+                      {isAdmin ? "Admin" : "Staff"}
+                    </span>
                     )}
                   </div>
                   <ChevronDown className="h-4 w-4" />
@@ -301,7 +382,7 @@ export default function NavBar() {
                                 : ""
                             }
                           >
-                            <Users className="h-3 w-3 mr-2" /> Customer Cart
+                            <Users className="h-3 w-3 mr-2" /> Customers
                           </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem asChild>
@@ -433,7 +514,7 @@ export default function NavBar() {
         </div>
 
         {/* Mobile actions (phone, theme toggle, account label, menu) */}
-        <div className="flex flex-1 items-center justify-end gap-2 md:hidden">
+        <div className="flex flex-1 items-center justify-end gap-2 md:hidden min-w-0 max-[360px]:gap-1.5">
           <a
             href={ADMIN_PHONE_TEL}
             className="hidden xs:flex flex-shrink-0 items-center text-sm font-medium gap-1"
@@ -447,19 +528,19 @@ export default function NavBar() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className="flex items-center gap-1 max-w-[200px] px-3"
+                  className="flex items-center gap-1 max-w-[120px] px-2 min-w-0 max-[360px]:max-w-[90px] max-[360px]:px-1.5"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="truncate capitalize" suppressHydrationWarning>
+                    <span className="truncate capitalize text-xs sm:text-sm" suppressHydrationWarning>
                       {displayName}
                     </span>
                     {isAdmin && (
-                      <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
+                      <span className="hidden xs:inline-flex px-2 py-0.5 bg-primary/10 text-primary text-xs rounded-full">
                         Admin
                       </span>
                     )}
                   </div>
-                  <ChevronDown className="h-4 w-4" />
+                  <ChevronDown className="h-4 w-4 max-[360px]:hidden" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52 px-1">
@@ -494,7 +575,7 @@ export default function NavBar() {
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
                       <Link href="/admin/customers">
-                        <Users className="h-3 w-3 mr-2" /> Customer Cart
+                        <Users className="h-3 w-3 mr-2" /> Customers
                       </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
@@ -561,19 +642,41 @@ export default function NavBar() {
 
       {mobileOpen && mounted
         ? createPortal(
-            <div className="fixed inset-0 z-50 bg-background text-foreground px-6 pt-24 pb-8 md:hidden overflow-y-auto shadow-2xl">
+            <div
+              className="fixed inset-0 z-50 bg-background text-foreground px-6 pt-24 pb-8 md:hidden overflow-y-auto shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Site navigation"
+            >
               <div className="flex items-center justify-between mb-6">
                 <p className="text-sm uppercase tracking-wide text-muted-foreground">Browse</p>
-                <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} aria-label="Close menu">
+                <Button
+                  ref={closeButtonRef}
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setMobileOpen(false)}
+                  aria-label="Close menu"
+                >
                   <X className="h-5 w-5" />
                 </Button>
               </div>
-              <form action="/products" method="GET" className="mb-6">
+              <form
+                action="/products"
+                method="GET"
+                className="mb-6"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  scheduleSearch(searchQuery);
+                }}
+              >
                 <Input
                   type="search"
                   name="q"
                   placeholder="Search products…"
+                  aria-label="Search products"
                   className="w-full text-sm"
+                  value={searchQuery}
+                  onChange={(event) => scheduleSearch(event.target.value)}
                 />
               </form>
               <nav className="space-y-4 text-lg font-medium">

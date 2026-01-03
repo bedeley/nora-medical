@@ -12,6 +12,7 @@ export default function PrivacyPage() {
           Your trust matters. This policy explains what we collect, how we use it, and the steps we take to protect
           your information when you use Noralls Medical Supplies.
         </p>
+        <p className="text-xs text-muted-foreground mt-2">Effective date: Jan 1, 2025</p>
       </header>
 
       <article className="prose prose-slate dark:prose-invert max-w-none">
@@ -48,27 +49,34 @@ export default function PrivacyPage() {
           <li>Payment processing and fraud prevention.</li>
           <li>Order delivery and logistics.</li>
           <li>Email, SMS, or other communication services you have agreed to receive.</li>
+          <li>Hosting and infrastructure providers that keep the site running.</li>
         </ul>
         <p>
           These providers are required to protect your data and use it only for the specific services they perform on
           our behalf.
         </p>
 
-        <h2>4. Security</h2>
+        <h2>4. Cookies and Analytics</h2>
+        <p>
+          We use essential cookies and basic analytics to keep the site secure, remember your preferences, and improve
+          performance. You can control cookies through your browser settings.
+        </p>
+
+        <h2>5. Security</h2>
         <p>
           We use industry‑standard security measures and access controls to protect personal data, and we limit access
           to team members who need it to perform their roles. While no system is perfectly secure, we continuously
           review and improve our safeguards.
         </p>
 
-        <h2>5. Data Retention</h2>
+        <h2>6. Data Retention</h2>
         <p>
           We retain your information only as long as necessary to meet legal, tax, and operational requirements (for
           example, financial records and order history). When data is no longer needed, we delete it or anonymize it in
           line with our retention practices.
         </p>
 
-        <h2>6. Your Choices and Rights</h2>
+        <h2>7. Your Choices and Rights</h2>
         <ul>
           <li>
             <strong>Access and updates.</strong> You can view and update key account details from your account pages.
@@ -83,9 +91,16 @@ export default function PrivacyPage() {
           </li>
         </ul>
 
-        <h2>7. Contact</h2>
+        <h2>8. International Users</h2>
         <p>
-          If you have questions about this policy or how we handle your information, please visit our{" "}
+          If you access our services from outside Ghana, your information may be processed in Ghana or other locations
+          where our service providers operate. We take steps to protect your data wherever it is processed.
+        </p>
+
+        <h2>9. Contact</h2>
+        <p>
+          For privacy‑related requests, email{" "}
+          <a href="mailto:norallsmedser@gmail.com">norallsmedser@gmail.com</a>. You can also visit our{" "}
           <a href="/contact">Contact</a> page and we will be glad to assist.
         </p>
       </article>

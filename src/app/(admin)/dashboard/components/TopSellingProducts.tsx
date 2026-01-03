@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
@@ -120,9 +121,17 @@ export default function TopSellingProducts() {
           <p className="text-muted-foreground text-sm">Loading chart...</p>
         )}
         {data && data.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            No sales data available yet.
-          </p>
+          <div className="text-sm text-muted-foreground">
+            <p>No sales data available yet.</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button asChild size="sm" variant="outline">
+                <Link href="/admin/orders">View orders</Link>
+              </Button>
+              <Button asChild size="sm" variant="ghost">
+                <Link href="/admin/products">Add products</Link>
+              </Button>
+            </div>
+          </div>
         )}
         {data && data.length > 0 && (
           <ResponsiveContainer>

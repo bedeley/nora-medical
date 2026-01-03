@@ -22,6 +22,9 @@ export async function GET(
     type PaymentMeta = {
       applied?: AppliedMeta[];
       refundDisposition?: string;
+      method?: string;
+      reference?: string;
+      location?: string;
     };
 
     const payments = await prisma.payment.findMany({

@@ -6,6 +6,8 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 import { notifyOrderEvent, notifyPaymentEvent } from "@/lib/notifications";
+import { computeReceiptHash } from "@/lib/receipt-hash";
+import { rateLimit } from "@/lib/rate-limit";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -21,6 +23,7 @@ const createSchema = z.object({
     .min(1, "At least one item required"),
   initialPayment: z.number().min(0).optional(),
   note: z.string().max(200).optional(),
+  taxRate: z.number().min(0).max(100).optional(),
   deliveryStatus: z
     .enum(["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED", "RETURNED"])
     .optional(),
@@ -38,6 +41,10 @@ export async function POST(req: Request) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
+  const limited = await rateLimit(req, "admin-order-create", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
 
   try {
     const body = await req.json();
@@ -49,7 +56,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const { userId, items, initialPayment = 0, note, deliveryStatus } = parsed.data;
+    const {
+      userId,
+      items,
+      initialPayment = 0,
+      note,
+      deliveryStatus,
+      taxRate = 0,
+    } = parsed.data;
 
     // Validate user exists and has optional phone
     const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -90,13 +104,16 @@ export async function POST(req: Request) {
       }
     }
 
-    const total = items.reduce(
+    const subtotal = items.reduce(
       (sum: number, it: { productId: string; quantity: number }) => {
         const p = productMap.get(it.productId)!;
         return sum + Number(p.price) * it.quantity;
       },
       0
     );
+    const normalizedTaxRate = Number.isFinite(taxRate) ? Math.max(0, taxRate) : 0;
+    const taxAmount = subtotal * (normalizedTaxRate / 100);
+    const total = subtotal + taxAmount;
 
     const amountPaid = Math.min(initialPayment, total);
     const balance = Math.max(0, total - amountPaid);
@@ -106,6 +123,9 @@ export async function POST(req: Request) {
       const created = await tx.order.create({
         data: {
           userId,
+          subtotal,
+          taxRate: normalizedTaxRate,
+          taxAmount,
           total,
           amountPaid,
           balance,
@@ -156,6 +176,29 @@ export async function POST(req: Request) {
           },
         });
       }
+
+      const invoiceNumber = `INV-${created.id}`;
+      const receiptHash = computeReceiptHash({
+        orderId: created.id,
+        invoiceNumber,
+        subtotal,
+        taxRate: normalizedTaxRate,
+        taxAmount,
+        total,
+        createdAt: created.createdAt.toISOString(),
+        items: items.map((it: { productId: string; quantity: number }) => {
+          const p = productMap.get(it.productId)!;
+          return {
+            productId: p.id,
+            quantity: it.quantity,
+            price: Number(p.price),
+          };
+        }),
+      });
+      await tx.order.update({
+        where: { id: created.id },
+        data: { invoiceNumber, receiptHash },
+      });
 
       return created;
     });

@@ -83,6 +83,12 @@ export async function POST(req: Request) {
   credit = Math.max(0, credit);
 
   const subject = "Your Noralls Medical Supplies account statement";
+  const base =
+    (process.env.NEXT_PUBLIC_BASE_URL || "").replace(/\/$/, "") ||
+    (process.env.NEXTAUTH_URL || "").replace(/\/$/, "");
+  const loginUrl = base
+    ? `${base}/login?callbackUrl=${encodeURIComponent("/account/balance")}`
+    : "";
   const lines = [
     me?.name ? `Hi ${me.name},` : "Hi,",
     "",
@@ -93,7 +99,9 @@ export async function POST(req: Request) {
     `Outstanding balance:   ${balance.toFixed(2)}`,
     `Store credit:          ${credit.toFixed(2)}`,
     "",
-    "For a detailed breakdown, you can also download a full statement from your account page.",
+    loginUrl
+      ? `View your account balance: ${loginUrl}`
+      : "For a detailed breakdown, please sign in to your account page.",
     "",
     "Thank you for your business.",
   ];

@@ -38,10 +38,13 @@ export const authOptions: AuthOptions = {
 
   session: {
     strategy: "jwt", // use JWT sessions instead of DB sessions
+    maxAge: 60 * 60 * 24, // 24 hours
+    updateAge: 60 * 30, // rotate token at most every 30 minutes
   },
 
   jwt: {
     encode: defaultJwtEncode,
+    maxAge: 60 * 60 * 24,
     // Swallow decode errors (e.g., stale cookies after secret rotation) and treat as signed-out
     decode: async (params) => {
       try {
@@ -202,6 +205,20 @@ export const authOptions: AuthOptions = {
         sessionUser.phoneVerified = Boolean(extendedToken.phoneVerified);
       }
       return session;
+    },
+  },
+
+  events: {
+    async signIn({ user }) {
+      if (!user?.id) return;
+      try {
+        await prisma.user.update({
+          where: { id: user.id as string },
+          data: { lastLoginAt: new Date() },
+        });
+      } catch (e) {
+        console.warn("[auth] failed to update lastLoginAt", e);
+      }
     },
   },
 

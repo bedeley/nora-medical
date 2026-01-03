@@ -10,6 +10,7 @@ import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import { formatCurrency } from "@/lib/currency";
+import { chipToneBorderClass, chipToneClass } from "@/lib/status-chips";
 
 interface Product {
   id: string;
@@ -37,6 +38,7 @@ export default function ProductPage() {
   const [notifyPhone, setNotifyPhone] = useState("");
   const [notifyLoading, setNotifyLoading] = useState(false);
   const [notifyDone, setNotifyDone] = useState(false);
+  const [notifyError, setNotifyError] = useState("");
 
   // ✅ Fetch product from API (treat non-2xx as errors)
   const { data, error, isLoading } = useQuery<Product>({
@@ -130,9 +132,10 @@ export default function ProductPage() {
   async function subscribeBackInStock() {
     if (notifyLoading) return;
     if (!notifyEmail && !notifyPhone) {
-      toast.error("Enter an email or phone number.");
+      setNotifyError("Enter an email or phone number.");
       return;
     }
+    setNotifyError("");
     try {
       setNotifyLoading(true);
       const res = await fetch(`/api/products/${product.id}/stock-alerts`, {
@@ -183,15 +186,15 @@ export default function ProductPage() {
           <div className="flex items-center gap-3 mt-2">
             <p className="text-2xl font-bold">{formattedPrice}</p>
             {stock <= 0 ? (
-              <span className="text-red-500 text-sm font-medium">
+              <span className={`text-xs font-medium rounded border px-2 py-0.5 ${chipToneClass("danger")} ${chipToneBorderClass("danger")}`}>
                 Out of stock
               </span>
             ) : lowStock ? (
-              <span className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 text-xs font-medium">
+              <span className={`text-xs font-medium rounded border px-2 py-0.5 ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
                 Low stock &mdash; only {stock} left
               </span>
             ) : (
-              <span className="text-green-600 text-sm font-medium">
+              <span className={`text-xs font-medium rounded border px-2 py-0.5 ${chipToneClass("success")} ${chipToneBorderClass("success")}`}>
                 In stock
               </span>
             )}
@@ -206,7 +209,7 @@ export default function ProductPage() {
           </Button>
 
           {stock <= 0 && (
-            <div className="mt-6 rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm">
+            <div className={`mt-6 rounded-lg border border-dashed p-4 text-sm ${chipToneClass("neutral")} ${chipToneBorderClass("neutral")}`}>
               <p className="font-medium text-slate-900">
                 Get notified when this item is back in stock
               </p>
@@ -218,17 +221,28 @@ export default function ProductPage() {
                   type="email"
                   placeholder="Email address"
                   value={notifyEmail}
-                  onChange={(e) => setNotifyEmail(e.target.value)}
+                  onChange={(e) => {
+                    setNotifyEmail(e.target.value);
+                    if (notifyError) setNotifyError("");
+                  }}
+                  aria-invalid={!!notifyError}
+                  className={notifyError ? "border-red-500" : ""}
                 />
                 {smsEnabled && (
                   <Input
                     type="tel"
                     placeholder="Phone (optional)"
                     value={notifyPhone}
-                    onChange={(e) => setNotifyPhone(e.target.value)}
+                    onChange={(e) => {
+                      setNotifyPhone(e.target.value);
+                      if (notifyError) setNotifyError("");
+                    }}
+                    aria-invalid={!!notifyError}
+                    className={notifyError ? "border-red-500" : ""}
                   />
                 )}
               </div>
+              {notifyError && <p className="mt-2 text-xs text-red-600">{notifyError}</p>}
               <Button
                 className="mt-3 w-full sm:w-auto"
                 variant="outline"

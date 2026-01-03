@@ -71,14 +71,16 @@ export default function AdminLayout({
         </nav>
       </header>
       {children}
-      {/* Floating Add Expense button (visible on all admin pages including dashboard) */}
-      <AddExpenseDialog
-        onAdded={() => router.refresh()}
-        buttonClassName="fixed bottom-20 right-4 z-50 shadow-md"
-        buttonSize="lg"
-        buttonVariant="default"
-        label="+ Expense"
-      />
+      {/* Floating Add Expense button (all admin pages except dashboard) */}
+      {!isOnDashboard && (
+        <AddExpenseDialog
+          onAdded={() => router.refresh()}
+          buttonClassName="fixed bottom-20 right-4 z-50 shadow-md"
+          buttonSize="lg"
+          buttonVariant="default"
+          label="+ Expense"
+        />
+      )}
       {!isOnDashboard && (
         <Button
           asChild

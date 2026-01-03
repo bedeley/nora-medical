@@ -1,3 +1,5 @@
+import { chipToneBorderClass, chipToneClass } from "@/lib/status-chips";
+
 export const metadata = {
   title: "About Noralls Medical Supplies",
   description:
@@ -37,25 +39,21 @@ export default function AboutPage() {
       <article className="prose prose-slate dark:prose-invert max-w-none">
         <h2 className="mb-2">Our Story</h2>
         <p>
-          Noralls Medical Supplies began in 2013 with a simple promise: make essential medical supplies easier to access for
-          the providers who need them most. What started as a small, service‑first team has grown into a trusted partner
-          for hospitals, clinics, and practices that need dependable products and clear communication.
+          Noralls Medical Supplies began in 2013 with one goal: make essential medical supplies easy to access, reliably
+          and fast. We started by listening — nurses, physicians, procurement leads, and administrators told us where
+          delays hurt most. Those conversations shaped how we source, stock, and deliver today.
         </p>
         <p>
-          From the beginning, we chose to build the business around listening. We spoke with nurses, physicians,
-          procurement leads, and administrators to understand where delays occur, what “quality” really means at the
-          bedside, and how every stock‑out or late delivery can affect real patients. Those conversations shaped how we
-          select our suppliers, how we price our products, and how we design our ordering and follow‑up processes.
+          Over a decade later, we serve hospitals, clinics, labs, and private practices with consistent availability,
+          clear lead times for specialized items, and responsive local support. We focus on getting the essentials right:
+          verified products, transparent pricing, and dependable fulfillment — so your team can stay focused on patient
+          care.
         </p>
-        <p>
-          Over the past decade, we have expanded our catalog, built strong vendor relationships, and refined our
-          logistics so that accuracy and responsiveness are non‑negotiable. Today, Noralls Medical Supplies supports
-          hospitals, clinics, laboratories, and private practices with:
-        </p>
+        <h3>What We Deliver</h3>
         <ul>
-          <li>Consistently available core items and clearly communicated lead times for specialised products.</li>
-          <li>Transparent pricing designed to support long‑term partnership, not one‑off transactions.</li>
-          <li>Local, responsive support when you need to clarify an order or solve a problem quickly.</li>
+          <li>Consistently available core items and clear lead times for specialized products.</li>
+          <li>Transparent pricing built for long‑term partnership.</li>
+          <li>Local, responsive support to resolve issues quickly.</li>
         </ul>
 
         <h2 className="mb-2">How We Work</h2>
@@ -79,11 +77,34 @@ export default function AboutPage() {
         </p>
       </article>
 
-      <div className="mt-4 rounded-lg border border-primary/20 bg-primary/5 p-4">
-        <p className="text-sm text-primary">
-          If you would like to discuss contract supply, standing orders, or a tailored product list for your facility,
-          we&apos;d be glad to talk. Visit the Products page to explore our range, or use the phone link in the header to
-          reach us directly.
+      <div className="space-y-3">
+        <h2 className="text-xl font-semibold">Our Values</h2>
+        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="rounded-lg border border-muted bg-card/50 p-4">
+          <p className="text-sm font-semibold">Reliability</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Consistent stock, clear lead times, and dependable delivery.
+          </p>
+        </div>
+        <div className="rounded-lg border border-muted bg-card/50 p-4">
+          <p className="text-sm font-semibold">Transparency</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Straightforward pricing and proactive updates when something changes.
+          </p>
+        </div>
+        <div className="rounded-lg border border-muted bg-card/50 p-4">
+          <p className="text-sm font-semibold">Care</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Local support that treats your orders with urgency and attention.
+          </p>
+        </div>
+        </div>
+      </div>
+
+      <div className={`mt-4 rounded-lg border p-4 ${chipToneClass("info")} ${chipToneBorderClass("info")}`}>
+        <p className="text-sm">
+          Request a quote or a tailored product list for your facility. Visit the Products page to explore our range, or
+          use the phone link in the header to reach us directly.
         </p>
       </div>
     </section>

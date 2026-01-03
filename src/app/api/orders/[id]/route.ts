@@ -5,15 +5,21 @@ import { prisma } from "@/lib/prisma";
 import { notifyOrderEvent } from "@/lib/notifications";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 import { z } from "zod";
 
 type OrderWithRelations = {
   id: string;
+  invoiceNumber?: string | null;
+  subtotal?: unknown;
+  taxRate?: unknown;
+  taxAmount?: unknown;
   total: unknown;
   amountPaid?: unknown;
   balance?: unknown;
   status: string;
+  receiptHash?: string | null;
   deliveryStatus?: string | null;
   deliveredAt?: Date | string | null;
   createdAt: Date;
@@ -38,6 +44,10 @@ type OrderWithRelations = {
 };
 
 function serializeOrder(o: OrderWithRelations) {
+  const subtotalRaw = Number(o.subtotal ?? 0);
+  const subtotal = subtotalRaw > 0 ? subtotalRaw : Number(o.total ?? 0);
+  const taxRate = Number(o.taxRate ?? 0);
+  const taxAmount = Number(o.taxAmount ?? 0);
   const total = Number(o.total);
   let amountPaid = Number(o.amountPaid ?? 0);
   const epsilon = 0.01;
@@ -56,10 +66,15 @@ function serializeOrder(o: OrderWithRelations) {
   }
   return {
     id: o.id,
+    invoiceNumber: o.invoiceNumber || null,
+    subtotal,
+    taxRate,
+    taxAmount,
     total,
     amountPaid,
     balance,
     status,
+    receiptHash: o.receiptHash || null,
     deliveryStatus: o.deliveryStatus || "NOT_DELIVERED",
     deliveredAt: o.deliveredAt ? new Date(o.deliveredAt).toISOString() : null,
     createdAt: o.createdAt.toISOString(),
@@ -102,20 +117,26 @@ function serializeOrder(o: OrderWithRelations) {
 
 // GET /api/orders/[id] — fetch single order (admin or owner)
 export async function GET(
-  _req: Request,
+  req: Request,
   context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   const session = await getServerSession(authOptions);
-  if (!session)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const user = session.user as AuthenticatedUser;
-  const isAdmin = user.role === "ADMIN";
+  const user = session?.user as AuthenticatedUser | undefined;
+  const isAdmin = user?.role === "ADMIN";
+  const url = new URL(req.url);
+  const receiptToken =
+    url.searchParams.get("receipt") ||
+    url.searchParams.get("receiptHash") ||
+    "";
   const params = await context.params;
 
   try {
     const order = await prisma.order.findFirst({
-      where: isAdmin ? { id: params.id } : { id: params.id, userId: user.id },
+      where: session
+        ? isAdmin
+          ? { id: params.id }
+          : { id: params.id, userId: user?.id }
+        : { id: params.id },
       include: {
         items: {
           include: { product: true },
@@ -128,6 +149,11 @@ export async function GET(
 
     if (!order) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (!session) {
+      if (!receiptToken || !order.receiptHash || receiptToken !== order.receiptHash) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
     }
 
     // Also load any legacy AUTO_APPLY credit adjustment payments for this user
@@ -170,7 +196,12 @@ export async function GET(
       }
     }
 
-    return NextResponse.json({ data: serializeOrder(merged) });
+    const payload = serializeOrder(merged);
+    if (!session) {
+      payload.adminNote = null;
+      payload.placedById = null;
+    }
+    return NextResponse.json({ data: payload });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to fetch order";
@@ -205,6 +236,10 @@ export async function PATCH(
 ) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-order-update", 60_000, 60);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
   const session = await getServerSession(authOptions);
@@ -473,6 +508,10 @@ export async function DELETE(
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
+  const limited = await rateLimit(req, "admin-order-delete", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
 
   const session = await getServerSession(authOptions);
   if (!session)
@@ -494,10 +533,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Only undelivered, unpaid orders can be deleted" }, { status: 400 });
     }
 
-    await prisma.$transaction(async (tx: TxClient) => {
-      await tx.payment.updateMany({ where: { orderId }, data: { orderId: null } });
-      await tx.orderItem.deleteMany({ where: { orderId } });
-      await tx.order.delete({ where: { id: orderId } });
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { deletedAt: new Date() },
     });
     try {
       await recordAuditLog({
@@ -519,6 +557,62 @@ export async function DELETE(
     console.error("Error deleting order:", error);
     return NextResponse.json(
       { error: "Failed to delete order" },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/orders/[id] — restore deleted order (admin only)
+export async function POST(
+  req: Request,
+  context: { params: Promise<{ id: string }> | { id: string } }
+) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-order-restore", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
+  const session = await getServerSession(authOptions);
+  if (!session)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = session.user as AuthenticatedUser;
+  if (user.role !== "ADMIN")
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  try {
+    const params = await context.params;
+    const orderId = params.id;
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (!order.deletedAt) {
+      return NextResponse.json({ error: "Order is not deleted" }, { status: 400 });
+    }
+
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { deletedAt: null },
+    });
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_RESTORE",
+        entityType: "ORDER",
+        entityId: orderId,
+      });
+    } catch {
+      // best-effort
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("Error restoring order:", error);
+    return NextResponse.json(
+      { error: "Failed to restore order" },
       { status: 500 }
     );
   }

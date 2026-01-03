@@ -35,14 +35,20 @@ export default function ProfitSummary({ summary }: SummaryProps) {
   const profit = summary?.profit ?? 0;
   const margin = summary?.margin ?? 0;
   const [view, setView] = useState<"cards" | "pie">("cards");
+  const [labelMode, setLabelMode] = useState<"percent" | "amount">("percent");
   const [pieOuterRadius, setPieOuterRadius] = useState(70);
+  const [isCompact, setIsCompact] = useState(false);
+  const pieInnerRadius = Math.max(32, pieOuterRadius - 32);
 
   useEffect(() => {
     const updateRadius = () => {
       if (typeof window === "undefined") return;
       const w = window.innerWidth;
+      setIsCompact(w < 420);
       if (w >= 1280) {
         setPieOuterRadius(110);
+      } else if (w < 420) {
+        setPieOuterRadius(78);
       } else {
         setPieOuterRadius(70);
       }
@@ -118,6 +124,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
       value: Math.max(0, profit),
     },
   ];
+  const pieTotal = pieData.reduce((sum, slice) => sum + slice.value, 0);
 
   const formatSliceValue = (value: number) => {
     if (!value || !Number.isFinite(value)) return "";
@@ -132,6 +139,11 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     }
   };
 
+  const formatSlicePercent = (percent?: number) => {
+    if (percent === undefined || Number.isNaN(percent)) return "";
+    return `${Math.round(percent * 100)}%`;
+  };
+
   const renderSliceLabel = (props: PieLabelRenderProps) => {
     const RADIAN = Math.PI / 180;
     // Place label just outside the slice along the arc
@@ -140,12 +152,16 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     const cy = Number(props.cy ?? 0);
     const midAngle = Number(props.midAngle ?? 0);
 
-    const radius = outerRadius + 10;
+    const radius = isCompact ? Math.max(outerRadius - 8, 32) : outerRadius + 10;
     let x = cx + radius * Math.cos(-midAngle * RADIAN);
     let y = cy + radius * Math.sin(-midAngle * RADIAN);
 
-    const label = formatSliceValue(Number(props.value || 0));
-    if (!label) return null;
+    const percent = typeof props.percent === "number" ? props.percent : undefined;
+    const label =
+      labelMode === "amount"
+        ? formatSliceValue(Number(props.value || 0))
+        : formatSlicePercent(percent);
+    if (!label || isCompact) return null;
 
     // If the slice is at the very top of the pie, center the label
     if (midAngle > 80 && midAngle < 100) {
@@ -156,7 +172,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     const textAnchor = x === cx ? "middle" : x >= cx ? "start" : "end";
 
     const name = String((props as { name?: unknown }).name ?? "");
-    // Match label color to the slice / legend color so the amounts
+    // Match label color to the slice / legend color so the percents
     // visually align with the keys under the chart.
     let fillColor = "#e5e7eb";
     if (name === "Revenue") {
@@ -179,7 +195,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
         fill={fillColor}
         textAnchor={textAnchor as "start" | "end"}
         dominantBaseline="central"
-        fontSize={12}
+        fontSize={isCompact ? 10 : 12}
         fontWeight={600}
       >
         {label}
@@ -187,17 +203,20 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     );
   };
 
+  const netProfitPercent = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
+  const netProfitCompact = formatSliceValue(Math.abs(profit));
+
   return (
-    <Card className="p-4 shadow-md !border-none mb-4">
+    <Card className="p-4 shadow-md !border-none mb-4 min-w-0">
       <CardHeader className="pb-2">
-        <CardTitle className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
+        <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 min-w-0">
             <span className="inline-flex items-center gap-2">
               <PieChart className="h-5 w-5 text-amber-500" />
               Profit vs Expense Snapshot
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <span className="text-xs font-normal text-muted-foreground">
               Totals respect the filters selected below.
             </span>
@@ -225,17 +244,43 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                 Pie chart
               </button>
             </div>
+            {view === "pie" && (
+              <div className="inline-flex rounded-md border bg-muted/40 p-0.5 text-xs">
+                <button
+                  type="button"
+                  className={`px-2 py-0.5 rounded-sm ${
+                    labelMode === "percent"
+                      ? "bg-background shadow-sm font-semibold"
+                      : "text-muted-foreground"
+                  }`}
+                  onClick={() => setLabelMode("percent")}
+                >
+                  % labels
+                </button>
+                <button
+                  type="button"
+                  className={`px-2 py-0.5 rounded-sm ${
+                    labelMode === "amount"
+                      ? "bg-background shadow-sm font-semibold"
+                      : "text-muted-foreground"
+                  }`}
+                  onClick={() => setLabelMode("amount")}
+                >
+                  Amounts
+                </button>
+              </div>
+            )}
           </div>
         </CardTitle>
       </CardHeader>
 
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 min-w-0">
         {view === "cards" ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 min-w-0">
             {metrics.map((metric) => (
               <div
                 key={metric.key}
-                className="rounded-md bg-background p-3 shadow-sm"
+                className="rounded-md bg-background p-3 shadow-sm min-w-0"
               >
                 <p className="text-xs text-muted-foreground flex items-center gap-1">
                   {metric.label}
@@ -267,7 +312,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
             ))}
           </div>
         ) : (
-          <div className="w-full">
+          <div className="w-full min-w-0">
             {totalRevenue <= 0 ? (
               <p className="text-xs text-muted-foreground">
                 Not enough data to render a pie chart. Adjust the filters above
@@ -275,20 +320,66 @@ export default function ProfitSummary({ summary }: SummaryProps) {
               </p>
             ) : (
               <>
-                <div className="h-64 sm:h-72 lg:h-80 xl:h-96">
+                <div className="relative h-64 sm:h-72 lg:h-80 xl:h-96 min-w-0">
+                  {isCompact && (
+                    <div className="absolute right-2 top-2 z-10">
+                      <Tooltip
+                        content={
+                          <div className="space-y-1 text-xs">
+                            {pieData.map((slice) => {
+                              const color =
+                                slice.name === "Revenue"
+                                  ? "#3b82f6"
+                                  : slice.name === "COGS"
+                                    ? "#f97316"
+                                    : slice.name === "Operating Expenses"
+                                      ? "#ef4444"
+                                      : profit >= 0
+                                        ? "#22c55e"
+                                        : "#94a3b8";
+                              return (
+                                <div key={slice.name} className="flex items-center gap-2">
+                                  <span
+                                    className="h-2.5 w-2.5 rounded-sm"
+                                    style={{ backgroundColor: color }}
+                                    aria-hidden="true"
+                                  />
+                                  <span>{slice.name}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        }
+                      >
+                        <button
+                          type="button"
+                          className="rounded-full border bg-background/90 p-1 text-muted-foreground shadow-sm"
+                          aria-label="Show chart legend"
+                        >
+                          <HelpCircle className="h-4 w-4" />
+                        </button>
+                      </Tooltip>
+                    </div>
+                  )}
                   <ResponsiveContainer width="100%" height="100%">
-                    <RechartsPieChart margin={{ top: 8, bottom: 32, left: 0, right: 0 }}>
+                    <RechartsPieChart margin={{ top: 8, bottom: 24, left: 8, right: 8 }}>
                       <RechartsTooltip
-                        formatter={(value: number, name: string) => [
-                          formatCurrency(Number(value || 0)),
-                          name,
-                        ]}
+                        formatter={(value, name, item) => {
+                          const percent =
+                            typeof (item as { percent?: number } | undefined)?.percent === "number"
+                              ? (item as { percent?: number }).percent
+                              : undefined;
+                          const amount = formatCurrency(Number(value || 0));
+                          return [`${amount}${percent ? ` (${formatSlicePercent(percent)})` : ""}`, name];
+                        }}
                       />
-                      <Legend
-                        verticalAlign="bottom"
-                        align="center"
-                        wrapperStyle={{ fontSize: 11, marginTop: 4 }}
-                      />
+                      {!isCompact && (
+                        <Legend
+                          verticalAlign="bottom"
+                          align="center"
+                          wrapperStyle={{ fontSize: 11, marginTop: 4 }}
+                        />
+                      )}
                       <Pie
                         data={pieData}
                         dataKey="value"
@@ -296,7 +387,8 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                         cx="50%"
                         cy="50%"
                         outerRadius={pieOuterRadius}
-                        label={renderSliceLabel}
+                        innerRadius={pieInnerRadius}
+                        label={isCompact ? false : renderSliceLabel}
                         labelLine={false}
                       >
                         <Cell key="revenue" fill="#3b82f6" />
@@ -307,9 +399,58 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                           fill={profit >= 0 ? "#22c55e" : "#94a3b8"}
                         />
                       </Pie>
+                      <text x="50%" y="50%" textAnchor="middle" dominantBaseline="middle">
+                        <tspan x="50%" dy={-12} fill="#6b7280" fontSize={isCompact ? 10 : 11}>
+                          Net Profit
+                        </tspan>
+                        <tspan
+                          x="50%"
+                          dy={14}
+                          fill="#111827"
+                          fontSize={isCompact ? 16 : 16}
+                          fontWeight={600}
+                        >
+                          {netProfitPercent.toFixed(1)}%
+                        </tspan>
+                        <tspan x="50%" dy={14} fill="#6b7280" fontSize={isCompact ? 10 : 11}>
+                          {netProfitCompact || "GH₵0"}
+                        </tspan>
+                      </text>
                     </RechartsPieChart>
                   </ResponsiveContainer>
                 </div>
+                {isCompact && (
+                  <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                    {pieData.map((slice) => {
+                      const pct = pieTotal > 0 ? (slice.value / pieTotal) * 100 : 0;
+                      const color =
+                        slice.name === "Revenue"
+                          ? "#3b82f6"
+                          : slice.name === "COGS"
+                            ? "#f97316"
+                            : slice.name === "Operating Expenses"
+                              ? "#ef4444"
+                              : profit >= 0
+                                ? "#22c55e"
+                                : "#94a3b8";
+                      return (
+                        <div key={slice.name} className="flex items-center justify-between gap-2">
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 rounded-sm"
+                              style={{ backgroundColor: color }}
+                              aria-hidden="true"
+                            />
+                            <span className="truncate">{slice.name}</span>
+                          </span>
+                          <span className="tabular-nums">
+                            {formatSlicePercent(pct / 100)} · {formatSliceValue(slice.value)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 <p className="mt-2 text-[11px] text-muted-foreground">
                   Revenue shown for reference; COGS + Operating Expenses + Net Profit should equal total revenue for the selected period.
                 </p>
