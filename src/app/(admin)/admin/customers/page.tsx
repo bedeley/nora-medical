@@ -1647,7 +1647,7 @@ function AdminCustomersContent() {
     </Dialog>
     {/* Explain totals dialog */}
     <Dialog open={!!explain} onOpenChange={(o) => { if (!o) setExplain(null); }}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[85svh] overflow-y-auto sm:max-h-[90vh]">
         <DialogHeader>
           <DialogTitle className="text-base font-semibold">Explain Totals {explain?.email ? `for ${explain.email}` : ""}</DialogTitle>
         </DialogHeader>

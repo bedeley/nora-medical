@@ -1377,7 +1377,7 @@ function AddProductDialog() {
       <DialogTrigger asChild>
         <Button variant="default">+ Add Product</Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-h-[85vh]">
+      <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-h-[90vh]">
         <DialogHeader>
           <DialogTitle className="text-base font-semibold">Add New Product</DialogTitle>
         </DialogHeader>
