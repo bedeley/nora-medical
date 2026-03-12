@@ -22,7 +22,7 @@
     },
     {
       "path": "/api/admin/health/escalations/cron",
-      "schedule": "0 */4 * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }
