@@ -670,6 +670,7 @@ Inventory Planning — Reports
 - What it is: VAT rates and filing packs.
 - How to use: Maintain tax codes, export VAT filings.
 - Related: Used in journal entries and VAT reports.
+- Validation behavior: Tax code names are trimmed, duplicate names return `409`, and editing a deleted/non-existent code returns `404`.
 
 ## Accounting — Reports
 - Pages: /admin/accounting/reports, /admin/accounting/reports/pl,
