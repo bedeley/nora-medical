@@ -793,6 +793,7 @@ Inventory Planning — Reports
 - What it is: Open/close windows for accounting postings.
 - How to use: Create periods, close when ready, review close report snapshots.
 - Related: Closing a period prevents further postings in that date range.
+- Date handling: Period start is saved at `00:00:00.000Z` and period end at `23:59:59.999Z` so all postings on the selected end date are included in overlap checks and close validations.
 
 ## Accounting — Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
