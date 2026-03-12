@@ -1,0 +1,1689 @@
+﻿Nora Hospital Supplies — Admin Guide
+
+This guide uses collapsible sections in the app. Open any section for a concise walkthrough.
+
+Quick Links (sections)
+- Operations: Dashboard & Recent Activity, Products & Catalog, Suppliers, Orders & Receipts, Inventory & Alerts, Inventory Planning
+- Accounting: Accounting Portal Overview
+- HR: HR Portal Overview
+- Access & Security
+
+Phase 1 Index (where to find the pages)
+- Operations: Returns & RMA, Stock Adjustments, Supplier Performance
+- Accounting: AR Aging, AP Aging, Supplier Payments
+
+## Overview
+- What it is: A back-office portal for operations, accounting, HR, and settings.
+- How to use: Start at /admin/dashboard, then use the top nav or Admin menu.
+- Related: Most pages are role-gated; STAFF/ACCOUNTANT see limited options.
+
+## Access & Security
+- Pages: /admin/mfa, /unauthorized
+- What it is: Admin 2FA setup and access control feedback.
+- How to use: Enable 2FA on first admin login; use TOTP codes to access admin routes.
+- Related: Admin sessions expire and are enforced in middleware.
+- Role gates: Admin-only actions include purchase creation/receiving, returns/refunds, supplier payments, and journal approvals.
+- Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use “Invite employee” to send a 24‑hour invite link with verification code via email → SMS → WhatsApp fallback.
+
+## Dashboard & Recent Activity
+- Pages: /admin/dashboard, /admin/recent
+- What it is: KPIs and latest operational activity.
+- How to use: Monitor sales, payments, inventory alerts, and trends.
+- KPI interpretation:
+  - `Billed order total` is tax-inclusive.
+  - `Gross sales` is pre-tax sales value.
+  - `Tax collected` is shown separately.
+  - `Discounts` is shown separately and reduces net sales.
+  - Reconciliation card explains: `Billed = Collected + Outstanding`, and `Billed = Gross + Tax - Discounts`.
+- Related: Uses live order/payment/expense data; can switch to ledger reporting.
+
+## Products & Catalog
+- Pages: /admin/products, /admin/purchases, /admin/movements
+- What it is: Catalog maintenance and stock movement tracking.
+- How to use: Add/edit products, upload images, archive obsolete items, and record purchases.
+- Add product (initial stock vs order):
+  - Receive now checked: creates a received purchase, posts inventory + AP, and logs an inventory movement.
+  - Receive now unchecked: creates an ordered purchase only; stock stays 0 until received later.
+  - Pay now: records a supplier payment and posts AP to Cash/Bank.
+  - Add Product modal uses inline field validation (supplier, lot/batch, expiry date, and payment mode) so missing fields are shown directly beside the input.
+  - Purchase form uses inline field validation for required inputs (product, quantity, unit cost, supplier, and payment mode when Pay now is checked).
+  - Regulated/lot-history SKUs enforce lot code at receipt; expiry date is enforced when expiry tracking applies.
+- Cleanup behavior:
+  - Deleted products are hidden from product pickers by default.
+  - If a deleted product has an unreceived/no-history purchase draft (pending/approved/ordered/cancelled with no movements/payments/lots), that purchase is soft-removed from operational pages.
+- Related: Product stock drives inventory alerts and order fulfillment.
+
+## Suppliers
+- Page: /admin/suppliers
+- What it is: Supplier directory with lead times, status, and purchasing defaults.
+- How to use: Add suppliers, set lead time (avg/min/max), status (active/on hold/inactive), and defaults (MOQ/pack size).
+- Aging hub drill-through:
+  - `Open suppliers` from Aging Hub opens this page sorted by supplier name.
+  - A subtle `Applied from Aging Hub` badge appears when opened with that context.
+- Archive/Restore: Use Archive to hide a supplier without losing history; toggle "Show archived suppliers" to restore.
+- Lead time validation: Min must be <= max; the form will block invalid ranges.
+- Related: Supplier status and lead time feed inventory planning and alerting.
+
+## Suppliers — Performance
+- Page: /admin/suppliers/performance
+- What it is: Supplier scorecard tracking fill rate, on-time delivery, lead time, and spend.
+- How to use: Review the breakdown table; click a supplier to open the filtered Suppliers list.
+- Notes: Supplier is required when creating purchases.
+- Related: Use this when deciding preferred vendors or resolving supplier-driven stock issues.
+
+## Orders & Receipts
+- Pages: /admin/orders, /admin/orders/new, /admin/orders/[id], /admin/orders/[id]/receipt
+- What it is: Order lifecycle management and admin receipt handling.
+- How to use:
+  1) Create order (full or partial payment).
+     - Flow is optimized for operations: select customer -> add order lines -> finalize payment/delivery.
+     - If `Delivery Status = Partially Delivered`, enter delivered quantity for each line item before saving.
+     - Upfront payment fields are collapsed by default; click `Enable Payment` only when collecting payment at order creation.
+     - Upfront payment mode uses explicit placeholder selection (no default payment method).
+     - If upfront payment is enabled, amount and required reference fields are validated inline before create.
+     - Walk-in/unregistered customers are excluded from `/admin/orders/new` customer list; use OTC for walk-ins.
+  2) Record remaining payments from order page (cash/transfer/momo).
+  3) Mark delivery status.
+  4) Process returns from item row.
+  5) Validate payment summary line:
+     - Ledger total
+     - Less non-ledger return credits
+     - Net paid (must match Amount Paid)
+  6) If you see a protracted pending provider MoMo warning on the order:
+     - Use `Cancel pending MoMo request(s)` if customer wants another payment method.
+     - Record alternate payment (cash/transfer/manual MoMo) only once.
+     - If provider later returns success after cancel, keep order unchanged and resolve on MoMo page as store credit.
+- Expected:
+  - Partial payment -> `PARTIALLY_PAID`
+  - Full payment -> `PAID`
+  - Discounts are admin-only and must include a reason.
+  - `/admin/orders` list shows discount under the order total when applied.
+  - Order receipt and customer receipt show: Subtotal, Tax, Discount, Invoice total.
+  - Receipt layout is compact and operational: customer/status in header cards, item grid, delivery summary, and right-aligned financial summary.
+  - Partially delivered status requires per-line delivered quantities; fully delivered lines should use `Delivered`.
+  - Return credits reduce net paid correctly without false mismatch warnings.
+  - Provider MoMo pending does not count as paid until confirmed success.
+  - If page is opened with `outstandingOnly=1`, the header shows `Collections mode: Outstanding only`.
+  - Use `Show all` in the badge to return to normal full-order listing.
+- Related: Orders feed accounting, inventory movements, and customer balances.
+
+## Orders — OTC Sales
+- Page: /admin/orders/otc
+- What it is: One-screen walk-in OTC checkout with shift lock control.
+- How to use:
+  1) Open shift first (required).
+  2) Enter walk-in name (required by default), or use anonymous exception with reason.
+  3) Add items and choose payment method.
+  4) Review pre-submit summary strip (`Payment type`, `Will create status`, `Will mark delivery as`).
+  5) Complete sale from confirmation modal, then print receipt or open order details.
+- MoMo handling:
+  - `Create Sale + Request MoMo` for in-app live request flow.
+  - `Record Existing External Payment` for already-paid external transactions.
+- Notes:
+  - Walk‑in name is required by default.
+  - Anonymous sale is allowed only as an exception and requires a reason.
+  - Anonymous OTC sales must be paid in full (no partial/unpaid balance allowed).
+  - Named walk‑in OTC sales can be full, partial, or unpaid.
+  - Customer match supports registered users and prior walk-in history.
+  - Non-cash reference is required only for `Record Existing External Payment`.
+  - Live MoMo requires a valid 10-digit phone number; submit is blocked by inline validation if invalid.
+  - Payment reference field appears only when required by selected mode/capture flow.
+  - Delivery defaults to `Delivered`, with a checkbox to create as `Not delivered` when goods should be held.
+  - For live MoMo requests, keep goods on hold until payment status is confirmed successful.
+  - Admin can apply discount amount; discount reason is required and captured in audit metadata.
+  - Discount auto-adjusts `Amount Paid Now` to net payable for paid flows; credit/unpaid flows are not auto-paid.
+  - Unsaved OTC drafts auto-save for 3 minutes and can be restored.
+  - Keyboard shortcuts: `Alt+I` add item, `Alt+S` submit.
+  - Submit button is guarded against duplicate clicks on slow networks.
+  - Returns for OTC orders are tracked in Returns/RMA and customer account credit.
+- Related: OTC orders post to the journal when auto‑post is enabled.
+
+## OTC Shift Close
+- Page: /admin/otc/shift-close
+- What it is: End-of-day OTC reconciliation and lock control.
+- How to use:
+  1) Select day and refresh summary.
+  2) Compare expected cash/bank totals with counted actuals.
+  3) Use `Use Expected Amounts` for quick zero-variance close when counts match.
+  4) Resolve unposted payment warnings (sync) before final close, or override with reason.
+  5) Close shift and verify row in Recent Shift Closes.
+- Lock behavior:
+  - Before open: OTC sale creation blocked.
+  - After close: OTC sale creation blocked for staff.
+  - Admin can emergency-override after close with reason.
+  - New day requires manual open (staff after 06:00 UTC, admin anytime).
+- Related: Audit logs use `OTC_SHIFT_OPEN` and `OTC_SHIFT_CLOSE` with human-readable metadata.
+
+## Customers & Accounts
+- Pages: /admin/customers, /admin/customers/[id]/view, /admin/customer-accounts
+- What it is: Customer profiles, balances, and store credit workflows.
+- How to use: Review payment history, apply credits, and export statements.
+- Aging hub drill-through:
+  - `Open customers` from Aging Hub opens `balance due` customers sorted by highest balance first.
+  - A subtle `Applied from Aging Hub` badge appears when this context is active.
+- Statements & reminders: Use “Statement” or “Send reminder” to prompt overdue balances.
+- Related: Customer balances are validated in Accounting Integrity.
+
+## Payments
+- Pages: /admin/payments/momo, /admin/payments/receipt/[id], /admin/payments/export/print
+- What it is: Payment monitoring and receipts.
+- How to use: Reconcile MoMo payments, print/export receipts for bookkeeping.
+- Related: Payments update order balances and accounting entries.
+
+## Payments — MoMo Settlement & Reconciliation
+- Page: /admin/payments/momo
+- What it is: Ghana‑specific MoMo monitoring for provider requests, manual records, and reconciliation outcomes.
+- How to use:
+  - Use Status + Provider filters to isolate pending vs settled.
+  - `Source` helps interpretation:
+    - `Provider`: initiated from app and waiting/confirmed from provider callbacks.
+    - `Manual`: recorded external payment; treated as settled from operations side.
+  - `Ledger: Posted/Unposted` shows whether the journal entry exists for the payment.
+  - The `Actions` column only appears when at least one visible row is actionable.
+    - If all rows are view-only, the column is hidden.
+  - For long-running pending provider requests:
+    1) Open row and click `Cancel pending`.
+    2) Collect alternate payment if needed (cash/transfer/manual MoMo).
+    3) If provider later returns success, row becomes `late_success_after_cancel`.
+    4) Click `Resolve to Credit` to move amount to customer store-credit liability.
+- When to act:
+  - Pending for long periods: cancel and use alternate payment flow (avoid duplicate collection).
+  - Settled but Unposted: run Sync ledger in Accounting → Data Integrity.
+  - Late success after cancel: resolve to credit, then refund from customer account if cash return is needed.
+- Note:
+  - This page is operational control + monitoring.
+  - Detailed ledger behavior for these events is documented under Accounting → Posting Rules and Accounting → Journal.
+- Test-mode simulation (technical, not daily operations):
+  - `Simulate Late Success` is hidden by default.
+  - It appears only when test tools are enabled in non-production.
+  - Use it only for QA/UAT to verify late-success-after-cancel handling.
+
+## Inventory & Alerts
+- Pages: /admin/inventory, /admin/inventory-alerts
+- What it is: Stock on hand and low-stock notifications.
+- How to use: Adjust stock, review alerts, schedule restocks. Use "Adjust inventory value" to revalue cost and post a matching journal entry.
+- Related: Inventory is used in sales, COGS, and integrity checks.
+
+## Inventory — Lots & Expiry
+- Page: /admin/inventory-lots
+- What it is: Batch/lot tracking with expiry dates for compliance and audits.
+- How to use: Review lot balances and expiry windows; use FEFO Priority + Days left to plan picking.
+- FEFO behavior: Lots expiring sooner are sold first.
+- FEFO visuals: Priority labels use threshold bands (High 0-high threshold, Medium high+1-medium threshold, Low medium+1+, No expiry). Threshold days are configurable in app settings (`inventory.lots.fefo.thresholdDays.high`, `inventory.lots.fefo.thresholdDays.medium`).
+- Traceability: Use `Trace` on any lot to view source purchase details and lot-level movement history, export adaptive CSV files (single combined export for 0-1 movement; separate summary/movements for 2+), and deep-link into Purchases or lot-filtered Movements.
+- Movement navigation: Use `View all lot movements` from Trace to open all movements for the selected lot (not a single reason-only subset).
+- Related: Lot details are captured on receive; batch code and expiry are required for lot‑tracked items.
+
+## Inventory — Stock Adjustments
+- Page: /admin/stock-adjustments
+- What it is: Reconcile system stock to physical count.
+- How to use: Choose Cycle Count (periodic audit) or Stock Adjustment (one-off correction), enter the reason (e.g., damaged/expired), and save.
+- Posts: Creates inventory movement + journal entry to keep valuation aligned.
+- Related: Movement details show the adjustment reason in the modal.
+
+## Supplier + Inventory Enhancements
+- Pages: /admin/suppliers, /admin/products, /admin/purchases, /admin/inventory-planning, /admin/dashboard
+- What it is: A tighter loop between suppliers, purchasing, and planning (alternate suppliers, approvals, receipts, and alerts).
+- How to use:
+  1) Suppliers: Set lead time avg/min/max, default MOQ/pack size, and status.
+  2) Products: Link alternate suppliers and mark a primary supplier in the Edit dialog.
+  3) Purchases: Create purchase orders with expected arrival; large quantities are pending approval.
+  4) Approvals: Admins approve pending purchases before receiving stock.
+  5) Receiving: Use Receive to record partial/full receipts; on-order is reduced automatically.
+- Alerts: Inventory alerts include low stock, supplier inactive, lead time missing, and demand spike.
+- Related: Planning suggestions round to pack size and respect supplier lead time variability.
+Step-by-step (enhanced workflow)
+1) Suppliers setup
+   - Add supplier name, status, lead time avg/min/max, and defaults (MOQ/pack size).
+   - Example: “MedSupply Wholesale” · ACTIVE · lead time 14/10/21 · MOQ 50 · pack 10.
+   - Example (cartons): If a carton has 12 units and MOQ is 2 cartons, set MOQ = 24 and pack size = 12.
+   - Use ON_HOLD/INACTIVE to pause new orders; alerts will flag products tied to them.
+2) Product linkage
+   - Open a product and set the primary supplier in the main supplier selector.
+   - Add alternates in the supplier links panel, with optional overrides for lead time/MOQ/pack size.
+   - Use “Set as primary” if you switch vendors.
+   - Example: Primary = MedSupply Wholesale (lead time 14), Alternate = HealthPro (lead time 21, MOQ 100).
+3) Purchase creation (PO)
+   - Create a purchase with supplier + expected arrival date.
+   - Leave “Receive now” unchecked when it’s an order, not a delivery.
+   - Large quantities go to PENDING_APPROVAL automatically.
+   - Example: 500 units @ 12.50 from MedSupply, expected 2026-01-15 → status PENDING_APPROVAL.
+4) Approval (admin)
+   - Approve PENDING_APPROVAL purchases from the Purchases table.
+   - Once approved, the PO can be received.
+   - Example: Admin approves PO-123; status moves to APPROVED.
+5) Receiving (partial/full)
+   - Click Receive and enter the quantity received (partial or full).
+   - Stock, inventory movement, and accounting entry update on receipt.
+   - Remaining on-order quantity stays in planning until fully received.
+   - Example: Receive 200/500 → status PARTIALLY_RECEIVED; on-order remains 300.
+6) Alerts + Planning
+   - Check Inventory Alerts for low stock, supplier inactive, lead time missing, and demand spikes.
+   - Recompute Inventory Planning to refresh suggestions based on new receipts and demand.
+   - Example: Demand spike shows 2.1 vs 1.3 avg/day; suggestion rounds to pack size 10.
+
+## Inventory Planning
+- Pages: /admin/inventory-planning, /admin/inventory-planning/[id], /admin/inventory-planning/reports
+- What it is: Demand-driven planning using the last 60 days of sales, current stock, reserved stock, and on-order purchases.
+- How to use: Recompute demand, review suggestions, tune reorder points/lead times only when needed.
+- Related: Suggestions support purchasing decisions and reduce stockouts.
+Inventory Planning — Overview
+- Page: /admin/inventory-planning
+- What it is: Main planning dashboard summarizing demand, available stock, effective planning values, and suggestions.
+- How to use: Recompute demand; the system auto-derives reorder/safety stock, and manual settings override.
+- Default reorder point: Sets the fallback reorder point used when demand history is zero.
+- Per-product fallback: In the product detail page, you can override the fallback reorder point for zero-demand items.
+- Auto recompute toggle (Daily/Weekly): This saves your preference. It only runs if a cron job calls the recompute endpoint.
+- Cron setup (Vercel):
+  1) Set `CRON_SECRET` in Vercel and your server env.
+  2) Add a Cron Job targeting `https://your-domain.com/api/admin/inventory-planning/recompute`.
+  3) Add header `Authorization: Bearer <CRON_SECRET>`.
+  4) Schedule daily or weekly; the endpoint respects the toggle and last run time.
+- Related: Uses 60-day demand snapshots and open suggestions.
+
+Inventory Planning — Product Detail
+- Page: /admin/inventory-planning/[id]
+- What it is: Per-product planning settings and suggestion details.
+- How to use: Review demand snapshot, adjust reorder point/safety stock/lead time, dismiss suggestions if needed.
+- Related: Settings feed recompute logic for suggested quantities.
+Step-by-step (product detail)
+1) Open a product from /admin/inventory-planning.
+2) Review the demand snapshot (period, units sold, average daily demand).
+3) Check the restock suggestion; if none, the product is above reorder thresholds.
+4) Update planning settings:
+   - Reorder point, safety stock, lead time days, review period days, min order qty, target stock.
+   - Default reorder (no demand): per-product fallback used when demand history is zero.
+   - Approval threshold qty (optional): per-product cutoff for purchase approval.
+   - Target stock: desired on-hand level after replenishment; when set, suggestions aim to reach this level.
+5) Save planning settings.
+6) Return to /admin/inventory-planning and click Recompute demand to refresh suggestions.
+
+Inventory Planning — Reports
+- Page: /admin/inventory-planning/reports
+- What it is: Export center for restock suggestions.
+- How to use: Download CSV and share with purchasing/suppliers.
+
+## Accounting Portal Overview
+- Page: /admin/accounting
+- What it is: Main control center for chart of accounts, journal, reports, reconciliations, integrity checks, and posting rules.
+- How to use:
+  1) Start each day in Data Integrity (quick check).
+  2) Use Journal for posting review and drill-down.
+  3) Use Cash Reconciliation (operational mode) for end-of-day cash-up.
+  4) Use reports (P&L, Balance Sheet, Trial Balance, VAT) for management and filing.
+  5) Use Reconcile Totals when operational and ledger figures diverge.
+- Fiscal period baseline:
+  - After a fresh reset with no periods, the system auto-creates one OPEN period for the current calendar year on first load of accounting pages.
+
+## Accounting — Accounts
+- Page: /admin/accounting/accounts
+- What it is: Chart of accounts (COA) used by auto-posting and reporting.
+- Account code meanings (plain language):
+  - 1000 Cash: physical cash on hand (till/office cash).
+  - 1010 Bank: money in business bank/mobile money settlement bank account.
+  - 1020 Cash in Transit: cash collected but not yet handed over/confirmed in treasury.
+  - 1030 MoMo Clearing: pending MoMo provider receipts before final settlement.
+  - 1040 Payment Gateway Clearing: online gateway receipts waiting for bank settlement.
+  - 1100 Accounts Receivable: customer balances still owed to the business.
+  - 1200 Inventory: stock value currently held.
+  - 2000 Accounts Payable: supplier invoices still unpaid.
+  - 2100 VAT Payable: VAT liability (output VAT less input VAT, by filing period).
+  - 2200 Store Credit: customer credit liability available for future orders/refunds.
+  - 2300 Accrued Expenses: expenses incurred but not yet paid/invoiced.
+  - 2400 Payroll Payable: salaries/wages accrued but not yet paid.
+  - 2500 Unearned Revenue / Customer Deposits: customer money received before delivery.
+  - 3000 Owner's Equity: owner capital introduced into the business.
+  - 4000 Sales Revenue: recognized sales income after delivery/invoicing rules.
+  - 5000 Cost of Goods Sold: inventory cost recognized for items sold.
+  - 6000 Operating Expenses: general operating costs not mapped to a specific expense account.
+  - 6100 Payroll Expense: payroll cost recognized for the period.
+  - 6200 Delivery & Logistics Expense: shipping/rider/freight operating costs.
+  - 6300 Bank Charges & Fees: bank and payment processing charges.
+  - 6400 Utilities Expense: electricity, water, internet, and similar utilities.
+  - 6500 Rent Expense: rent/lease cost for premises.
+  - 6600 Repairs & Maintenance: maintenance and repair costs.
+  - 6700 Marketing Expense: advertising/promotion costs.
+  - 6990 Cash Over/Short: variance account for cash count differences.
+- Core protected system accounts:
+  - 1000 Cash
+  - 1010 Bank
+  - 1020 Cash in Transit
+  - 1100 Accounts Receivable
+  - 1200 Inventory
+  - 2000 Accounts Payable
+  - 2100 VAT Payable
+  - 2200 Store Credit
+  - 3000 Owner's Equity
+  - 4000 Sales Revenue
+  - 5000 Cost of Goods Sold
+  - 6000 Operating Expenses
+  - 6100 Payroll Expense
+  - 6990 Cash Over/Short
+- Additional accounting codes now active:
+  - 1030 MoMo Clearing
+  - 1040 Payment Gateway Clearing
+  - 2300 Accrued Expenses
+  - 2400 Payroll Payable
+  - 2500 Unearned Revenue / Customer Deposits
+  - 6200 Delivery & Logistics Expense
+  - 6300 Bank Charges & Fees
+  - 6400 Utilities Expense
+  - 6500 Rent Expense
+  - 6600 Repairs & Maintenance
+  - 6700 Marketing Expense
+- How to use: Add business-specific subaccounts where needed; keep core codes unchanged for system consistency.
+
+## Accounting — Posting Rules
+- Page: /admin/accounting/posting-rules
+- What it is: Mapping layer between system events and ledger accounts.
+- Recommended mapping (already configured in this environment):
+  - CASH_IN_TRANSIT -> 1020
+  - MOMO_CLEARING -> 1030
+  - GATEWAY_CLEARING -> 1040
+  - STORE_CREDIT -> 2200
+  - ACCRUED_EXPENSES -> 2300
+  - PAYROLL_PAYABLE -> 2400
+  - CUSTOMER_DEPOSITS -> 2500
+  - DELIVERY_EXPENSE -> 6200
+  - BANK_CHARGES_EXPENSE -> 6300
+  - UTILITIES_EXPENSE -> 6400
+  - RENT_EXPENSE -> 6500
+  - REPAIRS_MAINTENANCE_EXPENSE -> 6600
+  - MARKETING_EXPENSE -> 6700
+- Auto-posting now covers:
+  - staged MoMo/gateway clearing lifecycle (pending -> settle or reverse),
+  - payroll accrual + payroll settlement,
+  - customer prepayments to deposits (when payment is not tied to AR settlement),
+  - expense category routing into dedicated expense accounts.
+
+## Accounting — Journal
+- Page: /admin/accounting/journal
+- What it is: Book of record for posted, draft, and void entries.
+- How to use:
+  1) Filter by account (dropdown), source, status, and date.
+  2) Use one-click source chips (`ORDER`, `PAYMENT`, `PURCHASE`, `EXPENSE`, `MANUAL`, `PAYROLL`) for faster slicing.
+  3) Use account drill chips (`1100`, `2000`, `1200`, `1000`, `2300`) for fast account-impact isolation.
+  4) Expand an entry and click an account code in line details to drill and apply that account filter immediately.
+  5) Use `Saved journal views` to save/apply/remove frequent filter combinations.
+  6) Use `Quick presets` (`Today posted`, `Draft only`, `Payments today`) for rapid review modes.
+  6.1) Default scope is now `Recent 90 days` for faster load on large datasets.
+  6.2) Turn on `Include archive` to include older historical entries (same page, no separate archive UI).
+  6.3) `Period filter` options:
+    - `Recent 90 days (default)` = fast operational review.
+    - `All non-archived entries` = full active history without archived rows.
+    - `Current open period` = fiscal-period review.
+    - `All time` = full history (best with `Include archive` on).
+    - Named periods = exact closed/open period boundaries.
+  6.4) If no explicit date range is set and `Include archive` is off, backend applies a fast recent-window guard.
+  7) Use `Export CSV (filtered)` for spreadsheet review.
+  8) Use `Export audit pack` to download both:
+    - Filtered CSV
+    - Current-filter summary TXT (scope, counts, debit/credit totals)
+  9) Toggle row density (`Comfortable` or `Compact`) based on your review pace.
+  10) Review the period summary strip (entries, posted/draft/void, debit total, credit total).
+  11) Review anomaly chips:
+    - `HIGH anomaly` = missing source reference risk.
+    - `MEDIUM anomaly` = unusually large amount risk.
+  12) Expand lines to inspect debit/credit composition and AR/AP effect.
+  13) Use `Review mode` for high-volume cleanup:
+    - Hides `Approved By` and `Entry totals` columns to focus on risk/action columns.
+    - Best used with `Out-of-balance only` and `Largest variance first`.
+  14) Confirm payment/order entries are posted after operational actions.
+  15) Use approval confirmation dialogs:
+    - Single approve: review memo and debit/credit before posting.
+    - Bulk approve: review entry count, totals, and sample memos before posting.
+  16) Use `Approve + next draft` in single-approve dialog to clear draft queues faster.
+  17) Use exception chips for fast review queues:
+    - `Missing source ref`
+    - `Large amount`
+    - `Out-of-balance only`
+    - `Stale drafts 7d+`
+  18) Use `Largest variance first` to sort out-of-balance entries by biggest absolute `Dr-Cr` gap.
+  19) Use source trace badges on each row to jump to the related source page quickly.
+  20) Saved views now support:
+    - Rename view
+    - Set default view
+    - Auto-restore last used view on page open
+  21) `Export audit pack` now includes 3 files:
+    - Filtered journal CSV
+    - Current-filter summary TXT
+    - Exceptions CSV (risk-only subset)
+  22) Keyboard workflow:
+    - `J/K` move row focus.
+    - `Shift+J/K` jump page.
+    - `Enter` expand/collapse focused entry lines.
+    - `A` open approval on focused draft (authorized roles).
+    - `Home/End` (or `G` / `Shift+G`) jump to first/last row on current page.
+  23) Use `Copy link` (entry permalink) to share a specific journal entry review.
+  24) Use `Copy source` to share the exact source page for that row (order/payment/purchase/expense).
+  25) Journal keeps filter + pagination state in URL:
+    - You can refresh, bookmark, or share the same scoped review view directly.
+    - `includeArchive=1` appears in URL when archive is enabled.
+  26) Draft queue strip (above filters):
+    - Shows total drafts, oldest draft age, and oldest memo.
+    - `Approve oldest` opens the approval flow for the oldest draft immediately.
+  27) First-visit `Journal quick tour` strip:
+    - Highlights `Review mode`, `?` shortcuts, and `Approve + next draft`.
+    - Dismiss with `Got it` (persisted in local browser storage).
+  28) Archive quick tutorial (concise):
+    - Keep daily work in default `Recent 90 days`.
+    - Use `Include archive` only when you need older history.
+    - Admin can run `Dry run archive` then `Run archive` in advanced filters.
+    - Use `Undo last batch` within 5 minutes if archive was run unintentionally.
+    - Use `Export archive runs CSV` for archive batch evidence/review.
+    - Automatic monthly archive uses `GET /api/admin/accounting/journal/archive` with `X-Cron-Secret`.
+    - For audit evidence, check archive log meta for:
+      - trigger (`manual`/`cron`), actor (name/email/role when manual), policy source (`default-policy`/`manual-override`), included statuses, result summary, and no-op reason.
+    - Legacy rows created before this enhancement can be upgraded with the backfill script (see `readme.text` journal archive setup block).
+    - Archived rows are read-only and remain searchable/auditable.
+- Manual entry policy:
+  - Admin-only.
+  - Requires reason.
+  - By default restricted to balance-sheet accounts.
+  - Set `ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL=1` to allow income/expense manual entries.
+- Note: Journal account filter supports code/name and deep-links from Cash Reconciliation diagnostics.
+
+## Accounting — Aging Hub
+- Page: /admin/accounting/aging
+- What it is: One-screen AR/AP control tower before drilling into detailed aging pages.
+- How to use:
+  - Set a shared `As-of date` once (or keep `Today`) to align AR and AP snapshots.
+  - Review both side-by-side cards:
+    - AR total + bucket split.
+    - AP total + bucket split.
+  - Use quick actions from each card:
+    - AR -> `Open AR aging`, `Open collections queue`, `Open customers`.
+    - AP -> `Open AP aging`, `Open supplier follow-up`, `Open suppliers`.
+  - Use `Journal drill` links on each card for fast account-impact review:
+    - AR card: `1100 AR`, `1000 Cash`, `1030 MoMo Clearing`
+    - AP card: `2000 AP`, `1000 Cash`, `2300 Accrued Expenses`
+  - Use `Copy snapshot` to copy a compact text summary (as-of, AR, AP, net exposure) to clipboard for email/WhatsApp updates.
+  - Watch `Last refreshed` to confirm current snapshot time.
+- Net exposure:
+  - `Net exposure = AR total - AP total`.
+  - Color cue:
+    - Green = positive (customers owe more than supplier obligations).
+    - Amber = near zero.
+    - Red = negative (supplier obligations exceed receivables).
+- Expected:
+  - AR/AP cards should update together when as-of date changes.
+  - Drill-through links preserve the chosen as-of date on AR/AP detail pages.
+  - `Open collections queue` opens Orders in outstanding-only mode sorted by highest balance.
+  - `Open supplier follow-up` opens Supplier Payments with `Outstanding only` applied across all aging buckets.
+
+## Accounting — AR Aging
+- Page: /admin/accounting/aging/ar
+- What it is: Customer receivables grouped by age buckets (0-30, 31-60, 61-90, 90+).
+- How to use:
+  - Filter by customer and optional as-of date.
+  - Choose sort mode (`balance high->low`, `balance low->high`, `customer A-Z`).
+  - Use bucket chips (`All`, `0-30`, `31-60`, `61-90`, `90+`) to focus follow-up queues.
+  - Export current view via `Export CSV` or `Export PDF`.
+  - Use summary-card `Open in Orders` links to jump into collection follow-up date windows by bucket.
+  - Click customer name to open customer account for collections follow-up.
+  - Use `Last payment` in AR rows to prioritize customers with stale balances and no recent settlements.
+  - Use `Collections next actions` strip:
+    - `Overdue customers (>30d)` -> opens Orders overdue range.
+    - `No payment in 30+ days` -> opens Customers for stale follow-up.
+    - `High balance (top 5)` -> opens Orders sorted by highest balance.
+  - Use `Journal account drill` links in Filters:
+    - `1100 AR` for receivables postings.
+    - `1000 Cash` for cash-side settlement checks.
+    - `1030 MoMo Clearing` for pending/settled MoMo movement checks.
+- Scope note:
+  - AR Aging is ledger-focused receivables aging.
+  - For operational payment and allocation workflows, use `/admin/customers` and `/admin/orders`.
+- Expected: AR Aging total should align with AR ledger (subject to as-of date).
+
+## Accounting — AP Aging
+- Page: /admin/accounting/aging/ap
+- What it is: Supplier payables grouped by age buckets (0-30, 31-60, 61-90, 90+).
+- How to use:
+  - Filter by supplier and optional as-of date.
+  - Choose sort mode (`balance high->low`, `balance low->high`, `supplier A-Z`).
+  - Export current AP Aging view with `Export CSV`.
+  - Click supplier name to open Supplier Payments pre-filtered to that supplier.
+  - On mobile, use card view for each supplier (same totals/buckets as desktop table).
+  - Use `Journal account drill` links in Filters:
+    - `2000 AP` for liability postings.
+    - `1000 Cash` for payment-side settlement checks.
+    - `2300 Accrued Expenses` for accrual settlement crossover checks.
+- Scope note:
+  - AP Aging is ledger-focused (received liabilities).
+  - Ordered/not-received exposure is operational and is tracked in `/admin/supplier-payments`.
+- Expected: AP Aging changes after supplier payments are posted/approved.
+
+## Accounting — Supplier Payments (AP)
+- Pages: /admin/supplier-payments, /admin/purchases
+- What it is: AP subledger built from purchase receipts and supplier settlements.
+- How to use:
+  - Record supplier payments from payables ledger.
+  - Track pending approvals.
+  - Approve pending purchases directly from the "Pending Purchase Approvals" panel.
+  - Approval clicks (purchase/payment) now open a confirmation modal before final approval.
+  - Use "Next actions" buttons (`Overdue`, `Due today`, `Due in 7 days`) for quick follow-up queues.
+  - Use `Aging filter` (`All`, `Due today`, `Due in 7 days`, `Overdue`, and bucket drilldowns) to focus execution.
+  - Use `Outstanding only` follow-up scope (from Aging Hub deep-link) to focus strictly on rows with balance due across all buckets.
+  - Click aging cards (`0-30`, `31-60`, `61-90`, `90+`) to drill down ledger rows by bucket.
+  - Save frequently used filter combinations in "Saved filter presets" (save/apply/delete).
+  - If opened from Aging Hub, a subtle `Applied from Aging Hub` badge appears for context.
+  - Export bundle audits now capture file manifest and row/column counts (current view + summary) for stronger evidence.
+  - CSV/PDF downloads from this page are audit-logged:
+    - `Export current view (CSV)`
+    - `Export current view (PDF)`
+    - `Export summary (CSV)`
+    - `Export summary (PDF)`
+    - `Export statement (CSV)` (from supplier statement action)
+    Each log captures initiator, file name, format, scope snapshot, and size/row-column counts where available.
+- Summary behavior:
+  - `Summary basis` selector controls how outstanding/reconciliation are presented:
+    - `Operational exposure`: includes full operational open exposure.
+    - `Ledger AP basis`: focuses on received AP outstanding.
+  - Meaning and use:
+    - `Operational exposure` answers: “What supplier obligations are still operationally open right now?”
+      - Includes open ordered/not-yet-received exposure plus received/unpaid exposure within current page scope.
+      - Use for procurement execution, supplier follow-up, and expected-date discipline.
+    - `Ledger AP basis` answers: “What amount is currently represented as AP liability in accounting view?”
+      - Anchors reconciliation toward received AP positioning.
+      - Use for accounting controls, AP review, and period-close checks.
+  - Why compare both:
+    - Comparison identifies timing/process gaps between operations and accounting treatment.
+    - Small temporary differences can occur during normal posting windows.
+    - Persistent differences indicate action is needed.
+  - Recommended cadence:
+    - Daily during active operations; minimum weekly review.
+    - At period close, review and resolve deviations before final sign-off.
+  - Deviation triage (practical order):
+    - Confirm filters/scope first (supplier, month, status, strict date toggle).
+    - Check unposted/pending approvals and recent receives/payments.
+    - Verify expected-date/state transitions on open purchases.
+    - Reconcile credits/refunds and supplier-specific credit carryover.
+    - Re-run integrity/health checks if mismatch persists.
+  - Deviation threshold alerts:
+    - Configure absolute and percent thresholds on the page.
+    - Warning/critical badges appear when basis delta exceeds configured guardrails.
+  - Difference drilldown:
+    - Use `Why this difference?` to view quick contributors:
+      - ordered not received exposure
+      - pending purchase/payment approvals
+      - credits/refunds
+      - strict-date scope state
+  - "Pending payment approvals" reflects supplier payment requests awaiting approval.
+  - "Pending purchase approvals" reflects purchase orders awaiting approval (separate from payment approvals).
+  - Verify reconciliation line:
+    - `Total amount − Paid − Supplier credits + Refunds = Reconciliation net payable` (based on selected summary basis).
+  - Desktop includes sticky mini-summary while scrolling (`Open exposure`, `Received AP`, active filter).
+  - Supplier-specific aging mini-chart shows bucket concentration by selected supplier.
+- Pending approval behavior:
+  - "Pending approval" totals include only payments that are still unapproved.
+  - Once approved, they no longer count as pending and are posted as paid.
+- Posting logic:
+  - Purchase receive: Dr Inventory, Cr AP.
+  - Supplier payment: Dr AP, Cr Cash/Bank.
+  - Supplier return/refund paths reverse AP/inventory appropriately.
+- Exports and communication:
+  - "Export current view (CSV/PDF)" exports detail rows for current filters/scope.
+  - "Export summary (CSV/PDF)" exports totals and reconciliation snapshot.
+  - "Export email summary (TXT)" downloads plain text template for manual email.
+  - "Send summary email" opens a modal (To/CC/Subject/Message) and sends current summary directly from app (Admin permission required).
+  - "Export bundle (ZIP)" downloads current-view CSV, summary CSV, and email-summary TXT together for handoff/archival.
+  - "Last summary email sent" shows latest recipient/time on the page.
+  - "Quick recipients" in send modal lets admins reuse and manage recent recipient emails.
+  - "Scheduled summary email" section:
+    - lets admin set frequency (daily/weekly), recipients, and subject prefix.
+    - supports due-state tracking and one-click `Send now`.
+    - for full unattended automation, wire cron/job runner to call supplier summary email endpoint.
+  - AP Aging cross-link:
+    - `Open AP Aging` carries supplier and month context for faster cross-page reconciliation.
+
+## Operations — Returns & RMA
+- Page: /admin/returns
+- What it is: Central return ledger (cash refunds, store credit, and balance-applied returns).
+- Filters:
+  - Search
+  - From/To Date
+  - Return Type
+  - Source
+  - RMA Disposition (`RESTOCK`, `SCRAP`, `RETURN_TO_SUPPLIER`)
+- How it works:
+  - Total returns = all return value in the period.
+  - Applied to balance = value used to reduce existing outstanding balances.
+  - Store credit = credit created at return time (after any balance reduction).
+  - Credit used on orders = credit consumed at checkout.
+  - Expected remaining credit = issued credit - used credit (matches Customers page total).
+- How to use: Filter by labeled fields above, open the linked order, and verify refund disposition/restock/source.
+- Related: Uses return notes + journal entries to reconcile applied-to-balance returns.
+
+## Accounting — Returns & Refunds (Journal Posting)
+- Pages: /admin/orders/[id], /admin/returns
+- What it is: Return accounting for AR, cash, store credit, and stock valuation.
+- Posting behavior:
+  - Applied to balance: AR is reduced for applied amount.
+  - Cash refund: Cash/Bank is credited for payout amount.
+  - Store credit: Store Credit liability (2200) is credited for issued credit.
+  - Restock return: Inventory debited and COGS credited for cost reversal.
+- Reconciliation on order page:
+  - `Ledger total | Less non-ledger return credits | Net paid` should match `Amount Paid`.
+
+## Accounting — VAT / Tax
+- Pages: /admin/accounting/tax-codes, /admin/accounting/vat-filings
+- What it is: VAT rates and filing packs.
+- How to use: Maintain tax codes, export VAT filings.
+- Related: Used in journal entries and VAT reports.
+
+## Accounting — Reports
+- Pages: /admin/accounting/reports, /admin/accounting/reports/pl,
+  /admin/accounting/reports/balance-sheet, /admin/accounting/reports/trial-balance,
+  /admin/accounting/reports/vat, /admin/accounting/reports/order-discounts,
+  /admin/accounting/reports/scheduled
+- What it is: Ledger-backed statements and filing support.
+- How to use:
+  - Trial Balance: validate total debits = total credits.
+  - P&L: review income, discounts (contra-revenue), COGS, and expense classes.
+  - Balance Sheet: verify Assets = Liabilities + Equity.
+  - VAT: verify output/input/net and filing pack.
+  - Order Discounts: review discount amount, discount %, creator, and reason by order.
+  - Scheduled Reports: sends secure link emails (not raw financial data in email body).
+- Email behavior:
+  - Report email intentionally sends a link, not report payload.
+  - Link should be clickable and opens admin report route with date parameters.
+
+## Accounting — Bank Accounts
+- Page: /admin/accounting/banks
+- What it is: Bank accounts, transactions, and matching rules.
+- How to use: Add accounts, record transactions, create matching rules, import/export rules.
+- Related: Rules are used by reconciliation to match cash movement to ledger lines.
+
+## Accounting — Reconciliations
+- Pages: /admin/accounting/reconciliations, /admin/accounting/reconciliations/[id]
+- What it is: Matching bank transactions with journal entries for a period.
+- How to use:
+  - Create a reconciliation by selecting bank, start/end dates, and statement ending balance.
+  - The page blocks duplicate bank+period creation and highlights the existing reconciliation instead.
+    - Server and DB both enforce this; duplicate create returns `409` conflict.
+  - Use server-driven list filters (`Bank`, `Status`, `Search`, `Period start from`, `Period end to`) to isolate open month-end work quickly.
+    - Search input is debounced (350ms) to reduce unnecessary query churn.
+  - Sort options support triage (`Newest period`, `Oldest period`, `Oldest open`, `Largest balance`, `Recently updated`).
+  - Use pagination controls (`page`, `pageSize`) for large reconciliation volumes.
+  - Use quick presets for faster views:
+    - `Open only`
+    - `Closing this month`
+    - `Needs attention (>7d open)`
+  - Save and reuse custom filter states in `Saved Views`; use `Share link` to copy a deep-link URL.
+    - Saved views and column visibility are synced to user preferences (`/api/admin/preferences`) for cross-device continuity.
+  - Pagination mode can be switched between:
+    - `Offset (page numbers)`
+    - `Cursor (large lists)` for better scalability.
+  - URL query state is preserved for filters, pagination, create-form draft values, and selected reconciliation (`recId`) so views are shareable/reload-safe.
+  - Use `Open selected workspace` or row-level `Open` to continue matching and close checklist tasks.
+- Page signals:
+  - Summary cards show total count, in-progress count, closed count, and aggregate statement balance from current filtered scope.
+  - SLA cards show `Open > 7 days`, `Open > 14 days`, and `Oldest open age`.
+  - SLA Notifications panel highlights active 14-day breaches with one-click triage filters.
+  - Each row shows status badge, `Open age` (days), and `Last activity` date for SLA prioritization.
+  - Row progress includes `% matched` and matched/total transaction count.
+  - Each row supports assignee ownership (`ADMIN`/`ACCOUNTANT`) to make accountability explicit.
+  - Selected reconciliation panel shows current status plus matched-line count preview.
+- Controls and compliance:
+  - Bulk toolbar supports:
+    - `Open selected`
+    - `Close selected` (with dry-run checklist + explicit confirmations)
+    - `Export summary CSV`
+    - `Export detailed CSVs` (single ZIP package download)
+  - Keyboard shortcuts:
+    - `/` focus search
+    - `j` / `k` move row selection
+    - `enter` open selected workspace
+    - `?` open shortcut help dialog
+  - Assignment update failures show retry-capable toasts for quick recovery.
+  - History list uses virtualization for larger result sets to keep scrolling/rendering responsive.
+  - Row column visibility is configurable and synced per user (with local fallback).
+  - Export CSV actions are audit-logged (`accounting.reconciliations` export area).
+  - Opening reconciliation workspace is audit-logged (`reconciliation.workspace.open`).
+  - SLA threshold crossings emit audit alerts (`reconciliation.sla.alert`) with cooldown.
+  - List and create endpoints are rate-limited and validate/cap query payload sizes.
+  - Header shows data freshness (`Last data refresh` + query duration) and supports manual refresh + optional 60-second auto-refresh.
+  - Slow list queries emit telemetry logs (`Slow reconciliation list query`) for production tuning.
+  - Period dates are normalized to Accra calendar day boundaries (stored as UTC start/end of day) to avoid timezone drift.
+  - Browser E2E coverage exists for keyboard shortcut help, bulk-close dialog accessibility, and ZIP export button visibility.
+- Related: Supports period close checklists and integrity checks.
+
+## Accounting — Reconciliation Match Workspace
+- Page: /admin/accounting/reconciliations/[id]
+- What it is: Side-by-side matching of bank statement lines and journal entries.
+- How to use:
+  - Select a bank transaction and the corresponding journal line(s), then Apply match → Save match.
+  - Use Auto‑match (exact, tolerance, or rules) to speed up bulk matching.
+  - Reopen a closed reconciliation if you need to edit matches (closed reconciliations are locked).
+- Related: Matching rules from Bank Accounts can propose candidate matches.
+
+## Accounting — Cash Reconciliation
+- Page: /admin/accounting/cash-reconciliations
+- What it is: Two-mode cash control page with strict day-close controls.
+- Reconciliation modes:
+  - `Operational (day cash-up)`:
+    - compares day net movement (`cash in − cash out`) vs counted day net.
+    - supports source breakdown by channel (OTC, balance collections, purchases cash out, adjustments, etc.).
+    - includes optional till calculator (`opening float`, `counted closing till`, derived day net).
+  - `Ledger (GL as-of)`:
+    - compares cumulative GL cash balance as of selected date vs physically counted cash.
+- End-of-day controls:
+  - Daily close checklist required before save.
+  - Non-zero variance requires reason (with audit trail).
+  - Reconciled day lock blocks accidental resave unless override is explicitly enabled.
+  - Missed-day banner shows unreconciled days with cash movement.
+  - Auto-catchup can close only verified zero-variance missing days.
+- Diagnostics:
+  - Negative expected cash warning links directly to Journal (account/date filtered).
+- Cash deposit relation:
+  - `Deposit cash to bank` is a separate transfer entry.
+  - In operational mode, deposit is blocked after day is already reconciled.
+  - Reconcile first for that day, then deposit policy can be applied consistently.
+- History:
+  - Recent reconciliations support filtering/pagination and per-day detail drilldown.
+
+## Accounting — Owner Equity Contributions
+- Page: /admin/accounting
+- What it is: Quick way to record owner equity added to cash/bank.
+- How to use: Open “Record owner equity,” enter amount, select bank/cash account, and save.
+- Related: Posts a balanced journal entry (Debit Cash/Bank, Credit Equity).
+
+## Accounting — Fiscal Periods
+- Pages: /admin/accounting/periods, /admin/accounting/periods/[id]/snapshot
+- What it is: Open/close windows for accounting postings.
+- How to use: Create periods, close when ready, review close report snapshots.
+- Related: Closing a period prevents further postings in that date range.
+
+## Accounting — Data Integrity
+- Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
+- What it is: Consistency checks across AR, inventory, negative stock, and posting readiness.
+- How to use:
+  1) Set `As of date` (use today for live operations, historical date for point-in-time review).
+  2) Click `Recalculate` to refresh checks.
+  3) Review warning rows (`⚠`) for AR/inventory deltas and negative stock.
+  4) Review `Ledger readiness` counts for missing postings.
+  5) Use `Sync ledger` when postings are missing.
+  6) Use `Post inventory adjustment` when inventory valuation requires alignment.
+  7) Export CSV for audit handoff.
+- AR note: The AR check uses live order totals (all non-cancelled orders, including admin-created orders), so a mismatch usually means a missing posting or stale data. Use Sync ledger first.
+- Related: Settings define thresholds for warnings.
+
+### Practical Validation Script
+1) Open `/admin/accounting/integrity`.
+2) Confirm checks load and values are numeric.
+3) Change `As of date` to a past date and verify stale-date warning appears.
+4) Click `Use today` and verify warning clears.
+5) Click `Recalculate` and verify values refresh.
+6) If missing posting counts are non-zero, review sample links under `Missing postings (sample)`.
+7) Click `Sync ledger`, confirm dialog, run sync, then recheck counts.
+8) Click `Export CSV` and confirm file download.
+
+## Accounting — Reconcile Totals
+- Page: /admin/accounting/reconcile
+- What it is: Operational vs ledger bridge for Revenue, COGS, Expenses, Net Profit, and Margin.
+- How to use:
+  1) Set date range.
+  2) Compare operational and ledger columns.
+  3) Inspect manual entries list shown under totals.
+  4) Validate return credits and auto-apply effects for the same period.
+- Typical deltas explained by:
+  - inventory valuation adjustments,
+  - manual journal entries,
+  - timing differences between operations and posting date.
+
+## Accounting — Settings & Posting Rules
+- Pages: /admin/accounting/settings, /admin/accounting/posting-rules
+- What it is: Integrity thresholds + event-to-account mapping.
+- How to use:
+  - Settings page: configure alert thresholds and behavior.
+  - Posting Rules page: map system events to account codes.
+- New auto-post accounting lifecycles now included:
+  - MoMo/gateway pending -> success/cancel/failed clearing lifecycle.
+  - Customer deposit liability for unapplied customer cash.
+  - Payroll accrual and payroll paid settlement lifecycle.
+  - Expense smart routing into dedicated expense accounts.
+
+## System Settings — Feature Toggles
+- Page: /admin/settings/features
+- What it is: Global feature flags (includes Accounting auto-post).
+- How to use: Toggle "Accounting auto-post" on/off to control whether orders/payments/expenses post automatically. This toggle is locked by `ACCOUNTING_AUTO_POST_ENABLED` (set to 1 in `.env`/`.env.local`) and will be disabled in the UI while the env flag is on.
+- To disable auto-post: set `ACCOUNTING_AUTO_POST_ENABLED=0` in `.env`/`.env.local` and restart the app.
+- Related: When off, use Sync ledger in Data Integrity to backfill postings.
+
+## HR Portal
+- Pages: /admin/hr, /admin/hr/staff, /admin/hr/staff/[id], /admin/hr/hiring,
+  /admin/hr/issues, /admin/hr/leave, /admin/hr/compensation, /admin/hr/reviews, /admin/hr/payroll
+- What it is: Staff profiles, hiring, payroll, and HR compliance tracking.
+- How to use: Manage profiles, documents, leave, performance reviews, and payroll runs.
+- Related: HR docs are stored privately; payroll exports support accounting.
+
+## Admin Settings & Content
+- Pages: /admin/settings/homepage, /admin/settings/features, /admin/settings/communications
+- What it is: Content management and feature toggles.
+- How to use: Update homepage hero, enable/disable features, test comms providers.
+- Related: Impacts public site content and notification channels.
+
+## Audit & Health
+- Pages: /admin/audit, /admin/health, /admin/health/summary
+- What it is: Activity logs and system data health checks.
+- Access scope:
+  - ADMIN, ACCOUNTANT: full audit visibility.
+  - STAFF: payroll/compensation audit rows are hidden (including exports and filter options).
+- How to use:
+  1) Open `/admin/audit` and set filters (entity, action, actor, customer, date); confirm `Date range status` is valid.
+  2) Save reusable views with `Save current filter as`; enable sharing if the whole admin/accounting team should use it.
+  3) Reopen views from `Saved filters`:
+     `My filters` are editable by you; `Team filters` are shared and read-only for non-owners.
+  4) Use `Copy filter link` to send the exact filtered view to another user.
+  5) Use `Risk mode` to focus review:
+     `Exceptions only` (medium/high/critical), `Critical only`, or `Needs review` (exceptions not yet reviewed).
+     If all entries are currently low risk, `Needs review` will return no rows.
+     Use `Queue preset` for workflow queues:
+     `Critical unreviewed`, `Archive soon unreviewed`, `Needs assignment`, `Overdue tasks`.
+  6) Each row now shows `Risk` severity and review state (`Reviewed` / `Not reviewed`); use `Mark reviewed` when an exception is accepted.
+     High/critical (and selected control actions) now require a review task owner + due date before `Mark reviewed` is allowed.
+  7) `Clear review` / `Clear selected review` is ADMIN-only and requires a mandatory clear reason (minimum 8 characters) for re-opened exceptions.
+  8) The review action uses a confirmation dialog with note capture for audit traceability.
+  9) Use the queue strip above results for fast triage: `Needs review (all filtered)`, `Critical (all filtered)`, and `Reviewed today (all filtered)` based on your active filters (not only the visible page).
+  10) Health actions (`HEALTH_ACKNOWLEDGED`, `HEALTH_DIAGNOSTICS_RUN`, `HEALTH_AUTO_HEAL_RUN`) now render in compact plain-English form in the meta column:
+      key result, issue summary, and before/after workflow are shown first.
+      Zero-only issue breakdown and non-required follow-up notes are hidden to reduce noise.
+     The same strip also shows review pressure and archive pressure:
+     `Overdue reviews C/H/M`, `Archive soon (14d)`, `Archive escalation (3d)`, `Needs assignment (escalation window)`, `Open tasks`, `In-progress tasks`, `Overdue tasks`, and `Already archive-eligible unreviewed`.
+     Escalation requires assignment: unassigned rows in the escalation window are counted under `Needs assignment`.
+     Admin can send an escalation digest from `Notify escalation owners` (confirmation dialog) to configured recipients.
+     Use `Notification center` for in-app SLA breach alerts (overdue reviews, overdue tasks, archive-escalation without assignee).
+  10) For batches, tick row checkboxes (exception rows only), then use `Mark selected reviewed` or `Clear selected review`; a single confirmation dialog applies to all selected rows.
+      You can also use `Assign selected task` to set status/owner/due date for multiple rows at once.
+  11) Review each event row using `Actor`, `Entity`, and expanded `Meta` (`Show more`) for full context; meta values are shown in plain English (not JSON), including OTC shift, payment, and procurement status details, then use `View record` to open the source page when available.
+      Every row now includes an explicit `Initiated by` line in Meta (name/email/role, or `System` fallback for non-user/system events).
+      `View record` link coverage has been expanded (including product/supplier/journal/report/lot contexts) to reduce `No linked page` entries.
+      Review actions (`AUDIT_REVIEW_MARKED`, `AUDIT_REVIEW_CLEARED`, bulk variants) now include full trail context:
+      before/after review state, target event details, previous reviewer context, applied reviewer/timestamp, and clear reason.
+      `EXPENSE_CREATE` and `SUPPLIER_PRICE_CHANGE` rows now show dedicated plain-English fields (reason, reversal status, unit-cost delta, purchase reference), and supplier events include direct `View record` linking to the supplier page.
+      Additional high-volume entries now also use dedicated plain-English blocks:
+      `ORDER_CREATE_ADMIN`, `ORDER_CREATE`, `PAYMENT_SUCCESS`, `PURCHASE_CREATE`, `PURCHASE_RECEIVE`, `PURCHASE_APPROVE`, `EXPENSE_SETTLE`, `ORDER_ITEM_DELIVERY_UPDATE`, `IMAGE_UPLOAD`, and `PRODUCT_CREATE`.
+      Additional coverage from the next review pass:
+      `PRODUCT_STOCK_UPDATE`, `PRODUCT_DELETE`, `journal.archive.*` runs, `ACCOUNTING_POST_BACKFILL`, and `app-setting.update` (with masked value handling for sensitive keys).
+      `SUPPLIER_PAYABLES_EXPORT_BUNDLE` now shows export result, bundle name/time, initiated-by user (name/email/role), file count+size, scope snapshot (scope/basis/status/month/aging/page/rows), CSV row/column counts, notes/email indicators, and file manifest in plain English.
+      `PRODUCT_CREATE` now includes supplier context and initial purchase flow details; `IMAGE_UPLOAD` now includes storage/url and upload timestamp; `PURCHASE_RECEIVE` now includes receipt quantity + stock change with legacy-safe status rendering.
+      `PRODUCT_DELETE` now includes stronger audit context: SKU/category/brand/supplier, selling+cost snapshot, order-history count, cleanup effects, delete timestamp, and delete reason.
+      For all other entry types, fallback meta rendering now normalizes labels/values to plain English (status tokens, dates, currency-like fields, percentages, IDs, and empty values as `Not provided`) so raw JSON-style fragments are avoided.
+      Generic mutable-entry fallback now adds a `What changed` block when before/after fields exist.
+      Use `History` on a row to view review/task timeline (mark/clear/task updates with actor and timestamp).
+  12) Use the `Task` action on exception rows to assign owner, due date, and task status (`Open`, `In progress`, `Resolved`).
+      `In progress` and `Resolved` require an assignee (Admin/Accountant).
+      You can attach image evidence files to a task from the task dialog.
+      Task updates are audit-logged as `AUDIT_REVIEW_TASK_UPDATED` (single) or `AUDIT_REVIEW_TASK_BULK_UPDATED` (bulk).
+      The `Aging` column shows event age and SLA due/overdue timing for triage.
+      Critical review clear has dual approval:
+      non-admin users submit a clear request, then Admin can `Approve clear` or `Reject clear`.
+      Admin can still clear directly without second approval.
+  13) Use `Export CSV` or `Export PDF` for handoff; exports include plain-language `Details`, `Source link`, and risk/review status columns.
+      CSV/PDF downloads across admin pages are now audit-logged with initiator, file name, format, size, and scope context (where available).
+      You can filter `/admin/audit` by action:
+      `ADMIN_EXPORT_DOWNLOAD`, `CUSTOMER_STATEMENT_EXPORT_CSV`, `CUSTOMER_STATEMENT_EXPORT_PDF`,
+      `INVENTORY_LOTS_EXPORT_CSV`, `INVENTORY_LOTS_COMPLIANCE_EXPORT_CSV`,
+      `DASHBOARD_SUMMARY_EXPORT_CSV`, `DASHBOARD_SUMMARY_EXPORT_PDF`,
+      `PRODUCT_PL_EXPORT_CSV`, `PRODUCT_PL_EXPORT_PDF`,
+      `STOCKOUT_IMPACT_EXPORT_CSV`, `STOCKOUT_IMPACT_EXPORT_PDF`,
+      plus supplier-payables export actions.
+  14) Use bottom pagination to move across server-loaded results and `Refresh` to reload without clearing filters.
+  15) On small screens, audit rows switch to stacked cards with the same risk/review actions; desktop keeps table layout.
+  16) Open `/admin/audit/retention` for retention status and manual cleanup run.
+     Retention guard is enforced:
+     - Unreviewed `High/Critical` exceptions block purge (must be reviewed first).
+     - Unreviewed `Medium` exceptions require explicit one-run override + reason.
+  17) Open `/admin/audit/settings` to configure risk thresholds and review queue windows without code changes:
+     - Refund high/critical trigger amounts
+     - Payment void high trigger amount
+     - OTC unposted-payment high trigger count
+     - Review SLA windows (critical/high/medium)
+     - Archive reminder/escalation windows
+     Save uses confirmation dialog and inline validation.
+     Use `Reset to defaults` to immediately restore env/default baseline thresholds and windows (confirmation required).
+     `Risk rule matrix` toggles let Admin decide which control actions escalate severity (for example `ORDER_CANCEL` as High).
+     Every save is audit-logged as `audit-risk-setting.update` with before/after values.
+     Reset actions are audit-logged as `audit-risk-setting.reset`.
+     If editing is locked, check `AUDIT_SETTINGS_MODE`:
+     `editable` (can save), `read_only` (view only), `env_only` (DB ignored; env/defaults only).
+  18) Reviewer performance panel shows 30-day throughput per reviewer:
+      reviewed count, average hours-to-review, and assigned open/in-progress/overdue counts.
+  19) Open `/admin/health` to review `Health Operations` status, issue count, and SLA.
+      Location guide:
+      `Triage queue` is inside the `Health Operations` card (same page), below `Acknowledge + owner`.
+      Use `Triage queue` presets to focus issues:
+      `All`, `Critical`, `Posting gaps`, `Operational`, and `POD alerts`.
+      Each queue card shows count, plain-English impact hint, and `Open queue` link where relevant.
+      When an active incident exists, queue cards also show `Open active incident` for direct incident-level triage.
+      Operational queue links now deep-link to exact Health sections:
+      stock mismatches, order balance mismatches, payment mismatches, and legacy auto-apply diagnostics.
+      Quick Start (recommended sequence):
+      1. Run `Run diagnostics (dry run)`.
+      2. Choose a queue preset (`Critical`, `Posting gaps`, `Operational`, or `POD alerts`).
+      3. Use queue cards and click `Open active incident` when available.
+      4. In `Acknowledge + owner`, set owner, status, due date, and note.
+      5. Work category cards in `Runbook by signal` until open counts clear.
+      6. Add timeline notes (`Finding -> Action -> Outcome -> Next step`).
+      7. Re-run diagnostics and confirm issue signals return to zero.
+      8. If setting status to `Resolved`, enter resolution evidence note (minimum 12 chars).
+      9. Export `handoff bundle` for records and shift handoff.
+  20) Run `Run diagnostics (dry run)`, then use `Acknowledge + owner` to assign accountability.
+      `Run diagnostics (dry run)` refreshes health scan results, trend snapshot, and freshness timestamps.
+      It does not post or repair data.
+      Audit log entry `HEALTH_DIAGNOSTICS_RUN` now records:
+      who ran it, when it ran, total issue count, plain-English issue summary, and full issue breakdown.
+      `Acknowledge + owner` now validates inputs when issues are active:
+      owner is required and note must be at least 8 characters.
+      Workflow controls are included in the same panel:
+      set `Status` (`Open`, `In progress`, `Resolved`) and `Due date`.
+      Fields are explicitly labeled as `Status` and `Due date (deadline)` to avoid confusion with timestamp fields.
+      While active issues exist, due date is required; due date in the past is blocked unless status is `Resolved`.
+      Setting status to `Resolved` requires a resolution evidence note (minimum 12 characters).
+      Header badges highlight `Overdue` and `Needs assignment`.
+      Due-time badges now show `Due in ...` or `Overdue by ...`.
+      `Overdue` appears only when there are active issue signals and the due date is past.
+      Save uses a confirmation dialog.
+      After save, the form now re-syncs to the server-saved values immediately
+      (owner, status, due date, and current summary line) so the view is always canonical.
+      Note field behavior:
+      - while issues are active, note stays populated;
+      - when status is `Resolved` and issue signals are zero, note auto-clears for the next incident cycle.
+      Due date behavior:
+      - when status is `Resolved` and issue signals are zero, due date clears automatically (no active deadline remains).
+      Inline validation behavior:
+      acknowledgement errors are shown only after clicking `Save acknowledgement`.
+      Red warning does not show preemptively while the user is still editing inputs.
+      Audit log entry `HEALTH_ACKNOWLEDGED` now records:
+      workflow before/after (owner, status, due date, note), issue summary, and follow-up guidance.
+      Assignment notifications:
+      when incident owner changes on incident detail workflow, the new owner receives an email notification and audit row `HEALTH_INCIDENT_OWNER_NOTIFIED` is written.
+  21) If issues remain, run `Run auto-heal now`, then rerun diagnostics and confirm status returns to `Healthy`.
+      `Run auto-heal now` attempts safe automated posting repairs, then updates health state.
+      It is available only when `ACCOUNTING_AUTO_HEAL_MISSING_POSTINGS=1`.
+      `Run diagnostics` and `Run auto-heal now` now both require confirmation dialogs before execution.
+      Audit log entry `HEALTH_AUTO_HEAL_RUN` now records:
+      before/after issue count, plain-English summaries, and posting repair totals.
+  22) Use alert controls in `Diagnostics + auto-heal`:
+      - `Run alert check (dry run)` previews if alert email would send and how many admins would receive it.
+        The dry-run dialog shows the current alert recipients (name/email) before confirm.
+      - `Send health alert now` sends alert email immediately (daily duplicate guard still applies).
+      - `Force send alert now` bypasses daily duplicate guard for urgent resend.
+        Force send requires a reason (minimum 8 characters), and that reason is stored in audit metadata.
+        If force-send cannot execute (for example no active issues or no admin recipients), the attempt is still logged as `HEALTH_ALERT_FORCE_SEND_SKIPPED`.
+        In Audit Log, this action is shown in compact form: result, force reason, and whether active issues existed.
+        Force send is blocked when diagnostics are stale; run diagnostics first.
+        Guardrail threshold is controlled by `HEALTH_ALERT_FORCE_MAX_DIAGNOSTIC_AGE_HOURS` (default 6).
+      The dialog uses `Confirm & Send` for the send action so intent is explicit.
+      The card shows `Last sent alert` details for actual sends:
+      time, sender, source, issue summary, result summary, and recipient list.
+      It also shows `Last alert activity` so you can see skipped send attempts with reason/result.
+      Use `Run escalation check` to evaluate overdue active incidents against escalation thresholds and send escalation email when criteria are met.
+      Escalation defaults:
+      level 1 at 4 overdue hours, level 2 at 24 overdue hours.
+      Escalation events are audit-logged as `HEALTH_INCIDENT_ESCALATION_SENT` or `HEALTH_INCIDENT_ESCALATION_SKIPPED`.
+      Scheduled escalation checks:
+      configure cron endpoint `/api/admin/health/escalations/cron` (secret via `HEALTH_INCIDENT_ESCALATION_CRON_SECRET` or `CRON_SECRET`).
+      Both actions use confirmation dialogs and write audit logs (`HEALTH_ALERT_DRY_RUN` / `HEALTH_ALERT_SENT`).
+  23) Use `Incident timeline` to add investigation notes as work progresses.
+      `Add note` requires at least 8 characters and writes `HEALTH_INCIDENT_NOTE_ADDED` to audit log.
+      Use this for handoff context between admins (what was checked, what changed, next step).
+      Incident mode control:
+      - `Detector-backed`: use when active issue signals exist.
+      - `Operational follow-up`: use manual documentation when no active issue signals exist.
+      If no active signals are present, select `Operational follow-up` (detector-backed mode is blocked).
+      Detector-backed warning behavior: the warning now appears only when a user starts typing a timeline note while still in `Detector-backed` mode and there are no active issue signals.
+      In this blocked detector-backed state, incident note input is disabled and the 8-character note warning is suppressed.
+      Optional follow-up due date can be set for manual follow-up incidents.
+      Incident records are now stored per Health incident (not a single global list).
+      The Health page shows the latest 5 notes for the current/recent incident to keep the page clean.
+      Full historical notes remain available in audit logs.
+      Incident timeline tutorial:
+      1. After diagnostics, add a first note with the finding.
+      2. After each repair action (auto-heal/manual), add outcome note.
+      3. Before handoff, add next-step note so another admin can continue.
+      4. At closure, add final resolution note (what fixed it and verification result).
+      Suggested note format: `Finding -> Action -> Outcome -> Next step`.
+      If no active issue-linked incident exists, adding a note now auto-creates a manual incident so notes are never lost.
+  24) Use `Runbook checklist` in Health Operations to track execution status:
+      diagnostics run, owner/due assignment, investigation note added, healthy-state verification, and report handoff.
+      When no issue signals are active, the runbook area shows `No active incident` instead of completed/pending items.
+      Runbook checklist tutorial:
+      1. Run diagnostics.
+      2. Assign owner + due date.
+      3. Add at least one incident timeline note.
+      4. Re-run diagnostics after repair and verify healthy state.
+      5. Export report for handoff/records.
+      Keep Health workflow status as `Open` or `In progress` while checklist items remain pending.
+      Incident lifecycle behavior:
+      - Diagnostics with active issue signals opens/updates an incident.
+      - Healthy diagnostics resolves the active incident.
+      - New issue fingerprint opens a new incident timeline.
+      `Runbook by signal` card now tracks category-level status:
+      Posting/Ledger, Stock integrity, Payments/Balances, and POD compliance.
+      KPI strip at top now shows:
+      MTTA, MTTR, reopen rate, and overdue rate (rolling 30 days) for operational quality tracking.
+      KPI trend sparklines:
+      weekly MTTA and MTTR mini charts help detect trend direction, not just current average.
+  25) Export `health report (CSV)` or `summary (PDF)` when sharing health review outcomes.
+      `Export handoff bundle` adds a one-click text package containing:
+      snapshot summary, workflow context, signal breakdown, incident context, latest timeline notes, and 7-run trend.
+      Handoff filter controls:
+      choose `Scope` (`Full snapshot` or `Incident only`) and `Timeline notes` limit (5/10/20),
+      then click `Download configured handoff bundle`.
+      Exports now include workflow ownership fields (status, due date, overdue flag, needs-assignment flag).
+      PDF export uses the same stable generator approach as Audit exports for local/dev reliability.
+      Each export now writes an audit log row (`HEALTH_EXPORT_CSV` / `HEALTH_EXPORT_PDF` / `HEALTH_EXPORT_HANDOFF_BUNDLE`)
+      with initiator, file details, size, and workflow scope snapshot.
+      Recommended operating sequence:
+      (a) Check severity + issue count,
+      (b) choose queue preset,
+      (c) run diagnostics,
+      (d) acknowledge owner/note,
+      (e) run auto-heal if appropriate,
+      (f) rerun diagnostics,
+      (g) export report for handoff.
+  26) Open `/admin/health/incidents` for incident-focused history and handoff:
+      - Manual incidents are hidden by default; turn on `Include manual incidents` when needed.
+      - Default status view is `All statuses` so recent incidents are visible immediately.
+      - Filter by status (`Open`, `In progress`, `Resolved`, `Closed`) and search summary/fingerprint/note text.
+      - Use this page for historical review; use `/admin/health` for live response actions.
+      - Incident list is mobile-card friendly and desktop-table friendly.
+      - Desktop table now keeps fixed column spacing so status/opened/count/summary/fingerprint/resolved/latest-note remain aligned.
+      - Each row shows status, opened/resolved timestamps, issue count, summary, fingerprint, and latest note.
+      Suggested use:
+      1. During active issue: keep working from `/admin/health` and add timeline notes.
+      2. During handoff/reporting: open `/admin/health/incidents` to review recent incidents quickly.
+      3. During audit prep: cross-check incident rows with `/admin/audit` entries.
+      4. For parallel incidents, click `Manage` on each incident row/card and update that incident directly:
+         - Set `Status` (`Open`, `In progress`, `Resolved`, `Closed`).
+         - Assign an `Owner` (or keep `Unassigned`).
+         - Set/adjust `Follow-up due date`.
+         - Add optional `Workflow note` and confirm update.
+      5. Add timeline updates from the same incident detail page (`Add note`), minimum 8 characters.
+      6. This per-incident workflow is independent of the global checklist on `/admin/health`.
+         Use `/admin/health` for current system snapshot response, and `/admin/health/incidents/[id]` for incident-specific tracking/handoff.
+      7. Workflow update confirmation now has two actions:
+         - `Confirm update`: save and stay on the incident page.
+         - `Confirm update & back`: save and return to incident list.
+         Success/failure is shown with toast notification and inline status text.
+      8. Incident status lifecycle (industry standard):
+         - `Resolved`: fix verified but can still be reopened if needed.
+         - `Closed`: final administrative closure.
+         - Reopening `Resolved` -> `Open/In progress` requires a reason (minimum 8 characters).
+         - `Closed` incidents cannot be edited via normal workflow controls.
+         - To reopen a closed incident, use `Reopen closed incident` (ADMIN only), provide mandatory reason, and confirm.
+      10. Incident tools (detail page):
+         - `Mark false positive`: closes incident with mandatory reason and logs `HEALTH_INCIDENT_FALSE_POSITIVE`.
+         - `Split incident`: creates a follow-up incident for separate tracking and logs `HEALTH_INCIDENT_SPLIT`.
+         - `Merge source incident`: merges another incident into current and closes source, logged as `HEALTH_INCIDENT_MERGED`.
+      9. Desktop incident table readability:
+         - Columns are left-aligned with balanced spacing and clearer date/age formatting.
+         - Long `Summary`, `Fingerprint`, and `Latest Note` values wrap cleanly.
+         - Horizontal scroll remains available on narrower laptop widths.
+- Auto-heal control: `Run auto-heal now` is enabled only when `ACCOUNTING_AUTO_HEAL_MISSING_POSTINGS=1` is set in `.env`/`.env.local`.
+- Related: Use cron for periodic health alerts and audit retention.
+
+## Platform Resilience — Monitoring & Alerts
+- Pages: /admin/dashboard (Monitoring widget), /admin/health
+- What it is: Daily checks for missing postings, ledger mismatches, and MoMo settlement issues.
+- How to use: Review counts on the dashboard, then open Health Check to investigate and repair.
+- Related: Trigger the health alert cron to email admins when mismatches appear.
+
+## Platform Resilience — Backup & Restore
+- Runbook: docs/runbooks/backup-restore.text
+- What it is: Step-by-step backup and restore instructions for PostgreSQL.
+- How to use: Follow the runbook before risky changes and on a regular cadence.
+
+## How It All Fits Together
+- Orders, payments, inventory, and purchases flow into accounting.
+- Ledger entries and reconciliations validate cash movement and profitability.
+- HR and admin settings govern staff operations and system behavior.
+- Audit logs and health checks help detect issues early.
+
+## Session Tutorial Pack â€” B2B Procurement + Tender + Conversion
+- Scope: This section captures the exact end-to-end flows completed in the latest implementation cycle.
+- Main pages:
+  - /admin/b2b/procurement
+  - /admin/b2b/tenders
+  - /admin/orders/new
+  - /admin/purchases
+
+## B2B Procurement Workflow â€” Tested Behavior
+- Page: /admin/b2b/procurement
+- What to verify:
+  1) Requests can be assigned and status-updated.
+  2) Status transitions are controlled (terminal states are handled intentionally).
+  3) Create Tender action opens Tender Builder with procurement context.
+  4) Draft Order action opens Order Create with request lines.
+- UX updates included:
+  - Closed/archive handling for long lists.
+  - Search with clinic suggestions.
+  - Bulk actions with safer status rules.
+  - Better alignment and overflow handling for row action buttons.
+
+## B2B Procurement Analytics â€” How to Use
+- Page: /admin/b2b/procurement/analytics
+- Purpose: Track request throughput, aging, response speed, and conversion quality.
+- Cards and meaning:
+  1) Request Volume
+     - Total: all tracked requests in scope.
+     - Open: requests not in terminal state.
+     - Unassigned Open: open requests without account manager.
+  2) Cycle Time (Hours)
+     - To Assignment: average time from created to assigned.
+     - To Quoted: average time from created to quoted.
+     - To Approved: average time from created to approved.
+  3) Draft Conversion
+     - Drafts Prepared: count of draft-order preparation actions.
+     - Conversion Rate: draft preparations relative to eligible requests.
+  4) Status Mix
+     - Current count by status (e.g., APPROVED, REJECTED, CLOSED).
+  5) Top Requested Items
+     - Most frequent request line items parsed from submitted item text.
+  6) Oldest Open Requests
+     - Open queue sorted by aging so staff can prioritize the oldest first.
+
+- Quick validation checklist:
+  1) Close one open request in Workflow and click Refresh in Analytics -> Open count should decrease.
+  2) Submit a new procurement request from customer portal -> Total should increase.
+  3) Leave one request unassigned -> Unassigned Open should increase.
+  4) Prepare a draft order from an approved request -> Drafts Prepared should increase.
+  5) Compare oldest-open list with /admin/b2b/procurement queue ordering.
+
+## Tender Builder â€” Core Workflow
+- Page: /admin/b2b/tenders
+- Standard flow:
+  1) Choose source (Paste/Upload or From Procurement Request).
+  2) Load buyer + items.
+  3) Analyze Items.
+  4) Review flagged lines (substitute / no-bid / lead-time / split-supply notes).
+  5) Save Tender Draft.
+  6) Open PDF and verify document layout.
+- Important behavior:
+  - Editing a draft revalidates with current stock/pricing (live preview refresh).
+  - NO BID lines are excluded from supply conversion.
+  - Out-of-stock lines require lead time + split supply note.
+
+## Tender Builder â€” Template Packs
+- Purpose: Reuse standard commercial terms quickly.
+- How to use:
+  1) Fill validity, lead time, payment terms, notes.
+  2) Enter template name + type.
+  3) Save Template.
+  4) Later, apply template from dropdown to auto-fill those fields.
+- Expected result: Saved values restore exactly.
+
+## Tender Builder â€” Approval Gate
+- Send flow uses explicit approval controls.
+- UI card: "Send Tender by Email"
+- Steps:
+  1) Select tender.
+  2) Approve for Send.
+  3) Send Latest Tender.
+- Enforcement:
+  - Approval can be required by env policy.
+  - Protected admin emails can operate one-user approve/send.
+
+## Session Tutorial Pack â€” Delivery Dispatch + Dispatcher
+- Scope: End-to-end tutorial for `/admin/delivery/dispatch` and `/dispatch/my-deliveries`.
+- Purpose: Assign deliveries safely, track POD/attempts, handle dispatcher cash claims, and prevent delivery/accounting mismatches.
+
+### Admin Dispatch Board (`/admin/delivery/dispatch`)
+- What it is:
+  - Operational queue for orders that still need delivery action.
+  - Delivered-complete orders are hidden from active queue by default.
+- Summary cards:
+  - Pending, Assigned, Out for delivery, Failed attempt, Rescheduled, Delivered.
+  - Needs attention, POD missing, Balance pending, Claims pending confirm.
+- Core filters:
+  1) Search (invoice/customer/phone)
+  2) Status
+  3) Date range + preset
+  4) Customer type
+  5) Order status
+  6) Collection state
+  7) Assignment scope
+  8) Rider
+  9) Include Delivered toggle
+- SLA:
+  - SLA age badge is shown only for records still needing action (delivery and/or collection).
+
+### Single Assignment Flow (Admin)
+- Use when one order needs dispatch:
+  1) Click `Actions` -> `Assign rider`.
+  2) Choose dispatcher from dropdown (system user) or use manual rider name/phone.
+  3) Choose assignment scope:
+     - Full: all remaining line quantities for this trip.
+     - Partial: set item-level assigned quantities in manifest.
+  4) Save assignment.
+- Result:
+  - Assignment metadata is visible on the order row and used by dispatcher app.
+
+### Bulk Assignment Flow (Admin)
+- Use when assigning multiple orders together:
+  1) Select rows with checkboxes.
+  2) Fill dispatcher/manual rider fields.
+  3) Choose either:
+     - `Set all selected to Full` for full manifests.
+     - Leave unchecked to open item-level bulk editor.
+  4) In item-level editor, set per-order/per-item quantities, then apply.
+- Notes:
+  - Bulk controls clear after apply.
+  - Partial assignment uses quantities (not percentages).
+
+### Delivery Status Update (Admin)
+- `Actions` -> `Update status` supports:
+  - Pending, Assigned, Out for delivery, Failed attempt, Rescheduled, Partially delivered, Delivered.
+- Rules:
+  - `Partially delivered` requires item-level delivered quantities.
+  - `Delivered` can capture POD details (recipient name/phone, note, image URL/upload).
+  - POD warning should only appear for dispatch-managed deliveries where POD is required.
+  - Orders updated as delivered outside dispatch context (e.g., order page pickup) should not trigger false POD missing follow-up.
+
+### Failed/Rescheduled Custody Handover
+- Problem solved:
+  - Failed/rescheduled trips can still be physically with the dispatcher.
+- Implemented behavior:
+  1) Dispatcher marks `FAILED_ATTEMPT` or `RESCHEDULED`.
+  2) System flags `return pending handover`.
+  3) Order remains visible to that dispatcher until handover is confirmed.
+  4) Admin uses `Confirm return received` in Dispatch actions.
+  5) System clears assignment after confirmation; rider no longer appears as current assignment on that order.
+- Reassignment policy:
+  - Reassign is blocked while return handover is pending.
+  - Unassign is also blocked while return handover is pending.
+  - Confirm return first, then reassign.
+
+### Collection Claims (Dispatcher -> Admin Confirm)
+- Recommended control flow (implemented):
+  1) Dispatcher marks order delivered.
+  2) Dispatcher records collection claim (amount/method/reference/note) when applicable.
+  3) Admin confirms claim from Dispatch board (`Confirm + Post Payment`).
+  4) Only on admin confirmation does official payment ledger/journal posting occur.
+- Why:
+  - Prevents unverified field collections from posting directly to finance.
+  - Maintains separation between operational claim and accounting confirmation.
+
+### Unassign / Reassign
+- `Actions` menu includes unassign with modal confirmation and reason.
+- Use when rider unavailable, wrong assignment, or reroute is needed.
+- Reassign by running assign flow again.
+
+### Dispatcher App (`/dispatch/my-deliveries`)
+- What it shows:
+  - Active assignments (actionable).
+  - Completed today (read-only summary).
+  - Delivery history (collapsible cards for better long-list usability).
+- Expected behavior:
+  - Dispatcher updates only assigned manifest for that trip.
+  - Dispatcher can capture POD on delivered updates:
+    - recipient name/phone,
+    - delivery note,
+    - proof image URL, or direct image upload from phone camera/gallery.
+  - Completed fully-settled items fall off active list.
+  - Failed/rescheduled assignments can be hidden from active queue and reassigned by admin.
+  - Historical deliveries remain searchable in history section.
+
+### Delivery Scope Model (Important)
+- Assignment scope is set by admin, not dispatcher:
+  - Dispatcher delivers what was assigned on manifest.
+  - Partial at order level may still be “delivered” for the assigned trip.
+- System representation:
+  - Trip can be completed while overall order remains partially delivered if other lines are pending future assignments.
+
+### Suggested End-to-End Test Script
+1) Create an order with multiple lines and partial/unpaid balance.
+2) Assign one line partially to Dispatcher A.
+3) Login as Dispatcher A -> mark delivered -> record collection claim.
+4) Back as admin -> confirm collection claim.
+5) Verify:
+   - Order payment ledger updated correctly.
+   - Journal payment posting present.
+   - Dispatch row reflects delivered/partial correctly.
+6) Reassign remaining lines to Dispatcher B.
+7) Complete and verify order becomes fully delivered, then drops from active dispatch queue.
+
+### Troubleshooting
+- “Delivered but item delivered qty is zero”:
+  - Use `Partially delivered` with item-level quantities or `Set all delivered` as needed.
+- “POD missing warning unexpectedly”:
+  - Ensure POD-required flag is only used for dispatch-managed drop-offs.
+- “Dispatcher claim exists but payment not in ledger”:
+  - Admin confirmation step is still pending.
+- “Order not visible on admin dispatch queue”:
+  - Check filters (`Include Delivered`, date range, status, rider, collection state).
+- Relevant env:
+  - B2B_TENDER_REQUIRE_APPROVAL=1 (or 0 to disable gate)
+  - B2B_TENDER_APPROVAL_MAKER_CHECKER=1/0
+  - PROTECTED_ADMIN_EMAILS=<comma-separated admin emails>
+
+## Session Tutorial Pack - Delivery Collection Review (Read-only)
+- Scope: Page-by-page tutorial for `/admin/delivery/collection-review`.
+- Legacy route `/admin/delivery/reconciliation` now redirects to this page.
+- Goal: Review delivery collection exposure and settlement status without performing operational confirmation on this page.
+- Access: `ADMIN`, `STAFF`, and `ACCOUNTANT`.
+
+### Current Purpose
+- This page is now a read-only collection review board.
+- Operational collection confirmation happens in `/admin/delivery/dispatch`.
+- Use this page to:
+  1) monitor claim-pending exposure,
+  2) monitor unposted settlement records,
+  3) review settled vs unsettled status,
+  4) navigate to settlement history.
+
+### What Rows Mean
+- Collection column:
+  - `claim pending`: dispatcher has recorded a collection claim and it is awaiting settlement lifecycle.
+  - `cleared`: no pending claim exposure for reconciliation.
+  - `No dispatcher claim yet`: order may still have balance, but no dispatcher claim was submitted.
+- Settlement column:
+  - `settled`: settlement record exists.
+  - `unsettled`: pending claim exists but not yet settled.
+  - `n/a`: no claim context, so settlement state is not applicable.
+
+### Core Controls To Test
+1) Search by invoice/customer/phone/rider.
+2) `Actionable only` toggle:
+   - default ON.
+   - shows only rows that need follow-up:
+     - pending dispatcher claim, or
+     - settled row with unposted settlement ledger.
+   - does NOT include POD-missing by default.
+3) `POD missing` toggle:
+   - optional quality view only.
+   - use this only when POD capture is required for the scenario.
+4) `Settlement history` link:
+   - opens `/admin/delivery/reconciliation/settlements`.
+5) `Open in Dispatch` action (for `claim pending` rows):
+   - jumps to `/admin/delivery/dispatch` with filters prefilled for claim confirmation.
+6) No settlement action controls:
+   - this page intentionally has no `Settle selected` flow.
+7) Rider rollup behavior:
+   - `Actionable only: ON`: riders shown are only those with actionable orders in view.
+   - `Show all delivered`: riders shown are all riders in current delivered-order scope.
+   - Rider columns remain delivery/actionable count, pending claims, and pending balance.
+
+### Practical Validation Script
+1) Open `/admin/delivery/collection-review`.
+2) Confirm summary cards render.
+3) Confirm default `Actionable only: ON`.
+4) If no pending claims and no unposted settlements exist:
+   - table should show `No actionable delivered orders.` (expected).
+5) Switch to `Show all delivered`:
+   - rows should appear with `claim pending`, `cleared`, or `No dispatcher claim yet`.
+6) Turn `POD missing` ON:
+   - only missing POD rows remain.
+7) For a `claim pending` row, click `Open in Dispatch`:
+   - verify Dispatch opens with claim-pending context so admin can confirm collection.
+8) Click `Settlement history` and verify posted/unposted settlement entries.
+
+### Where Operational Actions Happen
+- Confirm dispatcher collections and post payments in:
+  - `/admin/delivery/dispatch`
+- Collection Review page only reflects resulting state.
+
+### Troubleshooting
+- “Why is Actionable only empty?”:
+  - No pending dispatcher claims and no unposted settlements exist.
+- “Why do I see balance but settlement = n/a?”:
+  - There is no dispatcher claim for that order yet.
+- “How do I move a row from unsettled to settled?”:
+  - Complete the claim confirmation/settlement flow from Dispatch and Settlement History workflows.
+
+## Session Tutorial Pack - Delivery Settlement History
+- Page: `/admin/delivery/reconciliation/settlements`
+- Access: `ADMIN`, `STAFF`, `ACCOUNTANT`
+- Purpose:
+  - Read-only audit timeline of delivery collection completion records and posting state.
+  - Operational collection confirmation remains in `/admin/delivery/dispatch`.
+
+### Record Types (Important)
+- `order confirm`:
+  - One confirmed collection record, usually one order (`Orders = 1`).
+  - Created when admin confirms a dispatcher claim from Dispatch.
+- `settlement batch`:
+  - One grouped settlement record created from a bulk action.
+  - Can include multiple orders (`Orders > 1`) when admin selected multiple eligible rows together.
+  - If only one row was confirmed, no batch row is expected.
+
+### Ledger and Actions
+- `posted`:
+  - Journal entry exists for that record.
+- `unposted`:
+  - Journal posting is missing or failed.
+- `Retry post`:
+  - Available only on `settlement batch` rows with `unposted` status.
+  - `order confirm` rows are read-only on this page.
+
+### Practical Validation Script
+1) Open `/admin/delivery/reconciliation/settlements`.
+2) Confirm summary tiles load: `Settlements`, `Orders covered`, `Settled balance`, `Unposted settlements`.
+3) Search using record id, invoice/order id fragment, receiver name, or reference.
+4) Verify row meaning:
+   - `Type = order confirm` for individual confirmations.
+   - `Type = settlement batch` only when a real bulk grouping was performed.
+5) For any `settlement batch` with `Ledger = unposted`:
+   - click `Retry post`,
+   - confirm success toast,
+   - confirm `Ledger` updates after refresh.
+6) If table is empty:
+   - `No collection records found.` means no confirmation/batch records exist in the current result scope.
+
+## Session Tutorial Pack - Delivery POD Report
+- Page: `/admin/delivery/pod-report`
+- Access: `ADMIN`, `STAFF`, `ACCOUNTANT`
+- Purpose:
+  - Read-only POD quality and evidence report for delivered orders.
+  - Shows which delivered orders have proof-of-delivery details captured vs missing.
+
+### POD Status Rules
+- `captured`:
+  - At least one POD field exists on delivery update:
+    - recipient name, or
+    - recipient phone, or
+    - proof image URL.
+- `missing`:
+  - None of the POD capture fields exist.
+
+### Filters
+- `Search`: invoice, customer, recipient text.
+- `Rider`: dropdown of active dispatchers (exact rider filter).
+- `POD status`: `All`, `Captured`, `Missing`.
+- `Has proof image`: `All`, `Yes`, `No`.
+- `From` / `To`: delivered date range.
+- Quick presets: `Today`, `Last 7 days`, `This month`, `Clear dates`.
+
+### Practical Validation Script
+1) Open `/admin/delivery/pod-report`.
+2) Click `Refresh`.
+3) Confirm summary cards load:
+   - `Delivered orders`
+   - `POD captured`
+   - `POD missing`
+4) Set `POD status = Missing` and confirm only missing rows remain.
+5) Set `POD status = Captured` and confirm captured rows remain.
+6) Set `Rider` to one dispatcher and confirm rows narrow to that rider.
+7) Apply `From` and `To` dates and confirm range behavior.
+8) Use `Search` by invoice or customer name and confirm filtering.
+9) Click `Export CSV` and verify file includes:
+   - order/invoice,
+   - delivered date,
+   - customer/rider,
+   - POD status,
+   - recipient fields,
+   - proof image URL.
+10) In any row, click `Open in Dispatch`:
+   - verify dispatch opens pre-filtered to that order (includes delivered view).
+11) Validate note quality badge in Recipient section:
+   - `note ok` (sufficient detail),
+   - `note short`,
+   - `note missing`.
+
+### Operational Note
+- This page is reporting-only.
+- To fix missing POD, update delivery capture in dispatch/order workflows.
+
+## Tender Builder â€” Version Compare
+- Compare panel is driven by selected tender.
+- Steps:
+  1) Save at least two commercial edits.
+  2) Select tender in Send card.
+  3) Open Version Comparison and click Compare.
+- Current behavior:
+  - Dropdown shows comparable commercial versions only.
+  - Compare summary shows totals delta and changed line count.
+
+## Tender Builder â€” Expiry Reminders
+- Recent Tenders shows expiry countdown for eligible tenders.
+- Send Reminder is available for active expiring records from reminder feed.
+- Expected result:
+  - Success toast after send.
+  - Audit and recipient records are stored.
+
+## Tender Builder â€” Export Package
+- Action: Export Package on Recent Tenders row.
+- Expected zip contents:
+  - *.pdf
+  - *-lines.csv
+  - *-terms.txt
+  - *-versions.csv
+  - *-snapshot.json
+- Why this exists:
+  - Submission document + spreadsheet review + terms + audit history + system snapshot in one package.
+
+## Tender Status Policy (Locked Finals)
+- Finalized statuses are now locked.
+- Transition policy:
+  - DRAFT -> SUBMITTED or CANCELLED
+  - SUBMITTED -> SENT / WON / LOST / EXPIRED / CANCELLED
+  - SENT -> WON / LOST / EXPIRED / CANCELLED
+  - WON / LOST / EXPIRED / CANCELLED -> locked
+- UI and API both enforce these rules.
+
+## WON Tender -> Order Conversion
+- Flow:
+  1) Set status to WON.
+  2) Click Convert to Order.
+  3) Order form opens with tender source card and prefilled lines.
+- Customer linking behavior:
+  - Tries buyer email first.
+  - Falls back via procurement reference/history/phone.
+  - If unresolved and only one actual customer exists, auto-selects that customer.
+- Duplicate-protection behavior (new conversions):
+  - Once order is created from a WON tender, tender row tracks linkage and shows Open Order instead of Convert to Order.
+
+## Purchase Approval Threshold Behavior
+- Page: /admin/purchases
+- Intent:
+  - Approval-required purchases should still be created (PENDING_APPROVAL), not blocked.
+  - Immediate receiving is blocked until approved.
+  - High-value receipts are credit-only (no paid-on-receipt at creation).
+- Threshold resolution:
+  - If both a global threshold and product-specific threshold exist, the stricter (lower) threshold is applied.
+- Implemented UX:
+  - New purchase form defaults to `Receive now = off` and `Pay now = off`.
+  - `Add Purchase` opens a confirmation dialog before final submission.
+  - If `Pay now` is enabled, payment mode must be selected explicitly (no auto-default to Cash).
+  - For regulated purchases, both Lot/Batch code and Expiry date are required with inline validation.
+  - Purchase form auto-saves an unsent draft for 3 minutes and shows `Restore Draft` / `Clear Draft` after refresh.
+  - If quantity crosses threshold, receive-now is forced off at submit.
+  - Purchase is created pending approval.
+  - UI includes direct link to /admin/purchases?status=PENDING_APPROVAL.
+  - If quantity x unit cost crosses supplier-payment approval threshold, Paid on receipt is forced off and payment is recorded later.
+  - Payment Mode includes an explicit Credit (Pay later) option.
+  - Deferred flows default to Credit automatically.
+  - Purchases page includes `Next actions` quick views:
+    - `Pending approval`
+    - `Awaiting receive`
+    - `Due today`
+    - `Overdue`
+  - Expected-arrival urgency tags now appear inline on purchase rows (for open, not-fully-received rows).
+  - `Export summary CSV` now exports the current quick-view scope with totals and action counts.
+  - `Export summary PDF` provides the same scoped snapshot in a print/share-friendly format.
+  - Expected date window chips are available:
+    - `No expected date`
+    - `Expected this week`
+    - `Expected next 7 days`
+  - Open supplier summary cards show per-supplier:
+    - open quantity
+    - open value
+    - oldest expected date
+    - overdue line count
+  - Stale open purchase warning appears when open purchases are missing expected dates or are overdue by 7+ days.
+  - Selected-row actions include `Approve selected` for pending approvals (admin only).
+  - Selected-row actions include bulk `Expected` date apply for open purchases.
+  - Selected-row actions include:
+    - `Receive selected` with confirmation and receive rule.
+    - `Return selected` with confirmation and required reason.
+    - bulk supplier assignment for selected rows missing supplier.
+  - Quick selection shortcuts are available in Purchases:
+    - `Select all pending approval`
+    - `Select all open`
+    - `Select all overdue`
+  - Bulk operations now display a result summary dialog with success/failure counts and failure details.
+  - Supplier bulk assignment supports one-click undo for the most recent assignment batch.
+  - Inline expected-date editing is available on open purchase rows (`Awaiting receive` flows) with immediate save.
+  - Sticky scope strip shows active quick-view/expected-window and provides one-click `Reset all`.
+  - Additional view controls:
+    - `Sort expected`: oldest first, newest first, or missing first.
+    - `Open only`: shows only purchases still awaiting receipt.
+  - Urgency legend explains row badges (`Overdue`, `Due soon`, `Expected`).
+- Approval action:
+  - Use Approve button on pending row.
+  - After approval, Receive action is available.
+  - Every receive event (partial or full) posts its own journal amount for only the quantity received in that action.
+  - Record supplier payment after approval/receipt from Supplier Payments.
+
+## Product Create with Initial Stock
+- Page: /admin/products (Add New Product)
+- Behavior:
+  - New product purchase controls now default to `Receive now = off` and `Pay now = off`.
+  - `Pay now` is always visible but only enabled when `Receive now` is enabled.
+  - If `Pay now` is enabled, payment mode must be selected explicitly.
+  - If initial quantity crosses purchase approval threshold, Receive now is forced off.
+  - System creates a pending-approval purchase and keeps stock unsellable until receive is done after approval.
+  - If initial receipt value crosses supplier-payment approval threshold, Paid on receipt is forced off (credit-first flow).
+
+## Troubleshooting Notes (From Testing)
+- "Invalid payload" while sending tender:
+  - Email payload now returns field-level validation errors in toast.
+- "Tender must be approved for latest version":
+  - Approve latest version first, or use protected-admin policy as configured.
+- Compare dropdown appears disabled:
+  - Select a tender first in Send Tender by Email card.
+- Old WON tender still shows Convert to Order:
+  - If conversion happened before linkage patch, it may lack historical link metadata; new conversions are tracked.
+
+## Recommended Test Checklist (Repeatable)
+1) Procurement request -> Create Tender.
+2) Analyze + Save Draft.
+3) Approve + Send email.
+4) Edit and save new commercial version.
+5) Compare versions.
+6) Export package and verify 5 files.
+7) Set WON and convert to order.
+8) Confirm prefilled items + customer behavior.
+9) Verify tender/order linkage shows Open Order on subsequent view.
+
+## Expenses Entry Controls
+- Page: /admin/expenses
+- Category source:
+  - Expense categories are account-driven and use 4-digit ledger codes in the dropdown.
+  - Manual expense categories are limited to active EXPENSE accounts (excluding system-driven codes 5000, 6100, 6990).
+- Payment controls:
+  - `Pay now` toggle is available when creating a new expense.
+  - If `Pay now` is enabled, payment mode is required (`Cash`, `Bank transfer`, `MoMo`).
+  - If `Pay now` is disabled, expense is treated as accrued/unpaid.
+  - For accrued/unpaid expenses, use `Record payment` in the Expenses list to settle later.
+  - Settlement notes are shown in concise format (for example: `Settlement: partially paid 10.00/38.00, 2026-02-27, 16:23, cash`), with a separate `Paid | Outstanding` line for clarity.
+  - Expenses list includes settlement state controls:
+    - Filter by settlement state (`Unpaid`, `Partially paid`, `Paid`).
+    - Settlement status badge per row.
+    - `Last paid` timestamp for accrued items with posted settlements.
+- Posting behavior:
+  - Debit posts to the selected coded expense account.
+  - Credit posts to Cash/Bank/MoMo clearing based on selected payment mode, or to Accrued Expenses when unpaid.
+  - Later settlement posts: Dr `2300 Accrued Expenses`, Cr selected payment account.
+  - Partial settlements are supported: each payment reduces outstanding balance and updates status (`UNPAID`, `PARTIALLY_PAID`, `PAID`).
