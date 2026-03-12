@@ -3,14 +3,12 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { downloadFileFromR2 } from "@/lib/r2-storage";
-import { readFile, stat } from "fs/promises";
-import path from "path";
 
 export const runtime = "nodejs";
 
 type StorageLocation =
   | { type: "r2"; key: string }
-  | { type: "local"; filePath: string }
+  | { type: "local"; urlPath: string }
   | { type: "url"; url: string }
   | { type: "unknown" };
 
@@ -22,33 +20,12 @@ function parseStorageLocation(fileUrl: string): StorageLocation {
     return key ? { type: "r2", key } : { type: "unknown" };
   }
   if (value.startsWith("/uploads/")) {
-    const filePath = path.join(process.cwd(), value.replace(/^\//, ""));
-    return { type: "local", filePath };
+    return { type: "local", urlPath: value };
   }
   if (value.startsWith("http://") || value.startsWith("https://")) {
     return { type: "url", url: value };
   }
   return { type: "unknown" };
-}
-
-function contentTypeForExt(ext: string) {
-  switch (ext.toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".webp":
-      return "image/webp";
-    case ".pdf":
-      return "application/pdf";
-    case ".doc":
-      return "application/msword";
-    case ".docx":
-      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    default:
-      return "application/octet-stream";
-  }
 }
 
 async function requireAdmin() {
@@ -60,7 +37,7 @@ async function requireAdmin() {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const resolvedParams = await params;
@@ -89,23 +66,7 @@ export async function GET(
   }
 
   if (location.type === "local") {
-    try {
-      const info = await stat(location.filePath);
-      const ext = path.extname(location.filePath);
-      const fileName = path.basename(location.filePath);
-      const bytes = await readFile(location.filePath);
-      return new Response(new Uint8Array(bytes), {
-        status: 200,
-        headers: {
-          "Content-Type": contentTypeForExt(ext),
-          "Content-Length": String(info.size),
-          "Content-Disposition": `inline; filename="${fileName}"`,
-        },
-      });
-    } catch (err) {
-      console.error("HR document read error:", err);
-      return NextResponse.json({ error: "Document not available" }, { status: 404 });
-    }
+    return NextResponse.redirect(new URL(location.urlPath, req.url));
   }
 
   if (location.type === "url") {
