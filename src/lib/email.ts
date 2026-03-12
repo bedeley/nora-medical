@@ -4,7 +4,28 @@ type EmailResult = {
   error?: string;
 };
 
-export async function sendEmail(to: string, subject: string, text: string, html?: string): Promise<EmailResult> {
+type EmailAttachment = {
+  filename: string;
+  content: string | Buffer;
+  type?: string;
+};
+
+type EmailOptions = {
+  attachments?: EmailAttachment[];
+};
+
+function toBase64(content: string | Buffer) {
+  if (typeof content === "string") return Buffer.from(content).toString("base64");
+  return content.toString("base64");
+}
+
+export async function sendEmail(
+  to: string,
+  subject: string,
+  text: string,
+  html?: string,
+  options?: EmailOptions
+): Promise<EmailResult> {
   const sendgridKey = process.env.SENDGRID_API_KEY || "";
   const sendgridFrom = process.env.SENDGRID_FROM || process.env.EMAIL_FROM || "";
   const resendKey = process.env.RESEND_API_KEY || "";
@@ -25,7 +46,11 @@ export async function sendEmail(to: string, subject: string, text: string, html?
   // Set EMAIL_SIMULATE_ONLY=0 to send real emails even in dev.
   if (shouldSimulate) {
     try {
-      console.info("[DEV] Simulated email send:", { to, subject });
+      console.info("[DEV] Simulated email send:", {
+        to,
+        subject,
+        attachments: options?.attachments?.length || 0,
+      });
       if (html) console.info("[DEV] Email HTML:\n", html);
       else if (text) console.info("[DEV] Email Text:\n", text);
     } catch {}
@@ -45,6 +70,16 @@ export async function sendEmail(to: string, subject: string, text: string, html?
           from: { email: sendgridFrom },
           subject,
           content: [{ type: html ? "text/html" : "text/plain", value: html || text }],
+          ...(options?.attachments?.length
+            ? {
+                attachments: options.attachments.map((attachment) => ({
+                  content: toBase64(attachment.content),
+                  filename: attachment.filename,
+                  type: attachment.type || "application/octet-stream",
+                  disposition: "attachment",
+                })),
+              }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -61,7 +96,22 @@ export async function sendEmail(to: string, subject: string, text: string, html?
           Authorization: `Bearer ${resendKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ from: resendFrom, to: [to], subject, text, html }),
+        body: JSON.stringify({
+          from: resendFrom,
+          to: [to],
+          subject,
+          text,
+          html,
+          ...(options?.attachments?.length
+            ? {
+                attachments: options.attachments.map((attachment) => ({
+                  filename: attachment.filename,
+                  content: toBase64(attachment.content),
+                  type: attachment.type || "application/octet-stream",
+                })),
+              }
+            : {}),
+        }),
       });
       if (!res.ok) {
         const t = await res.text().catch(() => "");

@@ -4,8 +4,10 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { formatIdReadable } from "@/lib/utils";
 import { PDFDocument, StandardFonts } from "pdf-lib";
+import { recordAuditLog } from "@/lib/audit-log";
 
 export const runtime = "nodejs";
+const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
 
 export async function GET(
   req: Request,
@@ -212,7 +214,7 @@ export async function GET(
         }
         const totalStr = Number(o.total || 0).toFixed(2);
         const paidStr = Number(o.amountPaid || 0).toFixed(2);
-        const balanceStr = Number(o.balance || 0).toFixed(2);
+        const balanceStr = normalizeBalance(Number(o.balance || 0)).toFixed(2);
         const status = o.status;
         drawColumns([
           {
@@ -408,6 +410,26 @@ export async function GET(
     });
 
     const pdfBytes = await pdfDoc.save();
+    await recordAuditLog({
+      actorId: user?.id || null,
+      action: "CUSTOMER_STATEMENT_EXPORT_PDF",
+      entityType: "CUSTOMER",
+      entityId: customer.id,
+      meta: {
+        customerId: customer.id,
+        customerName: customer.name || null,
+        customerEmail: customer.email || null,
+        format: "PDF",
+        fileName: `customer-${readableId}-statement.pdf`,
+        rowCount: orders.length + payments.length,
+        orderCount: orders.length,
+        paymentCount: payments.length,
+        byteSize: pdfBytes.length,
+        actorName: user?.name || null,
+        actorEmail: user?.email || null,
+        actorRole: user?.role || null,
+      },
+    });
     return new Response(pdfBytes as unknown as BodyInit, {
       headers: {
         "Content-Type": "application/pdf",
@@ -500,6 +522,27 @@ export async function GET(
   }
 
   const body = lines.join("\n");
+  await recordAuditLog({
+    actorId: user?.id || null,
+    action: "CUSTOMER_STATEMENT_EXPORT_CSV",
+    entityType: "CUSTOMER",
+    entityId: customer.id,
+    meta: {
+      customerId: customer.id,
+      customerName: customer.name || null,
+      customerEmail: customer.email || null,
+      format: "CSV",
+      fileName: `customer-${formatIdReadable(customer.id)}-statement.csv`,
+      rowCount: Math.max(0, lines.length - 1),
+      columnCount: header.length,
+      orderCount: orders.length,
+      paymentCount: payments.length,
+      byteSize: Buffer.byteLength(body, "utf8"),
+      actorName: user?.name || null,
+      actorEmail: user?.email || null,
+      actorRole: user?.role || null,
+    },
+  });
   return new NextResponse(body, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

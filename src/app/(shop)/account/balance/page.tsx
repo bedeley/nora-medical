@@ -45,6 +45,7 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 export default function AccountBalancePage() {
   const { status } = useSession();
   const isAuthed = status === "authenticated";
+  const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
   const { data, error, isLoading } = useQuery<Balance>({
     queryKey: ["balance", "self"],
     queryFn: () => fetcher("/api/balance?self=1"),
@@ -58,12 +59,13 @@ export default function AccountBalancePage() {
     enabled: isAuthed,
   });
   const hasOutstanding = (() => {
-    const bal = Number(data?.balance ?? 0);
+    const bal = normalizeBalance(Number(data?.balance ?? 0));
     if (bal > 0) return true;
     const orders = ordersData?.orders || [];
     return orders.some((o) => {
       const amountPaid = Number(o.amountPaid ?? 0);
-      const balance = Number(o.balance ?? Math.max(0, Number(o.total) - amountPaid));
+      const rawBalance = Number(o.balance ?? Math.max(0, Number(o.total) - amountPaid));
+      const balance = normalizeBalance(rawBalance);
       return balance > 0 && o.status !== "CANCELLED";
     });
   })();
@@ -131,8 +133,8 @@ export default function AccountBalancePage() {
                 <Card className="border">
                   <CardContent className="pt-4">
                     <p className="text-xs text-muted-foreground">Outstanding balance</p>
-                    <p className={data.balance > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
-                      {data.balance > 0 ? formatCurrency(data.balance) : "None"}
+                    <p className={normalizeBalance(data.balance) > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
+                      {normalizeBalance(data.balance) > 0 ? formatCurrency(normalizeBalance(data.balance)) : "None"}
                     </p>
                   </CardContent>
                 </Card>
@@ -220,7 +222,8 @@ export default function AccountBalancePage() {
                 <TableBody>
                   {ordersData.orders.slice(0, 5).map((o) => {
                     const totalPaid = Number(o.amountPaid ?? 0);
-                    const balance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+                    const rawBalance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+                    const balance = normalizeBalance(rawBalance);
                     return (
                       <TableRow key={o.id}>
                         <TableCell>{new Date(o.createdAt).toLocaleDateString()}</TableCell>

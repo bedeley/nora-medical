@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -13,22 +14,35 @@ export async function GET() {
   if (!session || (!isAdmin && !isStaff && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const where: Prisma.AuditLogWhereInput | undefined = isStaff
+    ? {
+        NOT: [
+          { entityType: { in: ["PAYROLL_RUN", "PAYSLIP", "COMPENSATION"] } },
+          { action: { startsWith: "PAYROLL_" } },
+          { action: { startsWith: "COMPENSATION_" } },
+        ],
+      }
+    : undefined;
 
   const [actions, entityTypes, actorRows] = await Promise.all([
     prisma.auditLog.findMany({
       distinct: ["action"],
       select: { action: true },
       orderBy: { action: "asc" },
+      where,
     }),
     prisma.auditLog.findMany({
       distinct: ["entityType"],
       select: { entityType: true },
       orderBy: { entityType: "asc" },
+      where,
     }),
     prisma.auditLog.findMany({
       distinct: ["actorId"],
       select: { actorId: true },
-      where: { actorId: { not: null } },
+      where: where
+        ? { AND: [where, { actorId: { not: null } }] }
+        : { actorId: { not: null } },
     }),
   ]);
 

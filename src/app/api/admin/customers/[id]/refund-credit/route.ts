@@ -6,6 +6,7 @@ import { z } from "zod";
 import { initiateMomoPayout } from "@/lib/momo";
 import { notifyPaymentEvent } from "@/lib/notifications";
 import { recordAuditLog } from "@/lib/audit-log";
+import { postStoreCreditPayoutEntry } from "@/lib/accounting-posting";
 import { isFeatureEnabled } from "@/lib/features";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
@@ -165,6 +166,23 @@ export async function POST(
         refundDisposition: "CASH",
       },
     });
+
+    try {
+      await postStoreCreditPayoutEntry({ paymentId: payment.id });
+    } catch (e) {
+      console.warn("postStoreCreditPayoutEntry error:", e);
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "ACCOUNTING_POST_FAILED",
+          entityType: "PAYMENT",
+          entityId: payment.id,
+          meta: { reason: "store_credit_payout", error: String(e) },
+        });
+      } catch {
+        // best-effort
+      }
+    }
 
     try {
       await notifyPaymentEvent({

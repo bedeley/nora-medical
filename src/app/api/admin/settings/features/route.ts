@@ -6,7 +6,16 @@ import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
 
-const KNOWN_FEATURES = [
+const KNOWN_FEATURES: Array<{
+  key: string;
+  label: string;
+  envKey?: string;
+}> = [
+  {
+    key: "accounting_auto_post",
+    label: "Accounting auto-post",
+    envKey: "ACCOUNTING_AUTO_POST_ENABLED",
+  },
   {
     key: "sms_notifications",
     label: "SMS Notifications",
@@ -30,7 +39,10 @@ export async function GET() {
   const byKey = new Map(flags.map((f) => [f.key, f.enabled]));
 
   const items = KNOWN_FEATURES.map((f) => {
-    const envVal = (process.env[f.envKey as keyof NodeJS.ProcessEnv] || "").toLowerCase() === "1";
+    const envVal = f.envKey
+      ? (process.env[f.envKey as keyof NodeJS.ProcessEnv] || "").toLowerCase() !== "0"
+      : true;
+    const envLockedOn = f.key === "accounting_auto_post" && envVal;
     const dbVal = byKey.has(f.key) ? Boolean(byKey.get(f.key)) : undefined;
     const effective = dbVal ?? envVal;
     return {
@@ -39,6 +51,7 @@ export async function GET() {
       envEnabled: envVal,
       dbEnabled: dbVal,
       effective,
+      envLockedOn,
     };
   });
 

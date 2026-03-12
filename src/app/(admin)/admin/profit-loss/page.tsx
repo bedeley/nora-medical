@@ -11,6 +11,7 @@ import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
+import { toast } from "sonner";
 import {
   Pagination,
   PaginationContent,
@@ -22,9 +23,17 @@ import {
 
 type TrendRow = { date: string; revenue: number; cogs: number; expense: number; profit: number; margin: number };
 type SummaryPayload = {
-  summary: { totalRevenue: number; totalCOGS: number; totalExpense: number; profit: number; margin: number };
-  trend: TrendRow[];
-  groupBy: string;
+  summary?: {
+    totalRevenue: number;
+    totalCOGS: number;
+    totalExpense: number;
+    profit: number;
+    margin: number;
+    totalDiscounts?: number;
+    discountedOrders?: number;
+  };
+  trend?: TrendRow[];
+  groupBy?: string;
 };
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -45,6 +54,12 @@ function ProfitLossContent() {
   const [updatedAtText, setUpdatedAtText] = useState<string>("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const { data: reportingMode } = useClientQuery<{ value: boolean | null }>({
+    queryKey: ["accounting", "reporting", "use-ledger"],
+    queryFn: () =>
+      fetch("/api/admin/settings/app?key=accounting.reporting.useLedger").then((r) => r.json()),
+  });
+  const useLedger = Boolean(reportingMode?.value);
 
   // Initialize from URL once
   useEffect(() => {
@@ -90,8 +105,10 @@ function ProfitLossContent() {
     if (groupBy) p.set("groupBy", groupBy);
     if (customer) p.set("customer", customer);
     if (category) p.set("category", category);
-    return `/api/admin/summary?${p.toString()}`;
-  }, [start, end, groupBy, customer, category]);
+    return useLedger
+      ? `/api/admin/accounting/reports/ledger-summary?${p.toString()}`
+      : `/api/admin/summary?${p.toString()}`;
+  }, [start, end, groupBy, customer, category, useLedger]);
 
   const { data, error, isLoading } = useClientQuery<SummaryPayload>({
     queryKey: ["admin","summary", { start, end, groupBy, customer, category }],
@@ -102,6 +119,10 @@ function ProfitLossContent() {
   });
 
   async function exportFile(kind: "csv" | "pdf") {
+    if (useLedger) {
+      toast.error("Export is available from Accounting reports in ledger mode.");
+      return;
+    }
     const p = new URLSearchParams();
     if (start) p.set("start", start);
     if (end) p.set("end", end);
@@ -149,6 +170,9 @@ function ProfitLossContent() {
   }, [trend.length]);
 
   const grossProfit = summary ? summary.totalRevenue - summary.totalCOGS : null;
+  const totalDiscounts = Number(summary?.totalDiscounts || 0);
+  const discountedOrders = Number(summary?.discountedOrders || 0);
+  const netSalesAfterDiscounts = summary ? Math.max(0, summary.totalRevenue - totalDiscounts) : null;
   const grossMargin = summary && summary.totalRevenue > 0
     ? (grossProfit! / summary.totalRevenue) * 100
     : null;
@@ -324,12 +348,20 @@ function ProfitLossContent() {
 
   return (
     <section className="container mx-auto py-8 space-y-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Profit &amp; Loss</h1>
           <p className="text-sm text-muted-foreground">
             Review revenue, costs, and margins over time.
           </p>
+          <p className="text-xs text-muted-foreground">
+            Operational view. For official financials, use Accounting → Reports.
+          </p>
+          {useLedger ? (
+            <p className="text-xs text-muted-foreground">
+              Ledger mode enabled: this report uses journal entries.
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button asChild variant="outline" className="w-full sm:w-auto">
@@ -344,7 +376,7 @@ function ProfitLossContent() {
         <CardHeader className="py-3">
           <CardTitle className="text-base font-semibold">Filters</CardTitle>
         </CardHeader>
-        <CardContent className="grid sm:grid-cols-2 md:grid-cols-7 gap-3 items-end">
+        <CardContent className="grid sm:grid-cols-2 lg:grid-cols-7 gap-3 items-end">
           <div>
             <label htmlFor="start" className="text-sm">Start</label>
             <Input id="start" type="date" value={start} onChange={(e) => setStart(e.target.value)} />
@@ -401,10 +433,10 @@ function ProfitLossContent() {
             {isLoading ? "Loading..." : `${filteredTrend.length} period(s)`}
           </div>
           <div
-            className="text-xs text-muted-foreground md:col-span-7"
-            title="Coverage includes non-cancelled orders (accrual revenue/COGS), expenses by category, and refunds from payments. The timestamp shows when the data was last refreshed."
+            className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-7"
+            title="Coverage includes non-cancelled orders (accrual revenue/COGS), discounts, expenses by category, and refunds from payments. The timestamp shows when the data was last refreshed."
           >
-            Coverage: Non-cancelled orders (accrual revenue/COGS), expenses by category, and refunds from payments.
+            Coverage: Non-cancelled orders (accrual revenue/COGS), discounts, expenses by category, and refunds from payments.
             {updatedAtText ? ` · Last refreshed ${updatedAtText}` : ""}
           </div>
         </CardContent>
@@ -414,7 +446,7 @@ function ProfitLossContent() {
         <CardHeader>
           <CardTitle className="text-base font-semibold">Totals</CardTitle>
         </CardHeader>
-        <CardContent className="grid sm:grid-cols-2 md:grid-cols-7 gap-3">
+        <CardContent className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <Stat
             label="Revenue"
             value={summary ? formatCurrency(summary.totalRevenue) : "-"}
@@ -423,6 +455,18 @@ function ProfitLossContent() {
             delta={formatDelta(rollingWindow?.currentRevenue ?? null, rollingWindow?.previousRevenue ?? null)}
             deltaLabel={deltaLabel}
             deltaTitle={deltaTitle}
+          />
+          <Stat
+            label="Discounts"
+            value={summary ? formatCurrency(totalDiscounts) : "-"}
+            accent={summary ? "text-amber-700" : ""}
+            tooltip="Contra-revenue discounts applied in the selected period."
+            subtext={`${discountedOrders} discounted order${discountedOrders === 1 ? "" : "s"}`}
+          />
+          <Stat
+            label="Net Sales (after discounts)"
+            value={netSalesAfterDiscounts != null ? formatCurrency(netSalesAfterDiscounts) : "-"}
+            tooltip="Revenue minus discounts (before refunds)."
           />
           <Stat
             label="Gross Profit"
@@ -629,7 +673,7 @@ function ProfitLossContent() {
           <CardTitle className="text-base font-semibold">Details</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="md:hidden px-4 pb-4 pt-2 space-y-3">
+          <div className="lg:hidden px-4 pb-4 pt-2 space-y-3">
             {paginatedTrend.map((t) => {
               const grossProfit = Number(t.revenue || 0) - Number(t.cogs || 0);
               const grossMargin = Number(t.revenue || 0) > 0 ? (grossProfit / Number(t.revenue || 0)) * 100 : 0;
@@ -705,7 +749,7 @@ function ProfitLossContent() {
             )}
           </div>
           <div className="overflow-x-auto">
-            <Table className="hidden md:table">
+            <Table className="hidden lg:table">
               <TableHeader>
                 <TableRow>
                   <TableHead>Period</TableHead>
@@ -775,7 +819,7 @@ function ProfitLossContent() {
             </Table>
           </div>
           {filteredTrend.length > 0 && (
-            <div className="flex flex-col gap-3 border-t px-4 py-3 text-sm md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-3 border-t px-4 py-3 text-sm lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>Rows per page</span>
                 <select
@@ -870,6 +914,7 @@ function Stat({
   accent,
   trend,
   tooltip,
+  subtext,
   delta,
   deltaLabel,
   deltaTitle,
@@ -879,6 +924,7 @@ function Stat({
   accent?: string;
   trend?: number[];
   tooltip?: string;
+  subtext?: string;
   delta?: string | null;
   deltaLabel?: string;
   deltaTitle?: string;
@@ -902,6 +948,7 @@ function Stat({
     <div className="p-3 rounded-md bg-background shadow-sm" title={tooltip}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`text-lg font-semibold ${accent ?? ""}`}>{value}</div>
+      {subtext ? <div className="text-[11px] text-muted-foreground">{subtext}</div> : null}
       {delta ? (
         <div
           className={`text-xs ${delta.startsWith("-") ? "text-red-600" : "text-green-600"}`}
@@ -929,3 +976,4 @@ function Stat({
     </div>
   );
 }
+

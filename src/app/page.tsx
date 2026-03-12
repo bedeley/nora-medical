@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import ThemeToggle from "@/components/header/ThemeToggle";
-import { ShoppingBag, Phone, Boxes, Package, ShieldCheck, ClipboardList } from "lucide-react";
+import { ShoppingBag, Phone, Boxes, Package, ShieldCheck, ClipboardList, Pill } from "lucide-react";
 import { ADMIN_PHONE } from "@/lib/config";
 import { prisma } from "@/lib/prisma";
 import ProductCard from "@/app/(shop)/products/ProductCard";
@@ -36,7 +36,10 @@ export default async function HomePage() {
   }));
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-start text-center px-6 pt-10 pb-16 relative overflow-hidden">
+    <main
+      className="min-h-screen flex flex-col items-center justify-start text-center px-6 pt-10 pb-16 relative overflow-hidden"
+      suppressHydrationWarning
+    >
       <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-teal-100/60 to-transparent" />
       <section className="max-w-6xl w-full">
         <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr] items-center text-center lg:text-left">
@@ -47,7 +50,7 @@ export default async function HomePage() {
                 alt="Noralls Medical Supplies Logo"
                 width={120}
                 height={120}
-                className="w-12 sm:w-20 md:w-24 h-auto"
+                className="w-12 sm:w-20 lg:w-24 h-auto"
               />
               <Badge variant="secondary" className="text-[10px] sm:text-sm whitespace-nowrap px-2 py-1">
                 Clinic-ready supply partner
@@ -87,7 +90,7 @@ export default async function HomePage() {
                 </>
               )}
               {!session && (
-                <div className="flex flex-col gap-2 w-full md:hidden">
+                <div className="flex flex-col gap-2 w-full lg:hidden">
                   <Link href="/login" className="w-full">
                     <Button variant="outline" size="lg" className="w-full">
                       Login
@@ -157,9 +160,10 @@ export default async function HomePage() {
               Quickly jump into the supplies teams order most often. Every category is curated for clinical-grade quality.
             </p>
           </div>
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {[
               { value: "diagnostics", helper: "Thermometers, monitors, kits", icon: ClipboardList },
+              { value: "therapeutics", helper: "Medicines & treatment essentials", icon: Pill },
               { value: "mobility", helper: "Wheelchairs, walkers, supports", icon: Package },
               { value: "ppe-safety", helper: "Masks, gloves, gowns", icon: ShieldCheck },
               { value: "equipment", helper: "Devices & tools", icon: Boxes },

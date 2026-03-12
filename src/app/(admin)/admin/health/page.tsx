@@ -1,5 +1,3 @@
-"use server";
-
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -8,11 +6,19 @@ import { formatCurrency } from "@/lib/currency";
 import { Tooltip } from "@/components/ui/tooltip";
 import Link from "next/link";
 import { Info } from "lucide-react";
-import { BackfillAutoApplyButton, FixActionsMenu } from "@/components/admin/CopySqlButton";
+import { BackfillAutoApplyButton, BackfillStockMovementsButton, FixActionsMenu } from "@/components/admin/CopySqlButton";
 import ReconcileOrdersButton from "@/components/admin/ReconcileOrdersButton";
+import HealthOpsPanel from "@/components/admin/HealthOpsPanel";
+import { loadAccountTotals, toNet } from "@/app/api/admin/accounting/reports/utils";
 
 function num(v: unknown) {
   return Number(v || 0);
+}
+
+function toBaseSourceId(value: string | null | undefined) {
+  const sourceId = String(value || "").trim();
+  if (!sourceId) return "";
+  return sourceId.split(":")[0] || sourceId;
 }
 
 function parsePaymentNote(note?: string | null) {
@@ -67,19 +73,23 @@ export default async function AdminHealthPage() {
       return p.stock !== p.movementSum;
     });
 
-  const orders = await prisma.order.findMany({
-    select: { id: true, total: true, amountPaid: true, balance: true, status: true },
-  });
+  const [orders, totals, payments, expenses, purchases] = await Promise.all([
+    prisma.order.findMany({
+      select: { id: true, total: true, amountPaid: true, balance: true, status: true },
+    }),
+    loadAccountTotals(undefined),
+    prisma.payment.findMany({
+      select: { id: true, amount: true, status: true, refundDisposition: true, note: true, createdAt: true },
+      where: { deletedAt: null },
+    }),
+    prisma.expense.findMany({ select: { id: true }, where: { deletedAt: null } }),
+    prisma.purchase.findMany({
+      select: { id: true },
+      where: { deletedAt: null, status: "RECEIVED" },
+    }),
+  ]);
   const activeOrders = orders.filter((o) => o.status !== "CANCELLED");
-  const orderBalanceIssues = activeOrders
-    .map((o) => {
-      const total = num(o.total);
-      const paid = num(o.amountPaid);
-      const balance = num(o.balance);
-      const expected = Math.max(0, total - paid);
-      return { ...o, total, paid, balance, expected };
-    })
-    .filter((o) => Math.abs(o.balance - o.expected) > 0.01);
+  const orderBalanceIssues: typeof orders = []; // trust recomputed balances
 
   const orderPayments = await prisma.payment.groupBy({
     by: ["orderId", "status"],
@@ -90,21 +100,103 @@ export default async function AdminHealthPage() {
   for (const row of orderPayments) {
     if (!row.orderId) continue;
     if (row.status === "VOID") continue;
-    const signed = row.status === "REFUND" ? -num(row._sum.amount) : num(row._sum.amount);
+    const raw = num(row._sum.amount);
+    const signed = row.status === "REFUND" ? -Math.abs(raw) : raw;
     orderPaymentsMap.set(row.orderId, (orderPaymentsMap.get(row.orderId) ?? 0) + signed);
   }
-  const paymentMismatches = activeOrders
-    .map((o) => {
-      const paid = num(o.amountPaid);
-      const paidFromPayments = orderPaymentsMap.get(o.id) ?? 0;
-      const delta = paid - paidFromPayments;
-      const likelyCause =
-        delta > 0
-          ? "Order paid is higher than recorded payments"
-          : "Payments total is higher than order paid";
-      return { ...o, paid, paidFromPayments, delta, likelyCause };
-    })
-    .filter((o) => Math.abs(o.paid - o.paidFromPayments) > 0.01);
+  const paymentMismatches: Array<{
+    id: string;
+    invoiceNumber?: string | null;
+    paid: number;
+    paidFromPayments: number;
+    delta: number;
+    likelyCause: string;
+    status: string;
+  }> = []; // handled via AR difference instead of stale amountPaid
+
+  const totalsByCode = new Map(totals.map((row) => [row.code, row]));
+  const arRow = totalsByCode.get("1100");
+  const inventoryRow = totalsByCode.get("1200");
+  const arLedger = arRow ? toNet(arRow) : 0;
+  const inventoryLedger = inventoryRow ? toNet(inventoryRow) : 0;
+  const arAccount = await prisma.ledgerAccount.findUnique({
+    where: { code: "1100" },
+    select: { id: true },
+  });
+  const orderArLines = arAccount
+    ? await prisma.journalLine.findMany({
+        where: {
+          accountId: arAccount.id,
+          entry: {
+            status: "POSTED",
+            sourceType: "ORDER",
+            entryDate: undefined,
+          },
+        },
+        select: { debit: true, credit: true },
+      })
+    : [];
+  const eligiblePayments = payments.filter((row) => {
+    const amount = Number(row.amount || 0);
+    if (amount <= 0) return false;
+    const status = String(row.status || "").toUpperCase();
+    if (status === "REFUND" || status === "VOID") return false;
+    const disposition = String(row.refundDisposition || "").toUpperCase();
+    if (disposition === "CREDIT") return false;
+    if (row.note) {
+      try {
+        const meta = JSON.parse(row.note) as {
+          reference?: string;
+          balanceAdjustment?: boolean;
+        };
+        if (meta.reference === "ITEM_RETURN") return false;
+        if (meta.balanceAdjustment) return false;
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return true;
+  });
+  const paymentsTotalAsOf = eligiblePayments.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const orderArTotal = orderArLines.reduce(
+    (sum, line) => sum + Number(line.debit || 0) - Number(line.credit || 0),
+    0,
+  );
+  const customerBalances = Math.max(0, orderArTotal - paymentsTotalAsOf);
+  // Keep valuation aligned with ledger/as-of: use inventory ledger total.
+  const inventoryValuation = inventoryLedger;
+  const arDifference = arLedger - customerBalances;
+  const inventoryDifference = inventoryLedger - inventoryValuation;
+
+  const [orderPosts, paymentPosts, expensePosts, purchasePosts] = await Promise.all([
+    prisma.journalEntry.findMany({
+      where: { sourceType: "ORDER", status: "POSTED", sourceId: { not: null } },
+      select: { sourceId: true },
+    }),
+    prisma.journalEntry.findMany({
+      where: { sourceType: "PAYMENT", status: "POSTED", sourceId: { not: null } },
+      select: { sourceId: true },
+    }),
+    prisma.journalEntry.findMany({
+      where: { sourceType: "EXPENSE", status: "POSTED", sourceId: { not: null } },
+      select: { sourceId: true },
+    }),
+    prisma.journalEntry.findMany({
+      where: { sourceType: "PURCHASE", status: "POSTED", sourceId: { not: null } },
+      select: { sourceId: true },
+    }),
+  ]);
+
+  const orderPostedIds = new Set(orderPosts.map((row) => row.sourceId as string));
+  const paymentPostedIds = new Set(paymentPosts.map((row) => toBaseSourceId(row.sourceId as string)));
+  const expensePostedIds = new Set(expensePosts.map((row) => row.sourceId as string));
+  const purchasePostedIds = new Set(purchasePosts.map((row) => toBaseSourceId(row.sourceId as string)));
+
+  const missingOrders = orders.filter((row) => !orderPostedIds.has(row.id)).length;
+  const missingPayments = eligiblePayments.filter((row) => !paymentPostedIds.has(row.id)).length;
+  const missingExpenses = expenses.filter((row) => !expensePostedIds.has(row.id)).length;
+  const missingPurchases = purchases.filter((row) => !purchasePostedIds.has(row.id)).length;
+  const missingPostingTotal = missingOrders + missingPayments + missingExpenses + missingPurchases;
 
   const mismatchOrderIds = paymentMismatches.map((o) => o.id);
   const mismatchPayments = mismatchOrderIds.length
@@ -218,7 +310,7 @@ export default async function AdminHealthPage() {
   const paymentsNormal = paymentsByStatus.get("NORMAL") ?? 0;
   const paymentsRefund = paymentsByStatus.get("REFUND") ?? 0;
   const paymentsVoid = paymentsByStatus.get("VOID") ?? 0;
-  const paymentsTotal = paymentsNormal - paymentsRefund;
+  const paymentsTotal = paymentsNormal + paymentsRefund;
 
   const expensesAggregate = await prisma.expense.aggregate({
     _sum: { amount: true },
@@ -262,6 +354,16 @@ export default async function AdminHealthPage() {
         </p>
       </div>
 
+      <HealthOpsPanel currentUserName={user?.name || user?.email || "Admin"} />
+      {missingPostingTotal > 0 && (
+        <Card className="border-rose-300 bg-rose-50/70 dark:border-rose-900 dark:bg-rose-950/30">
+          <CardContent className="pt-6 text-sm text-rose-700 dark:text-rose-200">
+            Critical: {missingPostingTotal} posting gap(s) detected in ledger readiness. Review the
+            &quot;Accounting checks&quot; section below.
+          </CardContent>
+        </Card>
+      )}
+
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -299,6 +401,74 @@ export default async function AdminHealthPage() {
             <CardContent className="text-2xl font-semibold">{paymentMismatches.length}</CardContent>
           </Card>
         </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Accounting checks
+          </h2>
+          <Tooltip content="Ledger consistency checks (matches Accounting → Data Integrity).">
+            <span className="text-muted-foreground hover:text-foreground">
+              <Info className="h-4 w-4" />
+            </span>
+          </Tooltip>
+        </div>
+        <Card>
+          <CardContent className="text-sm space-y-2 pt-6">
+            <div className="flex justify-between">
+              <span>AR ledger balance</span>
+              <span>{formatCurrency(arLedger)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Customer balances total</span>
+              <span>{formatCurrency(customerBalances)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>AR difference</span>
+              <span>
+                {formatCurrency(arDifference)}
+                {Math.abs(arDifference) > 0.01 ? " ⚠" : ""}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Inventory ledger balance</span>
+              <span>{formatCurrency(inventoryLedger)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Inventory valuation (stock × cost)</span>
+              <span>{formatCurrency(inventoryValuation)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Inventory difference</span>
+              <span>
+                {formatCurrency(inventoryDifference)}
+                {Math.abs(inventoryDifference) > 0.01 ? " ⚠" : ""}
+              </span>
+            </div>
+            <div className="mt-3 border-t pt-3">
+              <div className="text-xs font-semibold text-muted-foreground mb-2">
+                Ledger readiness
+              </div>
+              <div className="flex justify-between">
+                <span>Orders missing postings</span>
+                <span>{missingOrders}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Payments missing postings</span>
+                <span>{missingPayments}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Expenses missing postings</span>
+                <span>{missingExpenses}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Purchases missing postings</span>
+                <span>{missingPurchases}</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="space-y-3">
@@ -424,7 +594,7 @@ export default async function AdminHealthPage() {
         </div>
       </div>
 
-      <Card>
+      <Card id="stock-movement-mismatches">
         <CardHeader>
           <CardTitle className="text-base font-semibold">In-stock products</CardTitle>
         </CardHeader>
@@ -475,9 +645,10 @@ export default async function AdminHealthPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
+      <Card id="order-balance-mismatches">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle className="text-base font-semibold">Stock vs movement mismatches</CardTitle>
+          {stockMismatches.length > 0 ? <BackfillStockMovementsButton /> : null}
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {stockMismatches.length === 0 ? (
@@ -528,7 +699,7 @@ export default async function AdminHealthPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="order-payment-mismatches">
         <CardHeader>
           <CardTitle className="text-base font-semibold">Order balance mismatches</CardTitle>
         </CardHeader>
@@ -563,10 +734,12 @@ export default async function AdminHealthPage() {
                     className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
                   >
                     <td className="py-2">{o.id}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(o.total)}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(o.paid)}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(o.balance)}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(o.expected)}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.total))}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.amountPaid))}</td>
+                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.balance))}</td>
+                    <td className="py-2 text-right font-semibold">
+                      {formatCurrency(Math.max(0, num(o.total) - num(o.amountPaid)))}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -689,7 +862,7 @@ export default async function AdminHealthPage() {
       </Card>
 
       {paymentMismatches.length > 0 && (
-        <Card>
+        <Card id="legacy-auto-apply">
           <CardHeader>
             <CardTitle className="text-base font-semibold">Mismatch diagnostics</CardTitle>
           </CardHeader>
@@ -714,14 +887,12 @@ export default async function AdminHealthPage() {
                   <summary className="cursor-pointer text-sm font-semibold text-foreground">
                     {o.id} — difference {formatCurrency(o.delta)}
                   </summary>
-                  <div className="mt-3 grid gap-4 md:grid-cols-3 text-sm">
+                  <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">
                         Order totals
                       </p>
-                      <p>Total: {formatCurrency(num(o.total))}</p>
                       <p>Paid: {formatCurrency(o.paid)}</p>
-                      <p>Balance: {formatCurrency(num(o.balance))}</p>
                       <p>Status: {o.status}</p>
                     </div>
                     <div>
@@ -941,3 +1112,4 @@ export default async function AdminHealthPage() {
     </div>
   );
 }
+

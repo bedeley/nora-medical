@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcrypt";
-import { rateLimit } from "@/lib/rate-limit";
+import {
+  checkOtpLockout,
+  clearOtpFailures,
+  rateLimit,
+  recordOtpFailure,
+} from "@/lib/rate-limit";
 import { assertSameOrigin } from "@/lib/origin";
 
 export async function POST(req: Request) {
@@ -28,6 +33,14 @@ export async function POST(req: Request) {
       );
     }
 
+    const lockout = await checkOtpLockout("phone_register", userId);
+    if (lockout.locked) {
+      return NextResponse.json(
+        { error: "Invalid or expired code" },
+        { status: 400 }
+      );
+    }
+
     const otp = await prisma.userOtp.findFirst({
       where: { userId, purpose: "phone_register" },
       orderBy: { createdAt: "desc" },
@@ -49,8 +62,9 @@ export async function POST(req: Request) {
 
     const valid = await bcrypt.compare(code, otp.codeHash);
     if (!valid) {
+      await recordOtpFailure("phone_register", userId);
       return NextResponse.json(
-        { error: "Invalid verification code" },
+        { error: "Invalid or expired code" },
         { status: 400 }
       );
     }
@@ -62,6 +76,7 @@ export async function POST(req: Request) {
       }),
       prisma.userOtp.delete({ where: { id: otp.id } }),
     ]);
+    await clearOtpFailures("phone_register", userId);
 
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

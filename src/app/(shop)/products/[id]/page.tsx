@@ -163,7 +163,7 @@ export default function ProductPage() {
 
   return (
     <section className="container mx-auto py-10">
-      <div className="grid md:grid-cols-2 gap-10 items-start">
+      <div className="grid gap-10 lg:grid-cols-2 items-start">
         {/* ✅ Product Image */}
         <div className="relative aspect-square w-full bg-muted overflow-hidden">
           <Image

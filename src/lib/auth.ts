@@ -8,7 +8,7 @@ import type { JWT } from "next-auth/jwt";
 import type { Role } from "@/lib/prisma-enums";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
 import { decode as defaultJwtDecode, encode as defaultJwtEncode } from "next-auth/jwt";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, checkLoginLockout, recordLoginFailure, clearLoginFailures } from "@/lib/rate-limit";
 
 export type AuthenticatedUser = {
   id: string;
@@ -96,6 +96,17 @@ export const authOptions: AuthOptions = {
           }
         }
 
+        if (req) {
+          const lockout = await checkLoginLockout(req as unknown as Request, raw.toLowerCase());
+          if (lockout.locked) {
+            console.warn("[auth] login locked out", {
+              identifier: raw.toLowerCase(),
+              retryInMs: lockout.retryIn,
+            });
+            return null;
+          }
+        }
+
         const whereClause = isEmail
           ? { email: raw.toLowerCase() }
           : { username: raw.toLowerCase() };
@@ -110,17 +121,32 @@ export const authOptions: AuthOptions = {
             password: true,
             twoFactorEnabled: true,
             phoneVerifiedAt: true,
+            archived: true,
           },
         });
         if (!user) {
           console.warn("[auth] login failed: user not found", { identifier: raw });
+          if (req) {
+            await recordLoginFailure(req as unknown as Request, raw.toLowerCase());
+          }
+          return null;
+        }
+        if (user.archived) {
+          console.warn("[auth] login blocked: user archived", { userId: user.id });
           return null;
         }
 
         const isValid = await bcrypt.compare(password, user.password);
         if (!isValid) {
           console.warn("[auth] login failed: bad password", { userId: user.id });
+          if (req) {
+            await recordLoginFailure(req as unknown as Request, raw.toLowerCase());
+          }
           return null;
+        }
+
+        if (req) {
+          await clearLoginFailures(req as unknown as Request, raw.toLowerCase());
         }
 
         return {
@@ -176,6 +202,34 @@ export const authOptions: AuthOptions = {
         // Sliding window: extend admin session on activity while still valid.
         extendedToken.adminExpiresAt = now + ADMIN_SESSION_MAX_AGE_SECONDS;
       }
+
+      // Enforce forced logout / archived users on subsequent requests.
+      if (!user && token?.sub) {
+        const role = (extendedToken.role ?? "CUSTOMER") as Role | string;
+        const privileged = ["ADMIN", "STAFF", "ACCOUNTANT", "DISPATCHER"].includes(String(role));
+        if (privileged) {
+          try {
+            const refreshed = await prisma.user.findUnique({
+              where: { id: String(token.sub) },
+              select: { archived: true, sessionInvalidBefore: true },
+            });
+            if (!refreshed || refreshed.archived) {
+              return {};
+            }
+            if (refreshed.sessionInvalidBefore) {
+              const invalidBefore = Math.floor(
+                refreshed.sessionInvalidBefore.getTime() / 1000,
+              );
+              const tokenIat = typeof token.iat === "number" ? token.iat : 0;
+              if (tokenIat < invalidBefore) {
+                return {};
+              }
+            }
+          } catch (e) {
+            console.warn("[auth] forced logout check failed", e);
+          }
+        }
+      }
       return token;
     },
     async session({ session, token }) {
@@ -200,9 +254,46 @@ export const authOptions: AuthOptions = {
           phoneVerified?: boolean;
         };
         sessionUser.id = token.sub ?? "";
-        sessionUser.role = extendedToken.role ?? "CUSTOMER";
-        sessionUser.twoFactorEnabled = Boolean(extendedToken.mfaRequired);
-        sessionUser.phoneVerified = Boolean(extendedToken.phoneVerified);
+        let resolvedRole = extendedToken.role ?? "CUSTOMER";
+        let resolvedMfa = Boolean(extendedToken.mfaRequired);
+        let resolvedPhone = Boolean(extendedToken.phoneVerified);
+
+        const privileged = ["ADMIN", "STAFF", "ACCOUNTANT"].includes(String(resolvedRole));
+        if (sessionUser.id && privileged) {
+          try {
+            const refreshed = await prisma.user.findUnique({
+              where: { id: sessionUser.id },
+              select: {
+                role: true,
+                twoFactorEnabled: true,
+                phoneVerifiedAt: true,
+                archived: true,
+                sessionInvalidBefore: true,
+              },
+            });
+            if (!refreshed || refreshed.archived) {
+              delete (session as { user?: unknown }).user;
+              return session;
+            }
+            if (refreshed.sessionInvalidBefore) {
+              const invalidBefore = Math.floor(refreshed.sessionInvalidBefore.getTime() / 1000);
+              const tokenIat = typeof token.iat === "number" ? token.iat : 0;
+              if (tokenIat < invalidBefore) {
+                delete (session as { user?: unknown }).user;
+                return session;
+              }
+            }
+            resolvedRole = refreshed.role;
+            resolvedMfa = refreshed.role === "ADMIN" && Boolean(refreshed.twoFactorEnabled);
+            resolvedPhone = Boolean(refreshed.phoneVerifiedAt);
+          } catch (e) {
+            console.warn("[auth] role refresh failed", e);
+          }
+        }
+
+        sessionUser.role = resolvedRole;
+        sessionUser.twoFactorEnabled = resolvedMfa;
+        sessionUser.phoneVerified = resolvedPhone;
       }
       return session;
     },

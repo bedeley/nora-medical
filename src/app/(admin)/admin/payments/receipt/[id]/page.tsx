@@ -37,6 +37,8 @@ type ReceiptData = {
   delivery?: { orderId: string | null; deliveryStatus?: string; deliveredAt?: string | null } | null;
 };
 
+const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
+
 export default function PaymentReceiptPage() {
   const params = useParams();
   const id = String(params?.id || "");
@@ -96,6 +98,7 @@ export default function PaymentReceiptPage() {
 
   const { payment, meta, applied, totalsBefore, totals, settlement, delivery } = data;
   const createdAt = format(new Date(payment.createdAt), "PPpp");
+  const displayBalance = normalizeBalance(Number(totals.balance || 0));
 
   return (
     <section className="container mx-auto py-8 max-w-2xl">
@@ -124,7 +127,7 @@ export default function PaymentReceiptPage() {
         <p>
           <strong>Settlement:</strong> {settlement === "FULL" ? "Fully Paid" : settlement === "PARTIAL" ? "Partially Paid" : settlement === "REFUND" ? "Refund" : "Void"}
           {settlement !== "REFUND" && settlement !== "VOID" && (
-            <span> • Remaining Balance: {formatCurrency(totals.balance)}</span>
+            <span> • Remaining Balance: {formatCurrency(displayBalance)}</span>
           )}
         </p>
         {delivery && (
@@ -160,7 +163,7 @@ export default function PaymentReceiptPage() {
                   </td>
                   <td className="border px-2 py-1 text-right">{formatCurrency(a.applied)}</td>
                   <td className="border px-2 py-1 text-right">{formatCurrency(a.newAmountPaid)}</td>
-                  <td className="border px-2 py-1 text-right">{formatCurrency(a.newBalance)}</td>
+                  <td className="border px-2 py-1 text-right">{formatCurrency(normalizeBalance(a.newBalance))}</td>
                   <td className="border px-2 py-1">{a.newStatus}</td>
                 </tr>
               ))}
@@ -201,12 +204,12 @@ export default function PaymentReceiptPage() {
         <h2 className="font-medium mb-1">Account Summary</h2>
         {totalsBefore ? (
           <div className="text-sm space-y-0.5">
-            <p>Before: Total Purchases {formatCurrency(totalsBefore.totalDue)} • Paid {formatCurrency(totalsBefore.totalPaid)} • Balance {formatCurrency(totalsBefore.balance)}</p>
+            <p>Before: Total Purchases {formatCurrency(totalsBefore.totalDue)} • Paid {formatCurrency(totalsBefore.totalPaid)} • Balance {formatCurrency(normalizeBalance(totalsBefore.balance))}</p>
             <p>Payment: {formatCurrency(payment.amount)}</p>
-            <p>After: Total Purchases {formatCurrency(totals.totalDue)} • Paid {formatCurrency(totals.totalPaid)} • Balance {formatCurrency(totals.balance)}</p>
+            <p>After: Total Purchases {formatCurrency(totals.totalDue)} • Paid {formatCurrency(totals.totalPaid)} • Balance {formatCurrency(displayBalance)}</p>
           </div>
         ) : (
-          <p className="text-sm">Total Purchases: {formatCurrency(totals.totalDue)} • Total Paid: {formatCurrency(totals.totalPaid)} • Balance: {formatCurrency(totals.balance)}</p>
+          <p className="text-sm">Total Purchases: {formatCurrency(totals.totalDue)} • Total Paid: {formatCurrency(totals.totalPaid)} • Balance: {formatCurrency(displayBalance)}</p>
         )}
       </div>
 

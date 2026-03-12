@@ -31,7 +31,9 @@ type OrderForReceipt = {
   receiptHash?: string | null;
 };
 
-function formatReceiptText(order: OrderForReceipt, receiptUrl?: string) {
+const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
+
+function formatReceiptText(order: OrderForReceipt) {
   const lines: string[] = [];
   lines.push(`Noralls Medical Supplies`);
   const invoiceDisplay = formatInvoiceNumber(order.invoiceNumber);
@@ -53,9 +55,11 @@ function formatReceiptText(order: OrderForReceipt, receiptUrl?: string) {
   const taxRate = Number(order.taxRate ?? 0);
   const total = formatCurrency(Number(order.total ?? subtotal + taxAmount));
   const paid = formatCurrency(Number(order.amountPaid ?? 0));
-  const balance = formatCurrency(
-    Math.max(0, Number(order.total ?? subtotal + taxAmount) - Number(order.amountPaid ?? 0)),
+  const rawBalance = Math.max(
+    0,
+    Number(order.total ?? subtotal + taxAmount) - Number(order.amountPaid ?? 0),
   );
+  const balance = formatCurrency(normalizeBalance(rawBalance));
   lines.push(`Subtotal: ${formatCurrency(subtotal)}`);
   if (taxAmount > 0) {
     lines.push(`Tax${taxRate ? ` (${taxRate}%)` : ""}: ${formatCurrency(taxAmount)}`);
@@ -66,9 +70,6 @@ function formatReceiptText(order: OrderForReceipt, receiptUrl?: string) {
   lines.push(`Status: ${order.status}`);
   if (order.receiptHash) {
     lines.push(`Receipt hash: ${order.receiptHash}`);
-  }
-  if (receiptUrl) {
-    lines.push(`Receipt: ${receiptUrl}`);
   }
   return lines.join("\n");
 }
@@ -99,11 +100,7 @@ export async function POST(
       return NextResponse.json({ error: "No phone number on file for this order" }, { status: 400 });
     }
 
-    const url = new URL(_req.url);
-    const base = process.env.NEXT_PUBLIC_BASE_URL || `${url.protocol}//${url.host}`;
-    const receiptToken = order.receiptHash ? `?receipt=${encodeURIComponent(order.receiptHash)}` : "";
-    const receiptUrl = `${base}/orders/${order.id}/receipt${receiptToken}`;
-    const body = formatReceiptText(order as unknown as OrderForReceipt, receiptUrl);
+    const body = formatReceiptText(order as unknown as OrderForReceipt);
     // Try WhatsApp first
     const wa = await sendWhatsApp(
       phone.startsWith("whatsapp:")

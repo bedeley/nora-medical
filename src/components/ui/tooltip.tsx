@@ -19,8 +19,12 @@ export function Tooltip({ content, children, side = "top" }: TooltipProps) {
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
+    const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1024;
+    const tooltipMaxWidth = Math.min(360, viewportWidth - 24);
+    const half = tooltipMaxWidth / 2;
+    const clampedX = Math.max(12 + half, Math.min(centerX, viewportWidth - 12 - half));
     const top = side === "top" ? rect.top - 8 : rect.bottom + 8;
-    setPos({ top, left: centerX });
+    setPos({ top, left: clampedX });
   }, [side]);
 
   useEffect(() => {
@@ -52,7 +56,7 @@ export function Tooltip({ content, children, side = "top" }: TooltipProps) {
         ? createPortal(
             <div
               role="tooltip"
-              className="pointer-events-none fixed z-[9999] -translate-x-1/2 whitespace-nowrap rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
+              className="pointer-events-none fixed z-[9999] -translate-x-1/2 rounded-md border bg-popover px-2 py-1 text-xs leading-snug text-popover-foreground shadow-md whitespace-normal text-left max-w-[min(90vw,22rem)]"
               style={{ top: pos.top, left: pos.left }}
             >
               {content}

@@ -20,7 +20,7 @@ export async function GET(req: Request) {
       const [users, orderSums] = await Promise.all([
         prisma.user.findMany({
           where: { role: "CUSTOMER" },
-          select: { id: true, name: true, email: true },
+          select: { id: true, name: true, email: true, phone: true },
         }),
         prisma.order.groupBy({
           by: ["userId"],
@@ -38,7 +38,7 @@ export async function GET(req: Request) {
       }
 
       const nowIso = new Date().toISOString();
-      const rows = users.map((u: { id: string; name: string | null; email: string | null }) => {
+      const rows = users.map((u: { id: string; name: string | null; email: string | null; phone: string | null }) => {
         const totals = sumsByUser[u.id] || { totalDue: 0, totalPaid: 0 };
         const balance = Math.max(0, totals.totalDue - totals.totalPaid);
         return {
@@ -47,7 +47,7 @@ export async function GET(req: Request) {
           totalPaid: totals.totalPaid,
           balance,
           updatedAt: nowIso,
-          user: { name: u.name, email: u.email },
+          user: { name: u.name, email: u.email, phone: u.phone },
         };
       });
 

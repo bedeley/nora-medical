@@ -1,5 +1,6 @@
 export const PRODUCT_CATEGORIES = [
   "diagnostics",
+  "therapeutics",
   "mobility",
   "ppe-safety",
   "equipment",
@@ -9,6 +10,7 @@ export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
 
 export const PRODUCT_CATEGORY_LABELS: Record<ProductCategory, string> = {
   diagnostics: "Diagnostics",
+  therapeutics: "Therapeutics",
   mobility: "Mobility",
   "ppe-safety": "PPE & Safety",
   equipment: "Equipment",

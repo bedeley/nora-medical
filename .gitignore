@@ -36,6 +36,8 @@ yarn-error.log*
 # docs (local notes)
 README.md
 readme.text
+HR_ADMIN_PLAYBOOK.md
+csv-usage.text
 
 # vercel
 .vercel

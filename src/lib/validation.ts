@@ -17,7 +17,7 @@ export const registerSchema = z
     name: z.string().trim().min(2),
     email: optionalEmail,
     username: optionalUsername,
-    password: z.string().min(6),
+    password: z.string().min(10),
     phone: z
       .string()
       .trim()

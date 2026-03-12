@@ -8,3 +8,7 @@ ignoredBuiltDependencies:
   - prisma
   - sharp
   - unrs-resolver
+
+offline: false
+
+storeDir: C:\Users\bedel\AppData\Local\pnpm\store\v10

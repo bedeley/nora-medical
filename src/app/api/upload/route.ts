@@ -12,6 +12,18 @@ import { rateLimit } from "@/lib/rate-limit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+async function saveLocalUpload(
+  buffer: Buffer,
+  ext: ".jpg" | ".jpeg" | ".png" | ".webp",
+) {
+  const uploadDir = path.join(process.cwd(), "public", "uploads");
+  await mkdir(uploadDir, { recursive: true });
+  const fileName = `${randomUUID()}${ext}`;
+  const filePath = path.join(uploadDir, fileName);
+  await writeFile(filePath, buffer, { flag: "wx" });
+  return `/uploads/${fileName}`;
+}
+
 function detectImageType(buf: Buffer): "jpeg" | "png" | "webp" | "unknown" {
   if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpeg";
   if (
@@ -42,7 +54,7 @@ function detectImageType(buf: Buffer): "jpeg" | "png" | "webp" | "unknown" {
 }
 
 /**
- * Admin-only image upload with strict validation.
+ * Staff image upload with strict validation.
  * In production, prefers Cloudflare R2 when configured; otherwise
  * falls back to saving into /public/uploads and returns { url }.
  */
@@ -58,13 +70,14 @@ export async function POST(req: Request) {
     const role = user.role;
     const isAdmin = role === "ADMIN";
     const isStaff = role === "STAFF";
-    if (!isAdmin && !isStaff) {
+    const isDispatcher = role === "DISPATCHER";
+    if (!isAdmin && !isStaff && !isDispatcher) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
     }
     if (!assertSameOrigin(req)) {
       return new Response(JSON.stringify({ error: "Bad origin" }), { status: 403 });
     }
-    const limited = await rateLimit(req, "admin-upload", 60_000, 60);
+    const limited = await rateLimit(req, "staff-upload", 60_000, 60);
     if (!limited.ok) {
       return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
     }
@@ -95,31 +108,52 @@ export async function POST(req: Request) {
 
     const ext = (kind === "jpeg" ? ".jpg" : `.${kind}`) as ".jpg" | ".jpeg" | ".png" | ".webp";
 
-    // Best-effort audit log (before upload destination)
-    try {
-      await recordAuditLog({
-        actorId: user.id,
-        action: "IMAGE_UPLOAD",
-        entityType: "PRODUCT_IMAGE",
-        entityId: "n/a",
-        meta: {
-          mime,
-          size: file.size,
-          ext,
-          filename: (file as File & { name?: string }).name || null,
-        },
-      });
-    } catch {
-      // ignore audit errors
-    }
+    const logImageUpload = async (payload: { storage: string; url: string }) => {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "IMAGE_UPLOAD",
+          entityType: "PRODUCT_IMAGE",
+          entityId: "n/a",
+          meta: {
+            mime,
+            size: file.size,
+            ext,
+            filename: (file as File & { name?: string }).name || null,
+            storage: payload.storage,
+            url: payload.url,
+            uploadedAt: new Date().toISOString(),
+            actorName: user.name || null,
+            actorEmail: user.email || null,
+            actorRole: user.role || null,
+            resultSummary: `Uploaded image to ${payload.storage}.`,
+          },
+        });
+      } catch {
+        // ignore audit errors
+      }
+    };
 
     // Prefer Cloudflare R2 when configured (required for production)
     if (isR2Configured()) {
       const uploaded = await uploadImageToR2(buffer, ext);
       if (!uploaded.ok) {
         console.error("R2 upload error:", uploaded.error);
-        return new Response(JSON.stringify({ error: "Upload failed" }), { status: 500 });
+        if (isLiveStage()) {
+          return new Response(
+            JSON.stringify({
+              error:
+                "Upload failed. Verify R2 connectivity and credentials (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_BASE_URL).",
+            }),
+            { status: 500 },
+          );
+        }
+        // In local/UAT, tolerate transient R2/DNS outages and fallback to local uploads.
+        const localUrl = await saveLocalUpload(buffer, ext);
+        await logImageUpload({ storage: "local-fallback", url: localUrl });
+        return new Response(JSON.stringify({ url: localUrl, storage: "local-fallback" }), { status: 200 });
       }
+      await logImageUpload({ storage: "r2", url: uploaded.url });
       return new Response(JSON.stringify({ url: uploaded.url }), { status: 200 });
     }
 
@@ -134,14 +168,8 @@ export async function POST(req: Request) {
     }
 
     // Fallback: local filesystem (useful for local dev without Supabase)
-    const uploadDir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadDir, { recursive: true });
-    const fileName = `${randomUUID()}${ext}`;
-    const filePath = path.join(uploadDir, fileName);
-
-    await writeFile(filePath, buffer, { flag: "wx" });
-
-    const url = `/uploads/${fileName}`;
+    const url = await saveLocalUpload(buffer, ext);
+    await logImageUpload({ storage: "local", url });
     return new Response(JSON.stringify({ url }), { status: 200 });
   } catch (err) {
     console.error("Upload error:", err);

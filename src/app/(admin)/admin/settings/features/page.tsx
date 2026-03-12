@@ -14,6 +14,7 @@ type FeatureRow = {
   envEnabled: boolean;
   dbEnabled?: boolean;
   effective: boolean;
+  envLockedOn?: boolean;
 };
 
 type FeaturesResponse = {
@@ -102,6 +103,7 @@ export default function FeatureSettingsPage() {
             <div className="grid gap-3">
               {rows.map((row) => {
                 const envBlocked = !row.envEnabled;
+                const lockOn = Boolean(row.envLockedOn);
                 return (
                   <div
                     key={row.key}
@@ -128,11 +130,16 @@ export default function FeatureSettingsPage() {
                           no effect until the env var is enabled.
                         </p>
                       )}
+                      {lockOn && (
+                        <p className="text-[11px] text-amber-700">
+                          This feature is locked ON by env; change `ACCOUNTING_AUTO_POST_ENABLED` to disable.
+                        </p>
+                      )}
                     </div>
                     <Button
                       size="sm"
                       variant={row.effective ? "outline" : "secondary"}
-                      disabled={loading || envBlocked}
+                      disabled={loading || envBlocked || lockOn}
                       onClick={() => toggleFeature(row)}
                     >
                       {row.effective ? "Turn off" : "Turn on"}

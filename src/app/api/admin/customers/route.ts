@@ -41,6 +41,7 @@ type CustomerRow = {
   storeCredit: number;
   delivery: { delivered: number; partial: number; pending: number };
   refundedCash: number;
+  creditLimit: number;
   lastOrderAt: string | null;
   whatsappReady: boolean;
   phoneVerified: boolean;
@@ -185,6 +186,15 @@ export async function GET(req: Request) {
         note: true,
       },
     });
+
+    const balanceRows = await prisma.balance.findMany({
+      where: { userId: { in: users.map((u) => u.id) } },
+      select: { userId: true, creditLimit: true },
+    });
+    const creditLimitByUser: Record<string, number> = {};
+    for (const row of balanceRows) {
+      creditLimitByUser[row.userId] = Number(row.creditLimit || 0);
+    }
 
     const creditIssuedByUser: Record<string, number> = {};
     const creditAppliedByUser: Record<string, number> = {};
@@ -335,6 +345,7 @@ export async function GET(req: Request) {
         storeCredit,
         delivery: deliveryByUser[u.id] || { delivered: 0, partial: 0, pending: 0 },
         refundedCash: refundsByUser[u.id] || 0,
+        creditLimit: creditLimitByUser[u.id] ?? 0,
         lastOrderAt: lastOrderByUser[u.id] || null,
         whatsappReady: !!(u.phone && String(u.phone).trim()),
         phoneVerified: !!u.phoneVerifiedAt,

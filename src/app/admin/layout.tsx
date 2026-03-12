@@ -18,7 +18,7 @@ export default function AdminLayout({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 print:hidden">
         <nav className="container mx-auto flex flex-wrap items-center gap-2 py-2 text-sm">
           <Link
             href="/admin/dashboard"
@@ -51,6 +51,14 @@ export default function AdminLayout({
             }`}
           >
             Products
+          </Link>
+          <Link
+            href="/admin/hr"
+            className={`px-2 py-1 rounded whitespace-nowrap ${
+              pathname.startsWith("/admin/hr") ? "bg-muted" : ""
+            }`}
+          >
+            HR
           </Link>
           <Link
             href="/admin/payments/momo"

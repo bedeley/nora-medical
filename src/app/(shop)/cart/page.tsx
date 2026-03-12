@@ -92,6 +92,14 @@ export default function CartPage() {
   const [confirmPlaceOrderOpen, setConfirmPlaceOrderOpen] = useState(false);
   const [confirmMomoOpen, setConfirmMomoOpen] = useState(false);
   const qtyTimers = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+  const normalizePhone = (input: string) => {
+    const cleaned = (input || "").trim().replace(/[^\d+]/g, "");
+    if (/^0\d{9}$/.test(cleaned)) return "+233" + cleaned.slice(1);
+    return cleaned;
+  };
+  const isValidPhone = (input: string) => /^\+?\d{10,15}$/.test(normalizePhone(input));
+  const savedPhoneNormalized = me?.phone ? normalizePhone(me.phone) : "";
+  const showSavedPhoneChoice = Boolean(savedPhoneNormalized);
 
   // Server-backed cart for signed-in users
   const { data, error } = useQuery({
@@ -355,16 +363,6 @@ export default function CartPage() {
       setMomoProcessing(true);
       // Validate MoMo phone BEFORE creating the order to avoid
       // clearing the cart when the provided number is invalid.
-      const normalizePhone = (input: string) => {
-        const cleaned = (input || "").trim().replace(/[^\d+]/g, "");
-        if (/^0\d{9}$/.test(cleaned)) return "+233" + cleaned.slice(1);
-        return cleaned;
-      };
-      const isValidPhone = (input: string) => {
-        const p = normalizePhone(input);
-        return /^\+?\d{10,15}$/.test(p);
-      };
-
       const candidatePhone = momoPhone || me?.phone || "";
       if (!isValidPhone(candidatePhone)) {
         setMomoError("Enter a valid phone number.");
@@ -715,7 +713,7 @@ export default function CartPage() {
       <div className="grid gap-6 lg:grid-cols-[1.6fr_0.9fr] items-start">
         <div className="grid gap-4">
           {/* Mobile: stacked card layout to avoid horizontal scrolling */}
-          <div className="grid gap-3 md:hidden">
+          <div className="grid gap-3 lg:hidden">
         {itemsSorted.map((it) => (
           <div key={it.id} className="flex gap-3 border-t pt-3 first:border-t-0">
             <Image
@@ -938,7 +936,7 @@ export default function CartPage() {
           </div>
 
           {/* Desktop: tabular layout */}
-          <div className="hidden md:block overflow-x-auto">
+          <div className="hidden lg:block overflow-x-auto">
             <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="text-left border-b">
@@ -1238,6 +1236,8 @@ export default function CartPage() {
                   Pay now with MoMo
                 </div>
                 <Input
+                  type="tel"
+                  inputMode="tel"
                   placeholder="MoMo number"
                   value={momoPhone}
                   onChange={(e) => {
@@ -1247,6 +1247,24 @@ export default function CartPage() {
                   aria-invalid={!!momoError}
                   className={`w-full ${momoError ? "border-red-500" : ""}`}
                 />
+                {(momoPhone || showSavedPhoneChoice) && (
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    {showSavedPhoneChoice && momoPhone !== savedPhoneNormalized && (
+                      <button
+                        type="button"
+                        className="text-primary underline-offset-2 hover:underline"
+                        onClick={() => setMomoPhone(savedPhoneNormalized)}
+                      >
+                        Use saved MoMo number: {savedPhoneNormalized}
+                      </button>
+                    )}
+                    {isValidPhone(savedPhoneNormalized) && !momoPhone && (
+                      <span className="text-muted-foreground">
+                        We&apos;ll send the payment prompt to your saved MoMo number when you use it here.
+                      </span>
+                    )}
+                  </div>
+                )}
                 <Input
                   placeholder="Amount (optional)"
                   inputMode="decimal"

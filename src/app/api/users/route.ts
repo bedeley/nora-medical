@@ -3,7 +3,7 @@ import { registerSchema } from "@/lib/validation";
 import bcrypt from "bcrypt";
 import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
-import { rateLimit } from "@/lib/rate-limit";
+import { clearOtpFailures, rateLimit } from "@/lib/rate-limit";
 import { sendEmail } from "@/lib/email";
 import { sendWhatsApp } from "@/lib/whatsapp";
 import { sendSms } from "@/lib/sms";
@@ -76,6 +76,7 @@ export async function POST(req: Request) {
           expiresAt,
         },
       });
+      await clearOtpFailures("phone_register", user.id);
 
       let otpSent = false;
       let otpChannel: string | undefined = undefined;

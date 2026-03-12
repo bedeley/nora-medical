@@ -115,7 +115,7 @@ export default function HomepageSettingsPage() {
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading settings…</p>
           ) : (
-            <div className="grid gap-4 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {collage.map((url, index) => (
                 <div key={index} className="rounded-lg border p-3 space-y-3">
                   <div className="text-xs font-medium text-muted-foreground">

@@ -257,8 +257,17 @@ export function verifyMomoSignature(rawBody: string, headers: Headers): boolean 
   const secret = (process.env.MOMO_WEBHOOK_SECRET || "").trim();
   const headerName = (process.env.MOMO_WEBHOOK_SIGNATURE_HEADER || "x-momo-signature").toLowerCase();
   if (!secret) {
-    // No secret configured: accept only in non-live stages.
-    return !isLiveStage();
+    // Fail closed by default. For local testing only, allow explicit opt-in.
+    const allowUnsigned =
+      process.env.MOMO_ALLOW_UNSIGNED_CALLBACKS === "1" &&
+      !isLiveStage() &&
+      process.env.NODE_ENV !== "production";
+    if (allowUnsigned) {
+      console.warn("MoMo callback: accepting unsigned callback due to MOMO_ALLOW_UNSIGNED_CALLBACKS=1");
+      return true;
+    }
+    console.warn("MoMo callback: MOMO_WEBHOOK_SECRET is not configured");
+    return false;
   }
 
   let signature =

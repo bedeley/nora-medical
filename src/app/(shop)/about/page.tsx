@@ -17,7 +17,7 @@ export default function AboutPage() {
         </p>
       </header>
 
-      <div className="grid gap-6 md:grid-cols-3">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         <div className="rounded-xl bg-card text-card-foreground shadow-sm p-6">
           <p className="text-sm text-muted-foreground">Founded</p>
           <p className="text-2xl font-semibold">2013</p>

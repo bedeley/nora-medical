@@ -16,12 +16,16 @@ import { useSession } from "next-auth/react";
 
 type ReceiptOrder = {
   id: string;
+  subtotal?: number | string;
+  taxAmount?: number | string;
   total: number | string;
   amountPaid?: number | string;
   balance?: number | string;
   status: string;
   createdAt: string | Date;
   deliveryStatus?: string | null;
+  walkInName?: string | null;
+  adminNote?: string | null;
   user?: { name?: string | null; email?: string | null } | null;
   items: Array<{
     id: string;
@@ -74,20 +78,31 @@ export default function ReceiptPage() {
   if (error) return <p className="p-6 text-center text-red-600">Failed to load receipt.</p>;
   if (!order) return <p className="p-6 text-center">Loading receipt...</p>;
 
-  const subtotal = Number(order.total || 0);
+  const subtotal = Number(order.subtotal ?? order.total ?? 0);
+  const taxAmount = Number(order.taxAmount ?? 0);
   const lineTotal = (order.items || []).reduce(
     (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
     0,
   );
+  const discountAmount = Math.max(0, subtotal + taxAmount - Number(order.total || 0));
   const returnAdjustment = Math.max(0, lineTotal - subtotal);
   const paid = Number(order.amountPaid || 0);
-  const balance = Math.max(0, subtotal - paid);
+  const rawBalance = Math.max(0, Number(order.total || 0) - paid);
+  const balance = Math.abs(rawBalance) < 0.01 ? 0 : rawBalance;
   const deliveryLabel = (() => {
     const raw = String(order.deliveryStatus || "NOT_DELIVERED").toUpperCase();
     if (raw === "DELIVERED") return "Delivered";
     if (raw === "PARTIALLY_DELIVERED") return "Partially delivered";
     if (raw === "RETURNED") return "Returned";
     return "Not delivered";
+  })();
+  const customerDisplayName = order.user?.name || order.walkInName || "Walk-in";
+  const anonymousReason = (() => {
+    const raw = String(order.adminNote || "");
+    const marker = "ANONYMOUS_OTC:";
+    const idx = raw.indexOf(marker);
+    if (idx < 0) return "";
+    return raw.slice(idx + marker.length).trim().split(" | ")[0].trim();
   })();
 
   const storeCreditApplied = (() => {
@@ -255,9 +270,12 @@ export default function ReceiptPage() {
         <div className="mt-6 grid gap-4 rounded-lg border bg-muted/30 p-4 text-sm sm:grid-cols-2">
           <div className="space-y-1">
             <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer</p>
-            <p className="font-medium">{order.user?.name || "—"}</p>
+            <p className="font-medium">{customerDisplayName}</p>
             {order.user?.email ? (
               <p className="text-muted-foreground">{order.user.email}</p>
+            ) : null}
+            {!order.user?.name && anonymousReason ? (
+              <p className="text-xs text-muted-foreground">Anonymous reason: {anonymousReason}</p>
             ) : null}
           </div>
           <div className="space-y-1 sm:text-right">
@@ -270,7 +288,7 @@ export default function ReceiptPage() {
         {/* Items list: mobile-friendly cards + desktop table */}
         <div className="mt-6">
           {/* Mobile: stacked item cards for clearer separation */}
-          <div className="grid gap-3 md:hidden print:hidden">
+          <div className="grid gap-3 lg:hidden print:hidden">
             {order.items.map((it) => (
               <div key={it.id} className="border rounded-lg p-3 text-sm bg-muted/20">
                 <div className="font-medium">
@@ -330,7 +348,7 @@ export default function ReceiptPage() {
           </div>
 
           {/* Desktop/tablet: keep tabular layout */}
-          <div className="hidden md:block print:block">
+          <div className="hidden lg:block print:block">
             <div className="overflow-hidden rounded-lg border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
@@ -375,12 +393,30 @@ export default function ReceiptPage() {
           <div className="flex justify-end">
             <div className="w-full max-w-xs rounded-lg border bg-muted/20 p-4">
               <div className="flex justify-between py-1">
-                <span>Total</span>
-                <span>{formatCurrency(lineTotal)}</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span>Subtotal</span>
+                <span>Taxable subtotal</span>
                 <span>{formatCurrency(subtotal)}</span>
+              </div>
+              {Math.abs(lineTotal - subtotal) > 0.005 ? (
+                <div className="flex justify-between py-1">
+                  <span>Items total</span>
+                  <span>{formatCurrency(lineTotal)}</span>
+                </div>
+              ) : null}
+              {taxAmount > 0 ? (
+                <div className="flex justify-between py-1">
+                  <span>Tax</span>
+                  <span>{formatCurrency(taxAmount)}</span>
+                </div>
+              ) : null}
+              {discountAmount > 0 ? (
+                <div className="flex justify-between py-1 text-amber-700">
+                  <span>Discount</span>
+                  <span>-{formatCurrency(discountAmount)}</span>
+                </div>
+              ) : null}
+              <div className="flex justify-between py-1">
+                <span>Invoice total</span>
+                <span>{formatCurrency(Number(order.total || 0))}</span>
               </div>
               <div className="flex justify-between py-1">
                 <span>Paid</span>
@@ -424,7 +460,7 @@ export default function ReceiptPage() {
           </div>
         </div>
 
-        {balance === 0 ? (
+        {balance <= 0 ? (
           <p className="mt-4 text-center text-xs text-muted-foreground">Thank you for your payment.</p>
         ) : null}
       </div>

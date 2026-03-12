@@ -17,7 +17,10 @@ async function main() {
     prisma.expense.deleteMany({}),
     prisma.account.deleteMany({}),
     prisma.session.deleteMany({}),
+    prisma.userOtp.deleteMany({}),
+    prisma.stockAlert.deleteMany({}),
     prisma.product.deleteMany({}),
+    prisma.userPreference.deleteMany({}),
     prisma.user.deleteMany({}),
   ]);
 

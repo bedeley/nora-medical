@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcrypt";
-import { rateLimit } from "@/lib/rate-limit";
+import { clearOtpFailures, rateLimit } from "@/lib/rate-limit";
 import { assertSameOrigin } from "@/lib/origin";
 import { sendWhatsApp } from "@/lib/whatsapp";
 import { sendSms } from "@/lib/sms";
@@ -61,6 +61,7 @@ export async function POST(req: Request) {
         expiresAt,
       },
     });
+    await clearOtpFailures("phone_register", user.id);
 
     const message = `Noralls Medical Supplies verification code: ${code}. Enter this on the verification screen within 15 minutes to complete your registration.`;
 

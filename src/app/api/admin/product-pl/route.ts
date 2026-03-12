@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordAuditLog } from "@/lib/audit-log";
 import {
   parseISO,
   isValid,
@@ -169,6 +170,21 @@ export async function GET(request: Request) {
         ].join(",");
       });
       const csv = [headers.join(","), ...lines].join("\n");
+      await recordAuditLog({
+        actorId: user?.id || null,
+        action: "PRODUCT_PL_EXPORT_CSV",
+        entityType: "REPORT",
+        entityId: "PRODUCT_PL",
+        meta: {
+          format: "CSV",
+          fileName: `product_pl_${range || "custom"}.csv`,
+          range: range || "custom",
+          rowCount: finalRows.length,
+          columnCount: headers.length,
+          byteSize: Buffer.byteLength(csv, "utf8"),
+          query: q || null,
+        },
+      });
       return new Response(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
@@ -211,6 +227,20 @@ export async function GET(request: Request) {
       doc.end();
       await done;
       const pdf = Buffer.concat(chunks);
+      await recordAuditLog({
+        actorId: user?.id || null,
+        action: "PRODUCT_PL_EXPORT_PDF",
+        entityType: "REPORT",
+        entityId: "PRODUCT_PL",
+        meta: {
+          format: "PDF",
+          fileName: `product_pl_${range || "custom"}.pdf`,
+          range: range || "custom",
+          rowCount: finalRows.length,
+          byteSize: pdf.length,
+          query: q || null,
+        },
+      });
       return new Response(pdf, {
         headers: {
           "Content-Type": "application/pdf",

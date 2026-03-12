@@ -15,10 +15,11 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const smsSender = process.env.TWILIO_ALPHANUMERIC_SENDER_ID || process.env.TWILIO_FROM_NUMBER;
   const smsMissing = collectMissing({
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
-    TWILIO_FROM_NUMBER: process.env.TWILIO_FROM_NUMBER,
+    TWILIO_ALPHANUMERIC_SENDER_ID_OR_TWILIO_FROM_NUMBER: smsSender,
   });
   const whatsappMissing = collectMissing({
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,

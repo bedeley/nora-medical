@@ -19,6 +19,10 @@ export default function AdminDashboard() {
     orders: null as number | null,
     balances: null as number | null,
   });
+  const [parity, setParity] = useState<{
+    missingTotal: number;
+    missing: Record<string, number>;
+  } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -26,26 +30,31 @@ export default function AdminDashboard() {
     let active = true;
     const load = async () => {
       try {
-        const [productsRes, customersRes, summaryRes, balancesRes] = await Promise.all([
+        const [productsRes, customersRes, summaryRes, balancesRes, healthRes] = await Promise.all([
           fetch("/api/products?page=1&pageSize=1&includeArchived=1"),
           fetch("/api/admin/customers?includeArchived=1"),
           fetch("/api/admin/summary?groupBy=day"),
           fetch("/api/balance"),
+          fetch("/api/admin/health/summary"),
         ]);
         if (!active) return;
         const productsData = await productsRes.json().catch(() => ({}));
         const customersData = await customersRes.json().catch(() => ({}));
         const summaryData = await summaryRes.json().catch(() => ({}));
         const balancesData = await balancesRes.json().catch(() => ([]));
+        const healthData = await healthRes.json().catch(() => ({}));
         const balances = Array.isArray(balancesData)
           ? balancesData.filter((row: { balance?: number }) => Number(row?.balance || 0) > 0).length
           : null;
+        const missing = (healthData?.missingPostings || {}) as Record<string, number>;
+        const missingTotal = Object.values(missing).reduce((sum, n) => sum + Number(n || 0), 0);
         setCounts({
           products: Number(productsData?.total ?? null),
           customers: Array.isArray(customersData?.rows) ? customersData.rows.length : null,
           orders: Number(summaryData?.summary?.orderCount ?? null),
           balances,
         });
+        setParity({ missingTotal, missing });
         setLastUpdated(new Date());
       } catch (err) {
         console.error(err);
@@ -91,6 +100,21 @@ export default function AdminDashboard() {
           label="+ Expense"
         />
       </header>
+
+      <section className="flex flex-wrap items-center gap-3">
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/orders">Go to Orders</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/products">Add Product</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/expenses">Record Expense</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/admin/stock-adjustments">Adjust Stock</Link>
+        </Button>
+      </section>
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {/* Products Management */}
@@ -205,6 +229,134 @@ export default function AdminDashboard() {
             </p>
             <Link href="/admin/customer-accounts">
               <Button className="w-full">Manage Accounts</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Inventory */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <Package className="h-6 w-6 text-primary" />
+            <CardTitle>Inventory</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Track stock levels, lots, and inventory movements.
+            </p>
+            <Link href="/admin/inventory">
+              <Button className="w-full">Manage Inventory</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Stock Adjustments */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <ClipboardList className="h-6 w-6 text-primary" />
+            <CardTitle>Stock Adjustments</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Record corrections and audit stock changes quickly.
+            </p>
+            <Link href="/admin/stock-adjustments">
+              <Button className="w-full">Manage Adjustments</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Purchases */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <DollarSign className="h-6 w-6 text-primary" />
+            <CardTitle>Purchases</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Create purchase orders and receive supplier stock.
+            </p>
+            <Link href="/admin/purchases">
+              <Button className="w-full">Manage Purchases</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Expenses */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <DollarSign className="h-6 w-6 text-primary" />
+            <CardTitle>Expenses</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Log operating expenses and reconcile payments.
+            </p>
+            <Link href="/admin/expenses">
+              <Button className="w-full">Manage Expenses</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Accounting */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <CreditCard className="h-6 w-6 text-primary" />
+            <CardTitle>Accounting</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Review ledgers, reconciliations, and journal entries.
+            </p>
+            <Link href="/admin/accounting">
+              <Button className="w-full">Open Accounting</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Ops vs Journal Parity */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <CreditCard className="h-6 w-6 text-primary" />
+            <div>
+              <CardTitle>Ops vs Journal Parity</CardTitle>
+              {parity && (
+                <p className="text-xs text-muted-foreground">
+                  {parity.missingTotal} unposted operational record(s)
+                </p>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Tracks operational records missing journal postings.
+            </p>
+            {parity ? (
+              <p className="text-xs text-muted-foreground">
+                Orders {parity.missing.orders ?? 0} · Payments {parity.missing.payments ?? 0} ·
+                Expenses {parity.missing.expenses ?? 0} · Purchases {parity.missing.purchases ?? 0} ·
+                Settlements {parity.missing.settlements ?? 0}
+              </p>
+            ) : null}
+            <Link href="/admin/accounting/integrity">
+              <Button className="w-full" variant={parity && parity.missingTotal > 0 ? "default" : "outline"}>
+                Open Integrity
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* Audit Log */}
+        <Card className="hover:shadow-md transition-all duration-200">
+          <CardHeader className="flex items-center gap-3">
+            <ClipboardList className="h-6 w-6 text-primary" />
+            <CardTitle>Audit Log</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Track admin actions and compliance events.
+            </p>
+            <Link href="/admin/audit">
+              <Button className="w-full">View Audit Log</Button>
             </Link>
           </CardContent>
         </Card>

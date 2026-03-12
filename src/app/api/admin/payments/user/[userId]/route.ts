@@ -27,6 +27,35 @@ export async function GET(
       location?: string;
     };
 
+    function normalizeAppliedForRow(opts: {
+      amount: number;
+      orderId: string | null;
+      applied: Array<{ orderId: string; applied: number }>;
+    }) {
+      const amount = Math.abs(Number(opts.amount || 0));
+      const raw = Array.isArray(opts.applied) ? opts.applied : [];
+      const valid = raw
+        .map((a) => ({
+          orderId: String(a?.orderId || ""),
+          applied: Number(a?.applied || 0),
+        }))
+        .filter((a) => a.orderId && a.applied > 0);
+
+      if (valid.length === 0 && opts.orderId && amount > 0) {
+        return [{ orderId: String(opts.orderId), applied: amount }];
+      }
+
+      let remaining = amount;
+      const out: Array<{ orderId: string; applied: number }> = [];
+      for (const entry of valid) {
+        if (remaining <= 0.0001) break;
+        const take = Math.min(entry.applied, remaining);
+        if (take > 0) out.push({ orderId: entry.orderId, applied: take });
+        remaining -= take;
+      }
+      return out;
+    }
+
     const payments = await prisma.payment.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
@@ -47,20 +76,17 @@ export async function GET(
       } catch {
         meta = undefined;
       }
-      let applied: Array<{ orderId: string; applied: number }> = (meta?.applied || []).map(
+      const parsedApplied: Array<{ orderId: string; applied: number }> = (meta?.applied || []).map(
         (a: { orderId?: unknown; applied?: unknown }) => ({
           orderId: String(a?.orderId || ""),
           applied: Number(a?.applied || 0),
         })
       );
-      // Backfill applied info for older/manual payments that have an orderId
-      // but no structured "applied" metadata yet.
-      if ((!applied || applied.length === 0) && p.orderId && Number(p.amount || 0) !== 0) {
-        applied = [{
-          orderId: String(p.orderId),
-          applied: Number(p.amount || 0),
-        }];
-      }
+      const applied = normalizeAppliedForRow({
+        amount: Number(p.amount || 0),
+        orderId: p.orderId || null,
+        applied: parsedApplied,
+      });
       return {
         id: p.id,
         amount: Number(p.amount),

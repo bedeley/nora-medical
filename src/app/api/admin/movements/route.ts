@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 
 type MovementsWhere = {
   productId?: string;
+  lotId?: string;
   reason?: { contains: string; mode: "insensitive" };
   createdAt?: {
     gte?: Date;
@@ -27,11 +28,13 @@ export async function GET(req: Request) {
     const start = searchParams.get("start");
     const end = searchParams.get("end");
     const product = searchParams.get("product");
+    const lotId = searchParams.get("lotId");
     const reason = searchParams.get("reason");
     const format = searchParams.get("format");
 
     const where: MovementsWhere = {};
     if (product) where.productId = product;
+    if (lotId) where.lotId = lotId;
     if (reason) where.reason = { contains: reason, mode: "insensitive" };
     if (start || end) {
       where.createdAt = {};
@@ -48,6 +51,7 @@ export async function GET(req: Request) {
       include: {
         product: { select: { name: true, sku: true } },
         purchase: { select: { supplier: true, unitCost: true } },
+        lot: { select: { lotCode: true, expiryDate: true } },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -57,9 +61,11 @@ export async function GET(req: Request) {
       productId: string;
       delta: number;
       reason: string;
+      note?: string | null;
       createdAt: Date;
       product?: { name?: string | null; sku?: string | null } | null;
       purchase?: { supplier?: string | null; unitCost?: unknown } | null;
+      lot?: { lotCode?: string | null; expiryDate?: Date | null } | null;
     }) => ({
       id: r.id,
       productId: r.productId,
@@ -67,14 +73,17 @@ export async function GET(req: Request) {
       productSku: r.product?.sku ?? null,
       delta: r.delta,
       reason: r.reason,
+      note: r.note ?? null,
       supplier: r.purchase?.supplier ?? "",
       unitCost:
         r.purchase?.unitCost != null ? Number(r.purchase.unitCost) : null,
+      lotCode: r.lot?.lotCode ?? null,
+      expiryDate: r.lot?.expiryDate ?? null,
       createdAt: r.createdAt,
     }));
 
     if (format === "csv") {
-      const header = ["Date", "Product", "SKU", "Delta", "Reason", "Supplier", "Unit Cost"];
+      const header = ["Date", "Product", "SKU", "Delta", "Reason", "Supplier", "Unit Cost", "Lot", "Expiry"];
       const lines = [header.join(",")];
       for (const r of items) {
         lines.push([
@@ -85,13 +94,15 @@ export async function GET(req: Request) {
           JSON.stringify(r.reason),
           JSON.stringify(r.supplier || ""),
           r.unitCost == null ? "" : r.unitCost.toFixed(2),
+          JSON.stringify(r.lotCode || ""),
+          r.expiryDate ? new Date(r.expiryDate).toISOString().slice(0, 10) : "",
         ].join(","));
       }
       const net = items.reduce(
         (s: number, r: { delta: unknown }) => s + Number(r.delta || 0),
         0
       );
-      lines.push(["Net", "", "", String(net), "", "", ""].join(","));
+      lines.push(["Net", "", "", String(net), "", "", "", "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {
         headers: {

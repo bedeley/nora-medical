@@ -56,7 +56,7 @@ export default function RevenueSummary() {
         </div>
       </CardHeader>
 
-      <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+      <CardContent className="grid grid-cols-2 lg:grid-cols-4 gap-4 text-center">
         <div>
           <p className="text-sm text-muted-foreground">Total Sales</p>
           <p className="text-xl font-semibold">

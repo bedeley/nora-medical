@@ -349,8 +349,8 @@ function ProductPLContent() {
             </label>
           </div>
         </CardHeader>
-        <CardContent className="grid sm:grid-cols-2 md:grid-cols-6 gap-3 items-end">
-          <div className="md:col-span-2">
+        <CardContent className="grid sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end">
+          <div className="sm:col-span-2 lg:col-span-2">
             <label htmlFor="search" className="text-sm">Search products</label>
             <Input
               id="search"
@@ -431,7 +431,7 @@ function ProductPLContent() {
               <option value={100}>100</option>
             </select>
           </div>
-          <div className="text-sm text-muted-foreground md:col-span-1">
+          <div className="text-sm text-muted-foreground lg:col-span-1">
             {!mounted
               ? "\u00A0"
               : isLoading
@@ -445,7 +445,7 @@ function ProductPLContent() {
         <CardHeader>
           <CardTitle className="text-base font-semibold">Summary</CardTitle>
         </CardHeader>
-        <CardContent className="grid sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <CardContent className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="rounded-md bg-background p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Products shown</div>
             <div className="text-lg font-semibold">{filteredRows.length}</div>
@@ -478,7 +478,7 @@ function ProductPLContent() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="md:hidden px-4 pb-4 pt-2 space-y-3">
+          <div className="lg:hidden px-4 pb-4 pt-2 space-y-3">
             {filteredRows.map((r) => {
               const weightedSoldPrice = r.qty > 0 ? r.revenue / r.qty : 0;
               return (
@@ -569,7 +569,7 @@ function ProductPLContent() {
             )}
           </div>
           <div className="overflow-x-auto">
-            <Table className="hidden md:table">
+            <Table className="hidden lg:table">
               <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
                 <TableRow>
                   <TableHead className="w-20 text-center">Rank</TableHead>

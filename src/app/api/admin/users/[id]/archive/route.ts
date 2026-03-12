@@ -7,7 +7,7 @@ import { rateLimit } from "@/lib/rate-limit";
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } },
+  context: { params: Promise<{ id: string }> | { id: string } },
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -22,6 +22,7 @@ export async function PATCH(
     return new Response(JSON.stringify({ error: "Too many requests" }), { status: 429 });
   }
 
+  const params = await context.params;
   const userId = params.id;
   if (!userId) {
     return new Response("Missing user id", { status: 400 });

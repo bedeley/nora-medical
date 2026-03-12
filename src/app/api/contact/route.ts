@@ -22,6 +22,15 @@ const contactSchema = z
     }
   });
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function POST(req: Request) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -53,13 +62,19 @@ export async function POST(req: Request) {
       message,
     ].join("\n");
 
+    const safeName = escapeHtml(name);
+    const safeEmail = escapeHtml(email || "(not provided)");
+    const safePhone = escapeHtml(phone || "(not provided)");
+    const safeSubjectHtml = escapeHtml(safeSubject);
+    const safeMessage = escapeHtml(message);
+
     const html = `
       <p><strong>New contact form message</strong></p>
-      <p><strong>Name:</strong> ${name}</p>
-      <p><strong>Email:</strong> ${email || "(not provided)"}</p>
-      <p><strong>Phone:</strong> ${phone || "(not provided)"}</p>
-      <p><strong>Subject:</strong> ${safeSubject}</p>
-      <pre style="white-space:pre-wrap;font-family:inherit;">${message}</pre>
+      <p><strong>Name:</strong> ${safeName}</p>
+      <p><strong>Email:</strong> ${safeEmail}</p>
+      <p><strong>Phone:</strong> ${safePhone}</p>
+      <p><strong>Subject:</strong> ${safeSubjectHtml}</p>
+      <pre style="white-space:pre-wrap;font-family:inherit;">${safeMessage}</pre>
     `;
 
     const res = await sendEmail(to, `Contact: ${safeSubject}`, text, html);

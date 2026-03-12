@@ -161,7 +161,7 @@ export default function CommunicationsSettingsPage() {
               >
                 Twilio SMS Documentation
               </a>
-              <span className="text-muted-foreground"> — provision an SMS number and obtain credentials.</span>
+              <span className="text-muted-foreground"> — provision an SMS number or register an Alphanumeric Sender ID and obtain credentials.</span>
             </li>
             <li>
               <a

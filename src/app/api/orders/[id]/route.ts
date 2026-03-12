@@ -11,6 +11,9 @@ import { z } from "zod";
 
 type OrderWithRelations = {
   id: string;
+  customerType?: string | null;
+  walkInName?: string | null;
+  walkInPhone?: string | null;
   invoiceNumber?: string | null;
   subtotal?: unknown;
   taxRate?: unknown;
@@ -23,7 +26,7 @@ type OrderWithRelations = {
   deliveryStatus?: string | null;
   deliveredAt?: Date | string | null;
   createdAt: Date;
-  user: { name: string | null; email: string | null } | null;
+  user: { id: string; name: string | null; email: string | null } | null;
   placedById?: string | null;
   adminNote?: string | null;
   items: Array<{
@@ -43,12 +46,30 @@ type OrderWithRelations = {
   }>;
 };
 
+type DeliveryProof = {
+  recipientName?: string | null;
+  recipientPhone?: string | null;
+  deliveryNote?: string | null;
+  proofImageUrl?: string | null;
+  updatedAt?: string | null;
+};
+
+function parseMeta(raw?: string | null) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function serializeOrder(o: OrderWithRelations) {
   const subtotalRaw = Number(o.subtotal ?? 0);
   const subtotal = subtotalRaw > 0 ? subtotalRaw : Number(o.total ?? 0);
   const taxRate = Number(o.taxRate ?? 0);
   const taxAmount = Number(o.taxAmount ?? 0);
   const total = Number(o.total);
+  const discountAmount = Math.max(0, subtotal + taxAmount - total);
   let amountPaid = Number(o.amountPaid ?? 0);
   const epsilon = 0.01;
   let balance = Math.max(0, total - amountPaid);
@@ -66,10 +87,14 @@ function serializeOrder(o: OrderWithRelations) {
   }
   return {
     id: o.id,
+    customerType: o.customerType || "REGISTERED",
+    walkInName: o.walkInName || null,
+    walkInPhone: o.walkInPhone || null,
     invoiceNumber: o.invoiceNumber || null,
     subtotal,
     taxRate,
     taxAmount,
+    discountAmount,
     total,
     amountPaid,
     balance,
@@ -122,7 +147,10 @@ export async function GET(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  const isAdmin = user?.role === "ADMIN";
+  const role = user?.role;
+  const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
+  const canViewAll = isAdmin || isStaff;
   const url = new URL(req.url);
   const receiptToken =
     url.searchParams.get("receipt") ||
@@ -133,7 +161,7 @@ export async function GET(
   try {
     const order = await prisma.order.findFirst({
       where: session
-        ? isAdmin
+        ? canViewAll
           ? { id: params.id }
           : { id: params.id, userId: user?.id }
         : { id: params.id },
@@ -142,7 +170,7 @@ export async function GET(
           include: { product: true },
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         },
-        user: { select: { name: true, email: true } },
+        user: { select: { id: true, name: true, email: true } },
         payments: true,
       },
     });
@@ -159,6 +187,7 @@ export async function GET(
     // Also load any legacy AUTO_APPLY credit adjustment payments for this user
     // that are not tied to a single orderId, so receipts can show applied credit.
     let merged = order as unknown as OrderWithRelations;
+    let returnCredits: OrderWithRelations["payments"] = [];
     if (order.userId) {
       const autoApplyPayments = await prisma.payment.findMany({
         where: {
@@ -194,9 +223,70 @@ export async function GET(
           payments: Array.from(existing.values()),
         };
       }
+
+      const returnPayments = await prisma.payment.findMany({
+        where: {
+          userId: order.userId,
+          note: {
+            contains: "\"reference\":\"ITEM_RETURN\"",
+          },
+        },
+      });
+      const existingReturnIds = new Set(
+        (merged.payments || []).map((payment) => payment.id),
+      );
+      returnCredits = returnPayments.filter((payment) => {
+        if (existingReturnIds.has(payment.id)) return false;
+        if (!payment.note) return false;
+        try {
+          const meta = JSON.parse(payment.note) as { orderId?: string };
+          return meta.orderId === order.id;
+        } catch {
+          return false;
+        }
+      });
     }
 
-    const payload = serializeOrder(merged);
+    const payload = {
+      ...serializeOrder(merged),
+      ...(returnCredits.length > 0
+        ? {
+            returnCredits: returnCredits.map((p) => ({
+              id: p.id,
+              amount: Number(p.amount ?? 0),
+              note: p.note || null,
+              status: p.status,
+              createdAt: p.createdAt.toISOString(),
+            })),
+          }
+        : {}),
+    };
+    let deliveryProof: DeliveryProof | null = null;
+    if (session && canViewAll) {
+      const latestDeliveryLog = await prisma.auditLog.findFirst({
+        where: {
+          entityType: "ORDER",
+          entityId: order.id,
+          action: "ORDER_DELIVERY_STATUS_UPDATE",
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      if (latestDeliveryLog) {
+        const meta = parseMeta(latestDeliveryLog.meta);
+        if (String(meta?.status || "").toUpperCase() === "DELIVERED") {
+          deliveryProof = {
+            recipientName: String(meta?.recipientName || "").trim() || null,
+            recipientPhone: String(meta?.recipientPhone || "").trim() || null,
+            deliveryNote: String(meta?.deliveryNote || "").trim() || null,
+            proofImageUrl: String(meta?.proofImageUrl || "").trim() || null,
+            updatedAt: String(meta?.updatedAt || latestDeliveryLog.createdAt.toISOString()),
+          };
+        }
+      }
+    }
+    if (deliveryProof) {
+      Object.assign(payload, { deliveryProof });
+    }
     if (!session) {
       payload.adminNote = null;
       payload.placedById = null;
@@ -274,6 +364,15 @@ export async function PATCH(
     if (!current) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+    const beforeItems = await prisma.orderItem.findMany({
+      where: { orderId },
+      select: {
+        id: true,
+        quantity: true,
+        deliveredQuantity: true,
+        product: { select: { name: true } },
+      },
+    });
 
     const newStatus = parsed.data.status;
     const newDelivery = parsed.data.deliveryStatus;
@@ -380,14 +479,14 @@ export async function PATCH(
       const updatedOrder = await tx.order.update({
         where: { id: orderId },
         data,
-      include: {
-        items: {
-          include: { product: true },
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        include: {
+          items: {
+            include: { product: true },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          },
+          user: { select: { id: true, name: true, email: true } },
+          payments: true,
         },
-        user: { select: { name: true, email: true } },
-        payments: true,
-      },
       });
 
       // If the overall delivery status is being set to DELIVERED, mark all
@@ -422,6 +521,62 @@ export async function PATCH(
 
       return updatedOrder;
     });
+
+    const afterItems = await prisma.orderItem.findMany({
+      where: { orderId },
+      select: {
+        id: true,
+        quantity: true,
+        deliveredQuantity: true,
+        product: { select: { name: true } },
+      },
+    });
+
+    const beforeById = new Map(
+      beforeItems.map((item) => [
+        item.id,
+        {
+          name: item.product?.name || "Item",
+          quantity: Number(item.quantity || 0),
+          delivered: Number(item.deliveredQuantity || 0),
+        },
+      ]),
+    );
+    const deliveryDeltaLines: string[] = [];
+    let remainingLinesBefore = 0;
+    let remainingItemsBefore = 0;
+    let remainingLinesAfter = 0;
+    let remainingItemsAfter = 0;
+
+    for (const item of beforeItems) {
+      const qty = Number(item.quantity || 0);
+      const delivered = Number(item.deliveredQuantity || 0);
+      const remaining = Math.max(0, qty - delivered);
+      if (remaining > 0) {
+        remainingLinesBefore += 1;
+        remainingItemsBefore += remaining;
+      }
+    }
+
+    for (const item of afterItems) {
+      const qty = Number(item.quantity || 0);
+      const delivered = Number(item.deliveredQuantity || 0);
+      const remaining = Math.max(0, qty - delivered);
+      if (remaining > 0) {
+        remainingLinesAfter += 1;
+        remainingItemsAfter += remaining;
+      }
+      const before = beforeById.get(item.id);
+      const beforeDelivered = before?.delivered ?? 0;
+      if (beforeDelivered !== delivered) {
+        deliveryDeltaLines.push(`${item.product?.name || before?.name || "Item"} ${beforeDelivered}->${delivered}`);
+      }
+    }
+    const deliveryDelta = deliveryDeltaLines.join(", ");
+    const updatedAtIso = new Date().toISOString();
+    const updatedAtTimezoneOffset = updatedAtIso.endsWith("Z")
+      ? "+00:00"
+      : updatedAtIso.slice(-6);
 
     // Fire-and-forget customer notifications for key events
     try {
@@ -462,10 +617,20 @@ export async function PATCH(
         entityType: "ORDER",
         entityId: updated.id,
         meta: {
+          changedByName: user.name || user.email || null,
+          changedByRole: user.role || null,
+          updatedAt: updatedAtIso,
+          updatedAtTimezoneOffset,
           previousStatus: current.status,
           newStatus,
           previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
           newDeliveryStatus: parsed.data.deliveryStatus || current.deliveryStatus || "NOT_DELIVERED",
+          deliveryDelta: deliveryDelta || null,
+          deliveryDeltaLines,
+          remainingLinesBefore,
+          remainingItemsBefore,
+          remainingLinesAfter,
+          remainingItemsAfter,
           restockReturned,
           cancelReason: cancelReason || null,
         },
@@ -488,6 +653,36 @@ export async function PATCH(
       }
     } catch {
       // audit logging is best-effort
+    }
+
+    // If an already-posted sale is cancelled, void its journal entries so the
+    // AR ledger no longer carries the cancelled amount. This keeps the
+    // accounting integrity check in sync with operational status.
+    if (newStatus === "CANCELLED") {
+      try {
+        const orderEntries = await prisma.journalEntry.findMany({
+          where: { sourceType: "ORDER", sourceId: orderId, status: "POSTED" },
+          select: { id: true },
+        });
+        if (orderEntries.length > 0) {
+          await prisma.journalEntry.updateMany({
+            where: { id: { in: orderEntries.map((e) => e.id) } },
+            data: { status: "VOID" },
+          });
+          await recordAuditLog({
+            actorId: user.id,
+            action: "ACCOUNTING_POST_VOID",
+            entityType: "ORDER",
+            entityId: orderId,
+            meta: {
+              reason: "order_cancelled",
+              voidedEntries: orderEntries.map((e) => e.id),
+            },
+          });
+        }
+      } catch (e) {
+        console.warn("Failed to void journal entries for cancelled order", e);
+      }
     }
 
     return NextResponse.json({ success: true, data: serializeOrder(updated) });

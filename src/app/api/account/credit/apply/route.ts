@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { PaymentStatus } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
+import { postPaymentEntry } from "@/lib/accounting-posting";
 import { randomUUID } from "crypto";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
           applied: 0,
           remainingBalance: balance,
           remainingCredit: credit,
+          createdPaymentIds: [],
         };
       }
 
@@ -128,7 +130,7 @@ export async function POST(req: Request) {
         newStatus: string;
       }> = [];
       const batchId = randomUUID();
-      const createdPaymentIds: string[] = [];
+      const createdPayments: Array<{ id: string; orderId: string; applied: number }> = [];
 
       for (const o of orders) {
         if (remainingPayment <= 0) break;
@@ -151,7 +153,7 @@ export async function POST(req: Request) {
             refundDisposition: null,
           },
         });
-        createdPaymentIds.push(payment.id);
+        createdPayments.push({ id: payment.id, orderId: o.id, applied: applyAmt });
 
         const updated = await recomputeOrderTotalsFromPayments(tx, o.id);
         applied.push({
@@ -178,22 +180,28 @@ export async function POST(req: Request) {
       );
       const balanceAfter = Math.max(0, totalDueAfter - totalPaidAfter);
 
-      if (createdPaymentIds.length > 0) {
+      if (createdPayments.length > 0) {
         try {
-          const withApplied = {
+          const withAppliedBase = {
             ...meta,
             batchId,
-            applied,
+            batchAppliedTotal: amountToApply,
+            batchAppliedCount: createdPayments.length,
             postTotals: {
               totalDue: totalDueAfter,
               totalPaid: totalPaidAfter,
               balance: balanceAfter,
             },
           };
-          for (const id of createdPaymentIds) {
+          for (const row of createdPayments) {
             await tx.payment.update({
-              where: { id },
-              data: { note: JSON.stringify(withApplied) },
+              where: { id: row.id },
+              data: {
+                note: JSON.stringify({
+                  ...withAppliedBase,
+                  applied: [{ orderId: row.orderId, applied: row.applied }],
+                }),
+              },
             });
           }
         } catch {}
@@ -208,10 +216,19 @@ export async function POST(req: Request) {
         applied: amountToApply,
         remainingBalance: balanceAfter,
         remainingCredit,
+        createdPaymentIds: createdPayments.map((p) => p.id),
       };
     });
 
-    return NextResponse.json(result);
+    for (const paymentId of result.createdPaymentIds) {
+      await postPaymentEntry({ paymentId });
+    }
+
+    return NextResponse.json({
+      applied: result.applied,
+      remainingBalance: result.remainingBalance,
+      remainingCredit: result.remainingCredit,
+    });
   } catch (e) {
     console.error("apply credit error", e);
     return NextResponse.json(

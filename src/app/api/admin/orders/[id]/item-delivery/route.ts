@@ -51,10 +51,21 @@ export async function POST(
     const result = await prisma.$transaction(async (tx: TxClient) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
-        include: { items: true },
+        include: {
+          items: {
+            include: {
+              product: {
+                select: { name: true, sku: true },
+              },
+            },
+          },
+        },
       });
       if (!order) {
         throw new Error("Order not found");
+      }
+      if (String(order.status || "").toUpperCase() === "ON_HOLD_CREDIT") {
+        throw new Error("Order is on credit hold. Release hold before delivery.");
       }
       const item = order.items.find((it) => it.id === itemId);
       if (!item) {
@@ -129,6 +140,13 @@ export async function POST(
         orderId: order.id,
         userId: order.userId,
         item: updatedItem,
+        itemName: item.product?.name || "Unknown item",
+        itemSku: item.product?.sku || null,
+        orderedQuantity: totalQty,
+        deliveredBefore: previousDeliveredQuantity,
+        deliveredAfter: deliveredQuantity,
+        remainingBefore: Math.max(0, totalQty - previousDeliveredQuantity),
+        remainingAfter: Math.max(0, totalQty - deliveredQuantity),
         previousStatus,
         newStatus,
         deliveryChanged: deliveredQuantity !== previousDeliveredQuantity,
@@ -136,6 +154,10 @@ export async function POST(
     });
 
     try {
+      const updatedAtIso = new Date().toISOString();
+      const updatedAtTimezoneOffset = updatedAtIso.endsWith("Z")
+        ? "+00:00"
+        : updatedAtIso.slice(-6);
       await recordAuditLog({
         actorId: user?.id,
         action: "ORDER_ITEM_DELIVERY_UPDATE",
@@ -143,8 +165,21 @@ export async function POST(
         entityId: result.orderId,
         meta: {
           itemId: parsed.data.itemId,
+          productName: result.itemName,
+          productSku: result.itemSku,
           mode: parsed.data.mode,
-          quantity: parsed.data.quantity ?? null,
+          quantity: parsed.data.quantity ?? null, // requested delta for partial mode
+          orderedQty: result.orderedQuantity,
+          deliveredBefore: result.deliveredBefore,
+          deliveredAfter: result.deliveredAfter,
+          remainingBefore: result.remainingBefore,
+          remainingAfter: result.remainingAfter,
+          orderDeliveryStatusBefore: result.previousStatus,
+          orderDeliveryStatusAfter: result.newStatus,
+          changedByName: user?.name || user?.email || null,
+          changedByRole: user?.role || null,
+          updatedAt: updatedAtIso,
+          updatedAtTimezoneOffset,
         },
       });
     } catch {

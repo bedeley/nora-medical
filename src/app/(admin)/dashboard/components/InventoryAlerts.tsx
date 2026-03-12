@@ -18,10 +18,14 @@ import { Button } from "@/components/ui/button";
 
 type InventoryAlert = {
   id: string;
+  productId: string;
   name: string;
   price: number | string;
   stock: number;
   updatedAt: string | Date;
+  type: string;
+  severity: "critical" | "warning";
+  message: string;
 };
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -38,14 +42,14 @@ export default function InventoryAlerts() {
       return alert("No inventory alerts to export.");
 
     // Convert array to CSV string
-    const headers = ["Product", "Price", "Stock", "Status", "Last Updated"];
+    const headers = ["Product", "Price", "Stock", "Type", "Message", "Last Updated"];
     const rows = data.map((p) => {
-      const status = p.stock <= 3 ? "Critical" : "Low Stock";
       return [
         `"${p.name}"`,
         `"${formatCurrency(Number(p.price))}"`,
         p.stock,
-        status,
+        p.type,
+        `"${p.message.replace(/"/g, '""')}"`,
         new Date(p.updatedAt).toLocaleString(),
       ].join(",");
     });
@@ -131,10 +135,12 @@ export default function InventoryAlerts() {
               <TableRow>
                 <TableHead>Product</TableHead>
                 <TableHead>Price</TableHead>
-                <TableHead>Stock</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Last Updated</TableHead>
-              </TableRow>
+              <TableHead>Stock</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Message</TableHead>
+              <TableHead>Last Updated</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
             </TableHeader>
             <TableBody>
               {data.map((p) => (
@@ -143,7 +149,7 @@ export default function InventoryAlerts() {
                   <TableCell>{formatCurrency(Number(p.price))}</TableCell>
                   <TableCell>{p.stock}</TableCell>
                   <TableCell>
-                    {p.stock <= 3 ? (
+                    {p.severity === "critical" ? (
                       <Badge
                         variant="destructive"
                         className="flex items-center gap-1"
@@ -155,12 +161,23 @@ export default function InventoryAlerts() {
                         variant="warning"
                         className="flex items-center gap-1"
                       >
-                        <AlertTriangle className="h-3 w-3" /> Low Stock
+                        <AlertTriangle className="h-3 w-3" /> {p.type.replace(/_/g, " ")}
                       </Badge>
                     )}
                   </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{p.message}</TableCell>
                   <TableCell>
                     {new Date(p.updatedAt).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-2">
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
+                      </Button>
+                      <Button asChild size="sm" variant="ghost">
+                        <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

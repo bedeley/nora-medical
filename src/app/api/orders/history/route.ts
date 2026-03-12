@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 
+const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
+
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session) return new Response("Unauthorized", { status: 401 });
@@ -44,7 +46,7 @@ export async function GET(req: Request) {
     const amountPaid = Number(o.amountPaid ?? 0);
     const rawBalance = Number(o.balance ?? 0);
     const computedBalance = Math.max(0, total - amountPaid);
-    const balance = rawBalance === 0 ? computedBalance : rawBalance;
+    const balance = normalizeBalance(rawBalance === 0 ? computedBalance : rawBalance);
     // Merge per-order payments with AUTO_APPLY credit entries for this user
     // (deduplicated by id).
     const mergedPayments = (() => {
@@ -65,7 +67,13 @@ export async function GET(req: Request) {
       deliveryStatus: o.deliveryStatus,
       deliveredAt: o.deliveredAt ? o.deliveredAt.toISOString() : null,
       createdAt: o.createdAt.toISOString(),
+      subtotal: Number(o.subtotal ?? o.total ?? 0),
+      taxAmount: Number(o.taxAmount ?? 0),
       total,
+      discountAmount: Math.max(
+        0,
+        Number(o.subtotal ?? o.total ?? 0) + Number(o.taxAmount ?? 0) - total,
+      ),
       amountPaid,
       balance,
       payments: mergedPayments.map((p: typeof mergedPayments[number]) => ({
@@ -110,7 +118,10 @@ export async function GET(req: Request) {
       "Date",
       "Status",
       "Delivery Status",
-      "Total",
+      "Taxable Subtotal",
+      "Tax",
+      "Discount",
+      "Invoice Total",
       "Paid",
       "Balance",
     ];
@@ -119,6 +130,9 @@ export async function GET(req: Request) {
       escapeCsv(o.createdAt),
       escapeCsv(o.status),
       escapeCsv(o.deliveryStatus ?? ""),
+      escapeCsv(o.subtotal),
+      escapeCsv(o.taxAmount),
+      escapeCsv(o.discountAmount),
       escapeCsv(o.total),
       escapeCsv(o.amountPaid),
       escapeCsv(o.balance),

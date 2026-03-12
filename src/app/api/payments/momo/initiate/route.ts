@@ -7,11 +7,19 @@ import { assertSameOrigin } from "@/lib/origin";
 import { initiateMomo } from "@/lib/momo";
 import { rateLimit } from "@/lib/rate-limit";
 import { isLiveStage } from "@/lib/env";
+import { recordAuditLog } from "@/lib/audit-log";
+import { postPaymentEntry } from "@/lib/accounting-posting";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
+function maskProviderRef(value: string | null | undefined) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.length <= 8) return `${raw.slice(0, 2)}***${raw.slice(-2)}`;
+  return `${raw.slice(0, 4)}***${raw.slice(-4)}`;
+}
 
 const schema = z.object({
-  orderId: z.string().cuid(),
+  orderId: z.string().cuid().optional(),
   phone: z.string().min(7),
   provider: z.enum(["mtn", "vodafone", "airteltigo"]).default("mtn"),
   amount: z.coerce.number().positive().optional(), // optional partial payment
@@ -32,15 +40,39 @@ export async function POST(req: Request) {
     }
 
     const userId = (session.user as AuthenticatedUser).id;
+    const customerProfile = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true, phone: true },
+    });
     const { orderId, phone, provider } = parsed.data;
     const amountOverride = parsed.data.amount;
 
-    const order = await prisma.order.findFirst({ where: { id: orderId, userId, status: { not: "CANCELLED" } } });
-    if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    const order = orderId
+      ? await prisma.order.findFirst({
+          where: { id: orderId, userId, status: { not: "CANCELLED" } },
+        })
+      : null;
+    if (orderId && !order) {
+      return NextResponse.json({ error: "Order not found" }, { status: 404 });
+    }
 
-    const total = Number(order.total || 0);
-    const paid = Number(order.amountPaid || 0);
-    const balance = Math.max(0, total - paid);
+    const outstandingOrders = order
+      ? [order]
+      : await prisma.order.findMany({
+          where: {
+            userId,
+            status: { not: "CANCELLED" },
+            OR: [{ status: "UNPAID" }, { status: "PARTIALLY_PAID" }, { status: "PENDING_PAYMENT" }],
+          },
+          orderBy: { createdAt: "asc" },
+          select: { id: true, total: true, amountPaid: true, status: true, balance: true },
+        });
+    const balance = outstandingOrders.reduce((sum, row) => {
+      const total = Number(row.total || 0);
+      const paid = Number(row.amountPaid || 0);
+      const raw = Number(row.balance ?? Math.max(0, total - paid));
+      return sum + Math.max(0, raw);
+    }, 0);
     if (balance <= 0) return NextResponse.json({ error: "Order already paid" }, { status: 400 });
 
     const amount = Math.max(0.01, Math.min(balance, Number(amountOverride || balance)));
@@ -53,6 +85,11 @@ export async function POST(req: Request) {
       phone,
       orderId,
       purpose: "balance_payment",
+      allocationScope: orderId ? "single_order" : "all_open_orders_oldest_first",
+      ordersAffected: outstandingOrders.map((o) => o.id),
+      orderCount: outstandingOrders.length,
+      orderCountOpen: outstandingOrders.length,
+      outstandingBefore: balance,
     };
 
     const payment = await prisma.payment.create({
@@ -63,13 +100,47 @@ export async function POST(req: Request) {
         note: JSON.stringify(meta),
       },
     });
+    try {
+      await recordAuditLog({
+        actorId: userId,
+        action: "PAYMENT_CREATE",
+        entityType: "PAYMENT",
+        entityId: payment.id,
+        meta: {
+          paymentId: payment.id,
+          initiatedAt: payment.createdAt.toISOString(),
+          actorType: "CUSTOMER",
+          channel: "portal",
+          sourceRoute: "/api/payments/momo/initiate",
+          customerId: userId,
+          customerName: customerProfile?.name || null,
+          customerEmail: customerProfile?.email || null,
+          customerPhone: customerProfile?.phone || null,
+          orderId: orderId || null,
+          invoiceNumber: order ? order.invoiceNumber || `INV-${order.id}` : null,
+          orderStatusBefore: order ? String(order.status || "UNPAID") : null,
+          remainingBalanceBefore: balance,
+          amount,
+          method: "momo",
+          paymentMethodLabel: "MoMo",
+          provider,
+          captureMode: "provider_request",
+          allocationScope: orderId ? "single_order" : "all_open_orders_oldest_first",
+          ordersAffected: outstandingOrders.map((o) => o.id),
+          orderCount: outstandingOrders.length,
+          orderCountOpen: outstandingOrders.length,
+          providerRefMasked: null,
+          status: "PENDING",
+        },
+      });
+    } catch {}
 
     const init = await initiateMomo({
       provider,
       amount,
       phone,
       externalId: payment.id,
-      description: `Order ${order.id}`,
+      description: orderId ? `Order ${orderId}` : `Customer balance ${userId}`,
     });
 
     if (!init.ok) {
@@ -78,6 +149,26 @@ export async function POST(req: Request) {
         await prisma.payment.update({
           where: { id: payment.id },
           data: { deletedAt: new Date() },
+        });
+      } catch {}
+      try {
+        await recordAuditLog({
+          actorId: userId,
+          action: "PAYMENT_FAILED",
+          entityType: "PAYMENT",
+          entityId: payment.id,
+          meta: {
+            actorType: "CUSTOMER",
+            channel: "portal",
+            resolvedBy: "INITIATE",
+            customerId: userId,
+            orderId,
+            amount,
+            method: "momo",
+            provider,
+            providerRef: null,
+            error: init.error || "Failed to initiate MoMo",
+          },
         });
       } catch {}
       return NextResponse.json({ error: init.error }, { status: 502 });
@@ -116,10 +207,137 @@ export async function POST(req: Request) {
             const updated = await tx.order.update({ where: { id: o.id }, data: { amountPaid: newPaid, balance: newBalance, status: newStatus } });
             applied.push({ orderId: updated.id, applied: applyAmt, newAmountPaid: newPaid, newBalance, newStatus });
           }
+        } else {
+          let remainingPayment = amount2;
+          const openOrders = await tx.order.findMany({
+            where: {
+              userId: userId2,
+              NOT: { status: "CANCELLED" },
+              OR: [{ status: "UNPAID" }, { status: "PARTIALLY_PAID" }, { status: "PENDING_PAYMENT" }],
+            },
+            orderBy: { createdAt: "asc" },
+          });
+          for (const o of openOrders) {
+            if (remainingPayment <= 0) break;
+            const paid = Number(o.amountPaid || 0);
+            const total = Number(o.total || 0);
+            const remaining = Math.max(0, total - paid);
+            if (remaining <= 0) continue;
+            const applyAmt = Math.min(remainingPayment, remaining);
+            const newPaid = Math.max(0, paid + applyAmt);
+            const newBalance = Math.max(0, total - newPaid);
+            const newStatus = newBalance <= 0 ? "PAID" : newPaid > 0 ? "PARTIALLY_PAID" : "UNPAID";
+            const updated = await tx.order.update({
+              where: { id: o.id },
+              data: { amountPaid: newPaid, balance: newBalance, status: newStatus },
+            });
+            applied.push({ orderId: updated.id, applied: applyAmt, newAmountPaid: newPaid, newBalance, newStatus });
+            remainingPayment -= applyAmt;
+          }
         }
         const withRef = { ...meta, providerRef: init.reference, status: "success", applied };
         await tx.payment.update({ where: { id: payment.id }, data: { note: JSON.stringify(withRef) } });
       });
+      let postingJournalEntryId: string | null = null;
+      try {
+        const posted = await postPaymentEntry({ paymentId: payment.id });
+        postingJournalEntryId = posted?.id || null;
+      } catch (e) {
+        console.warn("Accounting payment posting skipped (momo initiate simulated):", e);
+      }
+      if (!postingJournalEntryId) {
+        const existingPosted = await prisma.journalEntry.findFirst({
+          where: {
+            sourceType: "PAYMENT",
+            status: "POSTED",
+            OR: [
+              { sourceId: payment.id },
+              { sourceId: { startsWith: `${payment.id}:` } },
+            ],
+          },
+          select: { id: true },
+          orderBy: { createdAt: "desc" },
+        });
+        postingJournalEntryId = existingPosted?.id || null;
+      }
+      const orderBalanceAfter = orderId
+        ? (
+            await prisma.order.findUnique({
+              where: { id: orderId },
+              select: { balance: true },
+            })
+          )?.balance
+        : null;
+      try {
+        const paymentAfter = await prisma.payment.findUnique({
+          where: { id: payment.id },
+          select: { note: true },
+        });
+        const parsedAfter = (() => {
+          try {
+            return paymentAfter?.note
+              ? (JSON.parse(paymentAfter.note) as Record<string, unknown>)
+              : null;
+          } catch {
+            return null;
+          }
+        })();
+        const appliedRaw = Array.isArray(parsedAfter?.applied)
+          ? (parsedAfter?.applied as Array<Record<string, unknown>>)
+          : [];
+        const appliedAllocations = appliedRaw
+          .map((row) => {
+            const allocOrderId = String(row.orderId || "").trim();
+            const allocAmount = Number(row.applied || 0);
+            const remainingAfter = Number(row.newBalance);
+            if (!allocOrderId || !Number.isFinite(allocAmount) || allocAmount <= 0) return null;
+            return {
+              orderId: allocOrderId,
+              amount: allocAmount,
+              remainingAfter: Number.isFinite(remainingAfter) ? remainingAfter : null,
+            };
+          })
+          .filter(
+            (row): row is { orderId: string; amount: number; remainingAfter: number | null } =>
+              Boolean(row),
+          );
+        const appliedTotal = appliedAllocations.reduce((s, row) => s + row.amount, 0);
+        const postTotals = (parsedAfter?.postTotals as Record<string, unknown> | undefined) || null;
+        await recordAuditLog({
+          actorId: userId,
+          action: "PAYMENT_SUCCESS",
+          entityType: "PAYMENT",
+          entityId: payment.id,
+          meta: {
+            actorType: "CUSTOMER",
+            channel: "portal",
+            resolvedBy: "INITIATE",
+            customerId: userId,
+            orderId,
+            paymentId: payment.id,
+            amount,
+            method: "momo",
+            paymentMethodLabel: "MoMo",
+            provider,
+            providerRef: maskProviderRef(init.reference),
+            source: "TEST_REFERENCE_AUTO_APPLY",
+            allocationScope: orderId ? "single_order" : "all_open_orders_oldest_first",
+            ordersAffected: appliedAllocations.map((row) => row.orderId),
+            orderCount: appliedAllocations.length,
+            appliedAllocations,
+            appliedTotal,
+            remainingBalanceBefore: balance,
+            remainingBalanceAfter:
+              postTotals && Number.isFinite(Number(postTotals.balance))
+                ? Number(postTotals.balance)
+                : null,
+            postingStatus: postingJournalEntryId ? "POSTED" : "PENDING",
+            journalEntryId: postingJournalEntryId,
+            balanceAfter:
+              orderBalanceAfter == null ? null : Number(orderBalanceAfter),
+          },
+        });
+      } catch {}
       return NextResponse.json({
         ok: true,
         paymentId: payment.id,

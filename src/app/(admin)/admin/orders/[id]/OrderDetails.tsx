@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
+import { useSession } from "next-auth/react";
+import { hasPermission } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,8 +15,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
@@ -56,6 +66,12 @@ type OrderItem = {
 type OrderPayload = {
   id: string;
   status: string;
+  subtotal?: number;
+  taxRate?: number;
+  taxAmount?: number;
+  customerType?: "REGISTERED" | "WALK_IN";
+  walkInName?: string | null;
+  walkInPhone?: string | null;
   deliveryStatus: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED";
   deliveredAt: string | Date | null;
   total: number;
@@ -64,7 +80,7 @@ type OrderPayload = {
   createdAt: string | Date;
   updatedAt?: string | Date;
   adminNote?: string | null;
-  user?: { name: string | null; email: string | null } | null;
+  user?: { id: string; name: string | null; email: string | null } | null;
   items: OrderItem[];
   payments?: Array<{
     id: string;
@@ -73,15 +89,45 @@ type OrderPayload = {
     status: string;
     createdAt: string | Date;
   }>;
+  returnCredits?: Array<{
+    id: string;
+    amount: number | string;
+    note: string | null;
+    status: string;
+    createdAt: string | Date;
+  }>;
+  deliveryProof?: {
+    recipientName?: string | null;
+    recipientPhone?: string | null;
+    deliveryNote?: string | null;
+    proofImageUrl?: string | null;
+    updatedAt?: string | Date | null;
+  } | null;
 };
 
 export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const router = useRouter();
+  const { data: session } = useSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const canReturn = hasPermission(role, "orders.return");
   const queryClient = useQueryClient();
   const { data, error, isLoading } = useClientQuery<{ data: OrderPayload }>({
     queryKey: ["order", orderId],
     queryFn: () => fetcher(`/api/orders/${orderId}`),
     refetchInterval: 30000,
+    enabled: !!orderId,
+  });
+  const { data: paymentPostingData } = useClientQuery<{
+    orderId: string;
+    totalPayments: number;
+    postedCount: number;
+    pendingCount: number;
+    postedPaymentIds: string[];
+    pendingPaymentIds: string[];
+  }>({
+    queryKey: ["admin", "order", orderId, "payment-posting-status"],
+    queryFn: () => fetcher(`/api/admin/orders/${orderId}/payment-posting-status`),
+    refetchInterval: 15000,
     enabled: !!orderId,
   });
 
@@ -96,12 +142,32 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   const [returnQuantity, setReturnQuantity] = useState<string>("1");
   const [returnSubmitting, setReturnSubmitting] = useState(false);
   const [returnQtyError, setReturnQtyError] = useState("");
-  const [restockReturnToStock, setRestockReturnToStock] = useState(true);
+  const [returnDisposition, setReturnDisposition] = useState("");
+  const [returnReason, setReturnReason] = useState("");
+  const [returnReasonNote, setReturnReasonNote] = useState("");
+  const [returnHoldCredit, setReturnHoldCredit] = useState(false);
+  const [returnDispositionError, setReturnDispositionError] = useState("");
+  const [returnReasonError, setReturnReasonError] = useState("");
   const [deliveryItem, setDeliveryItem] = useState<OrderItem | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<"delivered" | "partial">("delivered");
   const [deliveryQty, setDeliveryQty] = useState<string>("1");
   const [deliveryItemSubmitting, setDeliveryItemSubmitting] = useState(false);
   const [deliveryQtyError, setDeliveryQtyError] = useState("");
+  const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentNote, setPaymentNote] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"" | "cash" | "momo" | "transfer" | "card">("");
+  const [paymentError, setPaymentError] = useState("");
+  const [paymentMethodError, setPaymentMethodError] = useState("");
+  const [paymentTab, setPaymentTab] = useState<"custom" | "full">("custom");
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [releaseHoldSubmitting, setReleaseHoldSubmitting] = useState(false);
+  const [confirmReleaseHold, setConfirmReleaseHold] = useState(false);
+  const [releaseHoldForce, setReleaseHoldForce] = useState(false);
+  const [releaseHoldNote, setReleaseHoldNote] = useState("");
+  const [cancelingPendingMomo, setCancelingPendingMomo] = useState(false);
+  const [checkingPendingMomoId, setCheckingPendingMomoId] = useState<string | null>(null);
+  const [checkingAllPendingMomo, setCheckingAllPendingMomo] = useState(false);
 
   useEffect(() => {
     if (!confirmCancel) {
@@ -112,6 +178,11 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
   useEffect(() => {
     if (!returningItem) {
       setReturnQtyError("");
+      setReturnDisposition("");
+      setReturnReason("");
+      setReturnReasonNote("");
+      setReturnDispositionError("");
+      setReturnReasonError("");
     }
   }, [returningItem]);
 
@@ -140,13 +211,31 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     Number(order.balance ?? (order.total - (order.amountPaid ?? 0))) > 0 &&
     order.status !== "PAID" &&
     order.status !== "CANCELLED";
+  const parsedReturnQty = Number(returnQuantity);
+  const safeReturnQty = Number.isFinite(parsedReturnQty) && parsedReturnQty > 0 ? parsedReturnQty : 0;
+  const returnRequestedAmount = returningItem ? Math.max(0, safeReturnQty * Number(returningItem.price || 0)) : 0;
+  const orderOutstandingForReturn = Math.max(0, Number(order.balance || 0));
+  const returnAppliedToCurrentOrder = Math.min(returnRequestedAmount, orderOutstandingForReturn);
+  const returnCreditCreated = Math.max(0, returnRequestedAmount - returnAppliedToCurrentOrder);
+  const returnAutoApplyEstimate = returnHoldCredit ? 0 : returnCreditCreated;
   const amountPaid = Number(order.amountPaid ?? 0);
-  const balance = Number(order.balance ?? Math.max(0, order.total - amountPaid));
+  const rawBalance = Number(order.balance ?? Math.max(0, order.total - amountPaid));
+  const balance = Math.abs(rawBalance) < 0.01 ? 0 : rawBalance;
+  const isBalanceZero = balance <= 0;
+  const isCreditHold = String(order.status || "").toUpperCase() === "ON_HOLD_CREDIT";
   const lineTotal = order.items.reduce(
     (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
     0,
   );
-  const returnAdjustment = Math.max(0, lineTotal - Number(order.total || 0));
+  const subtotal = Number(order.subtotal ?? lineTotal);
+  const taxRate = Number(order.taxRate ?? 0);
+  const taxAmount = Number(order.taxAmount ?? 0);
+  const orderTotal = Number(order.total || 0);
+  const discountAmount = Math.max(0, subtotal + taxAmount - orderTotal);
+  const returnedValue = order.items.reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.returnedQuantity || 0),
+    0,
+  );
   const allDelivered = order.items.every(
     (item) => (item.deliveredQuantity ?? 0) >= item.quantity
   );
@@ -173,6 +262,8 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           reference?: string;
           applied?: Array<{ orderId?: string; applied?: number }>;
           method?: string;
+          status?: string;
+          providerRef?: string;
         };
         if (meta.reference === "AUTO_APPLY" && Array.isArray(meta.applied)) {
           for (const a of meta.applied) {
@@ -181,7 +272,12 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             }
           }
         }
-        if (meta.method === "momo") {
+        const momoStatus = String(meta.status || "").toUpperCase();
+        const isProviderLinkedMomo =
+          meta.method === "momo" && Boolean(String(meta.providerRef || "").trim());
+        const isProviderMomoSettled = momoStatus === "SUCCESS" || momoStatus === "SUCCESSFUL";
+        const isProviderMomoUnsettled = isProviderLinkedMomo && !isProviderMomoSettled;
+        if (meta.method === "momo" && !isProviderMomoUnsettled) {
           momoPaid += amount;
         }
         if (meta.method === "cash" || meta.method === "transfer") {
@@ -223,6 +319,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         }
         if (
           meta.reference === "AUTO_APPLY" ||
+          meta.reference === "ITEM_RETURN" ||
           (meta.status === "normal" && meta.refundDisposition === "CREDIT")
         ) {
           hasStoreCreditIssued = true;
@@ -244,31 +341,370 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       let method = "unknown";
       let provider = "";
       let reference = "";
+      let isReturnAdjustment = false;
+      let adjustmentAmount = 0;
       if (p.note) {
         try {
           const meta = JSON.parse(p.note as string) as {
             method?: string;
             provider?: string;
             reference?: string;
+            appliedToBalance?: number;
+            balanceAdjustment?: boolean;
+            adjustmentAmount?: number;
+            status?: string;
+            providerRef?: string;
           };
           if (meta.method) method = meta.method;
           if (meta.provider) provider = meta.provider;
           if (meta.reference) reference = meta.reference;
+          const momoStatus = String(meta.status || "").toUpperCase();
+          const isProviderLinkedMomo =
+            meta.method === "momo" &&
+            Boolean(String(meta.providerRef || "").trim());
+          const isProviderMomoSettled =
+            momoStatus === "SUCCESS" || momoStatus === "SUCCESSFUL";
+          const providerMomoUnsettled = Boolean(
+            isProviderLinkedMomo && !isProviderMomoSettled,
+          );
+          const applied = Number(
+            meta.adjustmentAmount ?? meta.appliedToBalance ?? 0
+          );
+          if (
+            meta.reference === "ITEM_RETURN" &&
+            (meta.balanceAdjustment || applied > 0) &&
+            Number(p.amount || 0) === 0
+          ) {
+            isReturnAdjustment = true;
+            adjustmentAmount = applied;
+          }
+          return {
+            ...p,
+            method: isReturnAdjustment ? "return" : method,
+            provider,
+            reference: isReturnAdjustment ? "APPLIED_TO_BALANCE" : reference,
+            createdAt: new Date(p.createdAt),
+            isReturnAdjustment,
+            adjustmentAmount,
+            pendingProviderMomo: providerMomoUnsettled,
+            momoProviderStatus: momoStatus,
+          };
         } catch {
           // ignore malformed notes
         }
       }
       return {
         ...p,
-        method,
+        method: isReturnAdjustment ? "return" : method,
         provider,
-        reference,
+        reference: isReturnAdjustment ? "APPLIED_TO_BALANCE" : reference,
         createdAt: new Date(p.createdAt),
+        isReturnAdjustment,
+        adjustmentAmount,
+        pendingProviderMomo: false,
+        momoProviderStatus: "",
       };
     });
     return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   })();
-  const ledgerTotal = paymentLedger.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const pendingMomoPayments = (() => {
+    const rows: Array<{ id: string; provider: string; ref: string }> = [];
+    for (const p of order.payments || []) {
+      if (!p.note) continue;
+      try {
+        const meta = JSON.parse(p.note as string) as {
+          method?: string;
+          provider?: string;
+          providerRef?: string;
+          status?: string;
+        };
+        if (meta.method !== "momo") continue;
+        if (String(meta.status || "").toUpperCase() !== "PENDING") continue;
+        rows.push({
+          id: p.id,
+          provider: meta.provider || "momo",
+          ref: meta.providerRef || "-",
+        });
+      } catch {
+        // ignore malformed notes
+      }
+    }
+    return rows;
+  })();
+  const unsettledProviderMomoCount = paymentLedger.filter((p) =>
+    Boolean((p as { pendingProviderMomo?: boolean }).pendingProviderMomo),
+  ).length;
+
+  const cancelPendingMomoRequests = async () => {
+    if (pendingMomoPayments.length === 0) return;
+    setCancelingPendingMomo(true);
+    try {
+      const results = await Promise.all(
+        pendingMomoPayments.map(async (row) => {
+          const res = await fetch(`/api/admin/payments/momo/${row.id}/cancel`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: "Order settled through another confirmed payment path" }),
+          });
+          const payload = await res.json().catch(() => ({} as { error?: string }));
+          return { ok: res.ok, error: payload?.error || "Failed", id: row.id };
+        }),
+      );
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length > 0) {
+        toast.error(`Canceled ${results.length - failed.length}/${results.length}. ${failed[0].error}`);
+      } else {
+        toast.success(`Canceled ${results.length} pending MoMo request(s).`);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["admin","payments","momo","pending"] });
+    } finally {
+      setCancelingPendingMomo(false);
+    }
+  };
+  const checkPendingMomoStatus = async (paymentId: string) => {
+    try {
+      setCheckingPendingMomoId(paymentId);
+      const res = await fetch(`/api/payments/momo/status/${paymentId}`);
+      const payload = await res.json().catch(() => ({} as { error?: string; status?: string }));
+      if (!res.ok) {
+        toast.error(payload?.error || "Failed to check MoMo status.");
+        return;
+      }
+      const normalized = String(payload?.status || "").toUpperCase();
+      if (normalized === "SUCCESSFUL" || normalized === "SUCCESS") {
+        toast.success("MoMo payment confirmed and applied.");
+      } else if (normalized === "PENDING" || normalized === "PENDING_FORCED_TEST") {
+        toast.message("MoMo payment is still pending.");
+      } else if (normalized) {
+        toast.warning(`MoMo status: ${normalized}`);
+      } else {
+        toast.message("Status checked.");
+      }
+      await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "order", orderId, "payment-posting-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "payments", "momo", "pending"] });
+    } finally {
+      setCheckingPendingMomoId(null);
+    }
+  };
+  const checkAllPendingMomoStatuses = async () => {
+    if (pendingMomoPayments.length === 0) return;
+    try {
+      setCheckingAllPendingMomo(true);
+      const results = await Promise.all(
+        pendingMomoPayments.map(async (row) => {
+          const res = await fetch(`/api/payments/momo/status/${row.id}`);
+          const payload = await res.json().catch(() => ({} as { status?: string; error?: string }));
+          return {
+            ok: res.ok,
+            status: String(payload?.status || "").toUpperCase(),
+            error: payload?.error || "",
+          };
+        }),
+      );
+      const failed = results.filter((r) => !r.ok);
+      const succeeded = results.filter((r) => r.status === "SUCCESS" || r.status === "SUCCESSFUL").length;
+      if (failed.length > 0) {
+        toast.error(`Checked ${results.length - failed.length}/${results.length}. ${failed[0].error || "Some checks failed."}`);
+      } else if (succeeded > 0) {
+        toast.success(`Checked ${results.length} pending request(s). ${succeeded} confirmed successful.`);
+      } else {
+        toast.message(`Checked ${results.length} pending request(s).`);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "order", orderId, "payment-posting-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "payments", "momo", "pending"] });
+    } finally {
+      setCheckingAllPendingMomo(false);
+    }
+  };
+  const returnAdjustments = (() => {
+    const itemNameById = new Map(order.items.map((item) => [item.id, item.product?.name || "Item"]));
+    const paymentIds = new Set(paymentLedger.map((p) => p.id));
+    const all = [...(order.payments || []), ...(order.returnCredits || [])];
+    const rows = all
+      .map((p) => {
+        if (!p.note) return null;
+        try {
+          const meta = JSON.parse(p.note) as {
+            reference?: string;
+            refundDisposition?: string | null;
+            method?: string;
+            status?: string;
+            restockToStock?: boolean;
+            item?: { id?: string; quantity?: number; lineRefund?: number };
+          };
+          if (meta.reference !== "ITEM_RETURN") return null;
+          const itemId = meta.item?.id || "";
+          const itemLabel = itemNameById.get(itemId) || "Item return";
+          const quantity = Number(meta.item?.quantity || 0);
+          const amount = Number(meta.item?.lineRefund || p.amount || 0);
+          return {
+            id: p.id,
+            createdAt: new Date(p.createdAt),
+            itemLabel,
+            quantity,
+            amount,
+            method: meta.method || "adjustment",
+            disposition: meta.refundDisposition || meta.status || p.status,
+            status: p.status,
+            restockToStock: meta.restockToStock !== false,
+            inLedger: paymentIds.has(p.id),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as Array<{
+      id: string;
+      createdAt: Date;
+      itemLabel: string;
+      quantity: number;
+      amount: number;
+      method: string;
+      disposition: string;
+      status: string;
+      restockToStock: boolean;
+      inLedger: boolean;
+    }>;
+    return rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  })();
+  const paymentLedgerWithBalance = (() => {
+    let remaining = Number(order.total || 0);
+    return paymentLedger.map((p) => {
+      const isProviderMomoUnsettled = Boolean((p as { pendingProviderMomo?: boolean }).pendingProviderMomo);
+      if (!p.isReturnAdjustment && !isProviderMomoUnsettled) {
+        const amount = Number(p.amount || 0);
+        const isRefund =
+          amount < 0 || String(p.status || "").toUpperCase() === "REFUND";
+        if (isRefund) {
+          remaining += Math.abs(amount);
+        } else {
+          remaining -= amount;
+        }
+      }
+      const normalized = Math.abs(remaining) < 0.01 ? 0 : Math.max(0, remaining);
+      return { ...p, remaining: normalized };
+    });
+  })();
+  const ledgerTotal = paymentLedger.reduce(
+    (sum, p) =>
+      sum +
+      (p.isReturnAdjustment || (p as { pendingProviderMomo?: boolean }).pendingProviderMomo
+        ? 0
+        : Number(p.amount || 0)),
+    0
+  );
+  const nonLedgerReturnCreditTotal = returnAdjustments.reduce((sum, r) => {
+    const disposition = String(r.disposition || "").toUpperCase();
+    const isCredit = disposition.includes("CREDIT");
+    return sum + (!r.inLedger && isCredit ? Math.abs(Number(r.amount || 0)) : 0);
+  }, 0);
+  const ledgerNetPaid = ledgerTotal - nonLedgerReturnCreditTotal;
+  const ledgerMatchesAmountPaid = Math.abs(ledgerNetPaid - amountPaid) < 0.01;
+  const backorderLines = (() => {
+    const note = String(order.adminNote || "").trim();
+    if (!note) return [] as Array<{
+      productName: string;
+      requested: number;
+      supplyingNow: number;
+      remaining: number;
+      etaDays: number | null;
+      raw: string;
+    }>;
+    return note
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.toLowerCase().startsWith("backorder pending:"))
+      .map((line) => {
+        const m = line.match(
+          /^Backorder pending:\s*(.+?)\s*requested\s*(\d+)\s*,\s*supplying\s*(\d+)\s*now\s*,\s*remaining\s*(\d+)\.\s*(?:ETA\s*(\d+)\s*day\(s\)\.)?$/i,
+        );
+        if (!m) {
+          return {
+            productName: line.replace(/^Backorder pending:\s*/i, ""),
+            requested: 0,
+            supplyingNow: 0,
+            remaining: 0,
+            etaDays: null,
+            raw: line,
+          };
+        }
+        return {
+          productName: m[1].trim(),
+          requested: Number(m[2] || 0),
+          supplyingNow: Number(m[3] || 0),
+          remaining: Number(m[4] || 0),
+          etaDays: m[5] ? Number(m[5]) : null,
+          raw: line,
+        };
+      });
+  })();
+
+  const openPaymentDialog = () => {
+    setPaymentAmount("");
+    setPaymentNote("");
+    setPaymentMethod("");
+    setPaymentError("");
+    setPaymentMethodError("");
+    setPaymentTab("custom");
+    setIsPaymentDialogOpen(true);
+  };
+
+  const recordPayment = async () => {
+    if (isBalanceZero) {
+      setPaymentError("No outstanding balance to pay.");
+      return;
+    }
+    const amount = Number(paymentAmount);
+    if (!paymentAmount || !Number.isFinite(amount) || amount <= 0) {
+      setPaymentError("Enter a valid amount.");
+      return;
+    }
+    if (!paymentMethod) {
+      setPaymentMethodError("Select payment method.");
+      return;
+    }
+    if (amount > balance) {
+      setPaymentError("Amount cannot exceed remaining balance.");
+      return;
+    }
+
+    try {
+      setPaymentSubmitting(true);
+      setPaymentError("");
+      setPaymentMethodError("");
+      const res = await fetch(`/api/orders/${orderId}/payment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount,
+          method: paymentMethod,
+          note: paymentNote || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const j = await res
+          .json()
+          .catch(async () => ({ error: await res.text().catch(() => "") }));
+        const msg = j?.error || "Failed to record payment";
+        throw new Error(msg);
+      }
+
+      toast.success(`Payment of ${formatCurrency(amount)} recorded.`);
+      setPaymentAmount("");
+      setPaymentNote("");
+      setIsPaymentDialogOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+    } catch (err) {
+      console.error(err);
+      toast.error("Error recording payment.");
+    } finally {
+      setPaymentSubmitting(false);
+    }
+  };
   const timelineEvents = (() => {
     const events: Array<{ time: Date; label: string; detail?: string }> = [];
     const createdAt = new Date(order.createdAt);
@@ -280,11 +716,29 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       });
     }
     for (const p of paymentLedger) {
+      const isUnsettledProviderMomo = Boolean(
+        (p as { pendingProviderMomo?: boolean }).pendingProviderMomo,
+      );
+      const momoProviderStatus = String(
+        (p as { momoProviderStatus?: string }).momoProviderStatus || "",
+      ).toUpperCase();
       const amount = Number(p.amount || 0);
       const status = String(p.status || "").toUpperCase();
       const isRefund = status === "REFUND" || amount < 0;
       const method = p.method || "unknown";
       const ref = p.reference ? ` · Ref ${p.reference}` : "";
+      if (isUnsettledProviderMomo) {
+        const label =
+          momoProviderStatus === "CANCELLED_BY_STAFF"
+            ? "MoMo request canceled"
+            : "MoMo request pending";
+        events.push({
+          time: p.createdAt,
+          label,
+          detail: `${formatCurrency(Math.abs(amount))} via ${method}${ref}`,
+        });
+        continue;
+      }
       events.push({
         time: p.createdAt,
         label: isRefund ? "Payment refund" : "Payment received",
@@ -367,6 +821,35 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     }
   }
 
+  async function releaseCreditHold() {
+    try {
+      setReleaseHoldSubmitting(true);
+      const res = await fetch(`/api/admin/orders/${orderId}/release-hold`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          force: releaseHoldForce,
+          note: releaseHoldNote || undefined,
+        }),
+      });
+      const j = await res.json().catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        throw new Error(j?.error || "Failed to release credit hold");
+      }
+      queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+      toast.success("Credit hold released.");
+      setConfirmReleaseHold(false);
+      setReleaseHoldForce(false);
+      setReleaseHoldNote("");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to release credit hold";
+      toast.error(message);
+    } finally {
+      setReleaseHoldSubmitting(false);
+    }
+  }
+
   async function deleteOrder() {
     try {
       setDeleting(true);
@@ -412,7 +895,18 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       return;
     }
     setReturnQtyError("");
+    if (!returnDisposition) {
+      setReturnDispositionError("Select an RMA disposition.");
+      return;
+    }
+    setReturnDispositionError("");
+    if (!returnReason) {
+      setReturnReasonError("Select a return reason.");
+      return;
+    }
+    setReturnReasonError("");
     try {
+      const refundMode = order.customerType === "WALK_IN" ? "cash" : "credit";
       setReturnSubmitting(true);
       const res = await fetch(`/api/admin/orders/${orderId}/return-item`, {
         method: "POST",
@@ -420,8 +914,12 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         body: JSON.stringify({
           itemId: returningItem.id,
           quantity: qty,
-          refundMode: "credit",
-          restock: restockReturnToStock,
+          refundMode,
+          disposition: returnDisposition,
+          reason: returnReason,
+          reasonNote: returnReasonNote.trim() || undefined,
+          restock: returnDisposition === "RESTOCK",
+          skipAutoApplyCredit: returnHoldCredit,
         }),
       });
       const j = await res
@@ -434,6 +932,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       toast.success("Item return processed.");
       setReturningItem(null);
       setReturnQuantity("1");
+      setReturnHoldCredit(false);
       queryClient.invalidateQueries({ queryKey: ["order", orderId] });
     } catch (e) {
       console.error(e);
@@ -594,9 +1093,9 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 const r = await fetch(`/api/orders/${orderId}/receipt/email`, {
                   method: "POST",
                 });
-                const j = await r.json().catch(() => ({} as { error?: string }));
+                const j = await r.json().catch(() => ({} as { error?: string; simulated?: boolean }));
                 if (!r.ok) throw new Error(j?.error || "Failed to email receipt");
-                toast.success("Receipt emailed");
+                toast.success(`Receipt emailed${j?.simulated ? " (simulated)" : ""}`);
               } catch (e: unknown) {
                 const message =
                   e instanceof Error ? e.message : "Email failed";
@@ -610,6 +1109,12 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       </CardHeader>
 
       <CardContent className="space-y-6">
+        {isCreditHold ? (
+          <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-800 p-3 text-sm">
+            Credit hold is active. Deliveries are blocked until the outstanding balance falls below the credit limit
+            or an admin overrides the hold.
+          </div>
+        ) : null}
         {isUnpaid && (
           <div className="rounded-md border border-yellow-300 bg-yellow-50 text-yellow-800 p-3 text-sm">
             Unpaid order. Customer sees instructions to call {ADMIN_PHONE} to complete payment.
@@ -655,11 +1160,49 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               : "Not Delivered"}
             {order.deliveredAt ? ` on ${new Date(order.deliveredAt).toLocaleString()}` : ""}
           </p>
+          {order.deliveryProof ? (
+            <p className="text-sm text-muted-foreground">
+              <strong>POD:</strong> {order.deliveryProof.recipientName || "Unknown recipient"}
+              {order.deliveryProof.recipientPhone ? ` (${order.deliveryProof.recipientPhone})` : ""}
+              {order.deliveryProof.proofImageUrl ? (
+                <>
+                  {" "}
+                  -{" "}
+                  <a
+                    className="underline"
+                    href={order.deliveryProof.proofImageUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View proof
+                  </a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
+          {order.deliveryProof?.deliveryNote ? (
+            <p className="text-xs text-muted-foreground">
+              <strong>Delivery note:</strong> {order.deliveryProof.deliveryNote}
+            </p>
+          ) : null}
           <p className="text-sm text-muted-foreground">
-            <strong>Total:</strong> {formatCurrency(lineTotal)}
+            <strong>Item total:</strong> {formatCurrency(lineTotal)}
           </p>
           <p className="text-sm text-muted-foreground">
-            <strong>Subtotal:</strong> {formatCurrency(order.total)}
+            <strong>Subtotal:</strong> {formatCurrency(subtotal)}
+          </p>
+          {taxAmount > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              <strong>Tax {taxRate > 0 ? `(${taxRate}%)` : ""}:</strong> {formatCurrency(taxAmount)}
+            </p>
+          ) : null}
+          {discountAmount > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              <strong>Discount:</strong> -{formatCurrency(discountAmount)}
+            </p>
+          ) : null}
+          <p className="text-sm text-muted-foreground">
+            <strong>Total:</strong> {formatCurrency(orderTotal)}
           </p>
           <p className="text-sm text-muted-foreground">
             <strong>Amount Paid:</strong> {formatCurrency(amountPaid)}
@@ -699,15 +1242,87 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           >
             Outstanding Balance: {formatCurrency(balance)}
           </div>
-          <div className="mt-3">
-            <h3 className="text-sm font-semibold">Payments Ledger</h3>
-            {paymentLedger.length === 0 ? (
+          {isUnpaid ? (
+            <div className="mt-2">
+              <Button size="sm" onClick={openPaymentDialog}>
+                Record payment
+              </Button>
+            </div>
+          ) : null}
+          {pendingMomoPayments.length > 0 && balance > 0 ? (
+            <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              MoMo payment pending approval ({pendingMomoPayments.length}). Do not release items until payment is
+              confirmed.
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={checkAllPendingMomoStatuses}
+                  disabled={checkingAllPendingMomo}
+                >
+                  {checkingAllPendingMomo ? "Checking..." : "Check status"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelPendingMomoRequests}
+                  disabled={cancelingPendingMomo}
+                >
+                  {cancelingPendingMomo ? "Canceling..." : "Cancel pending MoMo request(s)"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {pendingMomoPayments.length > 0 && balance <= 0 ? (
+            <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+              MoMo provider request still shows pending ({pendingMomoPayments.length}), but this order is already
+              settled by confirmed payments. Review pending MoMo references to avoid duplicate settlement.
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={checkAllPendingMomoStatuses}
+                  disabled={checkingAllPendingMomo}
+                >
+                  {checkingAllPendingMomo ? "Checking..." : "Check status"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelPendingMomoRequests}
+                  disabled={cancelingPendingMomo}
+                >
+                  {cancelingPendingMomo ? "Canceling..." : "Cancel pending MoMo request(s)"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {pendingMomoPayments.length === 0 &&
+          unsettledProviderMomoCount > 0 &&
+          balance > 0 ? (
+            <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              There are {unsettledProviderMomoCount} provider MoMo request record(s) not in settled state.
+              Continue using confirmed payment methods only.
+            </div>
+          ) : null}
+            <div className="mt-3">
+              <h3 className="text-sm font-semibold">Payments Ledger</h3>
+              {paymentPostingData?.totalPayments ? (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Payment Journal:{" "}
+                  {paymentPostingData.pendingCount > 0 ? (
+                    <span className="font-medium text-amber-700">
+                      Pending ({paymentPostingData.pendingCount}/{paymentPostingData.totalPayments})
+                    </span>
+                  ) : (
+                    <span className="font-medium text-emerald-700">Posted</span>
+                  )}
+                </p>
+              ) : null}
+              {paymentLedger.length === 0 ? (
               <div className="text-xs text-muted-foreground mt-1">
                 <p>No payments recorded for this order yet.</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Button asChild size="sm">
-                    <Link href={`/admin/orders?q=${order.id}`}>Record payment</Link>
-                  </Button>
                   <Button asChild size="sm" variant="outline">
                     <Link href="/admin/orders">View all orders</Link>
                   </Button>
@@ -723,20 +1338,50 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       <th className="text-left py-1 pr-4">Provider</th>
                       <th className="text-left py-1 pr-4">Reference</th>
                       <th className="text-right py-1 pr-4">Amount</th>
+                      <th className="text-right py-1 pr-4">Balance after</th>
                       <th className="text-right py-1 pr-4">Status</th>
+                      <th className="text-right py-1">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {paymentLedger.map((p) => (
+                    {paymentLedgerWithBalance.map((p) => (
                       <tr key={p.id} className="border-t">
                         <td className="py-1 pr-4">{p.createdAt.toLocaleString()}</td>
                         <td className="py-1 pr-4">{p.method}</td>
                         <td className="py-1 pr-4">{p.provider || "-"}</td>
                         <td className="py-1 pr-4">{p.reference || "-"}</td>
                         <td className="py-1 pr-4 text-right">
-                          {formatCurrency(Number(p.amount || 0))}
+                          {formatCurrency(
+                            p.isReturnAdjustment
+                              ? -Math.abs(p.adjustmentAmount || 0)
+                              : Number(p.amount || 0)
+                          )}
                         </td>
-                        <td className="py-1 pr-4 text-right">{p.status}</td>
+                        <td className="py-1 pr-4 text-right">
+                          {formatCurrency(p.remaining)}
+                        </td>
+                        <td className="py-1 pr-4 text-right">
+                          {p.isReturnAdjustment
+                            ? "ADJUSTMENT"
+                            : Boolean((p as { pendingProviderMomo?: boolean }).pendingProviderMomo)
+                            ? String((p as { momoProviderStatus?: string }).momoProviderStatus || "PENDING")
+                            : p.status}
+                        </td>
+                        <td className="py-1 text-right">
+                          {Boolean((p as { pendingProviderMomo?: boolean }).pendingProviderMomo) ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => void checkPendingMomoStatus(p.id)}
+                              disabled={checkingPendingMomoId === p.id || checkingAllPendingMomo}
+                            >
+                              {checkingPendingMomoId === p.id ? "Checking..." : "Check status"}
+                            </Button>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -745,17 +1390,85 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
             )}
             {paymentLedger.length > 0 ? (
               <p className="text-xs text-muted-foreground mt-2">
-                Ledger total: {formatCurrency(ledgerTotal)}{" "}
-                {Math.abs(ledgerTotal - amountPaid) < 0.01
-                  ? "— matches Amount Paid"
-                  : `— does not match Amount Paid (${formatCurrency(amountPaid)})`}
+                Ledger total: {formatCurrency(ledgerTotal)}
+                {nonLedgerReturnCreditTotal > 0 ? (
+                  <>
+                    {" "}
+                    | Less non-ledger return credits: {formatCurrency(nonLedgerReturnCreditTotal)}{" "}
+                    | Net paid: {formatCurrency(ledgerNetPaid)}
+                  </>
+                ) : null}
+                {" "}
+                {ledgerMatchesAmountPaid
+                  ? "- matches Amount Paid"
+                  : `- does not match Amount Paid (${formatCurrency(amountPaid)})`}
+              </p>
+            ) : null}
+            {paymentLedger.some((p) => p.isReturnAdjustment) ? (
+              <p className="text-xs text-muted-foreground mt-1">
+                Return adjustments applied to balance are shown above but excluded
+                from the ledger total. Non-ledger store-credit returns are also
+                subtracted to compute net paid.
               </p>
             ) : null}
           </div>
-          {returnAdjustment > 0.005 && (
+          {returnAdjustments.length > 0 ? (
+            <div className="mt-4">
+              <h3 className="text-sm font-semibold">Return Credits & Refunds</h3>
+              <p className="text-xs text-muted-foreground mt-1">
+                Store-credit returns appear here even when they are not tied to the order payment ledger.
+              </p>
+              {order.user?.id ? (
+                <div className="mt-2 text-xs">
+                  <Link href={`/admin/customers/${order.user.id}/view`} className="underline">
+                    View customer account
+                  </Link>
+                </div>
+              ) : null}
+              <div className="mt-2 overflow-x-auto">
+                <table className="min-w-full text-xs whitespace-nowrap">
+                  <thead className="text-muted-foreground">
+                    <tr>
+                      <th className="text-left py-1 pr-4">Date</th>
+                      <th className="text-left py-1 pr-4">Item</th>
+                      <th className="text-right py-1 pr-4">Qty</th>
+                      <th className="text-right py-1 pr-4">Amount</th>
+                      <th className="text-left py-1 pr-4">Method</th>
+                      <th className="text-left py-1 pr-4">Disposition</th>
+                      <th className="text-left py-1 pr-4">Restock</th>
+                      <th className="text-left py-1 pr-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {returnAdjustments.map((r) => (
+                      <tr key={r.id} className="border-t">
+                        <td className="py-1 pr-4">{r.createdAt.toLocaleString()}</td>
+                        <td className="py-1 pr-4">
+                          {r.itemLabel}
+                          {r.inLedger ? "" : " (credit)"}
+                        </td>
+                        <td className="py-1 pr-4 text-right">
+                          {r.quantity > 0 ? r.quantity : "-"}
+                        </td>
+                        <td className="py-1 pr-4 text-right">
+                          {formatCurrency(Math.abs(r.amount))}
+                        </td>
+                        <td className="py-1 pr-4">{r.method}</td>
+                        <td className="py-1 pr-4">{r.disposition}</td>
+                        <td className="py-1 pr-4">
+                          {r.restockToStock ? "Yes" : "No"}
+                        </td>
+                        <td className="py-1 pr-4">{r.status}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+          {returnedValue > 0.005 && (
             <p className="text-xs text-muted-foreground mt-1">
-              Note: Subtotal is lower than the original total because returned items reduced this order by{" "}
-              {formatCurrency(returnAdjustment)}.
+              Note: Returned items value on this order: {formatCurrency(returnedValue)}.
             </p>
           )}
           <p className="text-sm text-muted-foreground">
@@ -768,13 +1481,64 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 {order.user.name} ({order.user.email})
               </>
             ) : (
-              <span className="text-muted-foreground">Unknown</span>
+              <span className="text-muted-foreground">
+                {order.walkInName || "Walk-in"}{order.walkInPhone ? ` · ${order.walkInPhone}` : ""}
+              </span>
             )}
           </p>
           {order.adminNote ? (
             <p className="text-sm text-muted-foreground">
               <strong>Admin Note:</strong> {order.adminNote}
             </p>
+          ) : null}
+          {backorderLines.length > 0 ? (
+            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3">
+              <h3 className="text-sm font-semibold text-amber-900">Backorder Lines</h3>
+              <p className="mt-1 text-xs text-amber-900">
+                Remaining quantities from this request that were not supplied in this order.
+              </p>
+              <div className="mt-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    router.push(
+                      `/admin/orders/new?backorderOrderId=${encodeURIComponent(order.id)}`,
+                    )
+                  }
+                >
+                  Create Fulfillment Order
+                </Button>
+              </div>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-amber-300 text-left">
+                      <th className="py-1 pr-3">Product</th>
+                      <th className="py-1 pr-3 text-right">Requested</th>
+                      <th className="py-1 pr-3 text-right">Supplied Now</th>
+                      <th className="py-1 pr-3 text-right">Remaining</th>
+                      <th className="py-1 pr-3">ETA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {backorderLines.map((line, index) => (
+                      <tr key={`backorder-${index}`} className="border-b border-amber-200 last:border-0">
+                        <td className="py-1 pr-3">{line.productName || "-"}</td>
+                        <td className="py-1 pr-3 text-right">{line.requested || "-"}</td>
+                        <td className="py-1 pr-3 text-right">{line.supplyingNow || "-"}</td>
+                        <td className="py-1 pr-3 text-right">{line.remaining || "-"}</td>
+                        <td className="py-1 pr-3">
+                          {line.etaDays != null && Number.isFinite(line.etaDays)
+                            ? `${line.etaDays} day(s)`
+                            : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           ) : null}
 
           <div className="mt-4 border-t pt-3">
@@ -783,77 +1547,89 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
               Notifications are sent automatically when orders are created, payments are
               recorded, store credit is issued/refunded, or delivery status changes.
             </p>
-            <ul className="mt-2 space-y-1 text-xs">
-              <li>
-                <span className="font-medium">Order confirmation:</span>{" "}
-                {order.createdAt
-                  ? "Sent when this order was created."
-                  : "Not available"}
-              </li>
-              <li>
-                <span className="font-medium">Payments received:</span>{" "}
-                {notificationSummary.hasPaymentRecorded
-                  ? "At least one payment notification has been sent."
-                  : (
-                    <>
-                      No payment notifications detected yet.{" "}
-                      <Link href="/admin/settings/communications" className="underline">
-                        Check comms settings
-                      </Link>
-                      .
-                    </>
-                  )}
-              </li>
-              <li>
-                <span className="font-medium">Store credit issued:</span>{" "}
-                {notificationSummary.hasStoreCreditIssued
-                  ? "Customer has been notified about store credit on their account."
-                  : (
-                    <>
-                      No store-credit notifications detected.{" "}
-                      <Link href="/admin/settings/communications" className="underline">
-                        Check comms settings
-                      </Link>
-                      .
-                    </>
-                  )}
-              </li>
-              <li>
-                <span className="font-medium">Store credit refunded:</span>{" "}
-                {notificationSummary.hasStoreCreditRefunded
-                  ? "Customer has been notified about a credit refund."
-                  : (
-                    <>
-                      No credit-refund notifications detected.{" "}
-                      <Link href="/admin/settings/communications" className="underline">
-                        Check comms settings
-                      </Link>
-                      .
-                    </>
-                  )}
-              </li>
-              <li>
-                <span className="font-medium">Delivery status:</span>{" "}
-                {order.deliveryStatus === "DELIVERED" ||
-                order.deliveryStatus === "PARTIALLY_DELIVERED" ||
-                order.deliveryStatus === "RETURNED"
-                  ? "Customer has been notified about the latest delivery update."
-                  : (
-                    <>
-                      No delivery notifications yet (status is Not Delivered).{" "}
-                      <Link href="/admin/orders" className="underline">
-                        View orders
-                      </Link>
-                      .
-                    </>
-                  )}
-              </li>
-            </ul>
+            {order.customerType === "WALK_IN" ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Walk-in sale: no customer notifications are sent.
+              </p>
+            ) : (
+              <ul className="mt-2 space-y-1 text-xs">
+                <li>
+                  <span className="font-medium">Order confirmation:</span>{" "}
+                  {order.createdAt
+                    ? "Sent when this order was created."
+                    : "Not available"}
+                </li>
+                <li>
+                  <span className="font-medium">Payments received:</span>{" "}
+                  {notificationSummary.hasPaymentRecorded
+                    ? "At least one payment notification has been sent."
+                    : (
+                      <>
+                        No payment notifications detected yet.{" "}
+                        <Link href="/admin/settings/communications" className="underline">
+                          Check comms settings
+                        </Link>
+                        .
+                      </>
+                    )}
+                </li>
+                <li>
+                  <span className="font-medium">Store credit issued:</span>{" "}
+                  {notificationSummary.hasStoreCreditIssued
+                    ? "Customer has been notified about store credit on their account."
+                    : (
+                      <>
+                        No store-credit notifications detected.{" "}
+                        <Link href="/admin/settings/communications" className="underline">
+                          Check comms settings
+                        </Link>
+                        .
+                      </>
+                    )}
+                </li>
+                <li>
+                  <span className="font-medium">Store credit refunded:</span>{" "}
+                  {notificationSummary.hasStoreCreditRefunded
+                    ? "Customer has been notified about a credit refund."
+                    : (
+                      <>
+                        No credit-refund notifications detected.{" "}
+                        <Link href="/admin/settings/communications" className="underline">
+                          Check comms settings
+                        </Link>
+                        .
+                      </>
+                    )}
+                </li>
+                <li>
+                  <span className="font-medium">Delivery status:</span>{" "}
+                  {order.deliveryStatus === "DELIVERED" ||
+                  order.deliveryStatus === "PARTIALLY_DELIVERED" ||
+                  order.deliveryStatus === "RETURNED"
+                    ? "Customer has been notified about the latest delivery update."
+                    : (
+                      <>
+                        No delivery notifications yet (status is Not Delivered).{" "}
+                        <Link href="/admin/orders" className="underline">
+                          View orders
+                        </Link>
+                        .
+                      </>
+                    )}
+                </li>
+              </ul>
+            )}
           </div>
         </div>
 
         <div className="border-t pt-4">
           <h3 className="text-sm font-semibold mb-3">Items</h3>
+          {!canReturn ? (
+            <p className="text-xs text-muted-foreground mb-3">
+              Returns can only be initiated by admins. Staff can still record payments
+              and update delivery status.
+            </p>
+          ) : null}
           <div className="grid gap-3">
             {order.items.map((item) => (
               <div
@@ -904,6 +1680,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       className="px-2"
                       disabled={
                         order.status === "CANCELLED" ||
+                        isCreditHold ||
                         deliveryItemSubmitting ||
                         (item.deliveredQuantity ?? 0) >= item.quantity
                       }
@@ -921,6 +1698,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       className="px-2"
                       disabled={
                         order.status === "CANCELLED" ||
+                        isCreditHold ||
                         deliveryItemSubmitting ||
                         (item.deliveredQuantity ?? 0) >= item.quantity
                       }
@@ -945,6 +1723,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                     size="sm"
                     className="px-2"
                     disabled={
+                      !canReturn ||
                       order.status === "CANCELLED" ||
                       returnSubmitting ||
                       (typeof item.deliveredQuantity === "number"
@@ -954,6 +1733,10 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                         : (item.returnedQuantity ?? 0) >= item.quantity)
                     }
                     onClick={() => {
+                      if (!canReturn) {
+                        toast.error("Only admins can process returns.");
+                        return;
+                      }
                       const delivered = item.deliveredQuantity ?? 0;
                       const alreadyReturned = item.returnedQuantity ?? 0;
                       const maxReturnable = Math.max(
@@ -968,11 +1751,16 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                       }
                       setReturningItem(item);
                       setReturnQuantity("1");
-                      setRestockReturnToStock(true);
+                      setReturnDisposition("");
+                      setReturnReason("");
+                      setReturnReasonNote("");
                     }}
                   >
                     Return item
                   </Button>
+                  {!canReturn ? (
+                    <span className="text-xs text-muted-foreground">Admin only</span>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -981,8 +1769,19 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
       </CardContent>
 
       <CardFooter className="justify-end">
-        <div className="flex flex-col md:flex-row gap-2 w-full md:w-auto md:items-center md:justify-end">
-          <div className="flex flex-wrap gap-2 w-full md:w-auto md:justify-end">
+        <div className="flex flex-col lg:flex-row gap-2 w-full lg:w-auto lg:items-center lg:justify-end">
+          <div className="flex flex-wrap gap-2 w-full lg:w-auto lg:justify-end">
+            {isCreditHold && role === "ADMIN" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={releaseHoldSubmitting}
+                onClick={() => setConfirmReleaseHold(true)}
+              >
+                {releaseHoldSubmitting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+                Release credit hold
+              </Button>
+            ) : null}
             <Button
               variant={order.deliveryStatus === "DELIVERED" ? "default" : "outline"}
               size="sm"
@@ -990,6 +1789,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 deliveryUpdating ||
                 deleting ||
                 order.deliveryStatus === "RETURNED" ||
+                isCreditHold ||
                 order.status === "CANCELLED" ||
                 allDelivered
               }
@@ -1007,6 +1807,60 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           </Button>
         </div>
       </CardFooter>
+      <Dialog
+        open={confirmReleaseHold}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirmReleaseHold(false);
+            setReleaseHoldForce(false);
+            setReleaseHoldNote("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
+          <DialogHeader>
+            <DialogTitle className="text-base font-semibold">Release credit hold</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Holds are automatically released once the customer&apos;s outstanding balance
+              drops below their credit limit. Use this only for special cases.
+            </p>
+            <label className="flex items-start gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                className="mt-1 h-4 w-4"
+                checked={releaseHoldForce}
+                onChange={(e) => setReleaseHoldForce(e.target.checked)}
+              />
+              Release anyway, even if the customer is still over their credit limit.
+            </label>
+            <div className="space-y-1">
+              <label className="text-xs uppercase text-muted-foreground">Reason (optional)</label>
+              <Textarea
+                value={releaseHoldNote}
+                onChange={(e) => setReleaseHoldNote(e.target.value)}
+                placeholder="Reason for manual release"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={releaseHoldSubmitting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              onClick={releaseCreditHold}
+              disabled={releaseHoldSubmitting}
+            >
+              {releaseHoldSubmitting ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : null}
+              Release hold
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={confirmCancel}
         onOpenChange={(o) => {
@@ -1127,6 +1981,150 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           )}
         </DialogContent>
       </Dialog>
+      <Dialog
+        open={isPaymentDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setIsPaymentDialogOpen(false);
+            setPaymentError("");
+            setPaymentMethodError("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
+          <DialogHeader>
+            <DialogTitle className="text-base font-semibold">Record Payment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-4">
+            <div className="grid gap-2 text-sm">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Order ID</span>
+                <span className="font-mono">{order.id.slice(0, 8)}…</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Total</span>
+                <span className="font-mono">{formatCurrency(Number(order.total || 0))}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Already Paid</span>
+                <span className="font-mono">{formatCurrency(amountPaid)}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground">Remaining Balance</span>
+                <span className="font-mono">{formatCurrency(balance)}</span>
+              </div>
+            </div>
+            {isBalanceZero ? (
+              <p className="text-xs text-muted-foreground">
+                This order has no outstanding balance. New payments cannot be recorded.
+              </p>
+            ) : null}
+
+            <div className="flex flex-col gap-2">
+              <span className="text-xs text-muted-foreground">Amount Mode</span>
+              <div className="flex flex-wrap gap-2" role="tablist" aria-label="Payment amount mode">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={paymentTab === "custom" ? "default" : "outline"}
+                  role="tab"
+                  aria-selected={paymentTab === "custom"}
+                  onClick={() => {
+                    setPaymentTab("custom");
+                    setPaymentAmount("");
+                    setPaymentError("");
+                  }}
+                  disabled={isBalanceZero}
+                  className="w-full sm:w-auto"
+                >
+                  Custom
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={paymentTab === "full" ? "default" : "outline"}
+                  role="tab"
+                  aria-selected={paymentTab === "full"}
+                  onClick={() => {
+                    setPaymentTab("full");
+                    setPaymentAmount(balance.toFixed(2));
+                    setPaymentError("");
+                  }}
+                  disabled={isBalanceZero}
+                  className="w-full sm:w-auto"
+                >
+                  Pay Full ({formatCurrency(balance)})
+                </Button>
+              </div>
+            </div>
+
+            <Input
+              type="number"
+              placeholder="Enter payment amount"
+              value={paymentAmount}
+              onChange={(e) => {
+                setPaymentAmount(e.target.value);
+                if (paymentError) setPaymentError("");
+              }}
+              aria-invalid={!!paymentError}
+              className={paymentError ? "border-red-500" : ""}
+              disabled={isBalanceZero}
+            />
+            {paymentError && <p className="text-xs text-red-600">{paymentError}</p>}
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Payment Method</label>
+              <select
+                className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${
+                  paymentMethodError ? "border-red-500" : ""
+                }`}
+                value={paymentMethod}
+                onChange={(e) => {
+                  setPaymentMethod(
+                    e.target.value as "" | "cash" | "momo" | "transfer" | "card",
+                  );
+                  if (paymentMethodError) setPaymentMethodError("");
+                }}
+                disabled={isBalanceZero}
+              >
+                <option value="">Select payment method</option>
+                <option value="cash">Cash</option>
+                <option value="momo">MoMo</option>
+                <option value="transfer">Bank Transfer</option>
+                <option value="card">Card</option>
+              </select>
+              {paymentMethodError ? (
+                <p className="text-xs text-red-600">{paymentMethodError}</p>
+              ) : null}
+            </div>
+
+            <Textarea
+              placeholder="Optional note (e.g., MoMo ref / teller details)"
+              value={paymentNote}
+              onChange={(e) => setPaymentNote(e.target.value)}
+              disabled={isBalanceZero}
+            />
+
+            <DialogFooter className="mt-4">
+              <Button
+                variant="outline"
+                onClick={() => setIsPaymentDialogOpen(false)}
+                disabled={paymentSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={recordPayment}
+                disabled={!paymentAmount || paymentSubmitting || isBalanceZero}
+              >
+                {paymentSubmitting ? (
+                  <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                ) : null}
+                Confirm Payment
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={confirmDelete} onOpenChange={(o) => { if (!o) setConfirmDelete(false); }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
           <DialogHeader>
@@ -1234,6 +2232,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
         onOpenChange={(open) => {
           if (!open) {
             setReturningItem(null);
+            setReturnHoldCredit(false);
           }
         }}
       >
@@ -1285,27 +2284,108 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">
-                    Returns for this item are refunded as{" "}
-                    <span className="font-medium">store credit</span>. If the
-                    customer prefers cash instead, please contact the accounts
-                    team so their store credit can be converted and refunded.
+                    {order.customerType === "WALK_IN"
+                      ? "OTC returns must be refunded as cash/transfer (no store credit)."
+                      : (
+                        <>
+                          Returns for this item are refunded as{" "}
+                          <span className="font-medium">store credit</span>. If the
+                          customer prefers cash instead, please contact the accounts
+                          team so their store credit can be converted and refunded.
+                        </>
+                      )}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="restock-return"
-                    type="checkbox"
-                    className="h-3 w-3"
-                    checked={restockReturnToStock}
-                    onChange={(e) => setRestockReturnToStock(e.target.checked)}
-                  />
-                  <label
-                    htmlFor="restock-return"
-                    className="text-xs text-muted-foreground"
-                  >
-                    Add returned units back into inventory
-                  </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="text-xs text-muted-foreground block mb-1">
+                      RMA disposition
+                    </label>
+                    <select
+                      value={returnDisposition}
+                      onChange={(e) => {
+                        setReturnDisposition(e.target.value);
+                        if (returnDispositionError) setReturnDispositionError("");
+                      }}
+                      className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="" disabled>
+                        Select disposition
+                      </option>
+                      <option value="RESTOCK">Restock</option>
+                      <option value="SCRAP">Scrap/Dispose</option>
+                      <option value="RETURN_TO_SUPPLIER">Return to supplier</option>
+                    </select>
+                    {returnDispositionError ? (
+                      <p className="text-xs text-red-600 mt-1">{returnDispositionError}</p>
+                    ) : null}
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Restock adds units back to inventory. Scrap/Return keeps them out of stock.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground block mb-1">
+                      Return reason
+                    </label>
+                    <select
+                      value={returnReason}
+                      onChange={(e) => {
+                        setReturnReason(e.target.value);
+                        if (returnReasonError) setReturnReasonError("");
+                      }}
+                      className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="" disabled>
+                        Select reason
+                      </option>
+                      <option value="DAMAGED">Damaged</option>
+                      <option value="EXPIRED">Expired</option>
+                      <option value="WRONG_ITEM">Wrong item shipped</option>
+                      <option value="QUALITY_ISSUE">Quality issue</option>
+                      <option value="CUSTOMER_CHANGED_MIND">Customer changed mind</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                    {returnReasonError ? (
+                      <p className="text-xs text-red-600 mt-1">{returnReasonError}</p>
+                    ) : null}
+                    <input
+                      type="text"
+                      placeholder="Optional reason details"
+                      value={returnReasonNote}
+                      onChange={(e) => setReturnReasonNote(e.target.value)}
+                      className="mt-2 h-9 w-full rounded-md border bg-background px-2 text-sm"
+                    />
+                  </div>
                 </div>
+                {order.customerType !== "WALK_IN" ? (
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={returnHoldCredit}
+                      onChange={(e) => setReturnHoldCredit(e.target.checked)}
+                    />
+                    Hold as store credit (do not auto-apply to outstanding balances)
+                  </label>
+                ) : null}
+                {order.customerType !== "WALK_IN" ? (
+                  <div className="rounded border bg-muted/30 p-2 text-xs text-muted-foreground space-y-1">
+                    <div>
+                      Return value: <span className="font-medium">{formatCurrency(returnRequestedAmount)}</span>
+                    </div>
+                    <div>
+                      Applied to this order balance:{" "}
+                      <span className="font-medium">{formatCurrency(returnAppliedToCurrentOrder)}</span>
+                    </div>
+                    <div>
+                      Store credit created:{" "}
+                      <span className="font-medium">{formatCurrency(returnCreditCreated)}</span>
+                    </div>
+                    <div>
+                      Auto-apply estimate (other older balances):{" "}
+                      <span className="font-medium">{formatCurrency(returnAutoApplyEstimate)}</span>
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <DialogFooter className="mt-4">
                 <Button
@@ -1332,3 +2412,4 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
     </Card>
   );
 }
+

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getCustomerProfileType } from "@/lib/customer-profile";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -21,5 +22,10 @@ export async function GET() {
     },
   });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-  return NextResponse.json(user);
+  const customerProfile = await getCustomerProfileType(userId);
+  return NextResponse.json({
+    ...user,
+    customerProfile,
+    isB2B: customerProfile === "B2B",
+  });
 }

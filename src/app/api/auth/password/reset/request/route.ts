@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { rateLimit } from "@/lib/rate-limit";
+import { clearOtpFailures, rateLimit } from "@/lib/rate-limit";
 import { assertSameOrigin } from "@/lib/origin";
 import { sendEmail } from "@/lib/email";
 import { sendWhatsApp } from "@/lib/whatsapp";
@@ -108,6 +108,7 @@ export async function POST(req: Request) {
     await prisma.userOtp.create({
       data: { userId: user.id, purpose: "password_reset", codeHash: hash, expiresAt },
     });
+    await clearOtpFailures("password_reset", user.id);
 
     if (channel === "email") {
       const subject = "Noralls Medical Supplies password reset";

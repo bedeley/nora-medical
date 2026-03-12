@@ -8,6 +8,14 @@ import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
 import { formatSku, normalizeSkuPrefix, parseSkuNumber } from "@/lib/sku";
 import { PRODUCT_CATEGORIES } from "@/lib/product-categories";
+import { postPurchaseEntry, postSupplierPaymentEntry } from "@/lib/accounting-posting";
+import { ensureInventoryLot } from "@/lib/inventory-lots";
+import { getMarginGuardError } from "@/lib/margin-guard";
+
+const PURCHASE_APPROVAL_QTY_THRESHOLD = Number(process.env.PURCHASE_APPROVAL_QTY_THRESHOLD || 0);
+const SUPPLIER_PAYMENT_APPROVAL_THRESHOLD = Number(
+  process.env.SUPPLIER_PAYMENT_APPROVAL_THRESHOLD || 0,
+);
 
 /**
  * ✅ Zod schema for new product creation
@@ -47,7 +55,19 @@ export const productSchema = z.object({
   imageUrl: urlOrPath,
   category: categorySchema,
   brand: z.string().min(2, { message: "Brand is required" }),
-  supplier: z.string().min(2, { message: "Supplier is required" }),
+  supplier: z.string().min(2, { message: "Supplier is required" }).optional(),
+  supplierId: z.string().optional().nullable(),
+  marginOverrideReason: z.string().min(5).optional(),
+  minMarginPct: z
+    .preprocess(
+      (val) => {
+        if (val == null || val === "") return null;
+        const num = Number(val);
+        return Number.isFinite(num) ? num : val;
+      },
+      z.number().min(0).max(100).nullable().optional()
+    )
+    .optional(),
   price: z
     .union([z.string(), z.number()])
     .transform((v) => Number(v))
@@ -64,7 +84,22 @@ export const productSchema = z.object({
     .transform((v) => Number(v))
     .refine((v) => Number.isInteger(v), { message: "Stock must be an integer" })
     .refine((v) => v >= 0, { message: "Stock cannot be negative" }),
-});
+  receiveNow: z.boolean().optional(),
+  paidOnReceipt: z.boolean().optional(),
+  paymentMethod: z.enum(["cash", "transfer", "bank", "credit"]).optional(),
+  lotCode: z.string().optional(),
+  expiryDate: z.string().optional(),
+  requiresLotTracking: z.boolean().optional(),
+  requiresExpiryDate: z.boolean().optional(),
+})
+  .refine(
+    (data) => Boolean(data.supplierId) || Boolean(data.supplier && data.supplier.trim()),
+    { message: "Supplier is required", path: ["supplier"] }
+  )
+  .refine(
+    (data) => !data.requiresExpiryDate || data.requiresLotTracking,
+    { message: "Expiry date tracking requires lot tracking.", path: ["requiresExpiryDate"] }
+  );
 
 type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirst>> & {
   createdAt: Date;
@@ -72,9 +107,38 @@ type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirst>> & {
   _count?: { orderItems?: number };
   brand?: string | null;
   supplier?: string | null;
+  inventoryPlan?: { approvalThresholdQty?: number | null } | null;
+  requiresLotTracking?: boolean | null;
+  requiresExpiryDate?: boolean | null;
 };
 
-function serializeProduct(p: ProductRow, includePrivate: boolean) {
+async function computeSellableStockByProductIds(productIds: string[]) {
+  if (!productIds.length) return new Map<string, number>();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const rows = await prisma.inventoryLot.findMany({
+    where: {
+      productId: { in: productIds },
+      quantityRemaining: { gt: 0 },
+      OR: [{ expiryDate: null }, { expiryDate: { gte: today } }],
+    },
+    select: { productId: true, quantityRemaining: true },
+  });
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    map.set(
+      row.productId,
+      Number(map.get(row.productId) || 0) + Number(row.quantityRemaining || 0),
+    );
+  }
+  return map;
+}
+
+function serializeProduct(
+  p: ProductRow,
+  includePrivate: boolean,
+  sellableStockById?: Map<string, number>,
+) {
   const base = {
     id: p.id,
     sku: p.sku ?? null,
@@ -84,6 +148,10 @@ function serializeProduct(p: ProductRow, includePrivate: boolean) {
     category: p.category ?? null,
     brand: p.brand ?? null,
     supplier: (p as { supplier?: string | null }).supplier ?? null,
+    supplierId: (p as { supplierId?: string | null }).supplierId ?? null,
+    requiresLotTracking: Boolean((p as { requiresLotTracking?: boolean | null }).requiresLotTracking),
+    requiresExpiryDate: Boolean((p as { requiresExpiryDate?: boolean | null }).requiresExpiryDate),
+    approvalThresholdQty: p.inventoryPlan?.approvalThresholdQty ?? null,
     price: Number(p.price),
     stock: p.stock,
     createdAt: p.createdAt.toISOString(),
@@ -93,7 +161,15 @@ function serializeProduct(p: ProductRow, includePrivate: boolean) {
   return {
     ...base,
     cost: Number(p.cost),
+    minMarginPct: p.minMarginPct != null ? Number(p.minMarginPct) : null,
     stock: p.stock,
+    sellableStock:
+      sellableStockById && (p.requiresLotTracking || p.requiresExpiryDate)
+        ? Math.min(
+            Math.max(0, Math.floor(Number(p.stock || 0))),
+            Math.max(0, Math.floor(Number(sellableStockById.get(p.id) || 0))),
+          )
+        : null,
     archived: p.archived,
     orderCount: p._count?.orderItems ?? 0,
   };
@@ -125,6 +201,10 @@ export async function GET(request: Request) {
   const category = PRODUCT_CATEGORIES.includes(rawCategory as (typeof PRODUCT_CATEGORIES)[number])
     ? rawCategory
     : "";
+  const supplierIdParam = String(searchParams.get("supplierId") || "").trim();
+  const supplierParam = String(searchParams.get("supplier") || "").trim();
+  const includeSellableStock = searchParams.get("includeSellableStock") === "1";
+  const includeDeleted = searchParams.get("includeDeleted") === "1";
 
   try {
     const idsParam = searchParams.get("ids");
@@ -142,12 +222,24 @@ export async function GET(request: Request) {
         });
       }
       const items = await prisma.product.findMany({
-        where: { id: { in: ids } },
+        where: {
+          id: { in: ids },
+          ...(includeDeleted ? {} : { deletedAt: null }),
+        },
         orderBy: { createdAt: "desc" },
-        include: includePrivate ? { _count: { select: { orderItems: true } } } : undefined,
+        include: includePrivate
+          ? {
+              _count: { select: { orderItems: true } },
+              inventoryPlan: { select: { approvalThresholdQty: true } },
+            }
+          : undefined,
       });
+      const sellableStockById =
+        includePrivate && includeSellableStock
+          ? await computeSellableStockByProductIds(items.map((p) => p.id))
+          : undefined;
       const safeItems = items.map((p: typeof items[number]) =>
-        serializeProduct(p, includePrivate)
+        serializeProduct(p, includePrivate, sellableStockById)
       );
       return NextResponse.json({
         items: safeItems,
@@ -187,10 +279,16 @@ export async function GET(request: Request) {
             }
           : {},
         includeArchived ? {} : { archived: false },
+        includeDeleted ? {} : { deletedAt: null },
         stockFilter === "out"
           ? { stock: { lte: 0 } }
           : stockFilter === "low"
           ? { stock: { lte: 5, gt: 0 } }
+          : {},
+        supplierIdParam
+          ? { supplierId: supplierIdParam }
+          : supplierParam
+          ? { supplier: { contains: supplierParam, mode: "insensitive" as const } }
           : {},
         category ? { category } : {},
       ],
@@ -203,14 +301,23 @@ export async function GET(request: Request) {
         orderBy: { [sort]: sortDir },
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: includePrivate ? { _count: { select: { orderItems: true } } } : undefined,
+        include: includePrivate
+          ? {
+              _count: { select: { orderItems: true } },
+              inventoryPlan: { select: { approvalThresholdQty: true } },
+            }
+          : undefined,
       }),
       prisma.product.count({ where }),
     ]);
+    const sellableStockById =
+      includePrivate && includeSellableStock
+        ? await computeSellableStockByProductIds(items.map((p) => p.id))
+        : undefined;
 
     // ✅ Normalize Prisma Decimal/Date
     const safeItems = items.map((p: typeof items[number]) =>
-      serializeProduct(p, includePrivate)
+      serializeProduct(p, includePrivate, sellableStockById)
     );
 
     return NextResponse.json({
@@ -258,7 +365,108 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+    const marginError = getMarginGuardError({
+      price: Number(parsed.data.price),
+      cost: Number(parsed.data.cost),
+      minMarginPct: parsed.data.minMarginPct,
+    });
+    if (marginError) {
+      const reason = parsed.data.marginOverrideReason?.trim();
+      if (!reason || reason.length < 5) {
+        return NextResponse.json({ error: marginError }, { status: 400 });
+      }
+    }
 
+    let supplierName = parsed.data.supplier?.trim() || "";
+    let supplierId: string | null = parsed.data.supplierId || null;
+    let supplierDefaults: { leadTimeDays: number | null; defaultMinOrderQty: number | null; defaultPackSize: number | null } | null = null;
+    if (supplierId) {
+      const supplier = await prisma.supplier.findUnique({
+        where: { id: supplierId },
+        select: { name: true, leadTimeDays: true, defaultMinOrderQty: true, defaultPackSize: true },
+      });
+      if (supplier?.name) {
+        supplierName = supplier.name;
+        supplierDefaults = {
+          leadTimeDays: supplier.leadTimeDays ?? null,
+          defaultMinOrderQty: supplier.defaultMinOrderQty ?? null,
+          defaultPackSize: supplier.defaultPackSize ?? null,
+        };
+      } else {
+        supplierId = null;
+      }
+    }
+    if (!supplierId && supplierName) {
+      const supplier = await prisma.supplier.upsert({
+        where: { name: supplierName },
+        create: { name: supplierName },
+        update: {},
+        select: { id: true, leadTimeDays: true, defaultMinOrderQty: true, defaultPackSize: true },
+      });
+      supplierId = supplier.id;
+      supplierDefaults = {
+        leadTimeDays: supplier.leadTimeDays ?? null,
+        defaultMinOrderQty: supplier.defaultMinOrderQty ?? null,
+        defaultPackSize: supplier.defaultPackSize ?? null,
+      };
+    }
+    if (supplierName.trim().toLowerCase() === "unknown") {
+      return NextResponse.json({ error: "Please enter a real supplier." }, { status: 400 });
+    }
+
+    const receiveNow = parsed.data.receiveNow !== false;
+    const paidOnReceipt = receiveNow ? parsed.data.paidOnReceipt !== false : false;
+    const rawPaymentMethod = String(parsed.data.paymentMethod || "").toLowerCase();
+    const paymentMethod =
+      rawPaymentMethod && ["cash", "transfer", "bank", "credit"].includes(rawPaymentMethod)
+        ? rawPaymentMethod
+        : "";
+    if (paidOnReceipt && !["cash", "transfer", "bank"].includes(paymentMethod)) {
+      return NextResponse.json({ error: "Select payment mode when paying now." }, { status: 400 });
+    }
+    const explicitCreditMode = paymentMethod === "credit";
+    const initialQty = Number(parsed.data.stock || 0);
+    const requiresPurchaseApproval =
+      Number.isFinite(PURCHASE_APPROVAL_QTY_THRESHOLD) &&
+      PURCHASE_APPROVAL_QTY_THRESHOLD > 0 &&
+      initialQty >= PURCHASE_APPROVAL_QTY_THRESHOLD;
+    const effectiveReceiveNow = receiveNow && !requiresPurchaseApproval;
+    const highValueCreditOnly =
+      Number.isFinite(SUPPLIER_PAYMENT_APPROVAL_THRESHOLD) &&
+      SUPPLIER_PAYMENT_APPROVAL_THRESHOLD > 0 &&
+      Number(parsed.data.cost || 0) * initialQty >= SUPPLIER_PAYMENT_APPROVAL_THRESHOLD;
+    const effectivePaidOnReceipt =
+      effectiveReceiveNow && paidOnReceipt && !highValueCreditOnly && !explicitCreditMode;
+    const lotCode = parsed.data.lotCode?.trim() || null;
+    const expiryDate = parsed.data.expiryDate ? new Date(parsed.data.expiryDate) : null;
+    const requiresExpiryDate = Boolean(parsed.data.requiresExpiryDate);
+    const requiresLotTracking = Boolean(parsed.data.requiresLotTracking) || requiresExpiryDate;
+    if (expiryDate && Number.isNaN(expiryDate.getTime())) {
+      return NextResponse.json({ error: "Invalid expiry date" }, { status: 400 });
+    }
+    if (effectiveReceiveNow && initialQty > 0) {
+      if (requiresLotTracking && !lotCode) {
+        return NextResponse.json({ error: "Lot/Batch code is required for regulated products." }, { status: 400 });
+      }
+      if (requiresExpiryDate && !expiryDate) {
+        return NextResponse.json({ error: "Expiry date is required for regulated products." }, { status: 400 });
+      }
+    }
+    let purchaseSupplierName = supplierName;
+    let purchaseSupplierId = supplierId;
+    if (!purchaseSupplierId && !purchaseSupplierName) {
+      const systemName = effectiveReceiveNow ? "Initial Stock" : "Initial Order";
+      const systemSupplier = await prisma.supplier.upsert({
+        where: { name: systemName },
+        update: {},
+        create: { name: systemName, status: "ACTIVE" },
+        select: { id: true, name: true },
+      });
+      purchaseSupplierName = systemSupplier.name;
+      purchaseSupplierId = systemSupplier.id;
+    }
+
+    const initialStock = effectiveReceiveNow ? Number(parsed.data.stock || 0) : 0;
     const product = await prisma.product.create({
       data: {
         name: parsed.data.name,
@@ -266,10 +474,15 @@ export async function POST(request: Request) {
         imageUrl: parsed.data.imageUrl,
         category: parsed.data.category,
         brand: parsed.data.brand,
-        supplier: parsed.data.supplier,
+        supplier: supplierName,
+        supplierId,
+        requiresLotTracking,
+        requiresExpiryDate,
+        minMarginPct: parsed.data.minMarginPct ?? null,
         price: parsed.data.price,
         cost: parsed.data.cost,
-        stock: parsed.data.stock,
+        stock: initialStock,
+        lastStockoutAt: initialStock <= 0 ? new Date() : null,
       },
     });
 
@@ -298,28 +511,134 @@ export async function POST(request: Request) {
       }
     }
 
+    // Create primary supplier link for planning defaults.
+    if (supplierId) {
+      try {
+        await prisma.productSupplier.upsert({
+          where: { productId_supplierId: { productId: product.id, supplierId } },
+          create: {
+            productId: product.id,
+            supplierId,
+            isPrimary: true,
+            leadTimeDays: supplierDefaults?.leadTimeDays ?? undefined,
+            minOrderQty: supplierDefaults?.defaultMinOrderQty ?? undefined,
+            packSize: supplierDefaults?.defaultPackSize ?? undefined,
+          },
+          update: { isPrimary: true },
+        });
+      } catch (e) {
+        console.warn("Failed to link product supplier", product.id, e);
+      }
+    }
+
+    let initialPurchaseSummary:
+      | { id: string; status: "PENDING_APPROVAL" | "ORDERED" | "RECEIVED"; quantity: number }
+      | null = null;
+    let initialPurchaseJournalEntryId: string | null = null;
+    let initialSupplierPaymentJournalEntryId: string | null = null;
+    const initialStockBefore = 0;
+    const initialStockAfter = effectiveReceiveNow ? Number(initialQty || 0) : 0;
+
     // If an initial stock and cost are provided, record a baseline purchase and inventory movement
     try {
-      const initialQty = Number(parsed.data.stock || 0);
       const unitCost = Number(parsed.data.cost || 0);
       if (initialQty > 0 && unitCost >= 0) {
-        const purchase = await prisma.purchase.create({
-          data: {
+        if (effectiveReceiveNow) {
+          const purchase = await prisma.purchase.create({
+            data: {
+              productId: product.id,
+              quantity: initialQty,
+              orderedQuantity: initialQty,
+              receivedQuantity: initialQty,
+              status: "RECEIVED",
+              unitCost: unitCost,
+              supplier: purchaseSupplierName || "Initial Stock",
+              supplierId: purchaseSupplierId,
+              note: "Auto-created with product",
+            },
+          });
+          initialPurchaseSummary = {
+            id: purchase.id,
+            status: "RECEIVED",
+            quantity: Number(initialQty),
+          };
+          const lot = await ensureInventoryLot(prisma, {
             productId: product.id,
-            quantity: initialQty,
-            unitCost: unitCost,
-            supplier: "Initial Stock",
-            note: "Auto-created with product",
-          },
-        });
-        await prisma.inventoryMovement.create({
-          data: {
-            productId: product.id,
-            delta: initialQty,
-            reason: "PURCHASE",
             purchaseId: purchase.id,
-          },
-        });
+            supplierId: purchaseSupplierId,
+            lotCode,
+            expiryDate,
+            quantity: initialQty,
+            notes: "Initial stock",
+          });
+          await prisma.inventoryMovement.create({
+            data: {
+              productId: product.id,
+              delta: initialQty,
+              reason: "PURCHASE",
+              purchaseId: purchase.id,
+              lotId: lot.id,
+              note: "Initial stock",
+            },
+          });
+          try {
+            const purchaseEntry = await postPurchaseEntry({
+              purchaseId: purchase.id,
+              amount: Number(purchase.unitCost) * Number(purchase.quantity || 0),
+              createdAt: purchase.createdAt,
+              memo: purchaseSupplierName || "Inventory purchase",
+            });
+            initialPurchaseJournalEntryId = purchaseEntry?.id ?? null;
+          } catch (e) {
+            console.warn("Accounting purchase posting skipped:", e);
+          }
+          if (effectivePaidOnReceipt) {
+            const paymentAmount = Number(purchase.unitCost) * Number(purchase.quantity || 0);
+            const supplierPayment = await prisma.supplierPayment.create({
+              data: {
+                supplierId: purchaseSupplierId,
+                purchaseId: purchase.id,
+                amount: paymentAmount,
+                method: paymentMethod,
+                reference: "PRODUCT_CREATE",
+                note: "Paid on receipt",
+                status: "NORMAL",
+                paidAt: new Date(),
+              },
+            });
+            try {
+              if (supplierPayment.status === "NORMAL") {
+                const paymentEntry = await postSupplierPaymentEntry({
+                  supplierPaymentId: supplierPayment.id,
+                });
+                initialSupplierPaymentJournalEntryId = paymentEntry?.id ?? null;
+              }
+            } catch (e) {
+              console.warn("Accounting supplier payment posting skipped:", e);
+            }
+          }
+        } else {
+          const purchase = await prisma.purchase.create({
+            data: {
+              productId: product.id,
+              quantity: initialQty,
+              orderedQuantity: initialQty,
+              receivedQuantity: 0,
+              status: requiresPurchaseApproval ? "PENDING_APPROVAL" : "ORDERED",
+              unitCost: unitCost,
+              supplier: purchaseSupplierName || "Initial Order",
+              supplierId: purchaseSupplierId,
+              note: requiresPurchaseApproval
+                ? "Auto-created with product (pending approval)"
+                : "Auto-created with product (ordered)",
+            },
+          });
+          initialPurchaseSummary = {
+            id: purchase.id,
+            status: requiresPurchaseApproval ? "PENDING_APPROVAL" : "ORDERED",
+            quantity: Number(initialQty),
+          };
+        }
       }
     } catch (e) {
       // Non-blocking; product already created
@@ -341,19 +660,91 @@ export async function POST(request: Request) {
         entityId: product.id,
         meta: {
           name: product.name,
+          sku: productWithSku.sku,
           category: parsed.data.category,
           brand: parsed.data.brand,
-          supplier: parsed.data.supplier,
+          supplier: supplierName,
+          supplierId,
           price: Number(product.price),
           cost: Number(product.cost),
           stock: product.stock,
+          requestedInitialQty: initialQty,
+          receiveNow,
+          effectiveReceiveNow,
+          paidOnReceipt,
+          effectivePaidOnReceipt,
+          paymentMethod: paymentMethod || null,
+          highValueCreditOnly,
+          requiresPurchaseApproval,
+          approvalThresholdQty: PURCHASE_APPROVAL_QTY_THRESHOLD > 0 ? PURCHASE_APPROVAL_QTY_THRESHOLD : null,
+          initialPurchase: initialPurchaseSummary,
+          stockBefore: initialStockBefore,
+          stockAfter: initialStockAfter,
+          purchaseJournalEntryId: initialPurchaseJournalEntryId,
+          paymentJournalEntryId: initialSupplierPaymentJournalEntryId,
         },
       });
+      if (initialPurchaseSummary) {
+        await recordAuditLog({
+          actorId: user?.id,
+          action: "PURCHASE_CREATE",
+          entityType: "PURCHASE",
+          entityId: initialPurchaseSummary.id,
+          meta: {
+            name: product.name,
+            productId: product.id,
+            quantity: initialPurchaseSummary.quantity,
+            unitCost: Number(parsed.data.cost || 0),
+            amount: Number(parsed.data.cost || 0) * Number(initialPurchaseSummary.quantity || 0),
+            stockBefore: initialStockBefore,
+            stockAfter: initialStockAfter,
+            status: initialPurchaseSummary.status,
+            supplier: purchaseSupplierName || null,
+            supplierId: purchaseSupplierId || null,
+            reason: "PRODUCT_CREATE",
+            note:
+              initialPurchaseSummary.status === "PENDING_APPROVAL"
+                ? "Auto-created with product (pending approval)"
+                : initialPurchaseSummary.status === "ORDERED"
+                ? "Auto-created with product (ordered)"
+                : "Auto-created with product",
+            receiveNow,
+            effectiveReceiveNow,
+            paidOnReceipt,
+            effectivePaidOnReceipt,
+            paymentMethod: paymentMethod || null,
+            highValueCreditOnly,
+            requiresApproval: requiresPurchaseApproval,
+            approvalThresholdQty: PURCHASE_APPROVAL_QTY_THRESHOLD > 0 ? PURCHASE_APPROVAL_QTY_THRESHOLD : null,
+            source: "PRODUCT_CREATE",
+            purchaseJournalEntryId: initialPurchaseJournalEntryId,
+            paymentJournalEntryId: initialSupplierPaymentJournalEntryId,
+          },
+        });
+      }
+      const reason = parsed.data.marginOverrideReason?.trim();
+      if (marginError && reason) {
+        await recordAuditLog({
+          actorId: user?.id,
+          action: "PRICE_MARGIN_OVERRIDE",
+          entityType: "PRODUCT",
+          entityId: product.id,
+          meta: {
+            reason,
+            price: Number(product.price),
+            cost: Number(product.cost),
+            minMarginPct: parsed.data.minMarginPct ?? null,
+          },
+        });
+      }
     } catch {
       // best-effort
     }
 
-    return NextResponse.json(safeProduct);
+    return NextResponse.json({
+      ...safeProduct,
+      initialPurchase: initialPurchaseSummary,
+    });
   } catch (error) {
     console.error("Error creating product:", error);
     return NextResponse.json(

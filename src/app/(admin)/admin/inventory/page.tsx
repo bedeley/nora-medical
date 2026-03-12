@@ -3,10 +3,13 @@
 export const dynamic = "force-dynamic";
 
 import { Suspense, type ReactNode, type DragEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { formatCurrency } from "@/lib/currency";
+import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   DropdownMenu,
@@ -69,6 +72,8 @@ type Row = {
   id: string;
   sku?: string | null;
   name: string;
+  requiresLotTracking?: boolean;
+  requiresExpiryDate?: boolean;
   price: number;
   cost?: number;
   stock: number;
@@ -84,6 +89,18 @@ type Row = {
   weeksCover?: number | null;
   reorderPoint?: number | null;
   suggestedReorder?: number | null;
+};
+
+type AlertRow = {
+  id: string;
+  productId: string;
+  name: string;
+  price: number | string;
+  stock: number;
+  updatedAt: string | Date;
+  type: string;
+  severity: "critical" | "warning";
+  message: string;
 };
 
 const defaultColumnOrder = [
@@ -106,6 +123,7 @@ const defaultColumnOrder = [
 ];
 
 function InventoryContent() {
+  const queryClient = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -120,8 +138,19 @@ function InventoryContent() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const { data: alertData, isLoading: alertsLoading } = useClientQuery<AlertRow[]>({
+    queryKey: ["admin", "inventory-alerts"],
+    queryFn: () => fetcher("/api/admin/inventory-alerts"),
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
 
   const rows: Row[] = useMemo(() => data?.rows || [], [data]);
+  const alerts = useMemo(
+    () => (Array.isArray(alertData) ? alertData : []),
+    [alertData],
+  );
   const [q, setQ] = useState("");
   const [qDeb] = useDebounce(q, 300);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -136,6 +165,11 @@ function InventoryContent() {
   const [valuationMode, setValuationMode] = useState<"sales" | "cost">("sales");
   const [infoOpen, setInfoOpen] = useState(false);
   const [infoRow, setInfoRow] = useState<Row | null>(null);
+  const [adjustOpen, setAdjustOpen] = useState(false);
+  const [adjustRow, setAdjustRow] = useState<Row | null>(null);
+  const [adjustCost, setAdjustCost] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
+  const [adjusting, setAdjusting] = useState(false);
   const [updatedAtText, setUpdatedAtText] = useState<string>("");
   const [showLastUnitCost, setShowLastUnitCost] = useState(true);
   const [showLastPurchase, setShowLastPurchase] = useState(true);
@@ -168,6 +202,48 @@ function InventoryContent() {
     suggestedReorder: 170,
     actions: 140,
   });
+
+  const openAdjust = (row: Row) => {
+    setAdjustRow(row);
+    setAdjustCost(String(Number(row.cost || 0)));
+    setAdjustReason("");
+    setAdjustOpen(true);
+  };
+
+  const submitAdjust = async () => {
+    if (!adjustRow) return;
+    const nextCost = Number(adjustCost);
+    if (!Number.isFinite(nextCost) || nextCost < 0) {
+      toast.error("Enter a valid unit cost.");
+      return;
+    }
+    if (!adjustReason.trim()) {
+      toast.error("Add a reason for this adjustment.");
+      return;
+    }
+    try {
+      setAdjusting(true);
+      const res = await fetch("/api/admin/accounting/inventory-adjustments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          productId: adjustRow.id,
+          newUnitCost: nextCost,
+          reason: adjustReason.trim(),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to post adjustment.");
+      toast.success("Inventory revaluation posted.");
+      setAdjustOpen(false);
+      setAdjustRow(null);
+      queryClient.invalidateQueries({ queryKey: ["admin", "inventory"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to post adjustment.");
+    } finally {
+      setAdjusting(false);
+    }
+  };
 
   useEffect(() => {
     if (!minStock || !maxStock) {
@@ -593,7 +669,14 @@ function InventoryContent() {
         cellClassName: "font-medium text-center",
         renderCell: (r) => (
           <div className="space-y-0.5">
-            <div>{String(r.name || "").replace(/^./, (c) => c.toUpperCase())}</div>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <span>{String(r.name || "").replace(/^./, (c) => c.toUpperCase())}</span>
+              {(r.requiresLotTracking || r.requiresExpiryDate) ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                  Regulated
+                </Badge>
+              ) : null}
+            </div>
             {r.sku ? (
               <div className="text-xs text-muted-foreground">SKU: {r.sku}</div>
             ) : null}
@@ -833,7 +916,7 @@ function InventoryContent() {
       {
         id: "reorderPoint",
         label: "Reorder Point",
-        tooltip: "Reorder when stock falls to ~7 days of sales",
+        tooltip: "From Inventory Planning effective plan",
         visible: showReorderPoint,
         headerClassName: "text-center",
         cellClassName: "text-center",
@@ -842,7 +925,7 @@ function InventoryContent() {
       {
         id: "suggestedReorder",
         label: "Suggested Reorder",
-        tooltip: "Quantity needed to reach ~14 days of stock",
+        tooltip: "From Inventory Planning suggestion (open/auto)",
         visible: showSuggestedReorder,
         headerClassName: "text-center",
         cellClassName: "text-center",
@@ -1013,10 +1096,20 @@ function InventoryContent() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `inventory_${Date.now()}.csv`;
     a.href = url;
-    a.download = `inventory_${Date.now()}.csv`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "inventory",
+      format: "CSV",
+      fileName: filename,
+      rowCount: rows.length + 1,
+      columnCount: 13,
+      byteSize: blob.size,
+      scopeSnapshot: `Search: ${q || "-"} | Include archived: ${includeArchived ? "yes" : "no"}`,
+    });
   }
 
   const saveCurrentFilter = () => {
@@ -1085,7 +1178,7 @@ function InventoryContent() {
           })()}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" className="hidden md:inline-flex">Columns</Button>
+              <Button size="sm" variant="outline" className="hidden lg:inline-flex">Columns</Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <button
@@ -1184,7 +1277,7 @@ function InventoryContent() {
           </DropdownMenu>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline">Saved filters</Button>
+              <Button size="sm" variant="outline" className="w-full sm:w-auto">Saved filters</Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={saveCurrentFilter}>
@@ -1222,6 +1315,7 @@ function InventoryContent() {
             <Button
               size="sm"
               variant={valuationMode === "sales" ? "default" : "outline"}
+              className="w-full sm:w-auto"
               onClick={() => setValuationMode("sales")}
               title="Show Sales valuation total (Price x Stock)"
             >
@@ -1230,6 +1324,7 @@ function InventoryContent() {
             <Button
               size="sm"
               variant={valuationMode === "cost" ? "default" : "outline"}
+              className="w-full sm:w-auto"
               onClick={() => setValuationMode("cost")}
               title="Show Cost valuation total (Cost x Stock)"
             >
@@ -1248,12 +1343,13 @@ function InventoryContent() {
               What is this?
             </span>
           </div>
-          <Button size="sm" variant="outline" onClick={downloadCSV}>
+          <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={downloadCSV}>
             Export CSV
           </Button>
           <Button
             size="sm"
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={async () => {
               try {
                 await navigator.clipboard.writeText(window.location.href);
@@ -1272,6 +1368,45 @@ function InventoryContent() {
         </div>
       </CardHeader>
       <CardContent>
+        <div className="mb-4 rounded-md border p-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm font-semibold">Inventory alerts</div>
+            <div className="text-xs text-muted-foreground">Auto-refreshes every minute</div>
+          </div>
+          {alertsLoading ? (
+            <div className="mt-2 text-xs text-muted-foreground">Loading alerts...</div>
+          ) : alerts.length === 0 ? (
+            <div className="mt-2 text-xs text-muted-foreground">No active alerts.</div>
+          ) : (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {alerts.slice(0, 8).map((alert) => (
+                <div key={alert.id} className="rounded-md border px-3 py-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium truncate">{alert.name}</div>
+                    <Badge
+                      className={
+                        alert.severity === "critical"
+                          ? "bg-rose-100 text-rose-800"
+                          : "bg-amber-100 text-amber-800"
+                      }
+                    >
+                      {alert.severity === "critical" ? "Critical" : "Warning"}
+                    </Badge>
+                  </div>
+                  <div className="text-muted-foreground">{alert.message}</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <a
+                      href={`/admin/purchases?product=${encodeURIComponent(alert.productId)}#new`}
+                      className="text-primary underline-offset-2 hover:underline"
+                    >
+                      Create purchase
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         {rows.some((r) => Number(r.stock || 0) < 0) && (
           <div className="mb-3 p-2 rounded-md bg-destructive/10 text-destructive text-sm">
             Warning: One or more products have negative stock. Please review purchases and sales.
@@ -1367,7 +1502,7 @@ function InventoryContent() {
         </div>
         <div className="overflow-x-auto">
           {!isLoading && sortedRows.length === 0 && (
-            <div className="md:hidden rounded-md border p-4 text-center text-sm text-muted-foreground">
+            <div className="lg:hidden rounded-md border p-4 text-center text-sm text-muted-foreground">
               <div className="flex flex-col items-center gap-3">
                 <span>No products found for the current filters.</span>
                 <div className="flex flex-wrap justify-center gap-2">
@@ -1396,7 +1531,7 @@ function InventoryContent() {
           )}
 
           {sortedRows.length > 0 && (
-            <div className="md:hidden space-y-3">
+            <div className="lg:hidden space-y-3">
               {sortedRows.map((r) => {
                 const pv = Number(r.price || 0) * Number(r.stock || 0);
                 const unitCost =
@@ -1482,7 +1617,7 @@ function InventoryContent() {
             </div>
           )}
 
-          <Table className="min-w-[1400px] table-fixed hidden md:table">
+          <Table className="min-w-[1400px] table-fixed hidden lg:table">
             <TableHeader>
               <TableRow>
                 {visibleColumns.map((col) => (
@@ -1617,8 +1752,72 @@ function InventoryContent() {
               {infoRow.lastPurchaseNote ? (
                 <div className="flex justify-between"><span className="text-muted-foreground">Note</span><span>{infoRow.lastPurchaseNote}</span></div>
               ) : null}
+              <div className="pt-3 flex justify-end">
+                <Button size="sm" variant="outline" onClick={() => openAdjust(infoRow)}>
+                  Adjust inventory value
+                </Button>
+              </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={adjustOpen}
+        onOpenChange={(open) => {
+          setAdjustOpen(open);
+          if (!open) {
+            setAdjustRow(null);
+            setAdjustCost("");
+            setAdjustReason("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Inventory revaluation</DialogTitle>
+          </DialogHeader>
+          {adjustRow ? (
+            <div className="grid gap-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Product</span>
+                <span>{adjustRow.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Current cost</span>
+                <span>{formatCurrency(Number(adjustRow.cost || 0))}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Stock</span>
+                <span>{adjustRow.stock}</span>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="adjustCost">New unit cost</Label>
+                <Input
+                  id="adjustCost"
+                  type="number"
+                  step="0.01"
+                  value={adjustCost}
+                  onChange={(e) => setAdjustCost(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="adjustReason">Reason</Label>
+                <Input
+                  id="adjustReason"
+                  value={adjustReason}
+                  onChange={(e) => setAdjustReason(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="secondary" onClick={() => setAdjustOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={submitAdjust} disabled={adjusting}>
+                  {adjusting ? "Posting..." : "Post adjustment"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </Card>

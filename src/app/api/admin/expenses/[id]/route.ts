@@ -7,6 +7,44 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 
+const SYSTEM_DRIVEN_EXPENSE_CODES = new Set(["5000", "6100", "6990"]);
+const SYSTEM_DRIVEN_EXPENSE_NAME_PATTERNS = [
+  /cost of goods sold/i,
+  /payroll expense/i,
+  /cash over\/short/i,
+];
+
+function isSystemDrivenExpenseCategory(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  const code = raw.match(/^(\d{4})\b/)?.[1] || "";
+  if (SYSTEM_DRIVEN_EXPENSE_CODES.has(code)) return true;
+  return SYSTEM_DRIVEN_EXPENSE_NAME_PATTERNS.some((rx) => rx.test(raw));
+}
+
+async function validateExpenseCategorySelection(value: string) {
+  const raw = String(value || "").trim();
+  const code = raw.match(/^(\d{4})\b/)?.[1] || "";
+  if (!code) {
+    return { ok: false as const, error: "Select a category that starts with a 4-digit account code." };
+  }
+  const account = await prisma.ledgerAccount.findUnique({
+    where: { code },
+    select: { id: true, type: true, isActive: true },
+  });
+  if (!account || account.type !== "EXPENSE" || !account.isActive) {
+    return { ok: false as const, error: `Expense account ${code} is missing or inactive.` };
+  }
+  if (SYSTEM_DRIVEN_EXPENSE_CODES.has(code)) {
+    return {
+      ok: false as const,
+      error:
+        "This category is system-driven (COGS, Payroll Expense, Cash Over/Short) and cannot be posted from manual Expenses.",
+    };
+  }
+  return { ok: true as const, code };
+}
+
 const expenseUpdateSchema = z
   .object({
     category: z.string().min(2).optional(),
@@ -14,6 +52,8 @@ const expenseUpdateSchema = z
     vendor: z.string().optional(),
     reason: z.string().optional(),
     note: z.string().optional(),
+    payNow: z.boolean().optional(),
+    paymentMode: z.enum(["cash", "bank", "momo"]).optional(),
   })
   .superRefine((data, ctx) => {
     if (!data.reason || data.reason.trim().length === 0) {
@@ -23,7 +63,28 @@ const expenseUpdateSchema = z
         message: "Reason is required for updates.",
       });
     }
+    if (data.payNow && !data.paymentMode) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["paymentMode"],
+        message: "Payment mode is required when paying now.",
+      });
+    }
   });
+
+function appendSettlementContext(note: string | undefined, payNow: boolean, paymentMode?: "cash" | "bank" | "momo") {
+  const base = String(note || "").trim();
+  const settlementText = payNow
+    ? paymentMode === "bank"
+      ? "Settlement: bank transfer (paid now)"
+      : paymentMode === "momo"
+      ? "Settlement: MoMo (paid now)"
+      : "Settlement: cash (paid now)"
+    : "Settlement: accrued (unpaid)";
+  const withoutExisting = base.replace(/\n?Settlement:.*$/i, "").trim();
+  if (!withoutExisting) return settlementText;
+  return `${withoutExisting}\n${settlementText}`;
+}
 
 export async function PATCH(_req: Request, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions);
@@ -54,12 +115,29 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
     const parsed = expenseUpdateSchema.safeParse({
       ...body,
       amount: body.amount === undefined ? undefined : Number(body.amount),
+      payNow: body.payNow === undefined ? undefined : Boolean(body.payNow),
     });
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid input", details: parsed.error.flatten() },
         { status: 400 }
       );
+    }
+
+    if (parsed.data.category && isSystemDrivenExpenseCategory(parsed.data.category)) {
+      return NextResponse.json(
+        {
+          error:
+            "This category is system-driven (COGS, Payroll Expense, Cash Over/Short) and cannot be posted from manual Expenses.",
+        },
+        { status: 400 },
+      );
+    }
+    if (parsed.data.category) {
+      const categoryCheck = await validateExpenseCategorySelection(parsed.data.category);
+      if (!categoryCheck.ok) {
+        return NextResponse.json({ error: categoryCheck.error }, { status: 400 });
+      }
     }
 
     const existing = await prisma.expense.findUnique({
@@ -96,9 +174,18 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
       );
     }
 
+    const { payNow, paymentMode, ...updatableFields } = parsed.data;
+    const nextNote =
+      payNow !== undefined
+        ? appendSettlementContext(parsed.data.note, payNow, paymentMode)
+        : parsed.data.note;
+
     const updated = await prisma.expense.update({
       where: { id: expenseId },
-      data: parsed.data,
+      data: {
+        ...updatableFields,
+        note: nextNote,
+      },
     });
 
     try {

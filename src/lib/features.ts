@@ -3,6 +3,10 @@ import { prisma } from "@/lib/prisma";
 const cache = new Map<string, boolean>();
 
 export async function isFeatureEnabled(key: string, defaultValue: boolean): Promise<boolean> {
+  if (key === "accounting_auto_post") {
+    const envVal = (process.env.ACCOUNTING_AUTO_POST_ENABLED || "").toLowerCase();
+    return envVal !== "0";
+  }
   if (cache.has(key)) return cache.get(key) ?? defaultValue;
   try {
     const flag = await prisma.featureFlag.findUnique({ where: { key } });
@@ -29,4 +33,3 @@ export async function setFeatureEnabled(key: string, enabled: boolean): Promise<
     console.warn("setFeatureEnabled error:", e);
   }
 }
-

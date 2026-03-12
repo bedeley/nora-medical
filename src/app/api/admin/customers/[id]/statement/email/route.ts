@@ -6,6 +6,8 @@ import { sendEmail } from "@/lib/email";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 
+const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
+
 export async function POST(
   req: Request,
   { params }: { params: { id: string } },
@@ -77,7 +79,8 @@ export async function POST(
     (s, o) => s + Number(o.amountPaid || 0),
     0,
   );
-  const balance = Math.max(0, totalDue - totalPaid);
+  const rawBalance = Math.max(0, totalDue - totalPaid);
+  const balance = normalizeBalance(rawBalance);
   // Store credit ledger: credits issued (NORMAL + CREDIT),
   // minus AUTO_APPLY applications and cash payouts of credit.
   let credit = 0;

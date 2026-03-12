@@ -15,6 +15,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
+type LedgerAccountOption = {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  isActive: boolean;
+};
+
+const EXCLUDED_SYSTEM_EXPENSE_CODES = new Set(["5000", "6100", "6990"]);
+type ExpensePaymentMode = "cash" | "bank" | "momo";
+
 export default function AddExpenseDialog({
   onAdded,
   buttonClassName,
@@ -44,13 +55,17 @@ export default function AddExpenseDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<{ category?: string; amount?: string; reason?: string }>({});
+  const [loadingCategories, setLoadingCategories] = useState(false);
+  const [errors, setErrors] = useState<{ category?: string; amount?: string; reason?: string; paymentMode?: string }>({});
+  const [expenseCategories, setExpenseCategories] = useState<Array<{ value: string; label: string }>>([]);
   const [form, setForm] = useState({
     category: initial?.category ?? "",
     amount: initial?.amount !== undefined ? String(initial.amount) : "",
     vendor: initial?.vendor ?? "",
     reason: initial?.reason ?? "",
     note: initial?.note ?? "",
+    payNow: false,
+    paymentMode: "" as "" | ExpensePaymentMode,
   });
   const formatAmount = (value: number) =>
     value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -66,6 +81,8 @@ export default function AddExpenseDialog({
         vendor: initial.vendor ?? "",
         reason: initial.reason ?? "",
         note: initial.note ?? "",
+        payNow: false,
+        paymentMode: "",
       });
       setErrors({});
     }
@@ -76,9 +93,49 @@ export default function AddExpenseDialog({
     setErrors({});
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    let ignore = false;
+    const loadExpenseCategories = async () => {
+      try {
+        setLoadingCategories(true);
+        const res = await fetch("/api/admin/accounting/accounts", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as LedgerAccountOption[];
+        if (ignore || !Array.isArray(data)) return;
+        const options = data
+          .filter(
+            (row) =>
+              row.isActive &&
+              row.type === "EXPENSE" &&
+              !EXCLUDED_SYSTEM_EXPENSE_CODES.has(String(row.code || "").trim()),
+          )
+          .sort((a, b) => a.code.localeCompare(b.code))
+          .map((row) => ({
+            value: `${row.code} ${row.name}`,
+            label: `${row.code} · ${row.name}`,
+          }));
+        const hasCurrent = options.some((row) => row.value === form.category);
+        if (form.category && !hasCurrent) {
+          options.unshift({
+            value: form.category,
+            label: `${form.category} (legacy)`,
+          });
+        }
+        setExpenseCategories(options);
+      } finally {
+        if (!ignore) setLoadingCategories(false);
+      }
+    };
+    loadExpenseCategories();
+    return () => {
+      ignore = true;
+    };
+  }, [open, form.category]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const nextErrors: { category?: string; amount?: string; reason?: string } = {};
+    const nextErrors: { category?: string; amount?: string; reason?: string; paymentMode?: string } = {};
     const amountValue = Number(form.amount);
     if (!form.category.trim()) nextErrors.category = "Category is required.";
     if (!form.amount.trim() || !Number.isFinite(amountValue)) {
@@ -92,6 +149,9 @@ export default function AddExpenseDialog({
     }
     if ((mode === "edit" || isReversal) && !form.reason.trim()) {
       nextErrors.reason = "Reason is required.";
+    }
+    if (!isReversal && form.payNow && !form.paymentMode) {
+      nextErrors.paymentMode = "Select payment mode.";
     }
     if (Object.values(nextErrors).some(Boolean)) {
       setErrors(nextErrors);
@@ -119,6 +179,9 @@ export default function AddExpenseDialog({
           vendor: form.vendor.trim(),
           reason: form.reason.trim(),
           note: form.note.trim(),
+          payNow: !isReversal && mode === "add" ? Boolean(form.payNow) : undefined,
+          paymentMode:
+            !isReversal && mode === "add" && form.payNow ? form.paymentMode : undefined,
           isReversal,
           reversalOfId,
         }),
@@ -144,6 +207,8 @@ export default function AddExpenseDialog({
         vendor: initial?.vendor ?? "",
         reason: initial?.reason ?? "",
         note: initial?.note ?? "",
+        payNow: false,
+        paymentMode: "",
       });
       setErrors({});
       onAdded?.(Date.now());
@@ -172,7 +237,7 @@ export default function AddExpenseDialog({
         <form onSubmit={handleSubmit} className="grid gap-3 mt-2">
           <div>
             <Label htmlFor="category">Category</Label>
-            <Input
+            <select
               id="category"
               value={form.category}
               onChange={(e) => {
@@ -181,8 +246,19 @@ export default function AddExpenseDialog({
               }}
               required
               aria-invalid={!!errors.category}
-              className={errors.category ? "border-red-500" : ""}
-            />
+              className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${
+                errors.category ? "border-red-500" : ""
+              }`}
+            >
+              <option value="">
+                {loadingCategories ? "Loading categories..." : "Select expense account category"}
+              </option>
+              {expenseCategories.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
             {errors.category && <p className="mt-1 text-xs text-red-600">{errors.category}</p>}
           </div>
           <div>
@@ -266,6 +342,54 @@ export default function AddExpenseDialog({
               placeholder="Optional details..."
             />
           </div>
+          {!isReversal && mode === "add" ? (
+            <>
+              <div className="flex items-center gap-2">
+                <input
+                  id="payNow"
+                  type="checkbox"
+                  checked={form.payNow}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setForm((prev) => ({
+                      ...prev,
+                      payNow: checked,
+                      paymentMode: checked ? prev.paymentMode : "",
+                    }));
+                    if (!checked) {
+                      setErrors((prev) => ({ ...prev, paymentMode: "" }));
+                    }
+                  }}
+                />
+                <Label htmlFor="payNow">Pay now</Label>
+              </div>
+              {form.payNow ? (
+                <div>
+                  <Label htmlFor="paymentMode">Payment mode</Label>
+                  <select
+                    id="paymentMode"
+                    value={form.paymentMode}
+                    onChange={(e) => {
+                      const value = e.target.value as "" | ExpensePaymentMode;
+                      setForm((prev) => ({ ...prev, paymentMode: value }));
+                      if (errors.paymentMode) setErrors((prev) => ({ ...prev, paymentMode: "" }));
+                    }}
+                    className={`h-10 w-full rounded-md border bg-background px-3 text-sm ${
+                      errors.paymentMode ? "border-red-500" : ""
+                    }`}
+                  >
+                    <option value="">Select payment mode</option>
+                    <option value="cash">Cash</option>
+                    <option value="bank">Bank transfer</option>
+                    <option value="momo">MoMo</option>
+                  </select>
+                  {errors.paymentMode ? (
+                    <p className="mt-1 text-xs text-red-600">{errors.paymentMode}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          ) : null}
           <DialogFooter>
             <Button type="submit" disabled={loading}>
               {loading

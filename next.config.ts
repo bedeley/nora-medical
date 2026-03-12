@@ -36,6 +36,7 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "images.unsplash.com" },
       { protocol: "https", hostname: "plus.unsplash.com" },
       { protocol: "https", hostname: "source.unsplash.com" },
+      { protocol: "https", hostname: "placehold.co" },
       { protocol: "https", hostname: "pub-*.r2.dev" },
       { protocol: "https", hostname: "*.r2.cloudflarestorage.com" },
       ...r2ExtraPatterns,

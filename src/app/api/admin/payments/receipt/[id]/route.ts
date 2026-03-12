@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 
 export async function GET(
   _req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -17,6 +17,7 @@ export async function GET(
   }
 
   try {
+    const params = await context.params;
     const payment = await prisma.payment.findUnique({
       where: { id: params.id },
       include: { user: { select: { id: true, name: true, email: true, phone: true } }, order: { select: { id: true } } },

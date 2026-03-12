@@ -22,6 +22,7 @@ export const chipToneBorderClass = (tone: ChipTone) => CHIP_TONE_BORDER_CLASSES[
 export const orderStatusTone = (status?: string | null): ChipTone => {
   const normalized = String(status || "").toUpperCase();
   if (normalized === "PAID") return "success";
+  if (normalized === "ON_HOLD_CREDIT") return "danger";
   if (normalized === "PARTIALLY_PAID" || normalized === "PENDING_PAYMENT") return "warning";
   if (normalized === "CANCELLED") return "neutral";
   return "danger";
@@ -37,9 +38,9 @@ export const deliveryStatusTone = (status?: string | null): ChipTone => {
 
 export const paymentStatusTone = (status?: string | null): ChipTone => {
   const normalized = String(status || "").toUpperCase();
-  if (["SUCCESS", "PAID", "NORMAL", "COMPLETED"].includes(normalized)) return "success";
+  if (["SUCCESS", "SETTLED", "PAID", "NORMAL", "COMPLETED"].includes(normalized)) return "success";
   if (["PENDING", "PROCESSING"].includes(normalized)) return "warning";
-  if (["FAILED", "CANCELLED", "VOID"].includes(normalized)) return "danger";
+  if (["FAILED", "DENIED", "TIMEOUT", "CANCELLED", "VOID"].includes(normalized)) return "danger";
   return "neutral";
 };
 

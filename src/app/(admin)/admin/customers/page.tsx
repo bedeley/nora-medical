@@ -34,6 +34,7 @@ import Link from "next/link";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatIdReadable } from "@/lib/utils";
 import { useSearchParams } from "next/navigation";
+import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
 
 const fetcher = async (u: string) => {
   const r = await fetch(u);
@@ -57,6 +58,7 @@ export type CustomerRow = {
   paymentsTotal?: number;
    storeCredit?: number;
   refundedCash?: number;
+  creditLimit?: number;
   cart?: {
     total?: number;
     totalItems?: number;
@@ -100,6 +102,63 @@ type PaymentRow = {
   refundDisposition: string | null;
 };
 
+type AppliedBreakdownDisplay = {
+  entries: PaymentApplied[];
+  linkedTotal: number;
+  unallocated: number;
+  overLinked: number;
+  hasMismatch: boolean;
+};
+
+type CustomerOrderPreview = {
+  id: string;
+  status: string;
+  createdAt: string;
+  total: number;
+  amountPaid: number;
+  balance: number;
+};
+
+function buildAppliedBreakdownDisplay(
+  payment: PaymentRow,
+): AppliedBreakdownDisplay {
+  const amount = Math.abs(Number(payment.amount || 0));
+  const source = Array.isArray(payment.applied) ? payment.applied : [];
+  const valid = source
+    .map((a) => ({
+      orderId: String(a?.orderId || ""),
+      applied: Number(a?.applied || 0),
+    }))
+    .filter((a) => a.orderId && a.applied > 0);
+
+  if (valid.length === 0 && payment.orderId && amount > 0) {
+    return {
+      entries: [{ orderId: String(payment.orderId), applied: amount }],
+      linkedTotal: amount,
+      unallocated: 0,
+      overLinked: 0,
+      hasMismatch: false,
+    };
+  }
+
+  let remaining = amount;
+  const entries: PaymentApplied[] = [];
+  for (const entry of valid) {
+    if (remaining <= 0.0001) break;
+    const take = Math.min(entry.applied, remaining);
+    if (take > 0) entries.push({ orderId: entry.orderId, applied: take });
+    remaining -= take;
+  }
+
+  const rawTotal = valid.reduce((sum, entry) => sum + entry.applied, 0);
+  const linkedTotal = entries.reduce((sum, entry) => sum + entry.applied, 0);
+  const unallocated = Math.max(0, amount - linkedTotal);
+  const overLinked = Math.max(0, rawTotal - amount);
+  const hasMismatch = Math.abs(rawTotal - amount) > 0.01;
+
+  return { entries, linkedTotal, unallocated, overLinked, hasMismatch };
+}
+
 function AdminCustomersContent() {
   const { data: session } = useSession();
   const currentRole = (session?.user as { role?: string } | undefined)?.role || "";
@@ -110,7 +169,9 @@ function AdminCustomersContent() {
   const [confirmClear, setConfirmClear] = useState<{ id: string; email?: string|null } | null>(null);
   const [deliveryFilter, setDeliveryFilter] = useState<string>("all");
   const [balanceFilter, setBalanceFilter] = useState<"all" | "due">("all");
+  const [customerSort, setCustomerSort] = useState<"balance_desc" | "balance_asc" | "name_asc">("balance_desc");
   const [creditFilter, setCreditFilter] = useState<"all" | "credit">("all");
+  const [limitFilter, setLimitFilter] = useState<"all" | "over">("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { data, error, isFetching: isValidating } = useClientQuery({
     queryKey: ["admin", "customers"],
@@ -148,17 +209,122 @@ function AdminCustomersContent() {
   const [viewCart, setViewCart] = useState<{ user: CustomerRow["user"]; cart: CustomerRow["cart"] } | null>(null);
   const [addPaymentFor, setAddPaymentFor] = useState<{ userId: string; email: string | null } | null>(null);
   const [addPaymentAmount, setAddPaymentAmount] = useState<string>("");
-  const [addPaymentMethod, setAddPaymentMethod] = useState<"cash" | "transfer">("cash");
+  const [addPaymentMethod, setAddPaymentMethod] = useState<"" | "cash" | "transfer">("");
   const [addPaymentNote, setAddPaymentNote] = useState<string>("");
   const [addPaymentSubmitting, setAddPaymentSubmitting] = useState(false);
-  const [addPaymentErrors, setAddPaymentErrors] = useState<{ amount?: string }>({});
+  const [addPaymentErrors, setAddPaymentErrors] = useState<{ amount?: string; method?: string }>({});
+  const [addPaymentOpenOrders, setAddPaymentOpenOrders] = useState<CustomerOrderPreview[]>([]);
+  const [addPaymentOrdersLoading, setAddPaymentOrdersLoading] = useState(false);
+  const [addPaymentOrdersError, setAddPaymentOrdersError] = useState("");
   const [adjustFor, setAdjustFor] = useState<{ userId: string; email: string | null } | null>(null);
   const [adjustAmount, setAdjustAmount] = useState<string>("");
   const [adjustNote, setAdjustNote] = useState<string>("");
   const [adjustSubmitting, setAdjustSubmitting] = useState(false);
   const [adjustErrors, setAdjustErrors] = useState<{ amount?: string }>({});
+  const [creditLimitFor, setCreditLimitFor] = useState<{ userId: string; email: string | null; creditLimit: number } | null>(null);
+  const [creditLimitValue, setCreditLimitValue] = useState<string>("");
+  const [creditLimitSubmitting, setCreditLimitSubmitting] = useState(false);
+  const [creditLimitError, setCreditLimitError] = useState<string>("");
   const searchParams = useSearchParams();
   const focusId = searchParams.get("focus") || "";
+  const sortParam = searchParams.get("sort") || "";
+  const balanceParam = searchParams.get("balance") || "";
+  const fromAgingHub =
+    (balanceParam === "due") ||
+    (sortParam === "balance_desc" || sortParam === "balance_asc" || sortParam === "name_asc");
+
+  const addPaymentUserId = addPaymentFor?.userId || "";
+
+  useEffect(() => {
+    if (balanceParam === "due") setBalanceFilter("due");
+    if (sortParam === "balance_desc" || sortParam === "balance_asc" || sortParam === "name_asc") {
+      setCustomerSort(sortParam);
+    }
+  }, [balanceParam, sortParam]);
+
+  useEffect(() => {
+    if (!addPaymentUserId) {
+      setAddPaymentOpenOrders([]);
+      setAddPaymentOrdersLoading(false);
+      setAddPaymentOrdersError("");
+      return;
+    }
+    let cancelled = false;
+    async function loadOrders() {
+      setAddPaymentOrdersLoading(true);
+      setAddPaymentOrdersError("");
+      try {
+        const res = await fetch(`/api/admin/orders/user/${addPaymentUserId}/list`);
+        const body = (await res.json().catch(() => ({}))) as {
+          orders?: Array<{
+            id: string;
+            status: string;
+            createdAt: string;
+            total: number;
+            amountPaid: number;
+            balance: number;
+          }>;
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(body?.error || "Failed to load customer orders");
+        }
+        const openOrders = (body.orders || [])
+          .map((o) => ({
+            id: o.id,
+            status: String(o.status || ""),
+            createdAt: String(o.createdAt || ""),
+            total: Number(o.total || 0),
+            amountPaid: Number(o.amountPaid || 0),
+            balance: Math.max(0, Number(o.balance || 0)),
+          }))
+          .filter(
+            (o) =>
+              o.balance > 0.005 &&
+              ["UNPAID", "PARTIALLY_PAID", "PENDING_PAYMENT"].includes(o.status),
+          )
+          .sort(
+            (a, b) =>
+              new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+          );
+        if (!cancelled) setAddPaymentOpenOrders(openOrders);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setAddPaymentOrdersError(
+            e instanceof Error ? e.message : "Failed to load customer orders",
+          );
+          setAddPaymentOpenOrders([]);
+        }
+      } finally {
+        if (!cancelled) setAddPaymentOrdersLoading(false);
+      }
+    }
+    loadOrders();
+    return () => {
+      cancelled = true;
+    };
+  }, [addPaymentUserId]);
+
+  const addPaymentAllocationPreview = useMemo(() => {
+    const amount = Number(addPaymentAmount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { allocations: [] as Array<{ orderId: string; apply: number; remainingAfter: number; previousBalance: number }>, unallocated: 0 };
+    }
+    let remaining = amount;
+    const allocations: Array<{ orderId: string; apply: number; remainingAfter: number; previousBalance: number }> = [];
+    for (const order of addPaymentOpenOrders) {
+      if (remaining <= 0.0001) break;
+      const previousBalance = Math.max(0, Number(order.balance || 0));
+      const apply = Math.min(previousBalance, remaining);
+      const remainingAfter = Math.max(0, previousBalance - apply);
+      allocations.push({ orderId: order.id, apply, remainingAfter, previousBalance });
+      remaining -= apply;
+    }
+    return {
+      allocations,
+      unallocated: Math.max(0, remaining),
+    };
+  }, [addPaymentAmount, addPaymentOpenOrders]);
 
   // Payments summary for current export filters
   const summaryParams = new URLSearchParams({ month: exportMonth });
@@ -192,7 +358,7 @@ function AdminCustomersContent() {
   };
 
   const filteredRows = useMemo(() => {
-    return rows
+    const base = rows
       .filter((r) => {
         const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
         if (deliveryFilter === "pending") return (d.pending || 0) > 0;
@@ -209,9 +375,27 @@ function AdminCustomersContent() {
           const credit = getCustomerCredit(r);
           if (credit <= 0.005) return false;
         }
+        if (limitFilter === "over") {
+          const balance = getCustomerBalance(r);
+          const limit = Number(r.creditLimit || 0);
+          if (limit <= 0.005 || balance <= limit + 0.005) return false;
+        }
         return true;
       });
-  }, [rows, deliveryFilter, balanceFilter, creditFilter]);
+    if (customerSort === "name_asc") {
+      return [...base].sort((a, b) =>
+        String(a.user.name || a.user.email || "").localeCompare(
+          String(b.user.name || b.user.email || ""),
+          undefined,
+          { sensitivity: "base" },
+        ),
+      );
+    }
+    if (customerSort === "balance_asc") {
+      return [...base].sort((a, b) => getCustomerBalance(a) - getCustomerBalance(b));
+    }
+    return [...base].sort((a, b) => getCustomerBalance(b) - getCustomerBalance(a));
+  }, [rows, deliveryFilter, balanceFilter, creditFilter, limitFilter, customerSort]);
   const visibleIds = filteredRows.map((r) => r.user.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const selectedCount = selectedIds.size;
@@ -267,12 +451,22 @@ function AdminCustomersContent() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `customers_${Date.now()}.csv`;
     a.href = url;
-    a.download = `customers_${Date.now()}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "customers",
+      format: "CSV",
+      fileName: filename,
+      rowCount: selected.length,
+      columnCount: header.length,
+      byteSize: blob.size,
+      scopeSnapshot: "Selected customers export",
+    });
   };
 
   async function createUserPayment(params: {
@@ -333,7 +527,7 @@ function AdminCustomersContent() {
             setAddPaymentAmount(
               outstanding > 0 ? outstanding.toFixed(2) : "",
             );
-            setAddPaymentMethod("cash");
+            setAddPaymentMethod("");
             setAddPaymentNote("");
           }}
         >
@@ -396,6 +590,41 @@ function AdminCustomersContent() {
           }}
         >
           Email statement
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={async () => {
+            try {
+              const res = await fetch(
+                `/api/admin/customers/${r.user.id}/reminder/email`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ userId: r.user.id }),
+                },
+              );
+              const j = await res.json().catch(() => ({} as { error?: string }));
+              if (!res.ok) {
+                throw new Error(j?.error || "Failed to send reminder");
+              }
+              toast.success("Payment reminder sent.");
+            } catch (e: unknown) {
+              const message =
+                e instanceof Error ? e.message : "Failed to send reminder";
+              toast.error(message);
+            }
+          }}
+        >
+          Send payment reminder
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            const limit = Number(r.creditLimit ?? 0);
+            setCreditLimitFor({ userId: r.user.id, email: r.user.email, creditLimit: limit });
+            setCreditLimitValue(limit > 0 ? limit.toFixed(2) : "");
+            setCreditLimitError("");
+          }}
+        >
+          Set credit limit
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link href={`/admin/customers/${r.user.id}/view`}>
@@ -500,98 +729,6 @@ function AdminCustomersContent() {
         })()}
         {canManageRoles && (
           <>
-            <DropdownMenuItem
-              onClick={async () => {
-                try {
-                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ role: "ADMIN" }),
-                  });
-                  const j = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    throw new Error(j?.error || "Failed to update role");
-                  }
-                  toast.success("User set as admin.");
-                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-                } catch (e: unknown) {
-                  const message =
-                    e instanceof Error ? e.message : "Failed to update role";
-                  toast.error(message);
-                }
-              }}
-            >
-              Make admin
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={async () => {
-                try {
-                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ role: "STAFF" }),
-                  });
-                  const j = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    throw new Error(j?.error || "Failed to update role");
-                  }
-                  toast.success("User set as staff.");
-                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-                } catch (e: unknown) {
-                  const message =
-                    e instanceof Error ? e.message : "Failed to update role";
-                  toast.error(message);
-                }
-              }}
-            >
-              Make staff
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={async () => {
-                try {
-                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ role: "ACCOUNTANT" }),
-                  });
-                  const j = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    throw new Error(j?.error || "Failed to update role");
-                  }
-                  toast.success("User set as accountant.");
-                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-                } catch (e: unknown) {
-                  const message =
-                    e instanceof Error ? e.message : "Failed to update role";
-                  toast.error(message);
-                }
-              }}
-            >
-              Make accountant
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={async () => {
-                try {
-                  const res = await fetch(`/api/admin/users/${r.user.id}/role`, {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ role: "CUSTOMER" }),
-                  });
-                  const j = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    throw new Error(j?.error || "Failed to update role");
-                  }
-                  toast.success("User set as customer.");
-                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
-                } catch (e: unknown) {
-                  const message =
-                    e instanceof Error ? e.message : "Failed to update role";
-                  toast.error(message);
-                }
-              }}
-            >
-              Set as customer
-            </DropdownMenuItem>
           </>
         )}
         {r.cart?.items?.length ? (
@@ -649,12 +786,17 @@ function AdminCustomersContent() {
   return (
     <>
     <section className="container mx-auto py-8 space-y-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Customers</h1>
           <p className="text-sm text-muted-foreground">
             Monitor balances, credits, and delivery status.
           </p>
+          {fromAgingHub ? (
+            <div className="mt-1 inline-flex items-center rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-800">
+              Applied from Aging Hub
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -727,7 +869,11 @@ function AdminCustomersContent() {
             <Button
               size="sm"
               variant={balanceFilter === "all" ? "default" : "outline"}
-              onClick={() => setBalanceFilter("all")}
+              onClick={() => {
+                setBalanceFilter("all");
+                setCreditFilter("all");
+                setLimitFilter("all");
+              }}
             >
               All customers
             </Button>
@@ -737,6 +883,7 @@ function AdminCustomersContent() {
               onClick={() => {
                 setBalanceFilter("due");
                 setCreditFilter("all");
+                setLimitFilter("all");
               }}
             >
               Balance due
@@ -744,7 +891,10 @@ function AdminCustomersContent() {
             <Button
               size="sm"
               variant={creditFilter === "all" ? "default" : "outline"}
-              onClick={() => setCreditFilter("all")}
+              onClick={() => {
+                setCreditFilter("all");
+                setLimitFilter("all");
+              }}
             >
               All credits
             </Button>
@@ -754,9 +904,21 @@ function AdminCustomersContent() {
               onClick={() => {
                 setCreditFilter("credit");
                 setBalanceFilter("all");
+                setLimitFilter("all");
               }}
             >
               Has store credit
+            </Button>
+            <Button
+              size="sm"
+              variant={limitFilter === "over" ? "default" : "outline"}
+              onClick={() => {
+                setLimitFilter("over");
+                setBalanceFilter("all");
+                setCreditFilter("all");
+              }}
+            >
+              Over credit limit
             </Button>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -835,7 +997,7 @@ function AdminCustomersContent() {
             </span>
           </CardHeader>
           <CardContent className="p-0 overflow-x-hidden">
-            <div className="hidden md:block min-w-0 overflow-x-auto">
+            <div className="hidden lg:block min-w-0 overflow-x-auto">
               <Table className="w-full table-auto admin-customers-table border-collapse">
                 <TableHeader>
                   <TableRow>
@@ -915,6 +1077,17 @@ function AdminCustomersContent() {
                         </Tooltip>
                       </div>
                     </TableHead>
+                    <TableHead className="w-[140px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Credit Limit</span>
+                        <Tooltip content="Maximum outstanding balance allowed before orders are placed on hold.">
+                          <HelpCircle
+                            className="h-3.5 w-3.5 text-muted-foreground"
+                            aria-label="Credit limit"
+                          />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
                     <TableHead className="w-[180px] text-center">
                       <div className="inline-flex items-center justify-center gap-1">
                         <span>Cart</span>
@@ -956,7 +1129,12 @@ function AdminCustomersContent() {
                         </TableCell>
                         <TableCell className="max-w-[320px] text-left">
                           <div className="space-y-0.5">
-                            <span className="truncate font-medium">{displayLabel}</span>
+                            <Link
+                              href={`/admin/customers/${r.user.id}/view`}
+                              className="truncate font-medium underline-offset-2 hover:underline"
+                            >
+                              {displayLabel}
+                            </Link>
                             <div className="text-xs text-muted-foreground">
                               {r.user.phone || r.user.email || ""}
                             </div>
@@ -995,6 +1173,11 @@ function AdminCustomersContent() {
                       return <span className={cls}>{formatCurrency(balance)}</span>;
                     })()}
                   </TableCell>
+                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
+                          {Number(r.creditLimit || 0) > 0
+                            ? formatCurrency(Number(r.creditLimit || 0))
+                            : "—"}
+                        </TableCell>
                         <TableCell className="text-center whitespace-nowrap px-2 text-sm">
                           {r.cart?.totalItems ? (
                             <div className="flex flex-col leading-tight">
@@ -1065,7 +1248,7 @@ function AdminCustomersContent() {
                 </TableBody>
               </Table>
             </div>
-            <div className="md:hidden space-y-4 border-t p-4">
+            <div className="lg:hidden space-y-4 border-t p-4">
               {filteredRows.map((r: CustomerRow) => {
             const outstanding = Math.max(0, getCustomerBalance(r));
             const credit = Math.max(0, getCustomerCredit(r));
@@ -1081,7 +1264,14 @@ function AdminCustomersContent() {
                         aria-label={`Select ${r.user.email}`}
                       />
                       <div className="min-w-0">
-                        <p className="font-semibold break-all">{r.user.name || r.user.email || "Customer"}</p>
+                        <p className="font-semibold break-all">
+                          <Link
+                            href={`/admin/customers/${r.user.id}/view`}
+                            className="underline-offset-2 hover:underline"
+                          >
+                            {r.user.name || r.user.email || "Customer"}
+                          </Link>
+                        </p>
                         <p className="text-xs text-muted-foreground">{r.user.phone || r.user.email || ""}</p>
                       </div>
                     </div>
@@ -1102,6 +1292,12 @@ function AdminCustomersContent() {
                         <p className="text-xs uppercase text-muted-foreground">Balance</p>
                         <p className={`font-mono ${outstanding > 0.005 ? "text-red-700" : "text-muted-foreground"}`}>
                           {formatCurrency(outstanding)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Credit limit</p>
+                        <p className="font-mono">
+                          {Number(r.creditLimit || 0) > 0 ? formatCurrency(Number(r.creditLimit || 0)) : "—"}
                         </p>
                       </div>
                     </div>
@@ -1196,7 +1392,7 @@ function AdminCustomersContent() {
       </DialogContent>
     </Dialog>
     <Dialog open={!!confirmClear} onOpenChange={(o) => { if (!o) setConfirmClear(null); }}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
+      <DialogContent className="max-h-[90vh] overflow-y-auto overflow-x-hidden sm:max-h-none sm:max-w-xl">
         <DialogHeader>
           <DialogTitle className="text-base font-semibold">Delete Cart</DialogTitle>
         </DialogHeader>
@@ -1379,9 +1575,12 @@ function AdminCustomersContent() {
         if (!open) {
           setAddPaymentFor(null);
           setAddPaymentAmount("");
-          setAddPaymentMethod("cash");
+          setAddPaymentMethod("");
           setAddPaymentNote("");
           setAddPaymentErrors({});
+          setAddPaymentOpenOrders([]);
+          setAddPaymentOrdersError("");
+          setAddPaymentOrdersLoading(false);
         }
       }}
     >
@@ -1411,51 +1610,105 @@ function AdminCustomersContent() {
                   {formatCurrency(outstanding)}
                 </span>
               </p>
-              <div className="flex items-center gap-2">
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  placeholder="Amount to apply"
-                  value={addPaymentAmount}
-                  onChange={(e) => {
-                    setAddPaymentAmount(e.target.value);
-                    if (addPaymentErrors.amount) setAddPaymentErrors((prev) => ({ ...prev, amount: "" }));
-                  }}
-                  aria-invalid={!!addPaymentErrors.amount}
-                  className={addPaymentErrors.amount ? "border-red-500" : undefined}
-                />
-                {addPaymentErrors.amount && <p className="text-xs text-red-600">{addPaymentErrors.amount}</p>}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={outstanding <= 0}
-                  onClick={() =>
-                    setAddPaymentAmount(outstanding.toFixed(2))
-                  }
-                >
-                  Use full balance
-                </Button>
+              <div className="space-y-1">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    placeholder="Amount to apply"
+                    value={addPaymentAmount}
+                    onChange={(e) => {
+                      setAddPaymentAmount(e.target.value);
+                      if (addPaymentErrors.amount) setAddPaymentErrors((prev) => ({ ...prev, amount: "" }));
+                    }}
+                    aria-invalid={!!addPaymentErrors.amount}
+                    className={addPaymentErrors.amount ? "border-red-500" : undefined}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={outstanding <= 0}
+                    onClick={() =>
+                      setAddPaymentAmount(outstanding.toFixed(2))
+                    }
+                  >
+                    Use full balance
+                  </Button>
+                </div>
+                {addPaymentErrors.amount ? (
+                  <p className="text-xs text-red-600">{addPaymentErrors.amount}</p>
+                ) : null}
+              </div>
+              <div className="rounded-md border p-3 space-y-2">
+                <div className="text-xs font-medium">Allocation preview (oldest orders first)</div>
+                {addPaymentOrdersLoading ? (
+                  <div className="text-xs text-muted-foreground">Loading open orders…</div>
+                ) : addPaymentOrdersError ? (
+                  <div className="text-xs text-red-600">{addPaymentOrdersError}</div>
+                ) : addPaymentOpenOrders.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">No open orders available for allocation.</div>
+                ) : addPaymentAllocationPreview.allocations.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">Enter amount to preview allocations.</div>
+                ) : (
+                  <>
+                    <div className="space-y-1 text-xs">
+                      {addPaymentAllocationPreview.allocations.map((entry) => (
+                        <div
+                          key={`alloc-${entry.orderId}`}
+                          className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 items-start"
+                        >
+                          <span className="min-w-0 truncate">Order {formatIdReadable(entry.orderId)}</span>
+                          <span className="text-right break-words">
+                            {formatCurrency(entry.apply)} ({formatCurrency(entry.previousBalance)} → {formatCurrency(entry.remainingAfter)})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="border-t pt-2 text-xs flex items-center justify-between">
+                      <span>Total to allocate</span>
+                      <span className="font-medium">
+                        {formatCurrency(
+                          addPaymentAllocationPreview.allocations.reduce(
+                            (sum, e) => sum + Number(e.apply || 0),
+                            0,
+                          ),
+                        )}
+                      </span>
+                    </div>
+                    {addPaymentAllocationPreview.unallocated > 0.005 ? (
+                      <div className="text-xs text-amber-700">
+                        Unallocated remainder: {formatCurrency(addPaymentAllocationPreview.unallocated)} (exceeds current open order balances).
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground">
                   Method
                 </label>
                 <Select
-                  value={addPaymentMethod}
-                  onValueChange={(val) =>
-                    setAddPaymentMethod(val as "cash" | "transfer")
-                  }
+                  value={addPaymentMethod || undefined}
+                  onValueChange={(val) => {
+                    setAddPaymentMethod(val as "" | "cash" | "transfer");
+                    if (addPaymentErrors.method) {
+                      setAddPaymentErrors((prev) => ({ ...prev, method: "" }));
+                    }
+                  }}
                 >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
+                  <SelectTrigger className={`h-9 ${addPaymentErrors.method ? "border-red-500" : ""}`}>
+                    <SelectValue placeholder="Select payment method" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="transfer">MoMo transfer</SelectItem>
                   </SelectContent>
                 </Select>
+                {addPaymentErrors.method ? (
+                  <p className="text-xs text-red-600">{addPaymentErrors.method}</p>
+                ) : null}
               </div>
               <Input
                 placeholder="Note (optional)"
@@ -1489,6 +1742,10 @@ function AdminCustomersContent() {
                       setAddPaymentErrors((prev) => ({ ...prev, amount: "Enter a valid payment amount." }));
                       return;
                     }
+                    if (!addPaymentMethod) {
+                      setAddPaymentErrors((prev) => ({ ...prev, method: "Select payment method." }));
+                      return;
+                    }
                     if (value > outstanding + 0.0001) {
                       setAddPaymentErrors((prev) => ({ ...prev, amount: "Amount exceeds outstanding balance." }));
                       return;
@@ -1505,7 +1762,7 @@ function AdminCustomersContent() {
                       toast.success("Payment recorded and applied to orders.");
                       setAddPaymentFor(null);
                       setAddPaymentAmount("");
-                      setAddPaymentMethod("cash");
+                      setAddPaymentMethod("");
                       setAddPaymentNote("");
                       setAddPaymentErrors({});
                       queryClient.invalidateQueries({
@@ -1643,6 +1900,96 @@ function AdminCustomersContent() {
             </div>
           );
         })()}
+      </DialogContent>
+    </Dialog>
+    {/* Credit limit */}
+    <Dialog
+      open={!!creditLimitFor}
+      onOpenChange={(open) => {
+        if (!open) {
+          setCreditLimitFor(null);
+          setCreditLimitValue("");
+          setCreditLimitError("");
+          setCreditLimitSubmitting(false);
+        }
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
+        <DialogHeader>
+          <DialogTitle className="text-base font-semibold">Set credit limit</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            Credit limits place new orders on hold once outstanding balances exceed the limit.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs uppercase text-muted-foreground">
+              Limit for {creditLimitFor?.email || "customer"}
+            </label>
+            <Input
+              type="number"
+              min={0}
+              step="0.01"
+              placeholder="0.00 (no limit)"
+              value={creditLimitValue}
+              onChange={(e) => {
+                setCreditLimitValue(e.target.value);
+                if (creditLimitError) setCreditLimitError("");
+              }}
+              aria-invalid={!!creditLimitError}
+              className={creditLimitError ? "border-red-500" : undefined}
+            />
+            {creditLimitError && (
+              <p className="text-xs text-red-600">{creditLimitError}</p>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline" disabled={creditLimitSubmitting}>
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button
+            disabled={creditLimitSubmitting}
+            onClick={async () => {
+              if (!creditLimitFor) return;
+              const raw = creditLimitValue.trim();
+              const value = raw === "" ? 0 : Number(raw);
+              if (!Number.isFinite(value) || value < 0) {
+                setCreditLimitError("Enter a valid non-negative number.");
+                return;
+              }
+              setCreditLimitSubmitting(true);
+              try {
+                const res = await fetch(
+                  `/api/admin/customers/${creditLimitFor.userId}/credit-limit`,
+                  {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ creditLimit: value }),
+                  },
+                );
+                const j = await res.json().catch(() => ({} as { error?: string }));
+                if (!res.ok) {
+                  throw new Error(j?.error || "Failed to update credit limit");
+                }
+                toast.success("Credit limit updated.");
+                setCreditLimitFor(null);
+                setCreditLimitValue("");
+                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+              } catch (e: unknown) {
+                const message =
+                  e instanceof Error ? e.message : "Failed to update credit limit";
+                toast.error(message);
+              } finally {
+                setCreditLimitSubmitting(false);
+              }
+            }}
+          >
+            Save limit
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
     {/* Explain totals dialog */}
@@ -1855,6 +2202,22 @@ function ExplainTotals({
   const balanceSum = Number(ordData?.balance ?? balance ?? 0);
   const ledgerGap = Math.max(0, paymentsSum - paidSum);
   const [ledgerRange, setLedgerRange] = useState<"all" | "30" | "90">("all");
+  const [backfillBusy, setBackfillBusy] = useState(false);
+  const [manualOrderIds, setManualOrderIds] = useState("");
+  const [manualLinkBusy, setManualLinkBusy] = useState(false);
+
+  const appliedOrderIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const p of list) {
+      if (Array.isArray(p.applied)) {
+        for (const a of p.applied) {
+          if (a.orderId) ids.add(String(a.orderId));
+        }
+      }
+    }
+    return Array.from(ids);
+  }, [list]);
+  const hasAppliedOrders = appliedOrderIds.length > 0;
 
   const ledgerList = useMemo(() => {
     if (ledgerRange === "all") return list;
@@ -1880,9 +2243,15 @@ function ExplainTotals({
       {/* Section A: snapshot – matches Customers row */}
       <div className="border-b pb-3">
         <h4 className="text-sm font-semibold mb-2">
-          Current summary (matches Customers row)
+          Current summary (live orders + payments)
         </h4>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+        {hasAppliedOrders && ordersSum <= 0.005 ? (
+          <div className="mb-2 rounded-md border border-amber-200 bg-amber-50/60 p-2 text-xs text-amber-900">
+            This customer has payments applied to orders that are not linked to their account,
+            so current order totals show as zero. You can backfill order links below.
+          </div>
+        ) : null}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Orders (net of returns)</div>
             <div className="font-mono tabular-nums font-semibold">
@@ -1896,9 +2265,9 @@ function ExplainTotals({
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
-            <div className="text-muted-foreground">Payments (net cash/MoMo)</div>
+            <div className="text-muted-foreground">Payments (ledger total)</div>
             <div className="font-mono tabular-nums font-semibold">
-              {formatCurrency(paymentsTotal)}
+              {formatCurrency(paymentsSum)}
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
@@ -1920,6 +2289,87 @@ function ExplainTotals({
             </div>
           </div>
         </div>
+        {hasAppliedOrders && ordersSum <= 0.005 ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={backfillBusy}
+              onClick={async () => {
+                try {
+                  setBackfillBusy(true);
+                  const res = await fetch(`/api/admin/customers/${userId}/backfill-orders`, {
+                    method: "POST",
+                  });
+                  const payload = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(payload?.error || "Backfill failed.");
+                  toast.success(`Linked ${payload.linked} order(s) to this customer.`);
+                  if (payload.skippedDifferentUser > 0) {
+                    toast.info(`${payload.skippedDifferentUser} order(s) were linked to another user and skipped.`);
+                  }
+                  queryClient.invalidateQueries({ queryKey: ["admin", "orders", "summary", userId] });
+                  queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                } catch (e: unknown) {
+                  const msg = e instanceof Error ? e.message : "Backfill failed.";
+                  toast.error(msg);
+                } finally {
+                  setBackfillBusy(false);
+                }
+              }}
+            >
+              {backfillBusy ? "Linking orders..." : "Backfill order links"}
+            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                value={manualOrderIds}
+                onChange={(e) => setManualOrderIds(e.target.value)}
+                placeholder="Paste order ID(s) or invoice number(s)"
+                className="h-8 w-72 text-xs"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={manualLinkBusy}
+                onClick={async () => {
+                  const raw = manualOrderIds
+                    .split(/[\s,;]+/g)
+                    .map((v) => v.trim())
+                    .filter(Boolean);
+                  if (raw.length === 0) {
+                    toast.error("Enter at least one order ID.");
+                    return;
+                  }
+                  try {
+                    setManualLinkBusy(true);
+                    const res = await fetch(`/api/admin/customers/${userId}/backfill-orders`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ orderIds: raw }),
+                    });
+                    const payload = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(payload?.error || "Link failed.");
+                    toast.success(`Linked ${payload.linked} order(s) to this customer.`);
+                    if (payload.skippedDifferentUser > 0) {
+                      toast.info(`${payload.skippedDifferentUser} order(s) were linked to another user and skipped.`);
+                    }
+                    if (payload.missingOrders > 0) {
+                      toast.info(`${payload.missingOrders} order(s) were not found.`);
+                    }
+                    queryClient.invalidateQueries({ queryKey: ["admin", "orders", "summary", userId] });
+                    queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+                  } catch (e: unknown) {
+                    const msg = e instanceof Error ? e.message : "Link failed.";
+                    toast.error(msg);
+                  } finally {
+                    setManualLinkBusy(false);
+                  }
+                }}
+              >
+                {manualLinkBusy ? "Linking..." : "Link order(s)"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Section B: lifetime ledger */}
@@ -1939,7 +2389,7 @@ function ExplainTotals({
             </Button>
           </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Lifetime payments total</div>
             <div className="font-mono tabular-nums font-semibold">
@@ -2028,36 +2478,58 @@ function ExplainTotals({
             </TableHeader>
             <TableBody>
               {ledgerList.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell className="text-left text-sm">
-                    {new Date(p.createdAt).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-left text-xs">
-                    {formatMethod(p)}
-                  </TableCell>
-                  <TableCell className="text-center font-mono tabular-nums">
-                    {formatCurrency(Number(p.amount || 0))}
-                  </TableCell>
-                  <TableCell className="text-left text-xs">
-                    {Array.isArray(p.applied) && p.applied.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {p.applied.map((a: PaymentApplied, idx: number) => (
-                          <span
-                            key={idx}
-                            className="inline-block bg-muted rounded px-1.5 py-0.5"
-                          >
-                            {formatOrderId(a.orderId)}:{" "}
-                            {formatCurrency(Number(a.applied || 0))}
+                (() => {
+                  const breakdown = buildAppliedBreakdownDisplay(p);
+                  return (
+                    <TableRow key={p.id}>
+                      <TableCell className="text-left text-sm">
+                        {new Date(p.createdAt).toLocaleString()}
+                      </TableCell>
+                      <TableCell className="text-left text-xs">
+                        {formatMethod(p)}
+                      </TableCell>
+                      <TableCell className="text-center font-mono tabular-nums">
+                        {formatCurrency(Number(p.amount || 0))}
+                      </TableCell>
+                      <TableCell className="text-left text-xs">
+                        {breakdown.entries.length > 0 ? (
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap gap-1">
+                              {breakdown.entries.map((a: PaymentApplied, idx: number) => (
+                                <span
+                                  key={idx}
+                                  className="inline-block bg-muted rounded px-1.5 py-0.5"
+                                >
+                                  {formatOrderId(a.orderId)}:{" "}
+                                  {formatCurrency(Number(a.applied || 0))}
+                                </span>
+                              ))}
+                            </div>
+                            {breakdown.unallocated > 0.01 ? (
+                              <div className="text-amber-700">
+                                Unallocated: {formatCurrency(breakdown.unallocated)}
+                              </div>
+                            ) : null}
+                            {breakdown.overLinked > 0.01 ? (
+                              <div className="text-amber-700">
+                                Over-linked hidden: {formatCurrency(breakdown.overLinked)}
+                              </div>
+                            ) : null}
+                            {breakdown.hasMismatch ? (
+                              <div className="text-amber-700">
+                                Applied breakdown mismatch on this row.
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            Store credit (not yet applied to any order)
                           </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">
-                        Store credit (not yet applied to any order)
-                      </span>
-                    )}
-                  </TableCell>
-                </TableRow>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })()
               ))}
               {ledgerList.length === 0 && (
                 <TableRow>

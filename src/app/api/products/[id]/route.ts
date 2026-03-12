@@ -9,6 +9,7 @@ import { notifyBackInStock } from "@/lib/stock-alerts";
 import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
 import { PRODUCT_CATEGORIES } from "@/lib/product-categories";
+import { getMarginGuardError } from "@/lib/margin-guard";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -45,6 +46,9 @@ export async function GET(
       category: product.category ?? null,
       brand: product.brand ?? null,
       supplier: product.supplier ?? null,
+      supplierId: (product as { supplierId?: string | null }).supplierId ?? null,
+      requiresLotTracking: Boolean((product as { requiresLotTracking?: boolean | null }).requiresLotTracking),
+      requiresExpiryDate: Boolean((product as { requiresExpiryDate?: boolean | null }).requiresExpiryDate),
       price: Number(product.price),
       stock: product.stock,
       createdAt: product.createdAt.toISOString(),
@@ -52,6 +56,7 @@ export async function GET(
       ...(includePrivate
         ? {
             cost: Number(product.cost),
+            minMarginPct: product.minMarginPct != null ? Number(product.minMarginPct) : null,
             archived: product.archived,
           }
         : {}),
@@ -103,7 +108,7 @@ const categorySchema = z.preprocess(
 );
 
 const productUpdateSchema = productSchema
-  .omit({ cost: true })
+  .omit({ cost: true, receiveNow: true, paidOnReceipt: true, paymentMethod: true })
   .partial()
   .extend({
     imageUrl: urlOrPath.optional(),
@@ -111,6 +116,10 @@ const productUpdateSchema = productSchema
     category: categorySchema.optional(),
     brand: z.string().min(2, { message: "Brand is required" }).optional(),
     supplier: z.string().min(2, { message: "Supplier is required" }).optional(),
+    supplierId: z.string().optional().nullable(),
+    marginOverrideReason: z.string().min(5).optional(),
+    requiresLotTracking: z.boolean().optional(),
+    requiresExpiryDate: z.boolean().optional(),
     editReason: z.string().min(5).optional(),
   });
 
@@ -152,9 +161,41 @@ export async function PATCH(
       );
     }
 
-    const { editReason, ...rawData } = parsed.data;
+    const { editReason, marginOverrideReason, ...rawData } = parsed.data;
     const updateData =
       rawData as Parameters<typeof prisma.product.update>[0]["data"];
+    if (typeof updateData.requiresExpiryDate !== "undefined") {
+      updateData.requiresLotTracking =
+        Boolean(updateData.requiresLotTracking) || Boolean(updateData.requiresExpiryDate);
+    }
+    if (typeof updateData.supplierId !== "undefined") {
+      let supplierId = updateData.supplierId as string | null;
+      if (supplierId) {
+        const supplier = await prisma.supplier.findUnique({
+          where: { id: supplierId },
+          select: { name: true },
+        });
+        if (supplier?.name) {
+          updateData.supplier = supplier.name;
+        } else {
+          supplierId = null;
+        }
+      }
+      updateData.supplierId = supplierId;
+    }
+    if (!updateData.supplierId && typeof updateData.supplier === "string") {
+      const supplierName = updateData.supplier.trim();
+      if (supplierName) {
+        const supplier = await prisma.supplier.upsert({
+          where: { name: supplierName },
+          create: { name: supplierName },
+          update: {},
+          select: { id: true },
+        });
+        updateData.supplierId = supplier.id;
+        updateData.supplier = supplierName;
+      }
+    }
     if (
       !editReason &&
       (typeof updateData.name !== "undefined" ||
@@ -164,7 +205,9 @@ export async function PATCH(
         typeof updateData.category !== "undefined" ||
         typeof updateData.brand !== "undefined" ||
         typeof updateData.supplier !== "undefined" ||
-        typeof updateData.stock !== "undefined")
+        typeof updateData.stock !== "undefined" ||
+        typeof updateData.requiresLotTracking !== "undefined" ||
+        typeof updateData.requiresExpiryDate !== "undefined")
     ) {
       return NextResponse.json(
         { error: "Please add a brief reason for this change." },
@@ -180,15 +223,40 @@ export async function PATCH(
         description: true,
         imageUrl: true,
         price: true,
+        cost: true,
+        minMarginPct: true,
         category: true,
         brand: true,
         supplier: true,
+        supplierId: true,
         createdAt: true,
+        requiresLotTracking: true,
+        requiresExpiryDate: true,
       },
     });
+    const supplierChanging =
+      (typeof updateData.supplierId !== "undefined" && updateData.supplierId !== existing?.supplierId) ||
+      (typeof updateData.supplier !== "undefined" && updateData.supplier !== existing?.supplier);
+    if (supplierChanging && !isAdmin) {
+      return NextResponse.json(
+        { error: "Supplier changes require admin approval." },
+        { status: 403 },
+      );
+    }
+    const nextSupplierId =
+      typeof updateData.supplierId !== "undefined" ? updateData.supplierId : existing?.supplierId ?? null;
+    const nextSupplier =
+      typeof updateData.supplier !== "undefined" ? updateData.supplier : existing?.supplier ?? null;
+    if (!nextSupplierId && !nextSupplier) {
+      return NextResponse.json(
+        { error: "Supplier is required." },
+        { status: 400 },
+      );
+    }
     const oldStock = Number(existing?.stock ?? 0);
     const oldArchived = Boolean(existing?.archived);
     const oldPrice = Number(existing?.price ?? 0);
+    const oldCost = Number(existing?.cost ?? 0);
     const priceChanging =
       typeof updateData.price !== "undefined" && Number(updateData.price) !== oldPrice;
     const stockChanging =
@@ -215,11 +283,66 @@ export async function PATCH(
         );
       }
     }
+    const nextPrice =
+      typeof updateData.price !== "undefined" ? Number(updateData.price) : oldPrice;
+    const nextMinMargin =
+      typeof updateData.minMarginPct !== "undefined"
+        ? updateData.minMarginPct == null
+          ? null
+          : Number(updateData.minMarginPct)
+        : existing?.minMarginPct != null
+        ? Number(existing.minMarginPct)
+        : null;
+    const marginError = getMarginGuardError({
+      price: nextPrice,
+      cost: oldCost,
+      minMarginPct: nextMinMargin,
+    });
+    if (marginError) {
+      const reason = marginOverrideReason?.trim();
+      if (!isAdmin || !reason || reason.length < 5) {
+        return NextResponse.json({ error: marginError }, { status: 400 });
+      }
+    }
+
+    if (
+      stockChanging &&
+      typeof updateData.stock !== "undefined" &&
+      oldStock > 0 &&
+      Number(updateData.stock) <= 0
+    ) {
+      updateData.lastStockoutAt = new Date();
+    }
 
     const updated = await prisma.product.update({
       where: { id: params.id },
       data: updateData,
     });
+
+    if (supplierChanging) {
+      const nextSupplierId = (updated as { supplierId?: string | null }).supplierId ?? null;
+      if (nextSupplierId) {
+        try {
+          await prisma.$transaction(async (tx: TxClient) => {
+            await tx.productSupplier.updateMany({
+              where: { productId: updated.id },
+              data: { isPrimary: false },
+            });
+            await tx.productSupplier.upsert({
+              where: { productId_supplierId: { productId: updated.id, supplierId: nextSupplierId } },
+              create: {
+                productId: updated.id,
+                supplierId: nextSupplierId,
+                isPrimary: true,
+              },
+              update: { isPrimary: true },
+            });
+          });
+        } catch (e) {
+          console.warn("Failed to update product supplier link", updated.id, e);
+        }
+      }
+    }
 
     const safeProduct = {
       ...updated,
@@ -278,6 +401,14 @@ export async function PATCH(
         changes.brand = { from: existing?.brand ?? null, to: updated.brand ?? null };
         nonStockChanges.brand = changes.brand;
       }
+      if (typeof updateData.requiresLotTracking !== "undefined" && Boolean(updateData.requiresLotTracking) !== Boolean(existing?.requiresLotTracking)) {
+        changes.requiresLotTracking = { from: Boolean(existing?.requiresLotTracking), to: Boolean(updated.requiresLotTracking) };
+        nonStockChanges.requiresLotTracking = changes.requiresLotTracking;
+      }
+      if (typeof updateData.requiresExpiryDate !== "undefined" && Boolean(updateData.requiresExpiryDate) !== Boolean(existing?.requiresExpiryDate)) {
+        changes.requiresExpiryDate = { from: Boolean(existing?.requiresExpiryDate), to: Boolean(updated.requiresExpiryDate) };
+        nonStockChanges.requiresExpiryDate = changes.requiresExpiryDate;
+      }
       if (typeof updateData.supplier !== "undefined" && updateData.supplier !== existing?.supplier) {
         changes.supplier = { from: existing?.supplier ?? null, to: updated.supplier ?? null };
         nonStockChanges.supplier = changes.supplier;
@@ -314,6 +445,21 @@ export async function PATCH(
             name: updated.name,
             changes: nonStockChanges,
             reason: editReason || null,
+          },
+        });
+      }
+      const reason = marginOverrideReason?.trim();
+      if (marginError && reason) {
+        await recordAuditLog({
+          actorId: user?.id,
+          action: "PRICE_MARGIN_OVERRIDE",
+          entityType: "PRODUCT",
+          entityId: updated.id,
+          meta: {
+            reason,
+            price: Number(updated.price),
+            cost: Number(updated.cost),
+            minMarginPct: updateData.minMarginPct ?? null,
           },
         });
       }
@@ -356,21 +502,67 @@ export async function DELETE(
 
   try {
     const params = await context.params;
+    const requestBody = (await request.json().catch(() => ({}))) as { reason?: unknown; note?: unknown };
+    const deleteReason = String(requestBody.reason || requestBody.note || "").trim().slice(0, 280);
     const product = await prisma.product.findUnique({
       where: { id: params.id },
-      select: { id: true, name: true, price: true, stock: true },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        category: true,
+        brand: true,
+        supplier: true,
+        supplierId: true,
+        price: true,
+        cost: true,
+        stock: true,
+        archived: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     });
 
     if (!product) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
     }
 
+    let removedCartItems = 0;
+    let updatedStockAlerts = 0;
+    let softDeletedDraftPurchases = 0;
+    let orderHistoryCount = 0;
     await prisma.$transaction(async (tx: TxClient) => {
-      await tx.cartItem.deleteMany({ where: { productId: params.id } });
-      await tx.stockAlert.updateMany({
+      const cartDeleteResult = await tx.cartItem.deleteMany({ where: { productId: params.id } });
+      removedCartItems = cartDeleteResult.count;
+      const stockAlertResult = await tx.stockAlert.updateMany({
         where: { productId: params.id },
         data: { deletedAt: new Date(), notifiedAt: new Date() },
       });
+      updatedStockAlerts = stockAlertResult.count;
+      orderHistoryCount = await tx.orderItem.count({
+        where: { productId: params.id },
+      });
+      if (orderHistoryCount === 0) {
+        const purgeCandidates = await tx.purchase.findMany({
+          where: {
+            productId: params.id,
+            deletedAt: null,
+            receivedQuantity: { lte: 0 },
+            status: { in: ["PENDING_APPROVAL", "APPROVED", "ORDERED", "CANCELLED"] },
+            movements: { none: {} },
+            lots: { none: {} },
+            supplierPayments: { none: {} },
+          },
+          select: { id: true },
+        });
+        if (purgeCandidates.length > 0) {
+          const purgeResult = await tx.purchase.updateMany({
+            where: { id: { in: purgeCandidates.map((p) => p.id) } },
+            data: { deletedAt: new Date() },
+          });
+          softDeletedDraftPurchases = purgeResult.count;
+        }
+      }
       const currentStock = Number(product.stock || 0);
       if (currentStock > 0) {
         await tx.inventoryMovement.create({
@@ -395,8 +587,23 @@ export async function DELETE(
         entityId: product.id,
         meta: {
           name: product.name,
+          sku: product.sku ?? null,
+          category: product.category ?? null,
+          brand: product.brand ?? null,
+          supplier: product.supplier ?? null,
+          supplierId: product.supplierId ?? null,
           price: Number(product.price),
+          cost: Number(product.cost),
           stock: product.stock,
+          archivedBeforeDelete: Boolean(product.archived),
+          removedCartItems,
+          updatedStockAlerts,
+          orderHistoryCount,
+          softDeletedDraftPurchases,
+          deletedAt: new Date().toISOString(),
+          productCreatedAt: product.createdAt.toISOString(),
+          productUpdatedAt: product.updatedAt.toISOString(),
+          deleteReason: deleteReason || null,
         },
       });
     } catch {

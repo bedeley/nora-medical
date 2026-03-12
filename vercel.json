@@ -3,6 +3,26 @@
     {
       "path": "/api/admin/health/alerts",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/admin/hr/payroll/cron",
+      "schedule": "0 6 1 * *"
+    },
+    {
+      "path": "/api/admin/accounting/reports/scheduled/run",
+      "schedule": "0 7 1 * *"
+    },
+    {
+      "path": "/api/admin/accounting/journal/archive",
+      "schedule": "30 5 1 * *"
+    },
+    {
+      "path": "/api/admin/audit/notify/escalations/cron",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/admin/health/escalations/cron",
+      "schedule": "0 */4 * * *"
     }
   ]
 }

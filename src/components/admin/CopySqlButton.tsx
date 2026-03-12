@@ -191,3 +191,40 @@ export function BackfillAutoApplyButton({
     </Button>
   );
 }
+
+export function BackfillStockMovementsButton({ onSuccess }: { onSuccess?: () => void }) {
+  const [running, setRunning] = useState(false);
+  const router = useRouter();
+
+  const handleRun = async () => {
+    if (!confirm("Create stock backfill movements to match current stock?")) return;
+    setRunning(true);
+    try {
+      const res = await fetch("/api/admin/health/backfill-stock-movements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to backfill stock movements");
+      const created = Number(j?.created || 0);
+      if (created > 0) {
+        toast.success(`Backfilled ${created} stock movement(s).`);
+      } else {
+        toast.success("No stock movements needed.");
+      }
+      onSuccess?.();
+      router.refresh();
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Could not backfill stock movements.";
+      toast.error(message);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <Button variant="outline" size="sm" onClick={handleRun} disabled={running}>
+      {running ? "Backfilling..." : "Backfill Stock Movements"}
+    </Button>
+  );
+}

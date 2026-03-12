@@ -3,8 +3,12 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { rateLimit } from "@/lib/rate-limit";
+import { assertSameOrigin } from "@/lib/origin";
 
 export async function POST(req: Request) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   if (!session || user?.role !== "ADMIN") {

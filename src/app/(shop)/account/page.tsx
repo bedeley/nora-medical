@@ -20,6 +20,8 @@ type AccountMe = {
   phoneVerifiedAt?: string | null;
   createdAt?: string | null;
   lastLoginAt?: string | null;
+  customerProfile?: "B2B" | "B2C";
+  isB2B?: boolean;
 };
 
 type OrderHistoryItem = {
@@ -75,6 +77,7 @@ function AccountContent() {
   const [emailVerifying, setEmailVerifying] = useState(false);
   const [resendingEmail, setResendingEmail] = useState(false);
   const savingRef = useRef(false);
+  const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
   const focusPhone = searchParams?.get("phone") === "1";
   const phoneVerificationEnabled =
     (process.env.NEXT_PUBLIC_PHONE_VERIFICATION_ENABLED || "").toLowerCase() ===
@@ -99,8 +102,11 @@ function AccountContent() {
       0
     );
     const balance = Number(o.total) - totalPaid;
-    return balance > 0;
+    return balance > 0.01;
   });
+  const normalizedBalance = balance
+    ? normalizeBalance(Number(balance.balance ?? 0))
+    : 0;
 
   // Treat phoneVerifiedAt as the generic "account verified via code" flag,
   // regardless of whether the code arrived via email or phone.
@@ -263,8 +269,8 @@ function AccountContent() {
             <Card className="border">
               <CardContent className="pt-4">
                 <p className="text-xs text-muted-foreground">Outstanding balance</p>
-                <p className={balance.balance > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
-                  {balance.balance > 0 ? formatCurrency(balance.balance) : "None"}
+                <p className={normalizedBalance > 0 ? "text-lg font-semibold text-red-600" : "text-lg font-semibold text-green-700"}>
+                  {normalizedBalance > 0 ? formatCurrency(normalizedBalance) : "None"}
                 </p>
               </CardContent>
             </Card>
@@ -293,8 +299,18 @@ function AccountContent() {
             <Link href="/account/balance" className="inline-flex">
               <Button variant="outline">My balance</Button>
             </Link>
+            {me?.isB2B ? (
+              <Link href="/account/procurement" className="inline-flex">
+                <Button variant="outline">Clinic procurement</Button>
+              </Link>
+            ) : null}
           </div>
         )}
+        {isEmailVerified && me && !me.isB2B ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Clinic procurement portal is currently disabled for this account. Contact support if you need B2B access.
+          </p>
+        ) : null}
 
         {recentOrders.length > 0 && (
           <div className="mt-6">

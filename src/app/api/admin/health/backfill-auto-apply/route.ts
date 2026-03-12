@@ -5,10 +5,14 @@ import { prisma } from "@/lib/prisma";
 import { PaymentStatus } from "@/lib/prisma-enums";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { rateLimit } from "@/lib/rate-limit";
+import { assertSameOrigin } from "@/lib/origin";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 export async function POST(req: Request) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   if (!session || user?.role !== "ADMIN") {

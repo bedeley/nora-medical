@@ -1,0 +1,34 @@
+Backup & Restore Runbook (PostgreSQL)
+
+Scope
+- This runbook covers database backups and restores for production and staging.
+- Keep backups encrypted and access‑controlled.
+
+Backup cadence (recommended)
+- Daily: full logical backup (pg_dump)
+- Weekly: full snapshot + offsite copy
+- Before risky changes: manual backup
+
+Environment variables used
+- DATABASE_URL (Postgres connection string)
+- BACKUP_DIR (optional local folder)
+
+Create a backup (logical)
+1) Set a destination:
+   - Windows: set BACKUP_DIR=C:\backups\nora
+   - macOS/Linux: export BACKUP_DIR=~/backups/nora
+2) Run:
+   - pg_dump --format=custom --file "%BACKUP_DIR%/nora_YYYYMMDD.dump" "%DATABASE_URL%"
+
+Restore a backup (logical)
+1) Verify target DB is correct (staging vs production).
+2) Run:
+   - pg_restore --clean --if-exists --dbname "%DATABASE_URL%" "%BACKUP_DIR%/nora_YYYYMMDD.dump"
+
+Verify after restore
+- Open /admin/health and confirm mismatches are zero.
+- Check latest order, inventory counts, and payments.
+
+Notes
+- Use a restricted admin account for backup/restore.
+- Store backup metadata (date, environment, operator) in an internal log.

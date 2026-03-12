@@ -10,13 +10,14 @@ import { notifyPaymentEvent } from "@/lib/notifications";
 import { recordAuditLog } from "@/lib/audit-log";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { randomUUID } from "crypto";
+import { postPaymentEntry } from "@/lib/accounting-posting";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  const user = session?.user as AuthenticatedUser | undefined;
-  const role = user?.role;
+  const actorUser = session?.user as AuthenticatedUser | undefined;
+  const role = actorUser?.role;
   const isAdmin = role === "ADMIN";
   const isAccountant = role === "ACCOUNTANT";
   if (!session || (!isAdmin && !isAccountant)) {
@@ -65,8 +66,8 @@ export async function POST(req: Request) {
     }
 
     // Validate user exists
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) {
+    const targetCustomer = await prisma.user.findUnique({ where: { id: userId } });
+    if (!targetCustomer) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
@@ -117,7 +118,7 @@ export async function POST(req: Request) {
       const meta = {
         note: note || undefined,
         method,
-        reference,
+        reference: reference || (isRefund ? "SALES_REFUND" : undefined),
         receivedBy,
         location,
         status,
@@ -346,22 +347,70 @@ export async function POST(req: Request) {
           ? "PAYMENT_REFUND"
           : "PAYMENT_CREATE";
       await recordAuditLog({
-        actorId: user.id,
+        actorId: actorUser?.id || null,
         action: auditAction,
         entityType: "PAYMENT",
         entityId: result.payments?.[0]?.id ?? "batch",
         meta: {
-          userId,
+          actorType: "ADMIN",
+          channel: "admin_customers",
+          sourceRoute: "/api/payments",
+          customerId: userId,
+          customerName: targetCustomer.name || null,
+          customerEmail: targetCustomer.email || null,
+          customerPhone: targetCustomer.phone || null,
+          recordedByName: actorUser?.name || actorUser?.email || null,
+          recordedByRole: actorUser?.role || null,
           orderId,
           amount: normalizedAmount,
           method,
+          captureType: "ADMIN_MANUAL",
+          externalReference: reference || null,
+          internalReference: location === "admin/orders" ? "ADMIN_ORDER_PAYMENT" : null,
           status: normalizedStatus,
           refundDisposition: refundDisposition || null,
           location,
           batchId: result.batchId || null,
+          paymentCount: result.payments?.length || 0,
+          paymentIds: (result.payments || []).map((row) => row.id),
+          orderCount: result.applied?.length || 0,
+          orderIds: Array.from(
+            new Set((result.applied || []).map((row) => row.orderId).filter(Boolean)),
+          ),
+          appliedAllocations: (result.applied || []).map((row) => ({
+            orderId: row.orderId,
+            amount: Number(row.applied || 0),
+            remainingAfter: Number(row.newBalance || 0),
+          })),
+          appliedCount: result.applied?.length || 0,
+          appliedTotal: (result.applied || []).reduce(
+            (sum, row) => sum + Number(row.applied || 0),
+            0,
+          ),
           note: note || null,
         },
       });
+    } catch {
+      // best-effort
+    }
+
+    // Accounting posting: post each created payment row (single or batched split).
+    // This keeps integrity counts aligned for admin-entered balance settlements.
+    try {
+      const createdPaymentIds = Array.from(
+        new Set(
+          (result.payments || [])
+            .map((row) => row?.id)
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+      for (const paymentId of createdPaymentIds) {
+        try {
+          await postPaymentEntry({ paymentId });
+        } catch (postError) {
+          console.warn("Accounting payment posting skipped:", postError);
+        }
+      }
     } catch {
       // best-effort
     }

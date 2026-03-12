@@ -44,6 +44,7 @@ import { toast } from "sonner";
 import { formatCurrency, formatDateGH } from "@/lib/currency";
 import { formatIdReadable, formatInvoiceNumber } from "@/lib/utils";
 import { chipToneClass, deliveryStatusTone, orderStatusTone } from "@/lib/status-chips";
+import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
 import { Download, RefreshCcw, Search, DollarSign, ArrowUpDown, ArrowUp, ArrowDown, HelpCircle } from "lucide-react";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
@@ -62,10 +63,17 @@ type AdminOrder = {
   createdAt: string | Date;
   updatedAt?: string | Date;
   invoiceNumber?: string | null;
+  subtotal?: number | string;
+  taxAmount?: number | string;
+  discountAmount?: number | string;
   total: number | string;
   amountPaid: number | string;
   balance: number | string;
   userId?: string | null;
+  customerType?: string | null;
+  walkInName?: string | null;
+  walkInPhone?: string | null;
+  hasPendingMomo?: boolean;
   user?: { id?: string; name?: string | null; email?: string | null; phone?: string | null } | null;
   adminNote?: string | null;
 };
@@ -77,12 +85,16 @@ type OrdersSavedFilter = {
     filter: string;
     deliveryFilter: string;
     paymentMethod: string;
+    customerType: string;
+    discountOnly: boolean;
     query: string;
     start: string;
     end: string;
     minTotal: string;
     maxTotal: string;
     userIdFilter: string;
+    orderIdFilter: string;
+    paymentIdFilter: string;
     sortKey: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | null;
     sortDir: "asc" | "desc";
     showPaid: boolean;
@@ -102,6 +114,9 @@ function AdminOrdersContent() {
   const [deliveryFilter, setDeliveryFilter] = useState<string>("ALL");
   const [query, setQuery] = useState<string>("");
   const [paymentMethod, setPaymentMethod] = useState<string>("ALL");
+  const [customerType, setCustomerType] = useState<string>("ALL");
+  const [outstandingOnly, setOutstandingOnly] = useState<boolean>(false);
+  const [discountOnly, setDiscountOnly] = useState<boolean>(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [start, setStart] = useState<string>("");
@@ -131,6 +146,8 @@ function AdminOrdersContent() {
   const [showBalance, setShowBalance] = useState(true);
   const [showDelivery, setShowDelivery] = useState(true);
   const [userIdFilter, setUserIdFilter] = useState<string>("");
+  const [orderIdFilter, setOrderIdFilter] = useState<string>("");
+  const [paymentIdFilter, setPaymentIdFilter] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectedOrders, setSelectedOrders] = useState<Map<string, AdminOrder>>(new Map());
   const [savedFilters, setSavedFilters] = useState<OrdersSavedFilter[]>([]);
@@ -166,7 +183,12 @@ function AdminOrdersContent() {
     const minParam = searchParams.get("minTotal");
     const maxParam = searchParams.get("maxTotal");
     const methodParam = searchParams.get("paymentMethod");
+    const customerTypeParam = searchParams.get("customerType");
+    const outstandingOnlyParam = searchParams.get("outstandingOnly");
+    const discountOnlyParam = searchParams.get("discountOnly");
     const userIdParam = searchParams.get("userId");
+    const orderIdParam = searchParams.get("orderId");
+    const paymentIdParam = searchParams.get("paymentId");
     const sk = searchParams.get("sortKey") as
       | "total"
       | "amountPaid"
@@ -179,14 +201,21 @@ function AdminOrdersContent() {
     const p = Number(searchParams.get("page") || 1);
     const ps = Number(searchParams.get("pageSize") || 25);
 
-    if (f && ["ALL", "UNPAID", "PARTIALLY_PAID", "PAID", "CANCELLED"].includes(f)) setFilter(f);
+    if (f && ["ALL", "UNPAID", "PARTIALLY_PAID", "PAID", "CANCELLED", "ON_HOLD_CREDIT"].includes(f)) setFilter(f);
     if (typeof q === "string") setQuery(q);
     if (startParam) setStart(startParam);
     if (endParam) setEnd(endParam);
     if (minParam) setMinTotal(minParam);
     if (maxParam) setMaxTotal(maxParam);
     if (methodParam) setPaymentMethod(methodParam);
+    if (customerTypeParam && ["ALL", "REGISTERED", "WALK_IN"].includes(customerTypeParam)) {
+      setCustomerType(customerTypeParam);
+    }
+    if (outstandingOnlyParam === "1") setOutstandingOnly(true);
+    if (discountOnlyParam === "1") setDiscountOnly(true);
     if (userIdParam) setUserIdFilter(userIdParam);
+    if (orderIdParam) setOrderIdFilter(orderIdParam);
+    if (paymentIdParam) setPaymentIdFilter(paymentIdParam);
     if (sk && ["total", "amountPaid", "balance", "createdAt", "customer", "invoice"].includes(sk)) setSortKey(sk);
     if (sd && ["asc", "desc"].includes(sd)) setSortDir(sd);
     if (!Number.isNaN(p) && p > 0) setPage(p);
@@ -286,6 +315,12 @@ function AdminOrdersContent() {
     else params.delete("dFilter");
     if (paymentMethod && paymentMethod !== "ALL") params.set("paymentMethod", paymentMethod);
     else params.delete("paymentMethod");
+    if (customerType && customerType !== "ALL") params.set("customerType", customerType);
+    else params.delete("customerType");
+    if (outstandingOnly) params.set("outstandingOnly", "1");
+    else params.delete("outstandingOnly");
+    if (discountOnly) params.set("discountOnly", "1");
+    else params.delete("discountOnly");
     if (start) params.set("start", start);
     else params.delete("start");
     if (end) params.set("end", end);
@@ -296,6 +331,10 @@ function AdminOrdersContent() {
     else params.delete("maxTotal");
     if (userIdFilter) params.set("userId", userIdFilter);
     else params.delete("userId");
+    if (orderIdFilter) params.set("orderId", orderIdFilter);
+    else params.delete("orderId");
+    if (paymentIdFilter) params.set("paymentId", paymentIdFilter);
+    else params.delete("paymentId");
     if (page && page > 1) params.set("page", String(page));
     else params.delete("page");
     if (pageSize && pageSize !== 25) params.set("pageSize", String(pageSize));
@@ -311,7 +350,7 @@ function AdminOrdersContent() {
 
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
-  }, [filter, query, sortKey, sortDir, deliveryFilter, paymentMethod, start, end, minTotal, maxTotal, userIdFilter, page, pageSize, pathname, router]);
+  }, [filter, query, sortKey, sortDir, deliveryFilter, paymentMethod, customerType, outstandingOnly, discountOnly, start, end, minTotal, maxTotal, userIdFilter, orderIdFilter, paymentIdFilter, page, pageSize, pathname, router]);
 
   // Type-to-focus: focus Search and append keystrokes when typing outside inputs
   useEffect(() => {
@@ -371,7 +410,7 @@ function AdminOrdersContent() {
 
   const queryClient = useQueryClient();
   const { data, isLoading } = useClientQuery({
-    queryKey: ["admin", "orders", { filter, deliveryFilter, paymentMethod, query, start, end, minTotal, maxTotal, userIdFilter, sortKey, sortDir, page, pageSize }],
+    queryKey: ["admin", "orders", { filter, deliveryFilter, paymentMethod, customerType, outstandingOnly, query, start, end, minTotal, maxTotal, userIdFilter, orderIdFilter, paymentIdFilter, sortKey, sortDir, page, pageSize }],
     // Admin dashboard should see all orders, not just the logged-in user's.
     queryFn: () => {
       const params = new URLSearchParams();
@@ -379,12 +418,16 @@ function AdminOrdersContent() {
       if (filter && filter !== "ALL") params.set("filter", filter);
       if (deliveryFilter && deliveryFilter !== "ALL") params.set("dFilter", deliveryFilter);
       if (paymentMethod && paymentMethod !== "ALL") params.set("paymentMethod", paymentMethod);
+      if (customerType && customerType !== "ALL") params.set("customerType", customerType);
+      if (outstandingOnly) params.set("outstandingOnly", "1");
       if (query) params.set("q", query);
       if (start) params.set("start", start);
       if (end) params.set("end", end);
       if (minTotal) params.set("minTotal", minTotal);
       if (maxTotal) params.set("maxTotal", maxTotal);
       if (userIdFilter) params.set("userId", userIdFilter);
+      if (orderIdFilter) params.set("orderId", orderIdFilter);
+      if (paymentIdFilter) params.set("paymentId", paymentIdFilter);
       if (sortKey) params.set("sortKey", sortKey);
       if (sortKey) params.set("sortDir", sortDir);
       params.set("page", String(page));
@@ -513,7 +556,10 @@ function AdminOrdersContent() {
       "Phone",
       "Status",
       "DeliveryStatus",
+      "TaxableSubtotal",
+      "Tax",
       "Total",
+      "Discount",
       "Paid",
       "Balance",
       "PlacedAt",
@@ -521,15 +567,21 @@ function AdminOrdersContent() {
     ];
     const lines = [header.join(",")];
     for (const o of selected) {
+      const customerName = o.user?.name || o.walkInName || "Walk-in";
+      const customerEmail = o.user?.email || "";
+      const customerPhone = o.user?.phone || o.walkInPhone || "";
       lines.push([
         JSON.stringify(o.id),
         JSON.stringify(o.invoiceNumber || ""),
-        JSON.stringify(o.user?.name || ""),
-        JSON.stringify(o.user?.email || ""),
-        JSON.stringify(o.user?.phone || ""),
+        JSON.stringify(customerName),
+        JSON.stringify(customerEmail),
+        JSON.stringify(customerPhone),
         JSON.stringify(o.status || ""),
         JSON.stringify(o.deliveryStatus || ""),
+        String(Number(o.subtotal || 0)),
+        String(Number(o.taxAmount || 0)),
         String(Number(o.total || 0)),
+        String(Number(o.discountAmount || 0)),
         String(Number(o.amountPaid || 0)),
         String(Number(o.balance || 0)),
         JSON.stringify(new Date(o.createdAt).toISOString()),
@@ -540,12 +592,22 @@ function AdminOrdersContent() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `orders_${Date.now()}.csv`;
     a.href = url;
-    a.download = `orders_${Date.now()}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "orders",
+      format: "CSV",
+      fileName: filename,
+      rowCount: selected.length,
+      columnCount: header.length,
+      byteSize: blob.size,
+      scopeSnapshot: "Selected orders export",
+    });
   };
 
   function toggleSort(key: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice") {
@@ -588,7 +650,9 @@ function AdminOrdersContent() {
     return parts.slice(0, 2).join("-");
   }
 
-  const sortedOrders = orders;
+  const sortedOrders = discountOnly
+    ? orders.filter((o) => Number(o.discountAmount || 0) > 0)
+    : orders;
   const pageTotal = sortedOrders.reduce(
     (sum, o) => sum + Number(o.total || 0),
     0
@@ -708,12 +772,16 @@ function AdminOrdersContent() {
         filter,
         deliveryFilter,
         paymentMethod,
+        customerType,
+        discountOnly,
         query,
         start,
         end,
         minTotal,
         maxTotal,
         userIdFilter,
+        orderIdFilter,
+        paymentIdFilter,
         sortKey,
         sortDir,
         showPaid,
@@ -731,12 +799,16 @@ function AdminOrdersContent() {
     setFilter(s.filter);
     setDeliveryFilter(s.deliveryFilter);
     setPaymentMethod(s.paymentMethod);
+    setCustomerType(s.customerType || "ALL");
+    setDiscountOnly(Boolean(s.discountOnly));
     setQuery(s.query);
     setStart(s.start);
     setEnd(s.end);
     setMinTotal(s.minTotal);
     setMaxTotal(s.maxTotal);
     setUserIdFilter(s.userIdFilter);
+    setOrderIdFilter(s.orderIdFilter || "");
+    setPaymentIdFilter(s.paymentIdFilter || "");
     setSortKey(s.sortKey);
     setSortDir(s.sortDir);
     setShowPaid(s.showPaid);
@@ -753,12 +825,28 @@ function AdminOrdersContent() {
 
   return (
     <section className="container mx-auto py-8 space-y-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Orders</h1>
           <p className="text-sm text-muted-foreground">
             Track orders, payments, and delivery status.
           </p>
+          {outstandingOnly ? (
+            <div className="mt-1 inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+              Collections mode: Outstanding only
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => {
+                  setOutstandingOnly(false);
+                  setPage(1);
+                }}
+              >
+                Show all
+              </Button>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" className="w-full sm:w-auto" onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "orders"] })}>
@@ -873,11 +961,16 @@ function AdminOrdersContent() {
                 setFilter("ALL");
                 setDeliveryFilter("ALL");
                 setPaymentMethod("ALL");
+                setCustomerType("ALL");
+              setOutstandingOnly(false);
+              setDiscountOnly(false);
                 setStart("");
                 setEnd("");
                 setMinTotal("");
                 setMaxTotal("");
                 setUserIdFilter("");
+                setOrderIdFilter("");
+                setPaymentIdFilter("");
                 setPage(1);
               }}
             >
@@ -886,7 +979,26 @@ function AdminOrdersContent() {
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+          {orderIdFilter || paymentIdFilter ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <span className="font-medium">Exact source filter active:</span>{" "}
+              {orderIdFilter ? shortOrderId(orderIdFilter) : `payment ${shortOrderId(paymentIdFilter)}`}{" "}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-1 h-6 px-2 text-[11px]"
+                onClick={() => {
+                  setOrderIdFilter("");
+                  setPaymentIdFilter("");
+                  setPage(1);
+                }}
+              >
+                Clear
+              </Button>
+            </div>
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -915,6 +1027,7 @@ function AdminOrdersContent() {
               <SelectItem value="ALL">All</SelectItem>
               <SelectItem value="UNPAID">Unpaid</SelectItem>
               <SelectItem value="PARTIALLY_PAID">Partially Paid</SelectItem>
+              <SelectItem value="ON_HOLD_CREDIT">On hold (credit)</SelectItem>
               <SelectItem value="PAID">Paid</SelectItem>
               <SelectItem value="CANCELLED">Cancelled</SelectItem>
             </SelectContent>
@@ -956,6 +1069,22 @@ function AdminOrdersContent() {
               <SelectItem value="adjustment">Adjustment</SelectItem>
             </SelectContent>
           </Select>
+          <Select
+            value={customerType}
+            onValueChange={(value) => {
+              setCustomerType(value);
+              setPage(1);
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Customer type" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All customers</SelectItem>
+              <SelectItem value="REGISTERED">Registered</SelectItem>
+              <SelectItem value="WALK_IN">Walk-in</SelectItem>
+            </SelectContent>
+          </Select>
           <Input
             type="date"
             value={start}
@@ -993,8 +1122,18 @@ function AdminOrdersContent() {
             }}
           />
         </div>
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">Saved views:</span>
+          <Button
+            variant={discountOnly ? "default" : "outline"}
+            size="sm"
+            onClick={() => {
+              setDiscountOnly((prev) => !prev);
+              setPage(1);
+            }}
+          >
+            Discounted only
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1033,6 +1172,9 @@ function AdminOrdersContent() {
                 setFilter("ALL");
                 setDeliveryFilter("ALL");
                 setPaymentMethod("ALL");
+                setCustomerType("ALL");
+                setOutstandingOnly(false);
+                setDiscountOnly(false);
                 setStart("");
                 setEnd("");
                 setMinTotal("");
@@ -1058,7 +1200,7 @@ function AdminOrdersContent() {
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
-        <Table className="hidden md:table w-full table-fixed min-w-[1200px]">
+        <Table className="hidden lg:table w-full table-fixed min-w-[1200px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[36px] relative" style={{ width: columnWidths.select }}>
@@ -1118,7 +1260,7 @@ function AdminOrdersContent() {
                 className="cursor-pointer select-none relative"
                 style={{ width: columnWidths.status }}
                 onClick={() => {
-                  const seq = ["ALL", "UNPAID", "PARTIALLY_PAID", "PAID", "CANCELLED"] as const;
+                  const seq = ["ALL", "UNPAID", "PARTIALLY_PAID", "ON_HOLD_CREDIT", "PAID", "CANCELLED"] as const;
                   const i = seq.indexOf(filter as (typeof seq)[number]);
                   const next = seq[(i + 1) % seq.length];
                   setFilter(next);
@@ -1256,7 +1398,14 @@ function AdminOrdersContent() {
                         </div>
                       </div>
                     ) : (
-                      <span className="text-muted-foreground">Unknown</span>
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="truncate">
+                          {order.walkInName || "Walk-in"}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground truncate">
+                          {order.walkInPhone || "OTC sale"}
+                        </div>
+                      </div>
                     )}
                   </TableCell>
                   <TableCell
@@ -1266,12 +1415,31 @@ function AdminOrdersContent() {
                     <span className="block truncate">{timeAgo(order.createdAt)}</span>
                   </TableCell>
                   <TableCell style={{ width: getColWidth("status") }}>
-                    <span className={`text-xs px-2 py-1 rounded-full ${chipToneClass(orderStatusTone(order.status))}`}>
-                      {order.status}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span className={`text-xs px-2 py-1 rounded-full ${chipToneClass(orderStatusTone(order.status))}`}>
+                        {order.status}
+                      </span>
+                      {String(order.status || "").toUpperCase() === "ON_HOLD_CREDIT" ? (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${chipToneClass("warning")}`}>
+                          Credit hold
+                        </span>
+                      ) : null}
+                      {Boolean(order.hasPendingMomo) ? (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${chipToneClass("warning")}`}>
+                          Hold release (MoMo pending)
+                        </span>
+                      ) : null}
+                    </div>
                   </TableCell>
                   <TableCell className="text-right" style={{ width: getColWidth("total") }}>
-                    {formatCurrency(Number(order.total || 0))}
+                    <div className="space-y-0.5">
+                      <div>{formatCurrency(Number(order.total || 0))}</div>
+                      {Number(order.discountAmount || 0) > 0 ? (
+                        <div className="text-[11px] text-amber-700">
+                          Discount: -{formatCurrency(Number(order.discountAmount || 0))}
+                        </div>
+                      ) : null}
+                    </div>
                   </TableCell>
                   {showPaid ? (
                     <TableCell className="text-right" style={{ width: getColWidth("paid") }}>
@@ -1326,7 +1494,7 @@ function AdminOrdersContent() {
             })}
           </TableBody>
         </Table>
-        <div className="md:hidden space-y-4 p-2">
+        <div className="lg:hidden space-y-4 p-2">
           {sortedOrders.map((order) => {
             const delivery = order.deliveryStatus || "NOT_DELIVERED";
             const statusClass = chipToneClass(orderStatusTone(order.status));
@@ -1353,9 +1521,11 @@ function AdminOrdersContent() {
                           : ""}
                       </p>
                     ) : null}
-                    <p className="text-xs text-muted-foreground">{order.user?.name || "Unknown"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {order.user?.name || order.walkInName || "Walk-in"}
+                    </p>
                     <p className="text-xs text-muted-foreground break-all">
-                      {order.user?.phone || order.user?.email || "—"}
+                      {order.user?.phone || order.user?.email || order.walkInPhone || "—"}
                     </p>
                   </div>
                   <span className="text-xs text-muted-foreground">{timeAgo(order.createdAt)}</span>
@@ -1364,9 +1534,16 @@ function AdminOrdersContent() {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <p className="text-xs uppercase text-muted-foreground">Status</p>
-                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${statusClass}`}>
-                      {order.status}
-                    </span>
+                    <div className="flex flex-col gap-1">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${statusClass}`}>
+                        {order.status}
+                      </span>
+                      {Boolean(order.hasPendingMomo) ? (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${chipToneClass("warning")}`}>
+                          Hold release (MoMo pending)
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                   {showDelivery ? (
                     <div>
@@ -1390,6 +1567,11 @@ function AdminOrdersContent() {
                     <p className="font-mono">
                       {formatCurrency(Number(order.total || 0))}
                     </p>
+                    {Number(order.discountAmount || 0) > 0 ? (
+                      <p className="text-[11px] text-amber-700">
+                        Discount: -{formatCurrency(Number(order.discountAmount || 0))}
+                      </p>
+                    ) : null}
                   </div>
                   {showPaid ? (
                     <div>
@@ -1448,16 +1630,16 @@ function AdminOrdersContent() {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" asChild className="flex-1 min-w-[120px]">
+                  <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
                     <Link href={`/admin/orders/${order.id}`}>View Details</Link>
                   </Button>
-                  <Button variant="outline" size="sm" asChild className="flex-1 min-w-[120px]">
+                  <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
                     <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}`}>Audit</Link>
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
-                    className="flex-1 min-w-[120px]"
+                    className="w-full sm:flex-1 sm:min-w-[120px]"
                     onClick={() => {
                       setSelectedOrder(order);
                       setPaymentAmount("");
@@ -1473,7 +1655,7 @@ function AdminOrdersContent() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="flex-1 min-w-[120px]"
+                    className="w-full sm:flex-1 sm:min-w-[120px]"
                     onClick={() => {
                       navigator.clipboard
                         .writeText(`${typeof window !== "undefined" ? window.location.origin : ""}/admin/orders/${order.id}`)

@@ -22,7 +22,7 @@ export async function GET(
   const userId = params.id;
 
   try {
-    const [orders, payments] = await Promise.all([
+    const [orders, payments, balanceRow] = await Promise.all([
       prisma.order.findMany({
         where: { userId, status: { not: "CANCELLED" } },
         select: { total: true, amountPaid: true },
@@ -32,6 +32,10 @@ export async function GET(
           userId,
         },
         select: { amount: true, status: true, refundDisposition: true, note: true },
+      }),
+      prisma.balance.findUnique({
+        where: { userId },
+        select: { creditLimit: true },
       }),
     ]);
 
@@ -133,6 +137,7 @@ export async function GET(
       balance,
       storeCredit,
       cashRefunds,
+      creditLimit: Number(balanceRow?.creditLimit ?? 0),
       updatedAt: new Date().toISOString(),
     });
   } catch (e) {

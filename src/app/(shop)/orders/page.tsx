@@ -63,6 +63,9 @@ type Order = {
   deliveryStatus?: "NOT_DELIVERED" | "PARTIALLY_DELIVERED" | "DELIVERED" | "RETURNED" | string;
   deliveredAt?: string | Date | null;
   createdAt: string | Date;
+  subtotal?: number | string;
+  taxAmount?: number | string;
+  discountAmount?: number | string;
   total: number | string;
   amountPaid?: number | string;
   balance?: number | string;
@@ -107,7 +110,8 @@ function OrdersContent() {
     const source = (data?.orders || []) as Order[];
     return source.map((o) => {
       const totalPaid = Number(o.amountPaid ?? 0);
-      const balance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+      const rawBalance = Number(o.balance ?? Math.max(0, Number(o.total) - totalPaid));
+      const balance = Math.abs(rawBalance) < 0.01 ? 0 : rawBalance;
       return { ...o, totalPaid, balance };
     });
   }, [data]);
@@ -122,16 +126,30 @@ function OrdersContent() {
   const summary = useMemo(() => {
     const active = orders.filter((o) => o.status !== "CANCELLED");
     const totalOrders = active.length;
-    const totalSpent = active.reduce((s, o) => s + Number(o.total), 0);
-    const totalPaid = active.reduce((s, o) => s + Number(o.totalPaid), 0);
-    const outstanding = Math.max(0, totalSpent - totalPaid);
-    return { totalOrders, totalSpent, totalPaid, outstanding };
+    const outstanding = Math.max(0, active.reduce((s, o) => s + Number(o.balance), 0));
+    return { totalOrders, outstanding };
   }, [orders]);
 
   const hasOutstanding = useMemo(
     () => orders.some((o) => o.status !== "CANCELLED" && Number(o.balance) > 0),
     [orders]
   );
+  const openOrdersOldestFirst = useMemo(
+    () =>
+      [...orders]
+        .filter((o) => o.status !== "CANCELLED" && Number(o.balance) > 0)
+        .sort(
+          (a, b) =>
+            new Date(String(a.createdAt || "")).getTime() -
+            new Date(String(b.createdAt || "")).getTime(),
+        )
+        .map((o) => ({
+          id: o.id,
+          balance: Number(o.balance || 0),
+        })),
+    [orders],
+  );
+  const preferredPhone = String((me?.phone ?? me?.user?.phone ?? "") as string).trim();
 
   const creditAvailable = Math.max(0, Number(balanceData?.unappliedFunds ?? 0));
   const cashRefunds = Math.max(0, Number(balanceData?.cashRefunds ?? 0));
@@ -166,7 +184,7 @@ function OrdersContent() {
           <>
             Store credit available:{" "}
             <span className="font-semibold">{formatCurrency(creditAvailable)}</span>. This will be used automatically
-            toward your oldest unpaid or partially‑paid orders when you place new orders. If you would like credit
+            toward your oldest unpaid or partially-paid orders when you place new orders. If you would like credit
             applied to an existing balance right away, please contact the store admin.
           </>
         ),
@@ -245,7 +263,7 @@ function OrdersContent() {
     );
 
   return (
-    <section className="orders-page mx-auto w-full max-w-5xl space-y-4 px-3 sm:px-4 lg:px-0">
+    <section className="orders-page mx-auto w-full max-w-6xl space-y-4 px-3 sm:px-4 lg:px-0">
       {notices.length > 0 && (
         <Card className="border">
           <CardHeader className="pb-2">
@@ -306,31 +324,39 @@ function OrdersContent() {
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      {summary.outstanding > 0 ? (
         <Card className="border">
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Orders</p>
-            <p className="text-lg font-semibold">{summary.totalOrders}</p>
-          </CardContent>
-        </Card>
-        <Card className="border">
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Outstanding</p>
-            <p className={`text-lg font-semibold ${summary.outstanding > 0 ? "text-red-600" : "text-green-700"}`}>
-              {formatCurrency(summary.outstanding)}
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Pay All Open Balances</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Make one payment and we will apply it oldest-first across your unpaid or partially-paid orders.
             </p>
+            <div className="text-sm">
+              Outstanding across open orders:{" "}
+              <span className="font-semibold text-red-600">
+                {formatCurrency(summary.outstanding)}
+              </span>
+            </div>
+            <MomoPayInline
+              maxAmount={summary.outstanding}
+              defaultPhone={preferredPhone || undefined}
+              allocatableOrders={openOrdersOldestFirst}
+              onSuccess={() => {
+                queryClient.invalidateQueries({ queryKey: ["orders", "history"] });
+                queryClient.invalidateQueries({ queryKey: ["balance", "self"] });
+              }}
+            />
           </CardContent>
         </Card>
+      ) : (
         <Card className="border">
-          <CardContent className="pt-4">
-            <p className="text-xs text-muted-foreground">Store credit</p>
-            <p className="text-lg font-semibold text-emerald-700">
-              {creditAvailable > 0 ? formatCurrency(creditAvailable) : "None"}
-            </p>
+          <CardContent className="py-4 text-sm text-green-700">
+            No balance due.
           </CardContent>
         </Card>
-      </div>
+      )}
 
       {filtered.map((order) => {
         const items = Array.isArray(order.items) ? order.items : [];
@@ -338,7 +364,13 @@ function OrdersContent() {
           (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
           0,
         );
-        const subtotal = Number(order.total || 0);
+        const subtotal = Number(order.subtotal ?? order.total ?? 0);
+        const taxAmount = Number(order.taxAmount ?? 0);
+        const netTotal = Number(order.total || 0);
+        const discountAmount = Math.max(
+          0,
+          Number(order.discountAmount ?? subtotal + taxAmount - netTotal),
+        );
         const returnAdjustment = Math.max(0, lineTotal - subtotal);
         const nonNullItems = items.filter((it) => it?.product);
         const uniqueProducts = nonNullItems.reduce(
@@ -375,13 +407,14 @@ function OrdersContent() {
         return (
           <Card
             key={order.id}
-            className="text-xs border shadow-sm"
+            className="border shadow-sm text-[12px]"
           >
-            <CardHeader className="pb-2">
-              <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-[13px]">
-                <span className="flex items-center gap-2 min-w-0">
-                  <span className="truncate max-w-[160px]">
-                    Order {formatIdReadable(order.id)}
+            <CardHeader className="px-4 pb-1 pt-3">
+              <CardTitle className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between text-[12px]">
+                <span className="flex items-start gap-2 min-w-0">
+                  <span className="min-w-0">
+                    <div className="font-semibold break-all">Order {formatIdReadable(order.id)}</div>
+                    <div className="text-[11px] text-muted-foreground">{formatDateGH(order.createdAt)}</div>
                   </span>
                   {(() => {
                     try {
@@ -392,7 +425,7 @@ function OrdersContent() {
                       if (pending) {
                         const pendingClass = chipToneClass(paymentStatusTone("PENDING"));
                         return (
-                          <span className={`text-[11px] px-2 py-0.5 rounded-full ${pendingClass}`}>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${pendingClass}`}>
                             MoMo Pending
                           </span>
                         );
@@ -405,7 +438,7 @@ function OrdersContent() {
                   {(() => {
                     const sc = chipToneClass(orderStatusTone(order.status));
                     return (
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${sc}`}>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${sc}`}>
                         {order.status}
                       </span>
                     );
@@ -422,13 +455,13 @@ function OrdersContent() {
                       label = "Returned";
                     }
                     return (
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full ${cls}`}>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${cls}`}>
                         {label}
                       </span>
                     );
                   })()}
                   <span
-                    className={`text-[11px] px-2 py-0.5 rounded-full border ${
+                    className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
                       order.balance > 0
                         ? `${chipToneClass("danger")} ${chipToneBorderClass("danger")}`
                         : `${chipToneClass("success")} ${chipToneBorderClass("success")}`
@@ -436,9 +469,17 @@ function OrdersContent() {
                   >
                     Balance {formatCurrency(Number(order.balance))}
                   </span>
+                  {discountAmount > 0 ? (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded-full border ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}
+                    >
+                      Discount -{formatCurrency(discountAmount)}
+                    </span>
+                  ) : null}
                   <Button
                     variant="outline"
                     size="sm"
+                    className="h-7 px-2 text-[11px]"
                     onClick={() =>
                       setDetailsOpen((prev) => ({
                         ...prev,
@@ -451,15 +492,15 @@ function OrdersContent() {
                 </div>
               </CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-2">
+            <CardContent className="grid gap-1 px-4 pb-3 pt-0">
               {uniqueProducts.length > 0 && (
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-1.5">
-                  <div className="flex items-start gap-2">
-                    <div className="flex flex-wrap gap-2 max-w-[176px] sm:max-w-none">
+                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between mb-1">
+                  <div className="flex items-start gap-1.5">
+                    <div className="flex flex-wrap gap-1.5 max-w-[176px] sm:max-w-none">
                       {uniqueProducts.slice(0, 3).map((it) => (
                         <div
                           key={it.product.id}
-                          className="relative h-7 w-7 rounded-md bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center"
+                          className="relative h-6 w-6 rounded-md bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center"
                         >
                           {it.product.imageUrl ? (
                             // eslint-disable-next-line @next/next/no-img-element
@@ -479,7 +520,7 @@ function OrdersContent() {
                         </div>
                       ))}
                       {uniqueProducts.length > 3 && (
-                        <div className="h-7 w-7 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-600">
+                        <div className="h-6 w-6 rounded-md bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-600">
                           +{uniqueProducts.length - 3}
                         </div>
                       )}
@@ -532,23 +573,41 @@ function OrdersContent() {
               )}
               {detailsOpen[order.id] && (
                 <>
-              <div className="flex justify-between">
-                <span>Total</span>
-                <span>{formatCurrency(lineTotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Subtotal</span>
-                <span>{formatCurrency(subtotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Paid</span>
-                <span>{formatCurrency(Number(order.totalPaid))}</span>
-              </div>
-              <div className="flex justify-between font-semibold">
-                <span>Balance</span>
-                <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
-                  {formatCurrency(Number(order.balance))}
-                </span>
+              <div className="mt-1 grid gap-1 rounded-md border bg-muted/20 p-2 sm:grid-cols-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-muted-foreground">Items total</span>
+                  <span>{formatCurrency(lineTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span>{formatCurrency(subtotal)}</span>
+                </div>
+                {taxAmount > 0 ? (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">Tax</span>
+                    <span>{formatCurrency(taxAmount)}</span>
+                  </div>
+                ) : null}
+                {discountAmount > 0 ? (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-muted-foreground">Discount</span>
+                    <span className="text-amber-700">-{formatCurrency(discountAmount)}</span>
+                  </div>
+                ) : null}
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-muted-foreground">Invoice total</span>
+                  <span>{formatCurrency(netTotal)}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-muted-foreground">Paid</span>
+                  <span>{formatCurrency(Number(order.totalPaid))}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] font-semibold">
+                  <span className="text-muted-foreground">Balance</span>
+                  <span className={order.balance <= 0 ? "text-green-600" : "text-red-600"}>
+                    {formatCurrency(Number(order.balance))}
+                  </span>
+                </div>
               </div>
               {returnAdjustment > 0.005 && (
                 <p className="mt-1 text-[10px] text-muted-foreground">
@@ -573,7 +632,7 @@ function OrdersContent() {
                         <span className="truncate sm:max-w-[220px]">
                           {it.product?.name || "Item"}{" "}
                           <span className="text-muted-foreground">
-                            ×{qty}
+                            x{qty}
                           </span>
                         </span>
                         <div className="flex flex-col items-start sm:items-end gap-0.5">
@@ -608,7 +667,7 @@ function OrdersContent() {
                 </div>
               )}
               {/* Simple timeline-style view (no duplicated payments) */}
-              <div className="mt-3 border-t pt-2 space-y-1">
+              <div className="mt-2 border-t pt-2 space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-medium">Order placed</span>
                   <span>{formatDateGH(order.createdAt)}</span>
@@ -636,7 +695,7 @@ function OrdersContent() {
               </div>
 
               {Number(order.balance) > 0 && order.status !== "CANCELLED" && (
-                <div className="mt-2 grid gap-2 rounded-md border bg-muted/40 p-3">
+                <div className="mt-2 grid gap-2 rounded-md border bg-muted/40 p-2.5">
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-semibold">Pay outstanding balance</p>
                     <p className="text-sm text-red-600 font-semibold">{formatCurrency(Number(order.balance))}</p>
@@ -651,7 +710,7 @@ function OrdersContent() {
                   <MomoPayInline
                     orderId={order.id}
                     maxAmount={Number(order.balance)}
-                    defaultPhone={String(me?.phone || "")}
+                    defaultPhone={preferredPhone || undefined}
                     onSuccess={() => queryClient.invalidateQueries({ queryKey: ["orders","history"] })}
                   />
                   <MomoPendingList
@@ -664,7 +723,7 @@ function OrdersContent() {
               )}
 
               {order.payments.length > 0 && (
-                <div className="mt-3">
+                <div className="mt-2">
                   <div className="flex items-center justify-between">
                     <h3 className="font-semibold text-sm">Payments</h3>
                     <Button
@@ -848,7 +907,7 @@ export default function OrdersPage() {
       fallback={
         <section className="space-y-4">
           <h1 className="text-2xl font-semibold">Order History</h1>
-          <p className="text-sm text-muted-foreground">Loading your orders…</p>
+          <p className="text-sm text-muted-foreground">Loading your orders...</p>
         </section>
       }
     >
@@ -860,7 +919,19 @@ export default function OrdersPage() {
 // Legacy payment formatting helpers and payment row typing have been removed
 // to keep this page focused on high-level order summaries.
 
-function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderId: string; maxAmount: number; defaultPhone?: string; onSuccess?: () => void }) {
+function MomoPayInline({
+  orderId,
+  maxAmount,
+  defaultPhone,
+  allocatableOrders,
+  onSuccess,
+}: {
+  orderId?: string;
+  maxAmount: number;
+  defaultPhone?: string;
+  allocatableOrders?: Array<{ id: string; balance: number }>;
+  onSuccess?: () => void;
+}) {
   const [phone, setPhone] = useState<string>("");
   const [normalized, setNormalized] = useState<string>("");
   const [amtStr, setAmtStr] = useState<string>(() => (Number(maxAmount) > 0 ? String(Number(maxAmount).toFixed(2)) : ""));
@@ -884,6 +955,24 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
     return Math.max(0, Math.min(Number(maxAmount) || 0, n));
   })();
   const amountInvalid = !(parsedAmount > 0) || parsedAmount > (Number(maxAmount) || 0);
+  const allocationPreview = useMemo(() => {
+    if (orderId || !allocatableOrders?.length) {
+      return { allocations: [] as Array<{ orderId: string; apply: number; before: number; after: number }>, unallocated: 0 };
+    }
+    const amountToApply = Number.isFinite(parsedAmount) && parsedAmount > 0 ? parsedAmount : 0;
+    let remaining = amountToApply;
+    const allocations: Array<{ orderId: string; apply: number; before: number; after: number }> = [];
+    for (const o of allocatableOrders) {
+      if (remaining <= 0.0001) break;
+      const before = Math.max(0, Number(o.balance || 0));
+      if (before <= 0) continue;
+      const apply = Math.min(before, remaining);
+      const after = Math.max(0, before - apply);
+      allocations.push({ orderId: o.id, apply, before, after });
+      remaining -= apply;
+    }
+    return { allocations, unallocated: Math.max(0, remaining) };
+  }, [orderId, allocatableOrders, parsedAmount]);
 
   const resetFields = () => {
     setPhone("");
@@ -909,7 +998,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
       const res = await fetch("/api/payments/momo/initiate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderId, phone: phoneToUse, provider: "mtn", amount: amt }),
+        body: JSON.stringify({ ...(orderId ? { orderId } : {}), phone: phoneToUse, provider: "mtn", amount: amt }),
       });
       const j = (await res.json().catch(() => ({} as { error?: string; paymentId?: string; applied?: boolean; simulated?: boolean })));
       if (!res.ok) {
@@ -981,8 +1070,21 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
   const showSavedPhoneChoice = Boolean(savedPhoneNormalized);
 
   return (
-    <div className="grid gap-2 sm:flex sm:items-start sm:gap-2">
-      <div className="grid gap-1">
+    <div className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-start">
+        <div className="grid gap-1">
+        {showSavedPhoneChoice ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>Saved phone: <span className="font-medium text-foreground">{savedPhoneNormalized}</span></span>
+            <button
+              type="button"
+              className="text-primary underline-offset-2 hover:underline"
+              onClick={() => setPhone(savedPhoneNormalized)}
+            >
+              Use this number
+            </button>
+          </div>
+        ) : null}
         <Input
           type="tel"
           inputMode="tel"
@@ -1003,13 +1105,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
               <span className="text-red-600">Enter a valid phone number</span>
             )}
             {showSavedPhoneChoice && phone !== savedPhoneNormalized && (
-              <button
-                type="button"
-                className="text-primary underline-offset-2 hover:underline"
-                onClick={() => setPhone(savedPhoneNormalized)}
-              >
-                Use saved MoMo number: {savedPhoneNormalized}
-              </button>
+              <span className="text-muted-foreground">Tip: tap &quot;Use this number&quot;.</span>
             )}
             {isValidPhone(savedPhoneNormalized) && !phone && (
               <span className="text-muted-foreground">
@@ -1018,11 +1114,11 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
             )}
           </div>
         )}
-      </div>
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+        </div>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
         <div className="relative w-40">
           <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-xs text-muted-foreground">
-            GH₵
+            GHS
           </span>
           <Input
             type="text"
@@ -1060,8 +1156,8 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
             Outstanding: {formatCurrency(Number(maxAmount) || 0)}
           </button>
         )}
-      </div>
-      <div className="flex gap-2">
+        </div>
+        <div className="flex flex-wrap gap-2">
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <DialogTrigger asChild>
             <Button
@@ -1101,7 +1197,7 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
                 </div>
               </div>
             </div>
-            <div className="flex justify-end gap-2 mt-4">
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
               <DialogClose asChild>
                 <Button variant="secondary">Cancel</Button>
               </DialogClose>
@@ -1134,6 +1230,46 @@ function MomoPayInline({ orderId, maxAmount, defaultPhone, onSuccess }: { orderI
           Pay full balance
         </Button>
       </div>
+      </div>
+      {!orderId && allocatableOrders && allocatableOrders.length > 0 ? (
+        <div className="rounded-md border bg-muted/20 p-3 text-xs space-y-2">
+          <div className="font-medium">Allocation preview (oldest orders first)</div>
+          {allocationPreview.allocations.length === 0 ? (
+            <div className="text-muted-foreground">Enter amount to preview allocations.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-[1fr_auto] gap-x-3 text-[11px] font-medium text-muted-foreground">
+                <span>Order</span>
+                <span>Apply (before -&gt; after)</span>
+              </div>
+              {allocationPreview.allocations.map((row) => (
+                <div
+                  key={`alloc-${row.orderId}`}
+                  className="grid grid-cols-[1fr_auto] gap-x-3 border-t pt-1 first:border-0 first:pt-0"
+                >
+                  <span className="truncate">Order {formatIdReadable(row.orderId)}</span>
+                  <span className="text-right">
+                    {formatCurrency(row.apply)} ({formatCurrency(row.before)} -&gt; {formatCurrency(row.after)})
+                  </span>
+                </div>
+              ))}
+              <div className="border-t pt-1 flex items-center justify-between">
+                <span>Total to allocate</span>
+                <span className="font-medium">
+                  {formatCurrency(
+                    allocationPreview.allocations.reduce((sum, item) => sum + Number(item.apply || 0), 0),
+                  )}
+                </span>
+              </div>
+              {allocationPreview.unallocated > 0.005 ? (
+                <div className="text-amber-700">
+                  Unallocated remainder: {formatCurrency(allocationPreview.unallocated)}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1205,3 +1341,4 @@ function MomoPendingWatcher({ paymentId, onSettled }: { paymentId: string; onSet
   }, [paymentId, onSettled]);
   return null;
 }
+

@@ -1,7 +1,7 @@
 ﻿"use client";
 
-import { Suspense, useState } from "react";
-import { signIn } from "next-auth/react";
+import { Suspense, useEffect, useState } from "react";
+import { signIn, useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -9,8 +9,15 @@ import Link from "next/link";
 
 function LoginContent() {
   const router = useRouter();
+  const { data: session, status } = useSession();
   const params = useSearchParams();
   const callbackUrl = params.get("callbackUrl") || "/";
+  const nextParam = params.get("next");
+  const role = String((session?.user as { role?: string } | undefined)?.role || "").toUpperCase();
+  const defaultRedirect =
+    role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT" || role === "DISPATCHER"
+      ? "/admin"
+      : "/account?verify=1";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
@@ -37,11 +44,43 @@ function LoginContent() {
     "email",
   );
 
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const target = nextParam || callbackUrl;
+    if (target && target !== "/login") {
+      router.replace(target);
+      return;
+    }
+    router.replace(defaultRedirect);
+  }, [status, nextParam, callbackUrl, defaultRedirect, router]);
+
+  useEffect(() => {
+    if (!showReset) return;
+    setResetIdentifier("");
+    setResetCode("");
+    setNewPassword("");
+    setResetMessage(null);
+    setResetError(null);
+    setResetFieldErrors({});
+    setCodeRequested(false);
+  }, [showReset]);
+
   const reason = params.get("reason");
   const initialReasonMessage =
     reason === "session-expired"
       ? "Your admin session timed out for security. Please sign in again."
       : null;
+
+  if (status === "loading" || status === "authenticated") {
+    return (
+      <section className="container mx-auto max-w-sm py-12">
+        <h1 className="text-2xl font-semibold mb-6">Sign in</h1>
+        <p className="text-sm text-muted-foreground">
+          {status === "loading" ? "Checking session…" : "Redirecting…"}
+        </p>
+      </section>
+    );
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -200,9 +239,12 @@ function LoginContent() {
       }
       setPassword("");
     } catch (error: unknown) {
-      setResetError(
-        error instanceof Error ? error.message : "Failed to reset password"
-      );
+      const message = error instanceof Error ? error.message : "Failed to reset password";
+      if (message.toLowerCase().includes("invalid payload")) {
+        setResetError("Invalid reset code or password. Check the code and try a stronger password.");
+      } else {
+        setResetError(message);
+      }
     } finally {
       setConfirmingReset(false);
     }
@@ -256,7 +298,7 @@ function LoginContent() {
         <button
           type="button"
           className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-          onClick={() => setShowReset((v) => !v)}
+          onClick={() => setShowReset((prev) => !prev)}
         >
           Forgot your password?
         </button>
@@ -303,6 +345,7 @@ function LoginContent() {
                   ? "Account phone number"
                   : "Account email"
               }
+              autoComplete="off"
               value={resetIdentifier}
               onChange={(e) => {
                 setResetIdentifier(e.target.value);
@@ -328,6 +371,7 @@ function LoginContent() {
             <div className="grid gap-2 sm:grid-cols-2">
               <Input
                 placeholder="Reset code"
+                autoComplete="one-time-code"
                 value={resetCode}
                 onChange={(e) => {
                   setResetCode(e.target.value.replace(/\s+/g, "").slice(0, 6));
@@ -338,7 +382,8 @@ function LoginContent() {
               />
               <Input
                 type="password"
-                placeholder="New password"
+                placeholder="New Password"
+                autoComplete="new-password"
                 value={newPassword}
                 onChange={(e) => {
                   setNewPassword(e.target.value);

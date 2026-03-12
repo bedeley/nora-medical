@@ -3,7 +3,12 @@ import { prisma } from "@/lib/prisma";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 import { assertSameOrigin } from "@/lib/origin";
-import { rateLimit } from "@/lib/rate-limit";
+import {
+  checkOtpLockout,
+  clearOtpFailures,
+  rateLimit,
+  recordOtpFailure,
+} from "@/lib/rate-limit";
 import bcrypt from "bcrypt";
 import { z } from "zod";
 
@@ -11,7 +16,7 @@ const schema = z.object({
   identifier: z.string().min(3).optional(),
   email: z.string().optional(), // backward compatibility
   code: z.string().min(4),
-  password: z.string().min(6),
+  password: z.string().min(10),
 });
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -89,6 +94,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid code" }, { status: 400 });
     }
 
+    const lockout = await checkOtpLockout("password_reset", user.id);
+    if (lockout.locked) {
+      return NextResponse.json({ error: "Invalid or expired code" }, { status: 400 });
+    }
+
     const now = new Date();
     const otp = await prisma.userOtp.findFirst({
       where: {
@@ -104,6 +114,7 @@ export async function POST(req: Request) {
 
     const ok = await bcrypt.compare(code, otp.codeHash);
     if (!ok) {
+      await recordOtpFailure("password_reset", user.id);
       return NextResponse.json({ error: "Invalid or expired code" }, { status: 400 });
     }
 
@@ -112,6 +123,7 @@ export async function POST(req: Request) {
       await tx.user.update({ where: { id: user.id }, data: { password: hashed } });
       await tx.userOtp.deleteMany({ where: { userId: user.id, purpose: "password_reset" } });
     });
+    await clearOtpFailures("password_reset", user.id);
 
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

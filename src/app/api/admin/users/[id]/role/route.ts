@@ -9,7 +9,7 @@ import { rateLimit } from "@/lib/rate-limit";
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   // Feature flag: disable role management unless explicitly enabled
   if ((process.env.ADMIN_ROLE_MANAGEMENT_ENABLED || "").trim() !== "1") {
@@ -24,6 +24,10 @@ export async function PATCH(
   if (!session || sessionUser?.role !== "ADMIN") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  const protectedAdmins = String(process.env.PROTECTED_ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
@@ -32,16 +36,17 @@ export async function PATCH(
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
+  const params = await context.params;
   const id = params.id;
   try {
     const body = (await req.json().catch(() => ({}))) as {
       role?: string;
     };
     const roleRaw = String(body?.role || "").toUpperCase();
-    const allowedRoles = ["ADMIN", "CUSTOMER", "STAFF", "ACCOUNTANT"];
+    const allowedRoles = ["ADMIN", "CUSTOMER", "STAFF", "ACCOUNTANT", "DISPATCHER"];
     if (!roleRaw || !allowedRoles.includes(roleRaw)) {
       return NextResponse.json(
-        { error: "Role must be one of ADMIN, STAFF, ACCOUNTANT, CUSTOMER" },
+        { error: "Role must be one of ADMIN, STAFF, ACCOUNTANT, DISPATCHER, CUSTOMER" },
         { status: 400 }
       );
     }
@@ -63,6 +68,17 @@ export async function PATCH(
     });
     if (!existing) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+    if (
+      existing.role === "ADMIN" &&
+      existing.email &&
+      protectedAdmins.includes(existing.email.toLowerCase()) &&
+      targetRole !== "ADMIN"
+    ) {
+      return NextResponse.json(
+        { error: "Protected admin roles cannot be changed." },
+        { status: 400 },
+      );
     }
 
     const user = await prisma.user.update({

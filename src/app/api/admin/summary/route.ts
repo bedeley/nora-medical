@@ -3,7 +3,29 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { startOfDay, endOfDay, parseISO, isValid, format, startOfWeek } from "date-fns";
-import PDFDocument from "pdfkit";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { recordAuditLog } from "@/lib/audit-log";
+
+export const runtime = "nodejs";
+
+type PaymentNoteMeta = {
+  reference?: string;
+  location?: string;
+  restockToStock?: boolean;
+  restock?: boolean;
+  restocked?: boolean;
+  item?: { id?: string; quantity?: number };
+};
+
+type ReturnLogMeta = {
+  itemId?: string;
+  quantity?: number;
+  refundAmount?: number;
+  appliedToBalance?: number;
+  restockToStock?: boolean;
+  restock?: boolean;
+  restocked?: boolean;
+};
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -40,8 +62,13 @@ export async function GET(request: Request) {
           : {}),
       },
       select: {
+        id: true,
         createdAt: true,
         total: true,
+        subtotal: true,
+        taxAmount: true,
+        amountPaid: true,
+        balance: true,
         deliveryStatus: true,
         items: {
           select: {
@@ -66,6 +93,20 @@ export async function GET(request: Request) {
       },
       select: { amount: true, createdAt: true, category: true },
     });
+    const manualExpenseLines = await prisma.journalLine.findMany({
+      where: {
+        entry: {
+          status: "POSTED",
+          sourceType: "EXPENSE",
+          sourceId: null,
+          entryDate: Object.keys(dateFilter).length ? dateFilter : undefined,
+        },
+      },
+      include: {
+        account: { select: { name: true, type: true } },
+        entry: { select: { entryDate: true } },
+      },
+    });
 
     const payments = await prisma.payment.findMany({
       where: {
@@ -74,67 +115,20 @@ export async function GET(request: Request) {
           ? { user: { name: { contains: customer, mode: "insensitive" } } }
           : {}),
       },
-      select: { amount: true, status: true, createdAt: true },
+      select: { amount: true, status: true, createdAt: true, refundDisposition: true, note: true, orderId: true },
     });
 
-    // Totals
-    let totalRevenue = 0;
-    let totalCOGS = 0;
-    let orderCount = 0;
-    let totalOrderValue = 0;
-    let deliveredCount = 0;
-    let partiallyDeliveredCount = 0;
-    let returnedCount = 0;
-    let pendingCount = 0;
-    for (const o of orders) {
-      orderCount += 1;
-      totalOrderValue += Number(o.total || 0);
-      const deliveryStatus = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
-      if (deliveryStatus === "DELIVERED") deliveredCount += 1;
-      else if (deliveryStatus === "PARTIALLY_DELIVERED") partiallyDeliveredCount += 1;
-      else if (deliveryStatus === "RETURNED") returnedCount += 1;
-      else pendingCount += 1;
-      for (const it of o.items) {
-        const qty = Number(it.quantity || 0);
-        totalRevenue += Number(it.price || 0) * qty;
-        const unitCost = it.costAtSale != null ? Number(it.costAtSale) : Number(it.product?.cost ?? 0);
-        totalCOGS += unitCost * qty;
-      }
-    }
-    let totalRefunds = 0;
-    let totalCashIn = 0;
-    let totalCashOut = 0;
-    for (const p of payments) {
-      const amount = Number(p.amount || 0);
-      const status = String(p.status || "").toUpperCase();
-      if (status === "REFUND") {
-        const refundAmount = Math.abs(amount);
-        totalRefunds += refundAmount;
-        totalCashOut += refundAmount;
-        continue;
-      }
-      if (status === "VOID") continue;
-      if (amount > 0) totalCashIn += amount;
-      if (amount < 0) totalCashOut += Math.abs(amount);
-    }
-    const totalExpense = expenses.reduce(
-      (sum: number, e: { amount: unknown }) => sum + Number(e.amount || 0),
-      0
+    const orderIdsForReturns = Array.from(
+      new Set(orders.map((o) => o.id).filter((id): id is string => Boolean(id))),
     );
-    const profit = totalRevenue - totalCOGS - totalExpense;
-    const margin = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
-    const netRevenue = totalRevenue - totalRefunds;
-    const netCash = totalCashIn - totalCashOut;
-    const averageOrderValue = orderCount > 0 ? totalOrderValue / orderCount : 0;
-
-    const expenseBreakdownMap: Record<string, number> = {};
-    for (const e of expenses) {
-      const key = e.category || "Uncategorized";
-      expenseBreakdownMap[key] = (expenseBreakdownMap[key] || 0) + Number(e.amount || 0);
-    }
-    const expenseBreakdown = Object.entries(expenseBreakdownMap)
-      .map(([cat, amount]) => ({ category: cat, amount }))
-      .sort((a, b) => b.amount - a.amount);
+    const returnLogs = await prisma.auditLog.findMany({
+      where: {
+        action: "ORDER_ITEM_RETURN",
+        createdAt: Object.keys(dateFilter).length ? dateFilter : undefined,
+        ...(orderIdsForReturns.length ? { entityId: { in: orderIdsForReturns } } : {}),
+      },
+      orderBy: { createdAt: "asc" },
+    });
 
     // Grouping key
     const formatKey = (d: Date) => {
@@ -147,13 +141,89 @@ export async function GET(request: Request) {
       return format(d, "yyyy-MM-dd");
     };
 
+    // Totals
+    let totalRevenue = 0;
+    let totalDiscounts = 0;
+    let discountedOrders = 0;
+    let totalBilled = 0;
+    let totalTaxCollected = 0;
+    let totalCollectedOnPeriodSales = 0;
+    let totalCOGS = 0;
+    let totalOutstanding = 0;
+    let orderCount = 0;
+    let totalOrderValue = 0;
+    let deliveredCount = 0;
+    let partiallyDeliveredCount = 0;
+    let returnedCount = 0;
+    let pendingCount = 0;
+      for (const o of orders) {
+        orderCount += 1;
+        const computedOutstanding = Math.max(
+          0,
+          Number(o.total || 0) - Number(o.amountPaid || 0),
+        );
+        totalOutstanding += computedOutstanding;
+        const deliveryStatus = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+      if (deliveryStatus === "DELIVERED") deliveredCount += 1;
+      else if (deliveryStatus === "PARTIALLY_DELIVERED") partiallyDeliveredCount += 1;
+      else if (deliveryStatus === "RETURNED") returnedCount += 1;
+      else pendingCount += 1;
+      let orderRevenue = Number(o.subtotal ?? 0);
+      if (!(orderRevenue > 0)) {
+        orderRevenue = 0;
+        for (const it of o.items) {
+          const qty = Number(it.quantity || 0);
+          orderRevenue += Number(it.price || 0) * qty;
+        }
+        if (orderRevenue <= 0) {
+          orderRevenue = Number(o.total ?? 0);
+        }
+      }
+      const orderTotal = Math.max(0, Number(o.total || 0));
+      let orderTax = Number(o.taxAmount ?? NaN);
+      const subtotalRaw = Number(o.subtotal ?? NaN);
+      if (!(Number.isFinite(orderTax) && orderTax >= 0)) {
+        if (Number.isFinite(subtotalRaw) && subtotalRaw >= 0) {
+          orderTax = Math.max(0, orderTotal - subtotalRaw);
+        } else {
+          orderTax = Math.max(0, orderTotal - orderRevenue);
+        }
+      }
+      // Keep revenue on a pre-tax basis even for older rows with sparse subtotal fields.
+      if (!(Number(o.subtotal ?? NaN) > 0) && orderRevenue >= orderTotal && orderTax > 0) {
+        orderRevenue = Math.max(0, orderTotal - orderTax);
+      }
+      const grossBeforeDiscount =
+        Number.isFinite(subtotalRaw) && subtotalRaw >= 0
+          ? subtotalRaw + orderTax
+          : orderTotal;
+      const orderDiscount = Math.max(0, grossBeforeDiscount - orderTotal);
+      if (orderDiscount > 0.005) {
+        discountedOrders += 1;
+        totalDiscounts += orderDiscount;
+      }
+      for (const it of o.items) {
+        const qty = Number(it.quantity || 0);
+        const unitCost = it.costAtSale != null ? Number(it.costAtSale) : Number(it.product?.cost ?? 0);
+        totalCOGS += unitCost * qty;
+      }
+      totalRevenue += orderRevenue;
+      totalOrderValue += orderRevenue;
+      const paidRaw = Number(o.amountPaid || 0);
+      const paidClamped = Math.max(0, Math.min(orderTotal, paidRaw));
+      totalBilled += orderTotal;
+      totalTaxCollected += orderTax;
+      totalCollectedOnPeriodSales += paidClamped;
+    }
     const trendMap: Record<string, {
       revenue: number;
       cogs: number;
       expense: number;
+      payrollExpense: number;
       refunds: number;
       cashIn: number;
       cashOut: number;
+      outstanding: number;
       orderCount: number;
       orderValue: number;
       delivered: number;
@@ -161,16 +231,303 @@ export async function GET(request: Request) {
       returned: number;
       pending: number;
     }> = {};
-    for (const o of orders) {
-      const key = formatKey(o.createdAt);
-      if (!trendMap[key]) {
-        trendMap[key] = {
+    let totalRefunds = 0;
+    let totalCashIn = 0;
+    let totalCashOut = 0;
+    const returnItems: Array<{ itemId: string; quantity: number; createdAt: Date }> = [];
+    const returnPayments: Array<{ orderId: string | null; amount: number; createdAt: Date }> = [];
+    for (const p of payments) {
+      const amount = Number(p.amount || 0);
+      const status = String(p.status || "").toUpperCase();
+      const note = typeof p.note === "string" ? p.note : "";
+      let meta: PaymentNoteMeta | null = null;
+      if (note.startsWith("{")) {
+        try {
+          meta = JSON.parse(note) as PaymentNoteMeta;
+        } catch {}
+      }
+      const reference =
+        meta?.reference || (note.includes("\"reference\":\"ITEM_RETURN\"") ? "ITEM_RETURN" : "");
+      const isAutoApply =
+        reference === "AUTO_APPLY" || note.includes("\"reference\":\"AUTO_APPLY\"");
+      const isReturn = reference === "ITEM_RETURN";
+      const isPendingMomo =
+        String((meta as { method?: string } | null)?.method || "").toLowerCase() === "momo" &&
+        String((meta as { status?: string } | null)?.status || "")
+          .toUpperCase()
+          .startsWith("PENDING");
+      const isRevenueRefund =
+        reference === "SALES_REFUND" || note.includes("\"reference\":\"SALES_REFUND\"");
+      const isCreditPayout =
+        meta?.location === "admin/customers:credit-payout" ||
+        note.includes("\"location\":\"admin/customers:credit-payout\"");
+      const refundDisposition = String(p.refundDisposition || "").toUpperCase();
+      const isStoreCreditReturn = isReturn && refundDisposition === "CREDIT";
+      if (isReturn && meta?.restockToStock && meta?.item?.id && meta?.item?.quantity) {
+        returnItems.push({
+          itemId: meta.item.id,
+          quantity: Number(meta.item.quantity || 0),
+          createdAt: p.createdAt,
+        });
+      }
+      if (isReturn) {
+        returnPayments.push({
+          orderId: p.orderId ?? null,
+          amount: Math.abs(amount),
+          createdAt: p.createdAt,
+        });
+      }
+
+      if (isReturn) {
+        // Return/refund revenue adjustments come from audit logs to avoid double counting.
+        if (!isStoreCreditReturn && status === "REFUND") {
+          const refundAmount = Math.abs(amount);
+          totalCashOut += refundAmount;
+          const key = formatKey(p.createdAt);
+          if (!trendMap[key]) {
+            trendMap[key] = {
+              revenue: 0,
+              cogs: 0,
+              expense: 0,
+              payrollExpense: 0,
+              refunds: 0,
+              cashIn: 0,
+              cashOut: 0,
+              outstanding: 0,
+              orderCount: 0,
+              orderValue: 0,
+              delivered: 0,
+              partial: 0,
+              returned: 0,
+              pending: 0,
+            };
+          }
+          trendMap[key].cashOut += refundAmount;
+        }
+        continue;
+      }
+      if (status === "REFUND") {
+        const refundAmount = Math.abs(amount);
+        totalCashOut += refundAmount;
+        if (!isCreditPayout && (isRevenueRefund || isReturn)) {
+          totalRefunds += refundAmount;
+        }
+        continue;
+      }
+      if (status === "VOID") continue;
+      if (isAutoApply) continue;
+      if (isPendingMomo) continue;
+      if (amount > 0) totalCashIn += amount;
+      if (amount < 0) totalCashOut += Math.abs(amount);
+    }
+
+    if (returnItems.length > 0) {
+      const itemIds = Array.from(new Set(returnItems.map((row) => row.itemId)));
+      const items = await prisma.orderItem.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, costAtSale: true, product: { select: { cost: true } } },
+      });
+      const costByItemId = new Map(
+        items.map((row) => [row.id, Number(row.costAtSale ?? row.product?.cost ?? 0)]),
+      );
+      for (const row of returnItems) {
+        const unitCost = costByItemId.get(row.itemId) || 0;
+        const cogs = unitCost * Number(row.quantity || 0);
+        totalCOGS -= cogs;
+        const key = formatKey(row.createdAt);
+        if (!trendMap[key]) {
+          trendMap[key] = {
+            revenue: 0,
+            cogs: 0,
+            expense: 0,
+            payrollExpense: 0,
+            refunds: 0,
+            cashIn: 0,
+            cashOut: 0,
+            outstanding: 0,
+            orderCount: 0,
+            orderValue: 0,
+            delivered: 0,
+            partial: 0,
+            returned: 0,
+            pending: 0,
+          };
+        }
+        trendMap[key].cogs -= cogs;
+      }
+    }
+
+    if (returnLogs.length > 0) {
+      const returnLogKeys = new Set<string>();
+      const logItemIds = Array.from(
+        new Set(
+          returnLogs
+            .map((log) => {
+              if (!log.meta) return null;
+              try {
+                const parsed = JSON.parse(String(log.meta)) as { itemId?: string };
+                return parsed.itemId || null;
+              } catch {
+                return null;
+              }
+            })
+            .filter((id): id is string => Boolean(id)),
+        ),
+      );
+
+      const itemCostRows = logItemIds.length
+        ? await prisma.orderItem.findMany({
+            where: { id: { in: logItemIds } },
+            select: { id: true, costAtSale: true, product: { select: { cost: true } } },
+          })
+        : [];
+      const costByItemId = new Map(
+        itemCostRows.map((row) => [row.id, Number(row.costAtSale ?? row.product?.cost ?? 0)]),
+      );
+
+      for (const log of returnLogs) {
+        let meta: ReturnLogMeta | null = null;
+        try {
+          meta = log.meta ? (JSON.parse(String(log.meta)) as ReturnLogMeta) : null;
+        } catch {
+          meta = null;
+        }
+        const itemId = meta?.itemId;
+        const quantity = Number(meta?.quantity || 0);
+        const refundAmount = Number(meta?.refundAmount || 0);
+        const appliedToBalance = Number(meta?.appliedToBalance || 0);
+        const refundTotal = refundAmount + appliedToBalance;
+        if (!itemId || !(refundTotal > 0) || !(quantity > 0)) continue;
+
+        const windowStart = new Date(log.createdAt.getTime() - 10 * 60 * 1000);
+        const windowEnd = new Date(log.createdAt.getTime() + 10 * 60 * 1000);
+        const logKey = `${log.entityId || ""}|${refundTotal.toFixed(2)}|${windowStart.toISOString()}|${windowEnd.toISOString()}`;
+        returnLogKeys.add(logKey);
+      }
+
+      for (const log of returnLogs) {
+        let meta: ReturnLogMeta | null = null;
+        try {
+          meta = log.meta ? (JSON.parse(String(log.meta)) as ReturnLogMeta) : null;
+        } catch {
+          meta = null;
+        }
+        const itemId = meta?.itemId;
+        const quantity = Number(meta?.quantity || 0);
+        const refundAmount = Number(meta?.refundAmount || 0);
+        const appliedToBalance = Number(meta?.appliedToBalance || 0);
+        const refundTotal = refundAmount + appliedToBalance;
+        if (!itemId || !(refundTotal > 0) || !(quantity > 0)) continue;
+
+        const key = formatKey(log.createdAt);
+        if (!trendMap[key]) {
+          trendMap[key] = {
+            revenue: 0,
+            cogs: 0,
+            expense: 0,
+            payrollExpense: 0,
+            refunds: 0,
+            cashIn: 0,
+            cashOut: 0,
+            outstanding: 0,
+            orderCount: 0,
+            orderValue: 0,
+            delivered: 0,
+            partial: 0,
+            returned: 0,
+            pending: 0,
+          };
+        }
+
+        totalRefunds += refundTotal;
+        trendMap[key].refunds += refundTotal;
+
+        const restockFlag = Boolean(meta?.restockToStock || meta?.restock || meta?.restocked);
+        const start = new Date(log.createdAt.getTime() - 10 * 60 * 1000);
+        const end = new Date(log.createdAt.getTime() + 10 * 60 * 1000);
+        const restockMovement = await prisma.inventoryMovement.findFirst({
+          where: {
+            reason: { in: ["RETURN_PARTIAL", "RETURN_FULL", "RETURN", "RETURN_RESTOCK", "RETURN_ITEM"] },
+            delta: quantity,
+            createdAt: { gte: start, lte: end },
+          },
+          select: { id: true },
+        });
+        if (restockFlag || restockMovement) {
+          const unitCost = costByItemId.get(itemId) || 0;
+          const cogs = unitCost * quantity;
+          totalCOGS -= cogs;
+          trendMap[key].cogs -= cogs;
+        }
+      }
+
+      if (returnPayments.length > 0) {
+        for (const payment of returnPayments) {
+          const windowStart = new Date(payment.createdAt.getTime() - 10 * 60 * 1000);
+          const windowEnd = new Date(payment.createdAt.getTime() + 10 * 60 * 1000);
+          const key = `${payment.orderId || ""}|${payment.amount.toFixed(2)}|${windowStart.toISOString()}|${windowEnd.toISOString()}`;
+          if (returnLogKeys.has(key)) continue;
+          totalRefunds += payment.amount;
+          const periodKey = formatKey(payment.createdAt);
+          if (!trendMap[periodKey]) {
+            trendMap[periodKey] = {
+              revenue: 0,
+              cogs: 0,
+              expense: 0,
+              payrollExpense: 0,
+              refunds: 0,
+              cashIn: 0,
+              cashOut: 0,
+              outstanding: 0,
+              orderCount: 0,
+              orderValue: 0,
+              delivered: 0,
+              partial: 0,
+              returned: 0,
+              pending: 0,
+            };
+          }
+          trendMap[periodKey].refunds += payment.amount;
+        }
+      }
+    }
+    let totalExpense = expenses.reduce(
+      (sum: number, e: { amount: unknown }) => sum + Number(e.amount || 0),
+      0
+    );
+    const totalPayrollExpense = expenses.reduce(
+      (sum: number, e) => sum + (/payroll/i.test(e.category || "") ? Number(e.amount || 0) : 0),
+      0
+    );
+    const totalOutstandingOnPeriodSales = Math.max(0, totalBilled - totalCollectedOnPeriodSales);
+    const reconciliationDelta = totalBilled - (totalCollectedOnPeriodSales + totalOutstandingOnPeriodSales);
+    const netRevenue = totalRevenue - totalRefunds;
+    const netCash = totalCashIn - totalCashOut;
+    const averageOrderValue = orderCount > 0 ? totalOrderValue / orderCount : 0;
+
+    const expenseBreakdownMap: Record<string, number> = {};
+    for (const e of expenses) {
+      const key = e.category || "Uncategorized";
+      expenseBreakdownMap[key] = (expenseBreakdownMap[key] || 0) + Number(e.amount || 0);
+    }
+    for (const line of manualExpenseLines) {
+      if (line.account.type !== "EXPENSE") continue;
+      const amount = Number(line.debit || 0) - Number(line.credit || 0);
+      if (amount <= 0) continue;
+      totalExpense += amount;
+      const key = `Manual: ${line.account.name}`;
+      expenseBreakdownMap[key] = (expenseBreakdownMap[key] || 0) + amount;
+      const periodKey = formatKey(line.entry.entryDate);
+      if (!trendMap[periodKey]) {
+        trendMap[periodKey] = {
           revenue: 0,
           cogs: 0,
           expense: 0,
+          payrollExpense: 0,
           refunds: 0,
           cashIn: 0,
           cashOut: 0,
+          outstanding: 0,
           orderCount: 0,
           orderValue: 0,
           delivered: 0,
@@ -179,19 +536,63 @@ export async function GET(request: Request) {
           pending: 0,
         };
       }
-      trendMap[key].orderCount += 1;
-      trendMap[key].orderValue += Number(o.total || 0);
-      const deliveryStatus = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
-      if (deliveryStatus === "DELIVERED") trendMap[key].delivered += 1;
+      trendMap[periodKey].expense += amount;
+    }
+
+    const profit = netRevenue - totalCOGS - totalExpense;
+    const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
+    const expenseBreakdown = Object.entries(expenseBreakdownMap)
+      .map(([cat, amount]) => ({ category: cat, amount }))
+      .sort((a, b) => b.amount - a.amount);
+
+      for (const o of orders) {
+        const key = formatKey(o.createdAt);
+        if (!trendMap[key]) {
+        trendMap[key] = {
+          revenue: 0,
+          cogs: 0,
+          expense: 0,
+          payrollExpense: 0,
+          refunds: 0,
+          cashIn: 0,
+          cashOut: 0,
+          outstanding: 0,
+          orderCount: 0,
+          orderValue: 0,
+          delivered: 0,
+          partial: 0,
+          returned: 0,
+          pending: 0,
+        };
+        }
+        trendMap[key].orderCount += 1;
+        let orderRevenue = Number(o.subtotal ?? 0);
+        if (!(orderRevenue > 0)) {
+          orderRevenue = 0;
+          for (const it of o.items) {
+            const qty = Number(it.quantity || 0);
+            orderRevenue += Number(it.price || 0) * qty;
+          }
+          if (orderRevenue <= 0) {
+            orderRevenue = Number(o.total ?? 0);
+          }
+        }
+        trendMap[key].orderValue += orderRevenue;
+        trendMap[key].outstanding += Math.max(
+          0,
+          Number(o.total || 0) - Number(o.amountPaid || 0),
+        );
+        const deliveryStatus = String(o.deliveryStatus || "NOT_DELIVERED").toUpperCase();
+        if (deliveryStatus === "DELIVERED") trendMap[key].delivered += 1;
       else if (deliveryStatus === "PARTIALLY_DELIVERED") trendMap[key].partial += 1;
       else if (deliveryStatus === "RETURNED") trendMap[key].returned += 1;
       else trendMap[key].pending += 1;
-      for (const it of o.items) {
-        const qty = Number(it.quantity || 0);
-        trendMap[key].revenue += Number(it.price || 0) * qty;
-        const unitCost = it.costAtSale != null ? Number(it.costAtSale) : Number(it.product?.cost ?? 0);
-        trendMap[key].cogs += unitCost * qty;
-      }
+        for (const it of o.items) {
+          const qty = Number(it.quantity || 0);
+          const unitCost = it.costAtSale != null ? Number(it.costAtSale) : Number(it.product?.cost ?? 0);
+          trendMap[key].cogs += unitCost * qty;
+        }
+        trendMap[key].revenue += orderRevenue;
     }
     for (const e of expenses) {
       const key = formatKey(e.createdAt);
@@ -200,9 +601,11 @@ export async function GET(request: Request) {
           revenue: 0,
           cogs: 0,
           expense: 0,
+          payrollExpense: 0,
           refunds: 0,
           cashIn: 0,
           cashOut: 0,
+          outstanding: 0,
           orderCount: 0,
           orderValue: 0,
           delivered: 0,
@@ -211,7 +614,11 @@ export async function GET(request: Request) {
           pending: 0,
         };
       }
-      trendMap[key].expense += Number(e.amount);
+      const amount = Number(e.amount);
+      trendMap[key].expense += amount;
+      if (/payroll/i.test(e.category || "")) {
+        trendMap[key].payrollExpense += amount;
+      }
     }
     for (const p of payments) {
       const key = formatKey(p.createdAt);
@@ -220,9 +627,11 @@ export async function GET(request: Request) {
           revenue: 0,
           cogs: 0,
           expense: 0,
+          payrollExpense: 0,
           refunds: 0,
           cashIn: 0,
           cashOut: 0,
+          outstanding: 0,
           orderCount: 0,
           orderValue: 0,
           delivered: 0,
@@ -233,13 +642,44 @@ export async function GET(request: Request) {
       }
       const amount = Number(p.amount || 0);
       const status = String(p.status || "").toUpperCase();
+      const note = typeof p.note === "string" ? p.note : "";
+      let meta: { location?: string; method?: string; status?: string; reference?: string } | null = null;
+      if (note.startsWith("{")) {
+        try {
+          meta = JSON.parse(note);
+        } catch {
+          meta = null;
+        }
+      }
+      const isPendingMomo =
+        String(meta?.method || "").toLowerCase() === "momo" &&
+        String(meta?.status || "").toUpperCase().startsWith("PENDING");
+      const isAutoApply =
+        String(meta?.reference || "").toUpperCase() === "AUTO_APPLY" ||
+        note.includes("\"reference\":\"AUTO_APPLY\"");
+      const isReturn =
+        String(meta?.reference || "").toUpperCase() === "ITEM_RETURN" ||
+        note.includes("\"reference\":\"ITEM_RETURN\"");
+      const isRevenueRefund =
+        String(meta?.reference || "").toUpperCase() === "SALES_REFUND" ||
+        note.includes("\"reference\":\"SALES_REFUND\"");
       if (status === "REFUND") {
         const refundAmount = Math.abs(amount);
-        trendMap[key].refunds += refundAmount;
         trendMap[key].cashOut += refundAmount;
+        const isCreditPayout =
+          meta?.location === "admin/customers:credit-payout" ||
+          note.includes("\"location\":\"admin/customers:credit-payout\"");
+        // Return revenue adjustments are reconciled from ORDER_ITEM_RETURN logs
+        // (with fallback matching), so skip them here to avoid double counting.
+        if (isReturn) continue;
+        if (!isCreditPayout && isRevenueRefund) {
+          trendMap[key].refunds += refundAmount;
+        }
         continue;
       }
       if (status === "VOID") continue;
+      if (isAutoApply) continue;
+      if (isPendingMomo) continue;
       if (amount > 0) trendMap[key].cashIn += amount;
       if (amount < 0) trendMap[key].cashOut += Math.abs(amount);
     }
@@ -250,11 +690,13 @@ export async function GET(request: Request) {
         revenue: v.revenue,
         cogs: v.cogs,
         expense: v.expense,
+        payrollExpense: v.payrollExpense,
         refunds: v.refunds,
         netRevenue: v.revenue - v.refunds,
         cashIn: v.cashIn,
         cashOut: v.cashOut,
         netCash: v.cashIn - v.cashOut,
+        outstanding: v.outstanding,
         orderCount: v.orderCount,
         orderValue: v.orderValue,
         averageOrderValue: v.orderCount > 0 ? v.orderValue / v.orderCount : 0,
@@ -262,8 +704,11 @@ export async function GET(request: Request) {
         partiallyDeliveredCount: v.partial,
         returnedCount: v.returned,
         pendingCount: v.pending,
-        profit: v.revenue - v.cogs - v.expense,
-        margin: v.revenue > 0 ? ((v.revenue - v.cogs - v.expense) / v.revenue) * 100 : 0,
+        profit: v.revenue - v.refunds - v.cogs - v.expense,
+        margin:
+          v.revenue - v.refunds > 0
+            ? ((v.revenue - v.refunds - v.cogs - v.expense) / (v.revenue - v.refunds)) * 100
+            : 0,
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -275,6 +720,7 @@ export async function GET(request: Request) {
         "Net Revenue",
         "COGS",
         "Expenses",
+        "Payroll Expenses",
         "Net Profit",
         "Margin (%)",
         "Orders",
@@ -282,6 +728,7 @@ export async function GET(request: Request) {
         "Cash In",
         "Cash Out",
         "Net Cash",
+        "Outstanding",
       ];
       const rows = trend.map((t) => [
         t.date,
@@ -290,6 +737,7 @@ export async function GET(request: Request) {
         (t.netRevenue ?? 0).toFixed(2),
         (t.cogs ?? 0).toFixed(2),
         t.expense.toFixed(2),
+        (t.payrollExpense ?? 0).toFixed(2),
         t.profit.toFixed(2),
         t.margin.toFixed(2),
         String(t.orderCount ?? 0),
@@ -297,16 +745,22 @@ export async function GET(request: Request) {
         (t.cashIn ?? 0).toFixed(2),
         (t.cashOut ?? 0).toFixed(2),
         (t.netCash ?? 0).toFixed(2),
+        (t.outstanding ?? 0).toFixed(2),
       ]);
       const csvString = [
         headers.join(","),
         ...rows.map((r) => r.join(",")),
+        "",
+        "Basis Notes,,",
+        "Order-date metrics: Revenue/Tax/Outstanding/Reconciliation are based on orders created in the selected period.,,",
+        "Payment-date metrics: Cash In/Cash Out/Net Cash are based on payments recorded in the selected period.,,",
         "",
         `Total Revenue,,${totalRevenue.toFixed(2)}`,
         `Total Refunds,,${totalRefunds.toFixed(2)}`,
         `Net Revenue,,${netRevenue.toFixed(2)}`,
         `Total COGS,,${totalCOGS.toFixed(2)}`,
         `Total Expenses,,${totalExpense.toFixed(2)}`,
+        `Total Payroll Expenses,,${totalPayrollExpense.toFixed(2)}`,
         `Net Profit,,${profit.toFixed(2)}`,
         `Margin,,${margin.toFixed(2)}%`,
         `Orders,,${orderCount}`,
@@ -314,7 +768,32 @@ export async function GET(request: Request) {
         `Cash In,,${totalCashIn.toFixed(2)}`,
         `Cash Out,,${totalCashOut.toFixed(2)}`,
         `Net Cash,,${netCash.toFixed(2)}`,
+        `Outstanding,,${totalOutstanding.toFixed(2)}`,
+        `Period Billed (Order Totals),,${totalBilled.toFixed(2)}`,
+        `Tax Collected,,${totalTaxCollected.toFixed(2)}`,
+        `Discounts,,${totalDiscounts.toFixed(2)}`,
+        `Discounted Orders,,${discountedOrders}`,
+        `Collected on Period Sales,,${totalCollectedOnPeriodSales.toFixed(2)}`,
+        `Outstanding on Period Sales,,${totalOutstandingOnPeriodSales.toFixed(2)}`,
+        `Reconciliation Delta,,${reconciliationDelta.toFixed(2)}`,
       ].join("\n");
+      await recordAuditLog({
+        actorId: (session.user as { id?: string } | undefined)?.id || null,
+        action: "DASHBOARD_SUMMARY_EXPORT_CSV",
+        entityType: "REPORT",
+        entityId: "SUMMARY",
+        meta: {
+          format: "CSV",
+          fileName: `nora_${groupBy}_summary.csv`,
+          groupBy,
+          rowCount: rows.length,
+          columnCount: headers.length,
+          byteSize: Buffer.byteLength(csvString, "utf8"),
+          actorName: (session.user as { name?: string } | undefined)?.name || null,
+          actorEmail: (session.user as { email?: string } | undefined)?.email || null,
+          actorRole: role || null,
+        },
+      });
       return new Response(csvString, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
@@ -324,45 +803,95 @@ export async function GET(request: Request) {
     }
 
     if (formatType === "pdf") {
-      const chunks: Buffer[] = [];
-      const doc = new PDFDocument({ margin: 40, size: "A4" });
-      doc.on("data", (c) => chunks.push(c));
-      const done = new Promise<void>((resolve) => doc.on("end", resolve));
+      const pdfDoc = await PDFDocument.create();
+      const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      doc.font("Helvetica-Bold").fontSize(16).text("Revenue, Expense, Margin Summary", { align: "center" });
-      doc.moveDown(0.4);
-      doc.fontSize(11).text(`Grouping: ${groupBy.toUpperCase()}    Generated: ${new Date().toLocaleString()}`, { align: "center" });
-      doc.moveDown(1);
+      const pageSize: [number, number] = [595.28, 841.89]; // A4
+      const margin = 40;
+      const lineHeight = 14;
+      let page = pdfDoc.addPage(pageSize);
+      let y = page.getSize().height - margin;
 
-      doc.font("Helvetica-Bold").fontSize(12).text("Totals");
-      doc.font("Helvetica").fontSize(11);
-      doc.text(`Total Revenue: ${totalRevenue.toFixed(2)}`);
-      doc.text(`Refunds: ${totalRefunds.toFixed(2)}`);
-      doc.text(`Net Revenue: ${netRevenue.toFixed(2)}`);
-      doc.text(`Total COGS: ${totalCOGS.toFixed(2)}`);
-      doc.text(`Operating Expenses: ${totalExpense.toFixed(2)}`);
-      doc.text(`Net Profit: ${profit.toFixed(2)}`);
-      doc.text(`Margin: ${margin.toFixed(2)}%`);
-      doc.text(`Orders: ${orderCount}`);
-      doc.text(`AOV: ${averageOrderValue.toFixed(2)}`);
-      doc.text(`Cash In: ${totalCashIn.toFixed(2)}`);
-      doc.text(`Cash Out: ${totalCashOut.toFixed(2)}`);
-      doc.text(`Net Cash: ${netCash.toFixed(2)}`);
-      doc.moveDown(1);
+      const ensureSpace = (required = lineHeight) => {
+        if (y - required < margin) {
+          page = pdfDoc.addPage(pageSize);
+          y = page.getSize().height - margin;
+        }
+      };
 
-      doc.font("Helvetica-Bold").fontSize(12).text("Trend");
-      doc.moveDown(0.3);
-      doc.font("Helvetica").fontSize(10);
-      doc.text("Period                Revenue   Refunds   NetRev    COGS     Expenses  NetProfit  Margin% ");
-      doc.moveTo(40, doc.y + 2).lineTo(550, doc.y + 2).stroke();
-      trend.forEach((t) => {
-        const line = `${t.date.padEnd(20)} ${t.revenue.toFixed(2).padStart(8)}  ${(t.refunds ?? 0).toFixed(2).padStart(7)}  ${(t.netRevenue ?? 0).toFixed(2).padStart(7)}  ${(t.cogs ?? 0).toFixed(2).padStart(7)}  ${t.expense.toFixed(2).padStart(7)}  ${t.profit.toFixed(2).padStart(8)}  ${t.margin.toFixed(2).padStart(7)}`;
-        doc.text(line);
+      const drawLine = (text: string, opts?: { isBold?: boolean; size?: number; x?: number }) => {
+        const size = opts?.size ?? 10;
+        const x = opts?.x ?? margin;
+        ensureSpace(size + 4);
+        page.drawText(text, {
+          x,
+          y,
+          size,
+          font: opts?.isBold ? bold : regular,
+        });
+        y -= size + 4;
+      };
+
+      drawLine("Revenue, Expense, Margin Summary", { isBold: true, size: 16 });
+      drawLine(`Grouping: ${groupBy.toUpperCase()}    Generated: ${new Date().toLocaleString()}`, { size: 10 });
+      y -= 4;
+
+      drawLine("Basis Notes", { isBold: true, size: 12 });
+      drawLine("- Order-date metrics: Revenue/Tax/Outstanding/Reconciliation use orders created in the selected period.");
+      drawLine("- Payment-date metrics: Cash In/Cash Out/Net Cash use payments recorded in the selected period.");
+      y -= 4;
+
+      drawLine("Totals", { isBold: true, size: 12 });
+      const totalLines = [
+        `Total Revenue: ${totalRevenue.toFixed(2)}`,
+        `Tax Collected: ${totalTaxCollected.toFixed(2)}`,
+        `Discounts: ${totalDiscounts.toFixed(2)} (${discountedOrders} orders)`,
+        `Refunds: ${totalRefunds.toFixed(2)}`,
+        `Net Revenue: ${netRevenue.toFixed(2)}`,
+        `Total COGS: ${totalCOGS.toFixed(2)}`,
+        `Operating Expenses: ${totalExpense.toFixed(2)}`,
+        `Payroll Expenses: ${totalPayrollExpense.toFixed(2)}`,
+        `Net Profit: ${profit.toFixed(2)}`,
+        `Margin: ${margin.toFixed(2)}%`,
+        `Orders: ${orderCount}`,
+        `AOV: ${averageOrderValue.toFixed(2)}`,
+        `Cash In: ${totalCashIn.toFixed(2)}`,
+        `Cash Out: ${totalCashOut.toFixed(2)}`,
+        `Net Cash: ${netCash.toFixed(2)}`,
+        `Outstanding: ${totalOutstanding.toFixed(2)}`,
+      ];
+      for (const line of totalLines) drawLine(line);
+      y -= 6;
+
+      drawLine("Trend", { isBold: true, size: 12 });
+      drawLine("Period | Revenue | Refunds | NetRev | COGS | Expenses | Payroll | NetProfit | Margin%", {
+        isBold: true,
       });
-      doc.end();
-      await done;
-      const pdf = Buffer.concat(chunks);
-      return new Response(pdf, {
+      for (const t of trend) {
+        drawLine(
+          `${t.date} | ${t.revenue.toFixed(2)} | ${(t.refunds ?? 0).toFixed(2)} | ${(t.netRevenue ?? 0).toFixed(2)} | ${(t.cogs ?? 0).toFixed(2)} | ${t.expense.toFixed(2)} | ${(t.payrollExpense ?? 0).toFixed(2)} | ${t.profit.toFixed(2)} | ${t.margin.toFixed(2)}%`,
+        );
+      }
+
+      const pdf = await pdfDoc.save();
+      await recordAuditLog({
+        actorId: (session.user as { id?: string } | undefined)?.id || null,
+        action: "DASHBOARD_SUMMARY_EXPORT_PDF",
+        entityType: "REPORT",
+        entityId: "SUMMARY",
+        meta: {
+          format: "PDF",
+          fileName: `nora_${groupBy}_summary.pdf`,
+          groupBy,
+          rowCount: trend.length,
+          byteSize: pdf.length,
+          actorName: (session.user as { name?: string } | undefined)?.name || null,
+          actorEmail: (session.user as { email?: string } | undefined)?.email || null,
+          actorRole: role || null,
+        },
+      });
+      return new Response(Buffer.from(pdf), {
         headers: {
           "Content-Type": "application/pdf",
           "Content-Disposition": `attachment; filename="nora_${groupBy}_summary.pdf"`,
@@ -384,6 +913,14 @@ export async function GET(request: Request) {
         totalCashIn,
         totalCashOut,
         netCash,
+        totalOutstanding,
+        totalBilled,
+        totalTaxCollected,
+        totalDiscounts,
+        discountedOrders,
+        totalCollectedOnPeriodSales,
+        totalOutstandingOnPeriodSales,
+        reconciliationDelta,
         deliveredCount,
         partiallyDeliveredCount,
         returnedCount,
@@ -395,6 +932,9 @@ export async function GET(request: Request) {
     });
   } catch (error) {
     console.error("Error generating admin summary:", error);
-    return NextResponse.json({ error: "Failed to generate summary" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Failed to generate summary", detail: String(error) },
+      { status: 500 }
+    );
   }
 }

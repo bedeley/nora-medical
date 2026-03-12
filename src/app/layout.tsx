@@ -1,4 +1,5 @@
 import "@/app/globals.css";
+import { Suspense } from "react";
 import { Inter } from "next/font/google";
 import Providers from "@/components/Providers";
 import type { Metadata, Viewport } from "next";
@@ -34,7 +35,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.className} bg-background text-foreground min-h-screen flex flex-col`}>
-        <Providers>{children}</Providers>
+        <Suspense fallback={<div className="min-h-screen bg-background" />}>
+          <Providers>{children}</Providers>
+        </Suspense>
       </body>
     </html>
   );

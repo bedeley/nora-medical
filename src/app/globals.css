@@ -89,17 +89,10 @@ body {
   --color-ring: #3B82F6; /* blue-500 */
 }
 
-/* Make all links show a pointer cursor */
-/* Show pointer cursor on hover for any link-like element */
-a:hover,
+/* Show pointer cursor on hover for explicit interactive controls */
 a[href]:hover,
 [role="link"]:hover,
 [data-radix-collection-item][role="menuitem"]:hover,
-.dropdown-menu a:hover {
-  cursor: pointer !important;
-}
-
-/* Ensure buttons also show pointer on hover (e.g., Login/Register buttons) */
 button:hover,
 [type="button"]:hover,
 [role="button"]:hover {
@@ -210,20 +203,40 @@ body.hide-chrome [data-chrome-toaster] {
   padding-bottom: 0.6rem;
 }
 
-/* Global table border cleanup: remove table and column borders everywhere */
-[data-slot="table-container"],
-[data-slot="table"],
-[data-slot="table-header"],
-[data-slot="table-body"],
-[data-slot="table-footer"],
-[data-slot="table-row"],
-[data-slot="table-head"],
-[data-slot="table-cell"] {
+/* Scoped table border cleanup for admin + customer account/order views only */
+[data-slot="admin-page"] [data-slot="table-container"],
+[data-slot="admin-page"] [data-slot="table"],
+[data-slot="admin-page"] [data-slot="table-header"],
+[data-slot="admin-page"] [data-slot="table-body"],
+[data-slot="admin-page"] [data-slot="table-footer"],
+[data-slot="admin-page"] [data-slot="table-row"],
+[data-slot="admin-page"] [data-slot="table-head"],
+[data-slot="admin-page"] [data-slot="table-cell"],
+.orders-page [data-slot="table-container"],
+.orders-page [data-slot="table"],
+.orders-page [data-slot="table-header"],
+.orders-page [data-slot="table-body"],
+.orders-page [data-slot="table-footer"],
+.orders-page [data-slot="table-row"],
+.orders-page [data-slot="table-head"],
+.orders-page [data-slot="table-cell"],
+.account-balance-page [data-slot="table-container"],
+.account-balance-page [data-slot="table"],
+.account-balance-page [data-slot="table-header"],
+.account-balance-page [data-slot="table-body"],
+.account-balance-page [data-slot="table-footer"],
+.account-balance-page [data-slot="table-row"],
+.account-balance-page [data-slot="table-head"],
+.account-balance-page [data-slot="table-cell"] {
   border: none !important;
 }
 
-[data-slot="table-head"],
-[data-slot="table-cell"] {
+[data-slot="admin-page"] [data-slot="table-head"],
+[data-slot="admin-page"] [data-slot="table-cell"],
+.orders-page [data-slot="table-head"],
+.orders-page [data-slot="table-cell"],
+.account-balance-page [data-slot="table-head"],
+.account-balance-page [data-slot="table-cell"] {
   border-left: none !important;
   border-right: none !important;
 }

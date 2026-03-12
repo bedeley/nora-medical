@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Info } from "lucide-react";
 import { toast } from "sonner";
 import { chipToneClass } from "@/lib/status-chips";
+import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
 
 type Product = { id: string; name: string; sku?: string | null };
 
@@ -28,8 +29,11 @@ type MovementRow = {
   productSku?: string | null;
   delta: number;
   reason: string;
+  note?: string | null;
   supplier?: string | null;
   unitCost?: number | string | null;
+  lotCode?: string | null;
+  expiryDate?: string | Date | null;
   createdAt: string | Date;
 };
 
@@ -39,7 +43,7 @@ function AdminMovementsContent() {
   const searchParams = useSearchParams();
   const initialized = useRef(false);
 
-  const [filters, setFilters] = useState({ start: "", end: "", product: "", reason: "" });
+  const [filters, setFilters] = useState({ start: "", end: "", product: "", reason: "", lotId: "" });
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<MovementRow[]>([]);
   const [page, setPage] = useState(1);
@@ -50,6 +54,8 @@ function AdminMovementsContent() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showSupplierCol, setShowSupplierCol] = useState(true);
   const [showUnitCostCol, setShowUnitCostCol] = useState(true);
+  const [showLotCol, setShowLotCol] = useState(true);
+  const [showExpiryCol, setShowExpiryCol] = useState(true);
 
   useEffect(() => {
     if (initialized.current) return;
@@ -59,6 +65,7 @@ function AdminMovementsContent() {
       end: sp.get("end") || "",
       product: sp.get("product") || "",
       reason: sp.get("reason") || "",
+      lotId: sp.get("lotId") || "",
     });
     initialized.current = true;
   }, [searchParams]);
@@ -74,6 +81,8 @@ function AdminMovementsContent() {
     else params.delete("product");
     if (filters.reason) params.set("reason", filters.reason);
     else params.delete("reason");
+    if (filters.lotId) params.set("lotId", filters.lotId);
+    else params.delete("lotId");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     router.replace(next, { scroll: false });
   }, [filters, pathname, router]);
@@ -101,6 +110,7 @@ function AdminMovementsContent() {
       if (filters.end) params.append("end", filters.end);
       if (filters.product) params.append("product", filters.product);
       if (filters.reason) params.append("reason", filters.reason);
+      if (filters.lotId) params.append("lotId", filters.lotId);
       const res = await fetch(`/api/admin/movements?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load movements");
       const data = await res.json();
@@ -131,7 +141,9 @@ function AdminMovementsContent() {
   }, [rows]);
   const tableColSpan = 6
     + (showSupplierCol ? 1 : 0)
-    + (showUnitCostCol ? 1 : 0);
+    + (showUnitCostCol ? 1 : 0)
+    + (showLotCol ? 1 : 0)
+    + (showExpiryCol ? 1 : 0);
   const reasonFilter = filters.reason.trim().toUpperCase();
   const reasonBadge = (reason: string) => {
     const upper = reason.toUpperCase();
@@ -181,7 +193,7 @@ function AdminMovementsContent() {
       toast.error("Select at least one movement to export.");
       return;
     }
-    const header = ["Date", "Product", "SKU", "Delta", "Reason", "Supplier", "Unit Cost"];
+    const header = ["Date", "Product", "SKU", "Delta", "Reason", "Supplier", "Unit Cost", "Lot", "Expiry"];
     const lines = [header.join(",")];
     for (const r of selectedRows) {
       lines.push([
@@ -192,18 +204,30 @@ function AdminMovementsContent() {
         JSON.stringify(r.reason || ""),
         JSON.stringify(r.supplier || ""),
         r.unitCost == null ? "" : Number(r.unitCost).toFixed(2),
+        JSON.stringify(r.lotCode || ""),
+        r.expiryDate ? new Date(r.expiryDate).toISOString().slice(0, 10) : "",
       ].join(","));
     }
     const csv = lines.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const filename = `movements_${Date.now()}.csv`;
     a.href = url;
-    a.download = `movements_${Date.now()}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "movements",
+      format: "CSV",
+      fileName: filename,
+      rowCount: selectedRows.length,
+      columnCount: header.length,
+      byteSize: blob.size,
+      scopeSnapshot: "Selected movement rows export",
+    });
   };
 
   const handleExport = async () => {
@@ -212,16 +236,25 @@ function AdminMovementsContent() {
     if (filters.end) params.append("end", filters.end);
     if (filters.product) params.append("product", filters.product);
     if (filters.reason) params.append("reason", filters.reason);
+    if (filters.lotId) params.append("lotId", filters.lotId);
     params.append("format", "csv");
     const res = await fetch(`/api/admin/movements?${params.toString()}`);
     if (!res.ok) return;
     const blob = await res.blob();
     const link = document.createElement("a");
+    const filename = `movements_${Date.now()}.csv`;
     link.href = URL.createObjectURL(blob);
-    link.download = `movements_${Date.now()}.csv`;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     link.remove();
+    void logAdminExportDownload({
+      area: "movements",
+      format: "CSV",
+      fileName: filename,
+      byteSize: blob.size,
+      scopeSnapshot: `Start: ${filters.start || "-"} | End: ${filters.end || "-"} | Product: ${filters.product || "-"} | Reason: ${filters.reason || "-"}`,
+    });
   };
 
   return (
@@ -238,7 +271,7 @@ function AdminMovementsContent() {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
-        <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <Label htmlFor="start">Start date</Label>
             <Input id="start" type="date" value={filters.start} onChange={(e) => setFilters({ ...filters, start: e.target.value })} />
@@ -269,6 +302,21 @@ function AdminMovementsContent() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-sm">
+          {filters.lotId ? (
+            <div className="inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs">
+              <span className="text-muted-foreground">Lot filter:</span>
+              <span className="font-mono">{filters.lotId}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2"
+                onClick={() => setFilters((prev) => ({ ...prev, lotId: "" }))}
+              >
+                Clear
+              </Button>
+            </div>
+          ) : null}
           <span className="text-muted-foreground text-xs">Quick filters</span>
           <Button
             type="button"
@@ -314,7 +362,7 @@ function AdminMovementsContent() {
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => setFilters({ start: "", end: "", product: "", reason: "" })}
+            onClick={() => setFilters({ start: "", end: "", product: "", reason: "", lotId: "" })}
           >
             Clear filters
           </Button>
@@ -382,6 +430,20 @@ function AdminMovementsContent() {
                 >
                   Unit Cost
                 </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  onSelect={(event) => event.preventDefault()}
+                  checked={showLotCol}
+                  onCheckedChange={(value) => setShowLotCol(Boolean(value))}
+                >
+                  Lot
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  onSelect={(event) => event.preventDefault()}
+                  checked={showExpiryCol}
+                  onCheckedChange={(value) => setShowExpiryCol(Boolean(value))}
+                >
+                  Expiry
+                </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -402,7 +464,7 @@ function AdminMovementsContent() {
           </div>
         )}
 
-        <div className="md:hidden space-y-3">
+        <div className="lg:hidden space-y-3">
           {rows.length === 0 ? (
             <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
               <p>No movements found for the current filters.</p>
@@ -410,7 +472,7 @@ function AdminMovementsContent() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setFilters({ start: "", end: "", product: "", reason: "" })}
+            onClick={() => setFilters({ start: "", end: "", product: "", reason: "", lotId: "" })}
                 >
                   Clear filters
                 </Button>
@@ -464,6 +526,20 @@ function AdminMovementsContent() {
                       <p className="font-medium">{Number(r.unitCost).toFixed(2)}</p>
                     </div>
                   ) : null}
+                  {showLotCol && r.lotCode ? (
+                    <div>
+                      <p className="text-muted-foreground text-xs uppercase">Lot</p>
+                      <p className="font-medium">{r.lotCode}</p>
+                    </div>
+                  ) : null}
+                  {showExpiryCol && r.expiryDate ? (
+                    <div>
+                      <p className="text-muted-foreground text-xs uppercase">Expiry</p>
+                      <p className="font-medium">
+                        {new Date(r.expiryDate).toLocaleDateString()}
+                      </p>
+                    </div>
+                  ) : null}
                   {showSupplierCol && r.supplier ? (
                     <div className="text-right">
                       <p className="text-muted-foreground text-xs uppercase">Supplier</p>
@@ -476,7 +552,7 @@ function AdminMovementsContent() {
           )}
         </div>
 
-        <div className="overflow-x-auto hidden md:block">
+        <div className="overflow-x-auto hidden lg:block">
           <table className="w-full text-sm border-collapse border border-gray-200 dark:border-gray-800">
             <thead className="bg-muted text-left">
               <tr>
@@ -495,6 +571,8 @@ function AdminMovementsContent() {
                 <th className="p-2 border">Reason</th>
                 {showSupplierCol && <th className="p-2 border">Supplier</th>}
                 {showUnitCostCol && <th className="p-2 border text-right">Unit Cost</th>}
+                {showLotCol && <th className="p-2 border">Lot</th>}
+                {showExpiryCol && <th className="p-2 border">Expiry</th>}
                 <th className="p-2 border text-right">Actions</th>
               </tr>
             </thead>
@@ -508,7 +586,7 @@ function AdminMovementsContent() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => setFilters({ start: "", end: "", product: "", reason: "" })}
+                        onClick={() => setFilters({ start: "", end: "", product: "", reason: "", lotId: "" })}
                         >
                           Clear filters
                         </Button>
@@ -555,6 +633,12 @@ function AdminMovementsContent() {
                     {showUnitCostCol && (
                       <td className="p-2 border text-right">
                         {r.unitCost == null ? "" : Number(r.unitCost).toFixed(2)}
+                      </td>
+                    )}
+                    {showLotCol && <td className="p-2 border">{r.lotCode || ""}</td>}
+                    {showExpiryCol && (
+                      <td className="p-2 border">
+                        {r.expiryDate ? new Date(r.expiryDate).toLocaleDateString() : ""}
                       </td>
                     )}
                     <td className="p-2 border text-right" onClick={(e) => e.stopPropagation()}>
@@ -615,6 +699,24 @@ function AdminMovementsContent() {
                 ) : null}
                 <div className="flex justify-between"><span className="text-muted-foreground">Delta</span><span className={selected.delta >= 0 ? 'text-green-600' : 'text-red-600'}>{selected.delta}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Reason</span><span>{selected.reason}</span></div>
+                {selected.note ? (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Detail</span>
+                    <span className="text-right">{selected.note}</span>
+                  </div>
+                ) : null}
+                {selected.lotCode ? (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Lot</span>
+                    <span>{selected.lotCode}</span>
+                  </div>
+                ) : null}
+                {selected.expiryDate ? (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Expiry</span>
+                    <span>{new Date(selected.expiryDate).toLocaleDateString()}</span>
+                  </div>
+                ) : null}
                 {selected.supplier ? (<div className="flex justify-between"><span className="text-muted-foreground">Supplier</span><span>{selected.supplier}</span></div>) : null}
                 {selected.unitCost != null ? (<div className="flex justify-between"><span className="text-muted-foreground">Unit Cost</span><span>{Number(selected.unitCost).toFixed(2)}</span></div>) : null}
               </div>

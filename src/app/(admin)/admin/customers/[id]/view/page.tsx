@@ -14,6 +14,7 @@ import { useParams } from "next/navigation";
 import { formatIdReadable } from "@/lib/utils";
 import type { CustomerRow } from "../../page";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 type OrderRow = {
   id: string;
@@ -39,6 +40,7 @@ type NormalizedOrderRow = OrderRow & {
   totalPaid: number;
   computedBalance: number;
 };
+type CustomerProfileType = "B2B" | "B2C";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -62,9 +64,12 @@ export default function AdminCustomerReadOnlyView() {
     balance: number;
     storeCredit: number;
     cashRefunds: number;
+    creditLimit: number;
     updatedAt: string;
   };
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfileType>("B2B");
+  const [savingCustomerProfile, setSavingCustomerProfile] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +91,28 @@ export default function AdminCustomerReadOnlyView() {
     return () => {
       cancelled = true;
       clearInterval(id);
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadProfile() {
+      try {
+        const res = await fetch(
+          `/api/admin/customers/${encodeURIComponent(String(userId))}/profile`,
+        );
+        if (!res.ok) return;
+        const json = (await res.json().catch(() => null)) as { profile?: CustomerProfileType } | null;
+        if (!cancelled && (json?.profile === "B2B" || json?.profile === "B2C")) {
+          setCustomerProfile(json.profile);
+        }
+      } catch {
+        // best effort
+      }
+    }
+    loadProfile();
+    return () => {
+      cancelled = true;
     };
   }, [userId]);
 
@@ -156,6 +183,7 @@ export default function AdminCustomerReadOnlyView() {
     0,
     Number(accountSummary?.storeCredit ?? 0),
   );
+  const creditLimit = Math.max(0, Number(accountSummary?.creditLimit ?? 0));
 
   const customerName = (customerMeta?.name || "").trim() || null;
   const customerEmail = (customerMeta?.email || "").trim() || null;
@@ -221,6 +249,29 @@ export default function AdminCustomerReadOnlyView() {
               Audit log
             </Link>
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                const res = await fetch(
+                  `/api/admin/customers/${encodeURIComponent(String(userId))}/reminder/email`,
+                  { method: "POST" },
+                );
+                const j = await res.json().catch(() => ({} as { error?: string }));
+                if (!res.ok) {
+                  throw new Error(j?.error || "Failed to send reminder");
+                }
+                toast.success("Payment reminder sent.");
+              } catch (e: unknown) {
+                const message =
+                  e instanceof Error ? e.message : "Failed to send reminder";
+                toast.error(message);
+              }
+            }}
+          >
+            Send reminder
+          </Button>
           <Button asChild variant="outline" size="sm">
             <Link
               href={`/api/admin/customers/${encodeURIComponent(
@@ -254,6 +305,57 @@ export default function AdminCustomerReadOnlyView() {
 
       <Card className="!border-none !shadow-md !rounded-none">
         <CardHeader className="py-3">
+          <CardTitle className="text-sm">Customer Commerce Profile</CardTitle>
+        </CardHeader>
+        <CardContent className="py-3 text-sm space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Controls feature access: B2B profile can use clinic procurement workflows; B2C profile uses retail flow only.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-9 rounded border bg-background px-2 text-sm"
+              value={customerProfile}
+              onChange={(e) => setCustomerProfile(e.target.value as CustomerProfileType)}
+            >
+              <option value="B2B">B2B</option>
+              <option value="B2C">B2C</option>
+            </select>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={savingCustomerProfile}
+              onClick={async () => {
+                try {
+                  setSavingCustomerProfile(true);
+                  const res = await fetch(
+                    `/api/admin/customers/${encodeURIComponent(String(userId))}/profile`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ profile: customerProfile }),
+                    },
+                  );
+                  const body = (await res.json().catch(() => ({}))) as { error?: string };
+                  if (!res.ok) {
+                    toast.error(body.error || "Failed to update customer profile.");
+                    return;
+                  }
+                  toast.success(`Customer profile updated to ${customerProfile}.`);
+                } catch {
+                  toast.error("Failed to update customer profile.");
+                } finally {
+                  setSavingCustomerProfile(false);
+                }
+              }}
+            >
+              {savingCustomerProfile ? "Saving..." : "Save Profile"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="!border-none !shadow-md !rounded-none">
+        <CardHeader className="py-3">
           <CardTitle className="text-sm">My Balance</CardTitle>
         </CardHeader>
         <CardContent className="py-3 text-sm space-y-1">
@@ -274,6 +376,12 @@ export default function AdminCustomerReadOnlyView() {
             <span>Outstanding balance</span>
             <span className={displayBalance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
               {formatBalance(displayBalance)}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span>Credit limit</span>
+            <span className="font-medium text-muted-foreground">
+              {creditLimit > 0 ? formatCurrency(creditLimit) : "None"}
             </span>
           </div>
           {creditAvailable > 0 && (
