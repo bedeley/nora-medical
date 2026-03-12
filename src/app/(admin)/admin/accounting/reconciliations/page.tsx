@@ -250,7 +250,10 @@ export default function ReconciliationsPage() {
 
   const banks = Array.isArray(banksData) ? banksData : [];
   const assignees = Array.isArray(assigneesData) ? assigneesData : [];
-  const items = Array.isArray(reconciliationsData?.items) ? reconciliationsData.items : [];
+  const items = useMemo(
+    () => (Array.isArray(reconciliationsData?.items) ? reconciliationsData.items : []),
+    [reconciliationsData?.items],
+  );
   const summary = reconciliationsData?.summary || {
     total: 0,
     draft: 0,
