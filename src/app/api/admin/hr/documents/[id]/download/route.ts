@@ -3,10 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { downloadFileFromR2 } from "@/lib/r2-storage";
-import { createReadStream } from "fs";
-import { stat } from "fs/promises";
+import { readFile, stat } from "fs/promises";
 import path from "path";
-import { Readable } from "stream";
 
 export const runtime = "nodejs";
 
@@ -95,8 +93,8 @@ export async function GET(
       const info = await stat(location.filePath);
       const ext = path.extname(location.filePath);
       const fileName = path.basename(location.filePath);
-      const stream = Readable.toWeb(createReadStream(location.filePath));
-  return new Response(stream as unknown as ReadableStream<Uint8Array>, {
+      const bytes = await readFile(location.filePath);
+      return new Response(new Uint8Array(bytes), {
         status: 200,
         headers: {
           "Content-Type": contentTypeForExt(ext),
