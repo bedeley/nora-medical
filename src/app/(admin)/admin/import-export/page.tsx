@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useClientQuery } from "@/hooks/use-client-query";
@@ -160,23 +161,29 @@ async function logAction(payload: {
 }
 
 export default function ImportExportCenterPage() {
+  const searchParams = useSearchParams();
   const { data: session, status } = useSession();
   const role = session?.user?.role;
   const isAdmin = role === "ADMIN";
   const [logBusy, setLogBusy] = useState<string | null>(null);
   const [filesByResource, setFilesByResource] = useState<Record<string, File | null>>({});
+  const [sourceFilesByResource, setSourceFilesByResource] = useState<Record<string, File | null>>({});
   const [bankSelections, setBankSelections] = useState<Record<string, string>>({});
   const [reportByResource, setReportByResource] = useState<
     Record<string, { issues: Array<{ row: number; reason: string }> } | null>
   >({});
   const [dryRunByResource, setDryRunByResource] = useState<Record<string, boolean>>({});
+  const [extractBusyByResource, setExtractBusyByResource] = useState<Record<string, boolean>>({});
+  const importCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const focusImport = (searchParams.get("focusImport") || "").trim();
+  const preselectedBankId = (searchParams.get("bankId") || "").trim();
 
   const { data: banksData } = useClientQuery<{ id: string; name: string }[]>({
     queryKey: ["accounting", "banks"],
     queryFn: () => fetch("/api/admin/accounting/banks").then((r) => r.json()),
     enabled: isAdmin,
   });
-  const banks = Array.isArray(banksData) ? banksData : [];
+  const banks = useMemo(() => (Array.isArray(banksData) ? banksData : []), [banksData]);
 
   const groupedExports = useMemo(() => {
     return exportItems.map((item) => ({
@@ -263,6 +270,49 @@ export default function ImportExportCenterPage() {
     }
   };
 
+  const handleExtract = async (item: ImportItem) => {
+    const sourceFile = sourceFilesByResource[item.resource];
+    if (!sourceFile) {
+      toast.error("Select a source file first (PDF, image, DOCX, TXT, or CSV).");
+      return;
+    }
+    setExtractBusyByResource((prev) => ({ ...prev, [item.resource]: true }));
+    try {
+      const formData = new FormData();
+      formData.append("file", sourceFile);
+      if (item.resource === "bankTransactions") {
+        const selectedBankId = bankSelections[item.resource] || "";
+        const selectedBank = banks.find((bank) => bank.id === selectedBankId);
+        if (selectedBank?.name) formData.append("bankName", selectedBank.name);
+      }
+      const res = await fetch(`/api/admin/import-export/extract/${item.resource}`, {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(payload?.error || "Failed to extract structured rows.");
+      }
+      const csvText = String(payload?.csv || "");
+      if (!csvText) throw new Error("Extraction returned empty CSV.");
+      const derivedFile = new File([csvText], `${item.resource}-extracted.csv`, {
+        type: "text/csv",
+      });
+      setFilesByResource((prev) => ({ ...prev, [item.resource]: derivedFile }));
+      if (Array.isArray(payload?.warnings) && payload.warnings.length > 0) {
+        toast.success(
+          `Extracted ${payload?.mappedRows ?? 0} row(s). Warnings present; run Dry run before import.`,
+        );
+      } else {
+        toast.success(`Extracted ${payload?.mappedRows ?? 0} row(s) into import-ready CSV.`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Assisted extraction failed.");
+    } finally {
+      setExtractBusyByResource((prev) => ({ ...prev, [item.resource]: false }));
+    }
+  };
+
   useEffect(() => {
     if (isAdmin || status === "loading") return;
     const timer = setTimeout(() => {
@@ -270,6 +320,23 @@ export default function ImportExportCenterPage() {
     }, 1200);
     return () => clearTimeout(timer);
   }, [isAdmin, status]);
+
+  useEffect(() => {
+    if (focusImport !== "bankTransactions") return;
+    if (!preselectedBankId) return;
+    if (!banks.some((bank) => bank.id === preselectedBankId)) return;
+    setBankSelections((prev) => {
+      if (prev.bankTransactions === preselectedBankId) return prev;
+      return { ...prev, bankTransactions: preselectedBankId };
+    });
+  }, [focusImport, preselectedBankId, banks]);
+
+  useEffect(() => {
+    if (!focusImport) return;
+    const target = importCardRefs.current[focusImport];
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [focusImport, status]);
 
   if (status === "loading") {
     return (
@@ -343,8 +410,21 @@ export default function ImportExportCenterPage() {
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
           {importItems.map((item) => (
-            <div key={item.resource} className="rounded-md border p-3 flex flex-col gap-2">
-              <div className="font-medium">{item.label}</div>
+            <div
+              key={item.resource}
+              ref={(node) => {
+                importCardRefs.current[item.resource] = node;
+              }}
+              className="rounded-md border p-3 flex flex-col gap-2"
+            >
+              <div className="font-medium">
+                {item.label}
+                {focusImport === item.resource ? (
+                  <span className="ml-2 rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Recommended
+                  </span>
+                ) : null}
+              </div>
               {item.note ? (
                 <p className="text-xs text-muted-foreground">{item.note}</p>
               ) : null}
@@ -391,6 +471,25 @@ export default function ImportExportCenterPage() {
                 </Button>
                 <input
                   type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.txt,.csv,text/csv,application/pdf,image/*"
+                  disabled={!item.enabled}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    setSourceFilesByResource((prev) => ({ ...prev, [item.resource]: file }));
+                  }}
+                  className="text-xs"
+                />
+                <Button
+                  className="w-full sm:w-auto"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleExtract(item)}
+                  disabled={Boolean(extractBusyByResource[item.resource]) || !item.enabled}
+                >
+                  {extractBusyByResource[item.resource] ? "Extracting..." : "Extract to CSV (beta)"}
+                </Button>
+                <input
+                  type="file"
                   accept=".csv,text/csv"
                   disabled={!item.enabled}
                   onChange={(event) => {
@@ -408,6 +507,10 @@ export default function ImportExportCenterPage() {
                   {item.enabled ? "Import" : "Import (coming soon)"}
                 </Button>
               </div>
+              <p className="text-[11px] text-muted-foreground">
+                Assisted extraction supports PDF/image/DOCX/TXT/CSV and creates an import-ready CSV candidate.
+                Always use Dry run before final import.
+              </p>
               {reportByResource[item.resource]?.issues?.length ? (
                 <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground space-y-1">
                   <div className="font-medium text-foreground">Skipped rows</div>

@@ -693,69 +693,160 @@ Inventory Planning — Reports
 - Page: /admin/accounting/banks
 - What it is: Bank accounts, transactions, and matching rules.
 - How to use: Add accounts, record transactions, create matching rules, import/export rules.
+- Bulk statement import:
+  - Use `Bulk import transactions` on this page to open `/admin/import-export` focused on `Bank Transactions`.
+  - If a bank is currently selected, it is preselected in the import form.
+  - The import center auto-scrolls to the `Bank Transactions` import card when opened from this shortcut.
+  - Download template, optionally run Dry run, then Import.
+  - Current supported file format is CSV only (`.csv`); PDF/images are not supported in this flow yet.
 - Related: Rules are used by reconciliation to match cash movement to ledger lines.
+
+## Import / Export Center — Assisted Extract (Beta)
+- Page: /admin/import-export
+- What it is:
+  - A review-first helper that extracts tabular candidates from PDF/image/DOCX/TXT/CSV into template-aligned CSV for imports.
+- Supported resources:
+  - products, suppliers, customers, orders, purchases, inventory lots, payments, supplier payments, bank transactions.
+- How to use:
+  1. Open the target import card.
+  2. (Bank Transactions only) select bank first.
+  3. Upload source file in `Extract to CSV (beta)` input.
+  4. Click `Extract to CSV (beta)`.
+  5. Review extraction result via `Dry run (validate only)`.
+  6. If dry run passes, run `Import`.
+- Safety:
+  - Extraction does not auto-post data; import still requires explicit confirmation.
+  - OCR for images/PDF fallback requires server OCR configuration (`IMPORT_OCR_ENABLE=1` and `OCR_SPACE_API_KEY`).
+  - When extraction warnings appear, use template download + manual correction before final import.
 
 ## Accounting — Reconciliations
 - Pages: /admin/accounting/reconciliations, /admin/accounting/reconciliations/[id]
-- What it is: Matching bank transactions with journal entries for a period.
-- How to use:
-  - Create a reconciliation by selecting bank, start/end dates, and statement ending balance.
-  - The page blocks duplicate bank+period creation and highlights the existing reconciliation instead.
-    - Server and DB both enforce this; duplicate create returns `409` conflict.
-  - Use server-driven list filters (`Bank`, `Status`, `Search`, `Period start from`, `Period end to`) to isolate open month-end work quickly.
-    - Search input is debounced (350ms) to reduce unnecessary query churn.
-  - Sort options support triage (`Newest period`, `Oldest period`, `Oldest open`, `Largest balance`, `Recently updated`).
-  - Use pagination controls (`page`, `pageSize`) for large reconciliation volumes.
-  - Use quick presets for faster views:
-    - `Open only`
-    - `Closing this month`
-    - `Needs attention (>7d open)`
-  - Save and reuse custom filter states in `Saved Views`; use `Share link` to copy a deep-link URL.
-    - Saved views and column visibility are synced to user preferences (`/api/admin/preferences`) for cross-device continuity.
-  - Pagination mode can be switched between:
-    - `Offset (page numbers)`
-    - `Cursor (large lists)` for better scalability.
-  - URL query state is preserved for filters, pagination, create-form draft values, and selected reconciliation (`recId`) so views are shareable/reload-safe.
-  - Use `Open selected workspace` or row-level `Open` to continue matching and close checklist tasks.
-- Page signals:
-  - Summary cards show total count, in-progress count, closed count, and aggregate statement balance from current filtered scope.
-  - SLA cards show `Open > 7 days`, `Open > 14 days`, and `Oldest open age`.
-  - SLA Notifications panel highlights active 14-day breaches with one-click triage filters.
-  - Each row shows status badge, `Open age` (days), and `Last activity` date for SLA prioritization.
-  - Row progress includes `% matched` and matched/total transaction count.
-  - Each row supports assignee ownership (`ADMIN`/`ACCOUNTANT`) to make accountability explicit.
-  - Selected reconciliation panel shows current status plus matched-line count preview.
-- Controls and compliance:
-  - Bulk toolbar supports:
-    - `Open selected`
-    - `Close selected` (with dry-run checklist + explicit confirmations)
-    - `Export summary CSV`
-    - `Export detailed CSVs` (single ZIP package download)
-  - Keyboard shortcuts:
-    - `/` focus search
-    - `j` / `k` move row selection
-    - `enter` open selected workspace
-    - `?` open shortcut help dialog
-  - Assignment update failures show retry-capable toasts for quick recovery.
-  - History list uses virtualization for larger result sets to keep scrolling/rendering responsive.
-  - Row column visibility is configurable and synced per user (with local fallback).
-  - Export CSV actions are audit-logged (`accounting.reconciliations` export area).
-  - Opening reconciliation workspace is audit-logged (`reconciliation.workspace.open`).
-  - SLA threshold crossings emit audit alerts (`reconciliation.sla.alert`) with cooldown.
-  - List and create endpoints are rate-limited and validate/cap query payload sizes.
-  - Header shows data freshness (`Last data refresh` + query duration) and supports manual refresh + optional 60-second auto-refresh.
-  - Slow list queries emit telemetry logs (`Slow reconciliation list query`) for production tuning.
-  - Period dates are normalized to Accra calendar day boundaries (stored as UTC start/end of day) to avoid timezone drift.
-  - Browser E2E coverage exists for keyboard shortcut help, bulk-close dialog accessibility, and ZIP export button visibility.
+- What it is:
+  - Month/period-level bank reconciliation control center.
+  - You create one reconciliation per `bank + period`, track progress, assign ownership, and close with checklist evidence.
+- Auto-create safety net:
+  - A daily cron checks the just-ended month and auto-creates missing reconciliation headers for active bank accounts.
+  - It is idempotent: if a reconciliation for that bank+period already exists, it is left unchanged.
+  - Auto-created rows default to `DRAFT` with statement balance `0` until accounting updates statement totals.
+  - Cron endpoint: `/api/admin/accounting/reconciliations/auto-create` (authorized via `RECONCILIATION_AUTOCREATE_CRON_SECRET` or `CRON_SECRET`).
+  - Manual trigger (ADMIN/ACCOUNTANT): `POST /api/admin/accounting/reconciliations/auto-create`.
+- Top-to-bottom walkthrough (how to use the page):
+  1) Header/actions:
+     - `Manage bank accounts` opens bank setup and transaction/rule maintenance.
+     - `Refresh now` updates cards/list; `Auto-refresh` can be toggled for active triage sessions.
+     - `Open selected workspace` jumps directly to `/admin/accounting/reconciliations/[id]`.
+  2) Summary cards:
+     - `Total`, `In Progress`, `Closed`, `Statement Total`.
+     - SLA cards: `Open > 7 Days`, `Open > 14 Days`, `Oldest Open Age`.
+     - Cards are computed from current filtered scope, not global totals.
+  3) SLA Notifications panel:
+     - Highlights 14-day breaches and provides quick triage links (`View needs attention`, `Show >14d only`).
+  4) Create reconciliation:
+     - Choose bank + period start/end + statement ending balance.
+     - Duplicate bank-period creation is blocked (server+DB enforcement; duplicate returns `409`).
+  5) History filters:
+     - Bank, assignee, status, search (debounced), period range, sort, page size, pagination mode.
+     - Quick presets: `Open only`, `Closing this month`, `Needs attention (>7d open)`.
+  6) Saved Views & Columns:
+     - Save common scopes and column visibility for repeated workflows.
+     - URL state is shareable/reload-safe (filters, pagination mode, selection, create draft fields).
+  7) History table + bulk toolbar:
+     - Row shows bank, period, status, assignee, open age, last activity, and matched progress.
+     - Bulk actions: `Open selected`, `Close selected` (dry-run checklist), `Export summary CSV`, `Export detailed CSVs`.
+     - Keyboard shortcuts: `/`, `j/k`, `enter`, `?`.
+  8) Selected reconciliation panel:
+     - Shows selected row summary and matched-line preview.
+     - Actions: `Open matching workspace`, `Export CSV`.
+- Concise testing flow (page acceptance):
+  1) Create flow:
+     - create a valid reconciliation and confirm row appears.
+     - attempt duplicate bank+period and confirm block.
+  2) Filter and state persistence:
+     - apply filters/sort/page mode, refresh browser, confirm state restored.
+  3) SLA/triage:
+     - apply `Needs attention` and `>14d` shortcuts, confirm expected rows.
+  4) Keyboard:
+     - verify `/`, `j/k`, `enter`, `?`.
+  5) Bulk close safety:
+     - select open rows, open close action, verify dry-run checklist before final close.
+  6) Export traceability:
+     - run summary/detailed export and confirm entries in Audit Log.
+  7) End-to-end completion:
+     - complete one reconciliation manually and one via auto-match in workspace, then close and verify status/card updates.
+  8) Deterministic test data reset:
+     - run `pnpm -s db:seed-reconciliations-page` when you need canonical seeded scenarios.
 - Related: Supports period close checklists and integrity checks.
 
 ## Accounting — Reconciliation Match Workspace
 - Page: /admin/accounting/reconciliations/[id]
-- What it is: Side-by-side matching of bank statement lines and journal entries.
-- How to use:
-  - Select a bank transaction and the corresponding journal line(s), then Apply match → Save match.
-  - Use Auto‑match (exact, tolerance, or rules) to speed up bulk matching.
-  - Reopen a closed reconciliation if you need to edit matches (closed reconciliations are locked).
+- What it is:
+  - The execution workspace where one reconciliation is completed and then closed.
+  - You match transaction rows to journal lines, use auto-match helpers, review outcome, and finalize.
+- Top-to-bottom walkthrough (how to use the page):
+  1) Header/actions:
+     - `Export CSV` for this reconciliation.
+     - `Close reconciliation` opens checklist dialog; close is explicit (not automatic).
+  2) Close readiness card:
+     - Shows live readiness (`matched` vs `unmatched`) and opens checklist review.
+  3) Bank transactions panel:
+     - Period-scoped rows only (same reconciliation period).
+     - Use filters and optional `Show only unmatched`.
+     - Checkmark indicates `matched=true`.
+     - Unmatched rows now show inline hints (`Rule miss`, `Amount mismatch`, `Date out-of-range`) to speed triage.
+  4) Journal lines panel:
+     - Period-scoped lines only.
+     - Defaults to unmatched-only view; toggle available.
+     - Use tolerance/date/search filters to narrow candidates.
+  5) Suggested matches panel:
+     - Appears when a transaction is selected.
+     - Uses amount/date scoring and rule hints.
+  6) Apply match action bar:
+     - `Save match`, `Use top suggestion`.
+     - Auto-match actions (`exact`, `tolerance`, `rules`) open in-page confirmation modal.
+     - Action bar stays sticky for long lists.
+  7) Last auto-match result panel:
+     - Shows attempted/matched totals and skip reasons.
+     - `Download skip report` exports skipped rows.
+     - `Undo last auto-match batch` reverts the most recent auto-match set.
+  8) Workspace activity:
+     - Server-persisted timeline sourced from audit logs (survives page refresh and user session changes).
+  9) Guardrails:
+     - Matching is blocked for closed reconciliations.
+     - API rejects out-of-period and wrong-bank matches.
+     - Sign-mismatch warning appears when selected transaction direction and selected journal sign likely conflict.
+     - Force-close with unmatched items is ADMIN-only and requires a reason (minimum 8 characters).
+- Concise testing flow:
+  1) Scope correctness:
+     - confirm rows/lines shown belong only to the reconciliation period.
+  2) Manual match:
+     - select txn + line -> `Save match`, verify checkmark and counters update.
+  3) Auto-match modal:
+     - open each mode and verify modal text + pre-flight counts.
+  4) Auto-match results:
+     - run one mode, verify result panel totals and skip reasons.
+  5) Undo batch:
+     - click `Undo last auto-match batch`, verify matched rows revert.
+     - verify audit timeline records undo event.
+  6) Unmatched toggles:
+     - toggle `Show only unmatched` on both panels and verify row subsets.
+  7) Close checklist:
+     - verify checklist counts and close behavior (normal/force path as applicable).
+     - for unmatched close path, confirm non-admin cannot force-close and admin must enter reason.
+- Hands-on test script (seeded example):
+  1) Open the March 2026 `Primary Operating Account` reconciliation workspace.
+  2) Confirm readiness shows unmatched counts (example baseline: 5 unmatched transactions, 3 unmatched journal lines).
+  3) Match `CURRENT-OPEN TXN 3 (+800)` to `1010 Bank 800` -> click `Save match`.
+  4) Match `CURRENT-OPEN TXN 2 (-650)` to `1010 Bank 650` -> click `Save match`.
+  5) Match `MOMO PAYMENT INV-1001 (+1380)` to `1010 Bank 1380` -> click `Save match`.
+  6) Verify:
+     - each matched transaction shows checkmark (`✓`),
+     - unmatched journal line count drops toward zero,
+     - close readiness card updates live,
+     - workspace activity logs the actions.
+  7) Turn on `Show only unmatched` for both panels and verify matched rows are hidden.
+  8) Run `Auto-match exact amounts` and confirm result modal/panel behavior:
+     - if no exact pairs remain, result should report `0 matched` with skip reasons (not silent success).
+  9) Open `Review close checklist` and verify close is blocked while unmatched transactions remain.
 - Related: Matching rules from Bank Accounts can propose candidate matches.
 
 ## Accounting — Cash Reconciliation
@@ -1668,6 +1759,45 @@ Inventory Planning — Reports
 7) Set WON and convert to order.
 8) Confirm prefilled items + customer behavior.
 9) Verify tender/order linkage shows Open Order on subsequent view.
+
+## Local Full Test Data Seeding (Page-by-Page Enhancement Baseline)
+- Goal:
+  - Create a broad, repeatable dataset so admin pages can be tested end-to-end after resets.
+- Run from:
+  - `nora-hospital-supply/`
+- Command sequence:
+  - `pnpm -s db:seed-accounting`
+  - `pnpm -s db:seed-reconciliations-page`
+  - `pnpm -s db:seed-dispatchers`
+  - `pnpm -s db:backfill-suppliers`
+  - `pnpm -s db:backfill-product-suppliers`
+  - `pnpm -s db:backfill-purchase-suppliers`
+  - `pnpm -s db:backfill-purchase-receipts`
+  - `pnpm -s db:seed-supplier-payment-approval`
+  - `pnpm -s db:seed-cash-reconciliation`
+  - `pnpm -s db:seed-inventory-lots`
+  - `pnpm -s db:seed-inventory-valuation-variance`
+  - `pnpm -s db:backfill-stockout-at`
+  - `pnpm -s db:reconcile-inventory-ledger`
+  - `pnpm -s db:recompute-inventory-planning`
+  - `pnpm -s db:backfill-otc-orders`
+  - `pnpm -s db:normalize-otc-walkin-names`
+  - `pnpm -s db:backfill-audit-customer-context`
+  - `pnpm -s db:backfill-balances`
+- Expected outcomes:
+  - Reconciliations page includes coverage cases:
+    - recent in-progress item,
+    - open item older than 7 days,
+    - open item older than 14 days,
+    - closed reference item,
+    - assignee and multi-bank filter coverage.
+  - Supplier Payments page has at least one pending approval candidate.
+  - Inventory pages show lots, valuation variance, stock alerts/suggestions, and reconciled ledger state.
+  - Cash reconciliation and dispatcher datasets are available for accounting/ops workflows.
+  - Some scripts may report `0 updated` or `No customers found` on a fresh DB; this is acceptable.
+- Validation:
+  - `pnpm exec prisma migrate status` -> `Database schema is up to date!`
+  - `pnpm exec tsc --noEmit` -> no type errors.
 
 ## Expenses Entry Controls
 - Page: /admin/expenses

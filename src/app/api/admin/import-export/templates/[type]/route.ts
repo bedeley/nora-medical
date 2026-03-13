@@ -4,49 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
 import { randomUUID } from "crypto";
 import { hasPermission } from "@/lib/permissions";
-
-const templates: Record<string, string[]> = {
-  products: [
-    "name",
-    "sku",
-    "category",
-    "price",
-    "cost",
-    "minMarginPct",
-    "stock",
-    "supplier",
-    "leadTimeDays",
-    "minOrderQty",
-    "packSize",
-    "requiresLotTracking",
-    "requiresExpiryDate",
-  ],
-  suppliers: ["name", "email", "phone", "leadTimeDays", "minOrderQty", "packSize", "status", "notes"],
-  customers: ["name", "email", "phone", "company", "address", "creditLimit"],
-  orders: ["invoiceNumber", "customerEmail", "date", "status", "total", "amountPaid", "deliveryStatus"],
-  purchases: ["productSku", "supplier", "quantity", "unitCost", "status", "expectedAt", "notes"],
-  inventoryLots: ["productSku", "batchCode", "expiryDate", "quantity", "receivedAt", "supplier"],
-  payments: ["orderInvoice", "amount", "method", "provider", "status", "createdAt"],
-  supplierPayments: [
-    "supplier",
-    "purchaseId",
-    "amount",
-    "method",
-    "reference",
-    "status",
-    "paidAt",
-    "approvedAt",
-    "createdAt",
-  ],
-  bankTransactions: [
-    "bankName",
-    "postedAt",
-    "amount",
-    "type",
-    "description",
-    "reference",
-  ],
-};
+import { IMPORT_TEMPLATES } from "@/lib/import-export-schema";
 
 export async function GET(
   _req: Request,
@@ -60,7 +18,7 @@ export async function GET(
 
   const params = await context.params;
   const key = params.type;
-  const headers = templates[key];
+  const headers = IMPORT_TEMPLATES[key];
   if (!headers) {
     return NextResponse.json({ error: "Template not found" }, { status: 404 });
   }

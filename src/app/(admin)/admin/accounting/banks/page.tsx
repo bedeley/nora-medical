@@ -313,6 +313,19 @@ export default function BankAccountsPage() {
         <p className="text-sm text-muted-foreground">
           Track bank accounts and reconcile transactions.
         </p>
+        <div className="mt-3">
+          <Button asChild size="sm" variant="outline">
+            <a
+              href={
+                activeBank?.id
+                  ? `/admin/import-export?focusImport=bankTransactions&bankId=${encodeURIComponent(activeBank.id)}`
+                  : "/admin/import-export?focusImport=bankTransactions"
+              }
+            >
+              Bulk import transactions
+            </a>
+          </Button>
+        </div>
       </div>
 
       <Card>

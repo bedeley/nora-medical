@@ -57,6 +57,7 @@
         "db:backfill-audit-customer-context": "tsx prisma/scripts/backfill-audit-customer-context.ts",
         "db:seed-supplier-payment-approval": "tsx prisma/scripts/seed-supplier-payment-approval.ts",
         "db:seed-cash-reconciliation": "tsx prisma/scripts/seed-cash-reconciliation.ts",
+        "db:seed-reconciliations-page": "tsx prisma/scripts/seed-reconciliations-page.ts",
         "db:seed-inventory-lots": "tsx prisma/scripts/seed-inventory-lots.ts",
         "db:seed-inventory-valuation-variance": "tsx prisma/scripts/seed-inventory-valuation-variance.ts",
         "db:seed-dispatchers": "tsx prisma/scripts/seed-dispatchers.ts",

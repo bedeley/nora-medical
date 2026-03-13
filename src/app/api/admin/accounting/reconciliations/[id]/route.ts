@@ -17,6 +17,11 @@ const getReconciliationId = (req: Request) => {
   return parts[parts.length - 1] || "";
 };
 
+const closePayloadSchema = z.object({
+  force: z.boolean().optional(),
+  forceReason: z.string().trim().optional(),
+});
+
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
@@ -87,7 +92,26 @@ export async function PATCH(
       return NextResponse.json(rec);
     }
 
-    const force = Boolean(body?.force);
+    const closePayload = closePayloadSchema.safeParse(body);
+    if (!closePayload.success) {
+      return NextResponse.json(
+        { error: "Invalid close payload", details: closePayload.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const force = Boolean(closePayload.data.force);
+    const forceReason = closePayload.data.forceReason || "";
+    if (force) {
+      if ((session.user as AuthenticatedUser).role !== "ADMIN") {
+        return NextResponse.json({ error: "Only admins can force-close reconciliations." }, { status: 403 });
+      }
+      if (forceReason.length < 8) {
+        return NextResponse.json(
+          { error: "Force-close reason must be at least 8 characters." },
+          { status: 400 },
+        );
+      }
+    }
     const existing = await prisma.reconciliation.findUnique({
       where: { id: recId },
       select: {
@@ -154,9 +178,16 @@ export async function PATCH(
     });
     await recordAuditLog({
       actorId: (session.user as AuthenticatedUser).id,
-      action: "reconciliation.close",
+      action: force ? "reconciliation.force_close" : "reconciliation.close",
       entityType: "Reconciliation",
       entityId: recId,
+      meta: force
+        ? {
+            forceReason,
+            unmatchedBankTxns,
+            unmatchedJournalLines,
+          }
+        : undefined,
     });
     return NextResponse.json(rec);
   } catch (error) {

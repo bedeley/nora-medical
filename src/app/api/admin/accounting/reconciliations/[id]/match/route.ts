@@ -10,6 +10,7 @@ const matchSchema = z.object({
   bankTransactionId: z.string().min(1),
   journalLineId: z.string().optional().nullable(),
   matchStatus: z.enum(["UNMATCHED", "MATCHED", "PARTIAL"]).optional(),
+  source: z.enum(["manual", "auto_exact", "auto_tolerance", "auto_rules", "undo_auto"]).optional(),
 });
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
     }
     const reconciliation = await prisma.reconciliation.findUnique({
       where: { id: recId },
-      select: { status: true },
+      select: { status: true, bankAccountId: true, periodStart: true, periodEnd: true },
     });
     if (!reconciliation) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -68,7 +69,36 @@ export async function POST(req: Request) {
     if (reconciliation.status === "CLOSED") {
       return NextResponse.json({ error: "Reconciliation is closed" }, { status: 400 });
     }
+    const bankTxn = await prisma.bankTransaction.findUnique({
+      where: { id: parsed.data.bankTransactionId },
+      select: { id: true, bankAccountId: true, postedAt: true },
+    });
+    if (!bankTxn) {
+      return NextResponse.json({ error: "Bank transaction not found" }, { status: 404 });
+    }
+    if (bankTxn.bankAccountId !== reconciliation.bankAccountId) {
+      return NextResponse.json({ error: "Bank transaction does not belong to this bank account" }, { status: 400 });
+    }
+    if (bankTxn.postedAt < reconciliation.periodStart || bankTxn.postedAt > reconciliation.periodEnd) {
+      return NextResponse.json({ error: "Bank transaction is outside reconciliation period" }, { status: 400 });
+    }
+    if (parsed.data.journalLineId) {
+      const journalLine = await prisma.journalLine.findUnique({
+        where: { id: parsed.data.journalLineId },
+        select: { id: true, entry: { select: { entryDate: true, status: true } } },
+      });
+      if (!journalLine) {
+        return NextResponse.json({ error: "Journal line not found" }, { status: 404 });
+      }
+      if (journalLine.entry.status !== "POSTED") {
+        return NextResponse.json({ error: "Journal line entry is not posted" }, { status: 400 });
+      }
+      if (journalLine.entry.entryDate < reconciliation.periodStart || journalLine.entry.entryDate > reconciliation.periodEnd) {
+        return NextResponse.json({ error: "Journal line is outside reconciliation period" }, { status: 400 });
+      }
+    }
     const matchStatus = parsed.data.matchStatus ?? (parsed.data.journalLineId ? "MATCHED" : "UNMATCHED");
+    const source = parsed.data.source || "manual";
     const line = await prisma.reconciliationLine.upsert({
       where: { bankTransactionId: parsed.data.bankTransactionId },
       update: {
@@ -96,6 +126,7 @@ export async function POST(req: Request) {
         bankTransactionId: parsed.data.bankTransactionId,
         journalLineId: parsed.data.journalLineId ?? null,
         matchStatus,
+        source,
       },
     });
     return NextResponse.json(line);
