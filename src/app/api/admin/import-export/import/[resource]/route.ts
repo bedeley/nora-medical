@@ -11,6 +11,14 @@ import { hasPermission } from "@/lib/permissions";
 import { assertSameOrigin } from "@/lib/origin";
 
 type CsvRow = Record<string, string>;
+type ImportOutcomePreviewRow = {
+  row: number;
+  bankName?: string;
+  date?: string;
+  amount?: string;
+  reference?: string;
+  reason?: string;
+};
 
 const parseCsv = (input: string): CsvRow[] => {
   const rows: string[][] = [];
@@ -119,9 +127,16 @@ export async function POST(
   let updated = 0;
   let skipped = 0;
   const issues: Array<{ row: number; reason: string }> = [];
+  const createdPreview: ImportOutcomePreviewRow[] = [];
+  const updatedPreview: ImportOutcomePreviewRow[] = [];
+  const skippedPreview: ImportOutcomePreviewRow[] = [];
+  const importedBankIds = new Set<string>();
   const noteSkip = (rowIndex: number, reason: string) => {
     skipped += 1;
     issues.push({ row: rowIndex, reason });
+    if (skippedPreview.length < 2000) {
+      skippedPreview.push({ row: rowIndex, reason });
+    }
   };
 
   if (resource === "products") {
@@ -749,14 +764,14 @@ export async function POST(
         noteSkip(rowIndex, bankName ? `Unknown bank "${bankName}".` : "Missing bank selection.");
         continue;
       }
+      importedBankIds.add(bank.id);
 
       const existing = await prisma.bankTransaction.findFirst({
         where: {
           bankAccountId: bank.id,
           postedAt,
           amount,
-          type,
-          description: description ?? null,
+          reference: reference ?? null,
         },
       });
       if (existing) {
@@ -765,6 +780,15 @@ export async function POST(
       }
 
       created += 1;
+      if (createdPreview.length < 2000) {
+        createdPreview.push({
+          row: rowIndex,
+          bankName: bank.name,
+          date: postedAt.toISOString().slice(0, 10),
+          amount: String(amount),
+          reference: reference ?? "",
+        });
+      }
       if (!dryRun) {
         await prisma.bankTransaction.create({
           data: {
@@ -794,6 +818,16 @@ export async function POST(
       created,
       updated,
       skipped,
+      bankIds:
+        resource === "bankTransactions" ? Array.from(importedBankIds) : undefined,
+      issuesCount: issues.length,
+      issuesPreview: issues.slice(0, 50),
+      issuesList: issues.slice(0, 2000),
+      outcomePreview: {
+        created: createdPreview.slice(0, 2000),
+        updated: updatedPreview.slice(0, 2000),
+        skipped: skippedPreview.slice(0, 2000),
+      },
     },
   });
 

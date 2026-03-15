@@ -20,8 +20,9 @@ function isAuthorized(user?: AuthenticatedUser | null) {
 
 export async function PATCH(
   req: Request,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
   if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -38,10 +39,52 @@ export async function PATCH(
         { status: 400 },
       );
     }
+    const before = await prisma.bankAccount.findUnique({ where: { id } });
+    if (!before) {
+      return NextResponse.json({ error: "Bank account not found" }, { status: 404 });
+    }
     const bank = await prisma.bankAccount.update({
-      where: { id: params.id },
+      where: { id },
       data: parsed.data,
     });
+    const actor = session.user as AuthenticatedUser;
+    const actorIdCandidate = String(actor?.id || "").trim();
+    let safeActorId: string | null = null;
+    if (actorIdCandidate) {
+      const actorExists = await prisma.user.findUnique({
+        where: { id: actorIdCandidate },
+        select: { id: true },
+      });
+      safeActorId = actorExists?.id || null;
+    }
+    try {
+      await prisma.auditLog.create({
+        data: {
+          actorId: safeActorId,
+          action: "BANK_ACCOUNT_UPDATED",
+          entityType: "BANK_ACCOUNT",
+          entityId: bank.id,
+          meta: JSON.stringify({
+            before: {
+              name: before.name,
+              bankName: before.bankName || null,
+              accountNumberMasked: before.accountNumberMasked || null,
+              currency: before.currency,
+              isActive: before.isActive,
+            },
+            after: {
+              name: bank.name,
+              bankName: bank.bankName || null,
+              accountNumberMasked: bank.accountNumberMasked || null,
+              currency: bank.currency,
+              isActive: bank.isActive,
+            },
+          }),
+        },
+      });
+    } catch (auditError) {
+      console.error("Accounting bank update audit error:", auditError);
+    }
     return NextResponse.json(bank);
   } catch (error) {
     console.error("Accounting bank update error:", error);

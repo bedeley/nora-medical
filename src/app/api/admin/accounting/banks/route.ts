@@ -51,6 +51,22 @@ export async function POST(req: Request) {
       );
     }
     const bank = await prisma.bankAccount.create({ data: parsed.data });
+    const actor = session.user as AuthenticatedUser;
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor?.id || null,
+        action: "BANK_ACCOUNT_CREATED",
+        entityType: "BANK_ACCOUNT",
+        entityId: bank.id,
+        meta: JSON.stringify({
+          name: bank.name,
+          bankName: bank.bankName || null,
+          accountNumberMasked: bank.accountNumberMasked || null,
+          currency: bank.currency,
+          isActive: bank.isActive,
+        }),
+      },
+    });
     return NextResponse.json(bank);
   } catch (error) {
     console.error("Accounting bank create error:", error);

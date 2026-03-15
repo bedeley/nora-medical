@@ -38,6 +38,15 @@ export default function AccountingSettingsPage() {
         r.json(),
       ),
   });
+  const { data: bankTxnEditWindowData, refetch: refetchBankTxnEditWindow } = useClientQuery<{
+    value: number | string | null;
+  }>({
+    queryKey: ["accounting", "bank-transactions", "edit-window-days"],
+    queryFn: () =>
+      fetch("/api/admin/settings/app?key=accounting.bankTransactions.editWindowDays").then((r) =>
+        r.json(),
+      ),
+  });
 
   const [arDifference, setArDifference] = useState("");
   const [inventoryDifference, setInventoryDifference] = useState("");
@@ -49,6 +58,8 @@ export default function AccountingSettingsPage() {
   const [storeCreditPolicy, setStoreCreditPolicy] =
     useState<StoreCreditApplyPolicy>("oldest_first");
   const [savingPolicy, setSavingPolicy] = useState(false);
+  const [bankTxnEditWindowDays, setBankTxnEditWindowDays] = useState("");
+  const [savingBankTxnEditWindow, setSavingBankTxnEditWindow] = useState(false);
 
   const current = data?.value;
   const displayAr = arDifference !== "" ? arDifference : String(current?.arDifference ?? 0.01);
@@ -67,6 +78,17 @@ export default function AccountingSettingsPage() {
     }
     setStoreCreditPolicy("oldest_first");
   }, [storeCreditPolicyData?.value]);
+  useEffect(() => {
+    const raw = bankTxnEditWindowData?.value;
+    const next = Number(
+      typeof raw === "number" ? raw : typeof raw === "string" ? raw : 7,
+    );
+    if (!Number.isFinite(next)) {
+      setBankTxnEditWindowDays("7");
+      return;
+    }
+    setBankTxnEditWindowDays(String(Math.min(365, Math.max(0, Math.floor(next)))));
+  }, [bankTxnEditWindowData?.value]);
 
   const saveSettings = async () => {
     const arVal = Number(displayAr);
@@ -147,6 +169,32 @@ export default function AccountingSettingsPage() {
       toast.error(e instanceof Error ? e.message : "Failed to save store-credit policy.");
     } finally {
       setSavingPolicy(false);
+    }
+  };
+  const saveBankTxnEditWindow = async () => {
+    const numeric = Number(bankTxnEditWindowDays);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 365) {
+      toast.error("Enter a valid edit window in days (0 to 365).");
+      return;
+    }
+    try {
+      setSavingBankTxnEditWindow(true);
+      const res = await fetch("/api/admin/settings/app", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: "accounting.bankTransactions.editWindowDays",
+          value: Math.floor(numeric),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to save transaction edit window.");
+      toast.success("Bank transaction edit window updated.");
+      refetchBankTxnEditWindow();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to save transaction edit window.");
+    } finally {
+      setSavingBankTxnEditWindow(false);
     }
   };
 
@@ -245,6 +293,26 @@ export default function AccountingSettingsPage() {
           </p>
           <Button className="w-full sm:w-auto" onClick={saveStoreCreditPolicy} disabled={savingPolicy}>
             {savingPolicy ? "Saving..." : "Save store-credit policy"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Bank transaction edit policy</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <Input
+            placeholder="Edit window (days)"
+            inputMode="numeric"
+            value={bankTxnEditWindowDays}
+            onChange={(e) => setBankTxnEditWindowDays(e.target.value)}
+          />
+          <p className="text-xs text-muted-foreground">
+            Transactions older than this window require ADMIN override reason. Closed-period transactions remain locked.
+          </p>
+          <Button className="w-full sm:w-auto" onClick={saveBankTxnEditWindow} disabled={savingBankTxnEditWindow}>
+            {savingBankTxnEditWindow ? "Saving..." : "Save edit policy"}
           </Button>
         </CardContent>
       </Card>

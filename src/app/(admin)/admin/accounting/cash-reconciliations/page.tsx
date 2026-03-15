@@ -105,6 +105,16 @@ type CashReconResponse = {
   } | null;
 };
 
+type SavedHistoryFilter = {
+  id: string;
+  name: string;
+  range: "today" | "month" | "all";
+  from: string;
+  to: string;
+  variance: "all" | "nonzero";
+  pageSize: number;
+};
+
 function toLocalYmd(date: Date) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -139,6 +149,8 @@ export default function CashReconciliationsPage() {
   const [historyVariance, setHistoryVariance] = useState<"all" | "nonzero">("all");
   const [historyPage, setHistoryPage] = useState(1);
   const [historyPageSize, setHistoryPageSize] = useState(10);
+  const [savedHistoryFilters, setSavedHistoryFilters] = useState<SavedHistoryFilter[]>([]);
+  const [selectedHistoryFilterId, setSelectedHistoryFilterId] = useState("");
   const [allowReopenOverride, setAllowReopenOverride] = useState(false);
   const [reopenReason, setReopenReason] = useState("");
   const [openingTillFloat, setOpeningTillFloat] = useState("");
@@ -224,6 +236,12 @@ export default function CashReconciliationsPage() {
   const reconciliations = data?.reconciliations || [];
   const historyTotal = Number(data?.history?.total || 0);
   const historyTotalPages = Number(data?.history?.totalPages || 1);
+  const nonZeroVarianceCount = reconciliations.filter((rec) => Number(rec.variance || 0) !== 0).length;
+  const latestVarianceAmount = reconciliations.length ? Number(reconciliations[0].variance || 0) : 0;
+  const storageKey = useMemo(
+    () => `cash-reconciliation-history-filters-${cashAccountId || data?.cashAccount?.id || "default"}`,
+    [cashAccountId, data?.cashAccount?.id],
+  );
   const variancePreview = (() => {
     if (!actualAmount.trim()) return null;
     const actual = Number(actualAmount);
@@ -512,6 +530,155 @@ th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left} th{b
       setHistoryPage(historyTotalPages);
     }
   }, [historyPage, historyTotalPages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) {
+        setSavedHistoryFilters([]);
+        setSelectedHistoryFilterId("");
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        setSavedHistoryFilters([]);
+        setSelectedHistoryFilterId("");
+        return;
+      }
+      const normalized: SavedHistoryFilter[] = parsed
+        .filter((item) => item && typeof item === "object")
+        .map((item) => ({
+          id: String(item.id || ""),
+          name: String(item.name || "Untitled"),
+          range: item.range === "today" || item.range === "month" ? item.range : "all",
+          from: String(item.from || ""),
+          to: String(item.to || ""),
+          variance: (item.variance === "nonzero" ? "nonzero" : "all") as "all" | "nonzero",
+          pageSize: Number(item.pageSize || 10),
+        }))
+        .filter((item) => item.id);
+      setSavedHistoryFilters(normalized);
+      setSelectedHistoryFilterId("");
+    } catch {
+      setSavedHistoryFilters([]);
+      setSelectedHistoryFilterId("");
+    }
+  }, [storageKey]);
+
+  const persistHistoryFilters = (next: SavedHistoryFilter[]) => {
+    setSavedHistoryFilters(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(storageKey, JSON.stringify(next));
+    }
+  };
+
+  const saveCurrentHistoryFilter = () => {
+    const name = (typeof window !== "undefined" ? window.prompt("History filter name") : "") || "";
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const id = `h_${Date.now()}`;
+    const next: SavedHistoryFilter[] = [
+      ...savedHistoryFilters,
+      {
+        id,
+        name: trimmed,
+        range: historyRange,
+        from: historyFrom,
+        to: historyTo,
+        variance: historyVariance,
+        pageSize: historyPageSize,
+      },
+    ];
+    persistHistoryFilters(next);
+    setSelectedHistoryFilterId(id);
+    toast.success("History filter saved.");
+  };
+
+  const applySavedHistoryFilter = (filterId: string) => {
+    setSelectedHistoryFilterId(filterId);
+    const found = savedHistoryFilters.find((item) => item.id === filterId);
+    if (!found) return;
+    setHistoryRange(found.range);
+    setHistoryFrom(found.from);
+    setHistoryTo(found.to);
+    setHistoryVariance(found.variance);
+    setHistoryPageSize(found.pageSize);
+    setHistoryPage(1);
+  };
+
+  const deleteSavedHistoryFilter = () => {
+    if (!selectedHistoryFilterId) {
+      toast.error("Select a saved history filter first.");
+      return;
+    }
+    const next = savedHistoryFilters.filter((item) => item.id !== selectedHistoryFilterId);
+    persistHistoryFilters(next);
+    setSelectedHistoryFilterId("");
+    toast.success("Saved history filter removed.");
+  };
+
+  const applyHistoryPreset = (preset: "today_nonzero" | "month_all" | "all_nonzero") => {
+    if (preset === "today_nonzero") {
+      setHistoryRange("today");
+      setHistoryFrom("");
+      setHistoryTo("");
+      setHistoryVariance("nonzero");
+    } else if (preset === "month_all") {
+      setHistoryRange("month");
+      setHistoryFrom("");
+      setHistoryTo("");
+      setHistoryVariance("all");
+    } else {
+      setHistoryRange("all");
+      setHistoryFrom("");
+      setHistoryTo("");
+      setHistoryVariance("nonzero");
+    }
+    setHistoryPage(1);
+  };
+
+  const exportHistoryCsv = () => {
+    const rows: string[] = [];
+    rows.push("ID,Counted At,Mode,Cash Account Code,Cash Account Name,Expected,Actual,Variance,Journal ID,Created By,Notes");
+    for (const rec of reconciliations) {
+      rows.push(
+        [
+          csvEscape(rec.id),
+          csvEscape(rec.countedAt),
+          csvEscape((rec.reconcileMode || mode).toUpperCase()),
+          csvEscape(rec.cashAccount.code),
+          csvEscape(rec.cashAccount.name),
+          csvEscape(Number(rec.expectedAmount || 0)),
+          csvEscape(Number(rec.actualAmount || 0)),
+          csvEscape(Number(rec.variance || 0)),
+          csvEscape(rec.journalEntryId || ""),
+          csvEscape(rec.createdBy?.name || rec.createdBy?.email || "System"),
+          csvEscape(rec.notes || ""),
+        ].join(","),
+      );
+    }
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const filename = `cash-reconciliations-history-${asOf}.csv`;
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "cash-reconciliations-history",
+      format: "CSV",
+      fileName: filename,
+      rowCount: reconciliations.length,
+      columnCount: 11,
+      byteSize: blob.size,
+      scopeSnapshot: `Range: ${historyRange} | Variance: ${historyVariance} | Account: ${data?.cashAccount?.code || ""}`,
+    });
+    toast.success("History CSV exported.");
+  };
 
   const toggleRecDetails = async (rec: CashRecon) => {
     const isOpen = Boolean(expandedRecIds[rec.id]);
@@ -1154,6 +1321,45 @@ th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left} th{b
 
       <Card>
         <CardHeader>
+          <CardTitle>History overview</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Rows in current page</div>
+            <div className="text-lg font-semibold">{reconciliations.length}</div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Non-zero variances</div>
+            <div className="text-lg font-semibold">{nonZeroVarianceCount}</div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Latest variance</div>
+            <div className={`text-lg font-semibold ${latestVarianceAmount !== 0 ? "text-amber-700" : ""}`}>
+              {formatCurrency(latestVarianceAmount)}
+            </div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-xs text-muted-foreground">Filter scope</div>
+            <div className="font-semibold">
+              {historyRange.toUpperCase()} / {historyVariance === "nonzero" ? "NON-ZERO" : "ALL"}
+            </div>
+          </div>
+          <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => applyHistoryPreset("today_nonzero")}>
+              Preset: Today non-zero
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyHistoryPreset("month_all")}>
+              Preset: This month all
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyHistoryPreset("all_nonzero")}>
+              Preset: All non-zero
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle>Recent reconciliations</CardTitle>
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -1210,6 +1416,27 @@ th,td{border:1px solid #ccc;padding:6px 8px;font-size:12px;text-align:left} th{b
                   <option value={50}>50</option>
                 </select>
               </label>
+              <select
+                className="h-8 min-w-44 rounded-md border bg-background px-2 text-sm text-foreground"
+                value={selectedHistoryFilterId}
+                onChange={(e) => applySavedHistoryFilter(e.target.value)}
+              >
+                <option value="">Saved history filters</option>
+                {savedHistoryFilters.map((filter) => (
+                  <option key={filter.id} value={filter.id}>
+                    {filter.name}
+                  </option>
+                ))}
+              </select>
+              <Button type="button" size="sm" variant="outline" onClick={saveCurrentHistoryFilter}>
+                Save filter
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={deleteSavedHistoryFilter}>
+                Delete filter
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={exportHistoryCsv}>
+                Export history CSV
+              </Button>
               <Button
                 type="button"
                 size="sm"

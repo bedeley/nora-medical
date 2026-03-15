@@ -690,16 +690,109 @@ Inventory Planning — Reports
   - Link should be clickable and opens admin report route with date parameters.
 
 ## Accounting — Bank Accounts
-- Page: /admin/accounting/banks
-- What it is: Bank accounts, transactions, and matching rules.
-- How to use: Add accounts, record transactions, create matching rules, import/export rules.
-- Bulk statement import:
-  - Use `Bulk import transactions` on this page to open `/admin/import-export` focused on `Bank Transactions`.
-  - If a bank is currently selected, it is preselected in the import form.
-  - The import center auto-scrolls to the `Bank Transactions` import card when opened from this shortcut.
-  - Download template, optionally run Dry run, then Import.
-  - Current supported file format is CSV only (`.csv`); PDF/images are not supported in this flow yet.
-- Related: Rules are used by reconciliation to match cash movement to ledger lines.
+- Pages: /admin/accounting/banks, /admin/accounting/banks/all-transactions
+- What it is:
+  - `/admin/accounting/banks`: bank-scoped working page for setup, controlled edits, matching rules, and import-run review.
+  - `/admin/accounting/banks/all-transactions`: read-only global search/audit view across all banks.
+- Top-to-bottom walkthrough (`/admin/accounting/banks`):
+  1. Header actions:
+     - `Bulk import transactions`: opens Import/Export with bank transaction card focused.
+     - `All banks transactions`: opens global read-only cross-bank transaction view.
+     - `Open reconciliations`: opens reconciliation list; when a bank is selected, it passes `bankAccountId`.
+  2. Add bank account:
+     - Enter account name (required), optional bank name, optional masked account number, then click `Add bank`.
+  3. Bank selector and context:
+     - Selector requires explicit choice (`Select bank account...`).
+     - Until selected, transaction/rule sections remain unavailable.
+     - Context line shows selected bank and inactive badge when applicable.
+  4. Selected bank profile (safe edit flow):
+     - Click `Edit bank profile` to enable fields.
+     - Save is enabled only when values changed.
+     - `Cancel` resets unsaved edits.
+     - `Save bank profile` opens a confirmation dialog before update.
+  5. Manual transaction entry:
+     - Enter date, amount, type, description/reference, then click `Add transaction`.
+     - Duplicate protection checks `(date, amount, reference)`; conflict can be overridden only with reason (>=8 chars), and this is audit-logged.
+  6. Filter and saved view row:
+     - Search, `Unmatched only: On/Off`, page size, saved filters (`Save filter`, `Delete filter`).
+  7. Sticky bulk action bar:
+     - `Export selected CSV`, `Export filtered CSV`, `Export all CSV`.
+     - `Set type: DEBIT`, `Set type: CREDIT`.
+     - `Delete selected` requires confirmation and is ADMIN-only; matched rows are protected.
+  8. Transaction list:
+     - Select per-row or `Select all on current page`.
+     - `Edit` is blocked for matched rows.
+     - Edit lock policy for unmatched rows:
+       - closed fiscal period: hard lock,
+       - older than configured window: ADMIN override reason required.
+     - `Test rules` opens a diagnostics drawer (`MATCH/MISS` plus checks) and does not change data.
+  9. Matching rules:
+     - Create rules with text mode, optional account, min/max/tolerance, priority, active flag.
+     - Manage rule order (`Up/Down`), active state, delete (ADMIN-only).
+     - Import/export rules via CSV.
+  10. Rule quality tools:
+      - `Rule simulator`: coverage by rule, overlap warning, account impact preview.
+      - `Rule conflict inspector`: top overlap pairs in current sample.
+      - `Current Rule Set for [Bank Name]`: operational list of active/inactive rules.
+  11. Bank import runs:
+      - Recent runs with actor/time and created/updated/skipped/issues counts.
+      - `Download issues CSV`, `View diff preview`, `Replay import`.
+- When to use `/admin/accounting/banks/all-transactions`:
+  - Use for global search, exception triage, and audit visibility across all banks.
+  - It is intentionally read-only to prevent accidental edits in the wrong bank context.
+  - Use `Open bank context` on a row to jump back to `/admin/accounting/banks` with that bank preselected for any edit/action.
+- Practical hands-on testing script (seeded data):
+  1. In `nora-hospital-supply/`, run:
+     - `pnpm -s db:seed-accounting`
+     - `pnpm -s db:seed-reconciliations-page`
+     - Expected result: accounting pages load with sample bank and transaction data.
+  2. Open `/admin/accounting/banks`.
+     - Expected result: bank selector starts at `Select bank account...`; working sections are gated.
+  3. Add bank account:
+     - Account name `QA Bank Main`, bank name `Ghana QA Bank`, masked account `***1234`.
+     - Expected result: success toast and bank appears in selector.
+  4. Select `QA Bank Main`.
+     - Expected result: context line appears (`Showing transactions for...`).
+  5. Bank profile safety:
+     - Click `Edit bank profile`, change one value.
+     - Expected result: unsaved-change indicator appears.
+     - Click `Cancel`.
+     - Expected result: values reset.
+     - Edit again and click `Save bank profile`.
+     - Expected result: confirmation modal then success toast on confirm.
+  6. Add transaction:
+     - Date today, amount `1500`, type `CREDIT`, description `Client transfer`, reference `QA-REF-001`.
+     - Expected result: row appears with correct date and amount sign.
+  7. Duplicate protection:
+     - Submit same date/amount/reference again.
+     - Expected result: duplicate conflict appears; no new row.
+     - Provide override reason (>=8 chars) and force create.
+     - Expected result: override row created and prior row can be opened/highlighted.
+  8. Filter and bulk:
+     - Search `QA-REF`; toggle `Unmatched only: On/Off`.
+     - Save filter as `QA refs`, reapply from dropdown.
+     - Select page rows, run `Set type: DEBIT`, then `Export selected CSV`.
+     - Expected result: types update; export file matches selected rows.
+  9. Edit-lock policy check:
+     - Try editing a matched row.
+     - Expected result: blocked.
+     - Try editing an old unmatched row outside policy window as non-admin.
+     - Expected result: locked with override requirement message.
+  10. Rules and diagnostics:
+      - Create two active rules with overlapping text scope.
+      - Expected result: simulator shows coverage; conflict inspector reports overlap pairs.
+  11. Import-run tracking:
+      - Use `Bulk import transactions` and run import/dry-run.
+      - Return to banks page.
+      - Expected result: latest import run appears with counts and diff preview.
+  12. Open `/admin/accounting/banks/all-transactions`.
+      - Filter by bank and `matched` state; search by reference text.
+      - Expected result: cross-bank read-only rows update by filters.
+      - Click `Open bank context` for one row.
+      - Expected result: returns to `/admin/accounting/banks` with that bank selected.
+- Related:
+  - Edit window days are configured in `/admin/accounting/settings` under `Bank transaction edit policy`.
+  - Matching rules support reconciliation workflows and exception triage.
 
 ## Import / Export Center — Assisted Extract (Beta)
 - Page: /admin/import-export
@@ -852,27 +945,85 @@ Inventory Planning — Reports
 ## Accounting — Cash Reconciliation
 - Page: /admin/accounting/cash-reconciliations
 - What it is: Two-mode cash control page with strict day-close controls.
-- Reconciliation modes:
-  - `Operational (day cash-up)`:
-    - compares day net movement (`cash in − cash out`) vs counted day net.
-    - supports source breakdown by channel (OTC, balance collections, purchases cash out, adjustments, etc.).
-    - includes optional till calculator (`opening float`, `counted closing till`, derived day net).
-  - `Ledger (GL as-of)`:
-    - compares cumulative GL cash balance as of selected date vs physically counted cash.
-- End-of-day controls:
-  - Daily close checklist required before save.
-  - Non-zero variance requires reason (with audit trail).
-  - Reconciled day lock blocks accidental resave unless override is explicitly enabled.
-  - Missed-day banner shows unreconciled days with cash movement.
-  - Auto-catchup can close only verified zero-variance missing days.
-- Diagnostics:
-  - Negative expected cash warning links directly to Journal (account/date filtered).
-- Cash deposit relation:
-  - `Deposit cash to bank` is a separate transfer entry.
-  - In operational mode, deposit is blocked after day is already reconciled.
-  - Reconcile first for that day, then deposit policy can be applied consistently.
-- History:
-  - Recent reconciliations support filtering/pagination and per-day detail drilldown.
+- Top-to-bottom walkthrough (how to use the page):
+  1. Date, mode, and scope controls:
+     - Choose `As-of date` and preset (`Today`, `Yesterday`, `Custom`).
+     - Select mode:
+       - `Operational`: reconciles day net movement.
+       - `Ledger`: reconciles GL cash balance as-of date.
+     - In `Operational`, choose scope (`All` or `OTC`).
+  2. Risk banners and diagnostics:
+     - Negative cash diagnostics show first negative day and investigation links to Journal.
+     - Unreconciled-day banner shows missing operational days and supports:
+       - jump to oldest missing day,
+       - open specific day,
+       - auto-catchup for verified zero-variance days only.
+     - Reconciled-day lock panel requires explicit override + reason for resave.
+  3. Operational source breakdown and summary:
+     - Operational mode shows per-source inflow/outflow/net.
+     - Summary cards show expected value, counted value, and variance preview.
+  4. Till calculator:
+     - Optional helper to compute counted day net and till-vs-ledger variance.
+  5. Record cash count:
+     - Enter counted amount.
+     - If variance is non-zero, variance reason and explanation are required.
+     - Complete checklist before save.
+     - Export print/CSV for selected day reconciliation pack.
+  6. Deposit cash flow:
+     - `Deposit cash to bank` opens transfer dialog.
+     - Deposit remains blocked until selected day is reconciled in operational mode.
+  7. History overview (enhanced):
+     - KPI cards: rows in page, non-zero variance count, latest variance, active filter scope.
+     - Quick presets:
+       - `Today non-zero`
+       - `This month all`
+       - `All non-zero`
+  8. Recent reconciliations (enhanced):
+     - History filters: range, from/to dates, variance filter, rows/page.
+     - Saved history filters: save/apply/delete per cash account.
+     - `Export history CSV` for current filtered page.
+     - Row-level day detail drilldown remains available via `View day details`.
+- Practical hands-on testing script (seeded data):
+  1. In `nora-hospital-supply/`, seed baseline data:
+     - `pnpm -s db:seed-accounting`
+     - `pnpm -s db:seed-cash-reconciliation`
+     - Expected result: page loads with cash account, movement data, and reconciliation history.
+  2. Open `/admin/accounting/cash-reconciliations`.
+     - Expected result: mode/date controls, summary cards, record form, and recent history are visible.
+  3. Operational reconciliation happy path:
+     - Keep mode `Operational`, set date to today.
+     - Enter counted amount equal to expected day net.
+     - Check all checklist boxes.
+     - Save reconciliation.
+     - Expected result: success toast; selected day appears reconciled; latest record appears in history.
+  4. Variance enforcement:
+     - Change counted amount to create non-zero variance.
+     - Try save without variance reason/notes.
+     - Expected result: save blocked with required-field guidance.
+     - Add reason + notes and save.
+     - Expected result: save succeeds; variance value appears on latest record.
+  5. Reconciled-day lock and override:
+     - Attempt another save for same day without override.
+     - Expected result: blocked as already reconciled.
+     - Enable override and enter reason (>=10 chars), save again.
+     - Expected result: override save succeeds and new record is created for same day.
+  6. Deposit guard:
+     - Before reconciliation, verify `Deposit cash to bank` is blocked.
+     - After reconciliation, open deposit dialog, choose bank, enter amount, save.
+     - Expected result: deposit recorded and reflected after refresh.
+  7. Unreconciled-day catchup:
+     - If unreconciled banner appears, open auto-catchup dialog.
+     - Select days, verify checkbox, enter verification note, run.
+     - Expected result: selected zero-variance days are created or skipped if already reconciled.
+  8. History enhancements validation:
+     - Apply presets (`Today non-zero`, `This month all`, `All non-zero`).
+     - Save current filter as `cash-nonzero`.
+     - Re-apply saved filter and verify state restoration.
+     - Export history CSV.
+     - Expected result: filters apply as expected, saved filter persists, CSV downloads with current page rows.
+  9. Day detail drilldown:
+     - Expand one history row with `View day details`.
+     - Expected result: operational source-level in/out/net appears for that day.
 
 ## Accounting — Owner Equity Contributions
 - Page: /admin/accounting
@@ -890,26 +1041,108 @@ Inventory Planning — Reports
 ## Accounting — Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
 - What it is: Consistency checks across AR, inventory, negative stock, and posting readiness.
-- How to use:
-  1) Set `As of date` (use today for live operations, historical date for point-in-time review).
-  2) Click `Recalculate` to refresh checks.
-  3) Review warning rows (`⚠`) for AR/inventory deltas and negative stock.
-  4) Review `Ledger readiness` counts for missing postings.
-  5) Use `Sync ledger` when postings are missing.
-  6) Use `Post inventory adjustment` when inventory valuation requires alignment.
-  7) Export CSV for audit handoff.
+- Top-to-bottom walkthrough (what each line/control means):
+  1. Header:
+     - `Data Integrity`: page title for accounting consistency checks.
+     - Subtitle: quick checks to find accounting inconsistencies.
+  2. Filters row:
+     - `As of date`: point-in-time cutoff for all numbers and samples.
+     - `Search issue IDs, refs, notes...`: filters visible sample/failure rows.
+     - `Pinned source`: narrows content to one stream (`all`, `orders`, `payments`, `expenses`, `purchases`, `supplier payments`, `credit payouts`, `settlements`, `posting failures`).
+     - `Show problems only`: hides clean rows and shows warning-focused view.
+  3. Action buttons:
+     - `Use today` (only shown on past date): resets As of date to today.
+     - `Post inventory adjustment`: opens inventory valuation page with current as-of date.
+     - `Sync ledger`: runs posting backfill/sync (ADMIN-only).
+     - `Recalculate`: refreshes all checks using current filters.
+     - `Export CSV`: downloads full integrity report for current as-of date.
+     - `Export missing sample CSV`: downloads currently visible missing-posting sample rows.
+     - `Export failures CSV`: downloads visible recent posting failures.
+     - `Run retry precheck (N)`: validates visible retry targets and flags blocked rows before posting.
+     - `Post all visible (N)`: bulk retry posts visible rows (ADMIN-only, and blocked if safeguards fail).
+     - `Export precheck CSV`: exports latest precheck results.
+     - `Export retry CSV`: exports latest bulk retry results.
+     - `Acknowledge warnings`: opens dialog to save acknowledgement note for current warning set.
+     - `Clear acknowledgement`: removes acknowledgement for current warning signature/as-of.
+  4. Status/info cards:
+     - `Last successful sync`: shows latest sync timestamp and actor.
+     - Stale-date warning card appears when As of date is not today.
+     - `Latest acknowledgement` card shows who acknowledged, when, and note.
+     - Precheck summary card shows total/ready/blocked and optional blocked-only toggle.
+     - Bulk retry result card shows total/posted/skipped.
+  5. Summary KPI cards:
+     - `Warnings triggered`
+     - `Missing postings`
+     - `Recent post failures`
+     - `Focused mode` (`All checks` or `Problems only`)
+  6. `Severity by signal`:
+     - Shows each signal with value and status (`OK` or `Warning`), plus `Open source` link.
+     - Signals: draft entries, AR difference, inventory difference, negative stock, missing postings, recent posting failures.
+  7. Core balances and counts:
+     - `Draft journal entries`
+     - `AR ledger balance`
+     - `Customer balances total`
+     - `AR difference`
+     - `Inventory ledger balance`
+     - `Inventory valuation (stock x cost)`
+     - `Inventory difference`
+     - `Products with negative stock`
+  8. `Ledger readiness`:
+     - Missing-posting counters for `orders`, `payments`, `expenses`, `purchases`, `supplier payments`, `credit payouts`, `settlements`.
+  9. `Aging SLA`:
+     - Summary of visible missing rows grouped as `fresh`, `warning`, `overdue`.
+  10. `Missing postings (sample)`:
+      - Grouped sample rows per source with:
+        - age badge,
+        - linked entity ID,
+        - optional failure hint (especially payments),
+        - row-level `Post now` retry button (when permitted).
+  11. `Recent posting failures`:
+      - Latest posting-failure events with age badge and normalized reason/hint text.
 - AR note: The AR check uses live order totals (all non-cancelled orders, including admin-created orders), so a mismatch usually means a missing posting or stale data. Use Sync ledger first.
 - Related: Settings define thresholds for warnings.
 
 ### Practical Validation Script
 1) Open `/admin/accounting/integrity`.
-2) Confirm checks load and values are numeric.
-3) Change `As of date` to a past date and verify stale-date warning appears.
-4) Click `Use today` and verify warning clears.
-5) Click `Recalculate` and verify values refresh.
-6) If missing posting counts are non-zero, review sample links under `Missing postings (sample)`.
-7) Click `Sync ledger`, confirm dialog, run sync, then recheck counts.
-8) Click `Export CSV` and confirm file download.
+   - Expected result: filters, action buttons, summary cards, severity block, balance rows, ledger readiness, and samples all render.
+2) Change `As of date` to a past date.
+   - Expected result: stale-date warning appears and `Use today` button is visible.
+3) Click `Use today`.
+   - Expected result: stale warning clears and as-of date resets to today.
+4) Toggle `Show problems only`.
+   - Expected result: focus mode state changes in summary card; if no warnings exist, green no-warning state appears.
+5) Test source pinning:
+   - Set `Pinned source` to `payments` (then `posting failures`).
+   - Expected result: visible samples/failures narrow to selected source.
+6) Test search filter:
+   - Enter part of an order/payment ID or reference in search box.
+   - Expected result: missing sample and recent failure rows are filtered.
+7) Test acknowledgement flow:
+   - Click `Acknowledge warnings`, enter a meaningful note.
+   - Expected result: success toast, acknowledgement button state updates, and `Latest acknowledgement` card shows actor/time/note.
+   - Click `Clear acknowledgement`.
+   - Expected result: acknowledgement card clears.
+8) Validate one-click row retries + aging:
+   - If sample rows exist, confirm each row has age badge and click `Post now` on one row.
+   - Expected result: retry runs with success/no-op toast and counts refresh.
+9) Export files:
+   - Click `Export missing sample CSV`.
+   - Click `Export failures CSV`.
+   - Click `Export CSV`.
+   - Expected result: files download when matching rows exist; if not, page shows no-data toast.
+10) Precheck and bulk retry:
+   - If visible retry targets > 0, click `Run retry precheck (N)`.
+   - Expected result: precheck card shows total/ready/blocked and row-level reasons.
+   - Click `Export precheck CSV`.
+   - Expected result: precheck CSV downloads.
+   - If blocked is 0 and your role is ADMIN, click `Post all visible (N)`.
+   - Expected result: bulk result card shows posted/skipped totals.
+   - Click `Export retry CSV`.
+   - Expected result: retry CSV downloads when bulk result rows exist.
+11) Click `Sync ledger`, confirm in modal, then run sync.
+   - Expected result: sync success toast appears and `Last successful sync` updates with timestamp and actor.
+12) Click `Recalculate`.
+   - Expected result: checks refresh immediately and all summary/metric cards update to current data.
 
 ## Accounting — Reconcile Totals
 - Page: /admin/accounting/reconcile

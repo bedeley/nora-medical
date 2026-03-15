@@ -55,7 +55,8 @@ export async function POST(
   { params }: { params: { id: string } },
 ) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) {
@@ -141,6 +142,19 @@ export async function POST(
       created.push(rule.id);
     }
 
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor?.id || null,
+        action: "BANK_RULE_IMPORT",
+        entityType: "BANK_MATCH_RULE",
+        entityId: params.id,
+        meta: JSON.stringify({
+          bankAccountId: params.id,
+          imported: created.length,
+          sourceRows: Math.max(0, rows.length - 1),
+        }),
+      },
+    });
     return NextResponse.json({ imported: created.length });
   } catch (error) {
     console.error("Accounting bank match rule import error:", error);

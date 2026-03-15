@@ -11,6 +11,8 @@ const txnSchema = z.object({
   description: z.string().max(255).optional(),
   reference: z.string().max(120).optional(),
   type: z.enum(["DEBIT", "CREDIT"]),
+  allowDuplicate: z.boolean().optional(),
+  duplicateReason: z.string().max(300).optional(),
 });
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -62,16 +64,109 @@ export async function POST(
         { status: 400 },
       );
     }
+    const postedAt = new Date(parsed.data.postedAt);
+    if (Number.isNaN(postedAt.getTime())) {
+      return NextResponse.json({ error: "Invalid postedAt date." }, { status: 400 });
+    }
+    const utcDayStart = new Date(
+      Date.UTC(
+        postedAt.getUTCFullYear(),
+        postedAt.getUTCMonth(),
+        postedAt.getUTCDate(),
+        0,
+        0,
+        0,
+        0,
+      ),
+    );
+    const utcDayEnd = new Date(
+      Date.UTC(
+        postedAt.getUTCFullYear(),
+        postedAt.getUTCMonth(),
+        postedAt.getUTCDate(),
+        23,
+        59,
+        59,
+        999,
+      ),
+    );
+    const duplicate = await prisma.bankTransaction.findFirst({
+      where: {
+        bankAccountId: bankId,
+        postedAt: { gte: utcDayStart, lte: utcDayEnd },
+        amount: parsed.data.amount,
+        reference: parsed.data.reference ?? null,
+      },
+      select: { id: true },
+    });
+    if (duplicate && !parsed.data.allowDuplicate) {
+      return NextResponse.json(
+        {
+          error:
+            "Potential duplicate transaction (same date, amount, and reference) already exists for this bank.",
+          duplicateId: duplicate.id,
+        },
+        { status: 409 },
+      );
+    }
+    if (duplicate && parsed.data.allowDuplicate) {
+      const reason = (parsed.data.duplicateReason || "").trim();
+      if (reason.length < 8) {
+        return NextResponse.json(
+          { error: "Duplicate reason is required (at least 8 characters)." },
+          { status: 400 },
+        );
+      }
+    }
+
     const txn = await prisma.bankTransaction.create({
       data: {
         bankAccountId: bankId,
-        postedAt: new Date(parsed.data.postedAt),
+        postedAt,
         amount: parsed.data.amount,
         description: parsed.data.description,
         reference: parsed.data.reference,
         type: parsed.data.type,
       },
     });
+    if (duplicate && parsed.data.allowDuplicate) {
+      const actor = session.user as AuthenticatedUser;
+      await prisma.auditLog.create({
+        data: {
+          actorId: actor?.id || null,
+          action: "BANK_TXN_DUPLICATE_OVERRIDE",
+          entityType: "BANK_TRANSACTION",
+          entityId: txn.id,
+          meta: JSON.stringify({
+            bankAccountId: bankId,
+            duplicateOfId: duplicate.id,
+            reason: (parsed.data.duplicateReason || "").trim(),
+            postedAt: parsed.data.postedAt,
+            amount: parsed.data.amount,
+            reference: parsed.data.reference ?? null,
+            type: parsed.data.type,
+          }),
+        },
+      });
+    } else {
+      const actor = session.user as AuthenticatedUser;
+      await prisma.auditLog.create({
+        data: {
+          actorId: actor?.id || null,
+          action: "BANK_TXN_CREATED",
+          entityType: "BANK_TRANSACTION",
+          entityId: txn.id,
+          meta: JSON.stringify({
+            bankAccountId: bankId,
+            postedAt: parsed.data.postedAt,
+            amount: parsed.data.amount,
+            type: parsed.data.type,
+            reference: parsed.data.reference ?? null,
+            description: parsed.data.description ?? null,
+          }),
+        },
+      });
+    }
     return NextResponse.json(txn);
   } catch (error) {
     console.error("Accounting bank transaction create error:", error);

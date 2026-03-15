@@ -22,13 +22,18 @@ function isAuthorized(user?: AuthenticatedUser | null) {
   return role === "ADMIN" || role === "ACCOUNTANT";
 }
 
+function isAdmin(user?: AuthenticatedUser | null) {
+  return user?.role === "ADMIN";
+}
+
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ id: string; ruleId: string }> },
 ) {
   const resolvedParams = await params;
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) {
@@ -47,6 +52,7 @@ export async function PATCH(
 
     const existing = await prisma.bankMatchRule.findFirst({
       where: { id: resolvedParams.ruleId, bankAccountId: resolvedParams.id },
+      include: { account: true },
     });
     if (!existing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -62,6 +68,39 @@ export async function PATCH(
       },
       include: { account: true },
     });
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor?.id || null,
+        action: "BANK_RULE_UPDATED",
+        entityType: "BANK_MATCH_RULE",
+        entityId: rule.id,
+        meta: JSON.stringify({
+          bankAccountId: resolvedParams.id,
+          before: {
+            name: existing.name,
+            matchText: existing.matchText,
+            matchMode: existing.matchMode,
+            accountId: existing.accountId ?? null,
+            minAmount: existing.minAmount ?? null,
+            maxAmount: existing.maxAmount ?? null,
+            amountTolerance: existing.amountTolerance ?? 0,
+            priority: existing.priority ?? 0,
+            isActive: existing.isActive,
+          },
+          after: {
+            name: rule.name,
+            matchText: rule.matchText,
+            matchMode: rule.matchMode,
+            accountId: rule.accountId ?? null,
+            minAmount: rule.minAmount ?? null,
+            maxAmount: rule.maxAmount ?? null,
+            amountTolerance: rule.amountTolerance ?? 0,
+            priority: rule.priority ?? 0,
+            isActive: rule.isActive,
+          },
+        }),
+      },
+    });
 
     return NextResponse.json(rule);
   } catch (error) {
@@ -76,8 +115,12 @@ export async function DELETE(
 ) {
   const resolvedParams = await params;
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isAdmin(actor)) {
+    return NextResponse.json({ error: "Only ADMIN can delete rules." }, { status: 403 });
   }
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -92,6 +135,22 @@ export async function DELETE(
     }
     await prisma.bankMatchRule.delete({
       where: { id: resolvedParams.ruleId },
+    });
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor?.id || null,
+        action: "BANK_RULE_DELETED",
+        entityType: "BANK_MATCH_RULE",
+        entityId: existing.id,
+        meta: JSON.stringify({
+          bankAccountId: resolvedParams.id,
+          name: existing.name,
+          matchText: existing.matchText,
+          matchMode: existing.matchMode,
+          accountId: existing.accountId ?? null,
+          priority: existing.priority ?? 0,
+        }),
+      },
     });
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -49,7 +49,8 @@ export async function POST(
   req: Request,
 ) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const bankId = getBankId(req);
@@ -89,6 +90,26 @@ export async function POST(
         isActive: parsed.data.isActive ?? true,
       },
       include: { account: true },
+    });
+    await prisma.auditLog.create({
+      data: {
+        actorId: actor?.id || null,
+        action: "BANK_RULE_CREATED",
+        entityType: "BANK_MATCH_RULE",
+        entityId: rule.id,
+        meta: JSON.stringify({
+          bankAccountId: bankId,
+          name: rule.name,
+          matchMode: rule.matchMode,
+          matchText: rule.matchText,
+          accountId: rule.accountId ?? null,
+          minAmount: rule.minAmount ?? null,
+          maxAmount: rule.maxAmount ?? null,
+          amountTolerance: rule.amountTolerance ?? 0,
+          priority: rule.priority ?? 0,
+          isActive: rule.isActive,
+        }),
+      },
     });
 
     return NextResponse.json(rule);
