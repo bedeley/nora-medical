@@ -399,6 +399,7 @@ export async function GET(req: Request) {
   const action = searchParams.get("action") || undefined;
   const actorId = searchParams.get("actorId") || undefined;
   const actorType = (searchParams.get("actorType") || "").toUpperCase();
+  const scope = (searchParams.get("scope") || "").toLowerCase();
   const metaStatus = searchParams.get("metaStatus") || undefined;
   const riskMode = (searchParams.get("riskMode") || "all").toLowerCase() as AuditRiskMode;
   const queueMode = normalizeQueueMode(searchParams.get("queueMode"));
@@ -465,6 +466,15 @@ export async function GET(req: Request) {
         { action: { startsWith: "COMPENSATION_" } },
       ],
     });
+  }
+  if (scope === "accounting_periods") {
+    andWhere.push({
+      OR: [{ action: { startsWith: "fiscal-period." } }, { action: { startsWith: "fiscal-month." } }],
+    });
+  }
+  if (scope === "accounting_settings") {
+    andWhere.push({ action: "app-setting.update" });
+    andWhere.push({ meta: { contains: `"sourcePage":"admin/accounting/settings"` } });
   }
   const where: Prisma.AuditLogWhereInput = andWhere.length > 0 ? { AND: andWhere } : {};
   const appendAnd = (clause: Prisma.AuditLogWhereInput) => {

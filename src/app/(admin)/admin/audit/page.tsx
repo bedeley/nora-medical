@@ -171,6 +171,10 @@ function AdminAuditContent() {
   const isStaff = currentRole === "STAFF";
   const canManageTasks = isAdmin || currentRole === "ACCOUNTANT";
   const searchParams = useSearchParams();
+  const scopedView = (() => {
+    const raw = (searchParams.get("scope") || "").toLowerCase();
+    return raw === "accounting_periods" || raw === "accounting_settings" ? raw : "";
+  })();
   const initialized = useRef(false);
   const [entityType, setEntityType] = useState("");
   const [entityId, setEntityId] = useState("");
@@ -448,6 +452,7 @@ function AdminAuditContent() {
   if (metaStatus) params.set("metaStatus", metaStatus);
   if (riskMode !== "all") params.set("riskMode", riskMode);
   if (queueMode !== "all") params.set("queueMode", queueMode);
+  if (scopedView) params.set("scope", scopedView);
   params.set("paginate", "1");
   params.set("includeSummary", "1");
   params.set("page", String(page));
@@ -467,6 +472,7 @@ function AdminAuditContent() {
     metaStatus,
     riskMode,
     queueMode,
+    scopedView,
     page,
     pageSize,
   ];

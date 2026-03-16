@@ -91,6 +91,21 @@ type JournalSavedView = {
   };
 };
 
+type ManualCategory =
+  | "PERIOD_END_ADJUSTMENT"
+  | "CORRECTION"
+  | "RECLASSIFICATION"
+  | "ACCRUAL_DEFERRAL"
+  | "OTHER_EXCEPTION";
+
+const MANUAL_CATEGORY_OPTIONS: Array<{ value: ManualCategory; label: string }> = [
+  { value: "PERIOD_END_ADJUSTMENT", label: "Period-end adjustment" },
+  { value: "CORRECTION", label: "Correction" },
+  { value: "RECLASSIFICATION", label: "Reclassification" },
+  { value: "ACCRUAL_DEFERRAL", label: "Accrual / deferral" },
+  { value: "OTHER_EXCEPTION", label: "Other exception" },
+];
+
 function getEntryImbalance(entry: JournalEntry) {
   const debitTotal = entry.lines?.reduce((sum, line) => sum + Number(line.debit || 0), 0) || 0;
   const creditTotal = entry.lines?.reduce((sum, line) => sum + Number(line.credit || 0), 0) || 0;
@@ -1433,6 +1448,10 @@ export default function JournalPage() {
     return today.toISOString().slice(0, 10);
   });
   const [memo, setMemo] = useState("");
+  const [manualCategory, setManualCategory] = useState<ManualCategory | "">("");
+  const [manualExceptionNote, setManualExceptionNote] = useState("");
+  const [manualPriorPeriodId, setManualPriorPeriodId] = useState("");
+  const [manualPriorPeriodNote, setManualPriorPeriodNote] = useState("");
   const [debitAccountId, setDebitAccountId] = useState("");
   const [creditAccountId, setCreditAccountId] = useState("");
   const [amount, setAmount] = useState("");
@@ -1548,6 +1567,10 @@ export default function JournalPage() {
   const amountInvalid = !Number.isFinite(numericAmount) || numericAmount <= 0;
   const [fullEntryDate, setFullEntryDate] = useState(entryDate);
   const [fullMemo, setFullMemo] = useState("");
+  const [fullManualCategory, setFullManualCategory] = useState<ManualCategory | "">("");
+  const [fullManualExceptionNote, setFullManualExceptionNote] = useState("");
+  const [fullManualPriorPeriodId, setFullManualPriorPeriodId] = useState("");
+  const [fullManualPriorPeriodNote, setFullManualPriorPeriodNote] = useState("");
   const [fullSaving, setFullSaving] = useState(false);
   const [autoVatEnabled, setAutoVatEnabled] = useState(false);
   const [showManualEntry, setShowManualEntry] = useState(false);
@@ -1580,6 +1603,13 @@ export default function JournalPage() {
   const accountOptions = useMemo(
     () => accounts.sort((a, b) => a.code.localeCompare(b.code)),
     [accounts],
+  );
+  const closedPeriods = useMemo(
+    () =>
+      periods
+        .filter((period) => period.status === "CLOSED")
+        .sort((a, b) => new Date(b.endDate).getTime() - new Date(a.endDate).getTime()),
+    [periods],
   );
   const manualAccountOptions = useMemo(
     () =>
@@ -1731,6 +1761,18 @@ export default function JournalPage() {
       toast.error("Manual entries require a reason in the memo field.");
       return;
     }
+    if (!manualCategory) {
+      toast.error("Select a manual adjustment category.");
+      return;
+    }
+    if (manualCategory !== "PERIOD_END_ADJUSTMENT" && manualExceptionNote.trim().length < 12) {
+      toast.error("Provide an exception note (12+ chars) when not using period-end adjustment.");
+      return;
+    }
+    if (manualPriorPeriodId && manualPriorPeriodNote.trim().length < 12) {
+      toast.error("Prior-period adjustment requires an amendment note (12+ chars).");
+      return;
+    }
     if (!debitAccountId || !creditAccountId) {
       toast.error("Select both debit and credit accounts.");
       return;
@@ -1752,6 +1794,10 @@ export default function JournalPage() {
           entryDate,
           memo: memo.trim() || undefined,
           sourceType: "MANUAL",
+          manualCategory,
+          manualExceptionNote: manualExceptionNote.trim() || undefined,
+          priorPeriodId: manualPriorPeriodId || undefined,
+          priorPeriodNote: manualPriorPeriodNote.trim() || undefined,
           status: "DRAFT",
           lines: [
             {
@@ -1775,6 +1821,10 @@ export default function JournalPage() {
       }
       toast.success("Journal entry created as draft.");
       setMemo("");
+      setManualCategory("");
+      setManualExceptionNote("");
+      setManualPriorPeriodId("");
+      setManualPriorPeriodNote("");
       setDebitAccountId("");
       setCreditAccountId("");
       setAmount("");
@@ -1789,6 +1839,18 @@ export default function JournalPage() {
   const createFullEntry = async () => {
     if (!fullMemo.trim()) {
       toast.error("Manual entries require a reason in the memo field.");
+      return;
+    }
+    if (!fullManualCategory) {
+      toast.error("Select a manual adjustment category.");
+      return;
+    }
+    if (fullManualCategory !== "PERIOD_END_ADJUSTMENT" && fullManualExceptionNote.trim().length < 12) {
+      toast.error("Provide an exception note (12+ chars) when not using period-end adjustment.");
+      return;
+    }
+    if (fullManualPriorPeriodId && fullManualPriorPeriodNote.trim().length < 12) {
+      toast.error("Prior-period adjustment requires an amendment note (12+ chars).");
       return;
     }
     if (fullLines.length < 2) {
@@ -1828,6 +1890,10 @@ export default function JournalPage() {
           entryDate: fullEntryDate,
           memo: fullMemo.trim() || undefined,
           sourceType: "MANUAL",
+          manualCategory: fullManualCategory,
+          manualExceptionNote: fullManualExceptionNote.trim() || undefined,
+          priorPeriodId: fullManualPriorPeriodId || undefined,
+          priorPeriodNote: fullManualPriorPeriodNote.trim() || undefined,
           status: "DRAFT",
           lines: fullLines.map((line) => ({
             accountId: line.accountId,
@@ -1844,6 +1910,10 @@ export default function JournalPage() {
       }
       toast.success("Full journal entry created as draft.");
       setFullMemo("");
+      setFullManualCategory("");
+      setFullManualExceptionNote("");
+      setFullManualPriorPeriodId("");
+      setFullManualPriorPeriodNote("");
       setFullLines([
         {
           id: String(Date.now()),
@@ -1961,6 +2031,18 @@ export default function JournalPage() {
             value={memo}
             onChange={(e) => setMemo(e.target.value)}
           />
+          <select
+            className="h-10 rounded-md border bg-background px-3 text-sm text-foreground"
+            value={manualCategory}
+            onChange={(e) => setManualCategory(e.target.value as ManualCategory | "")}
+          >
+            <option value="">Manual category (required)</option>
+            {MANUAL_CATEGORY_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
           <Tooltip content="Enter the total amount for the entry.">
             <Input
               placeholder="Amount"
@@ -1969,6 +2051,32 @@ export default function JournalPage() {
               onChange={(e) => setAmount(e.target.value)}
             />
           </Tooltip>
+          <Input
+            className="sm:col-span-2 lg:col-span-3"
+            placeholder="Exception note (required outside period-end adjustment)"
+            value={manualExceptionNote}
+            onChange={(e) => setManualExceptionNote(e.target.value)}
+          />
+          <select
+            className="h-10 rounded-md border bg-background px-3 text-sm text-foreground sm:col-span-2 lg:col-span-3"
+            value={manualPriorPeriodId}
+            onChange={(e) => setManualPriorPeriodId(e.target.value)}
+          >
+            <option value="">No prior-period reference</option>
+            {closedPeriods.map((period) => (
+              <option key={period.id} value={period.id}>
+                {period.name} ({new Date(period.startDate).toLocaleDateString()} - {new Date(period.endDate).toLocaleDateString()})
+              </option>
+            ))}
+          </select>
+          {manualPriorPeriodId ? (
+            <Input
+              className="sm:col-span-2 lg:col-span-3"
+              placeholder="Prior-period amendment note (required, 12+ chars)"
+              value={manualPriorPeriodNote}
+              onChange={(e) => setManualPriorPeriodNote(e.target.value)}
+            />
+          ) : null}
           {amount.length > 0 && amountInvalid ? (
             <div className="sm:col-span-2 lg:col-span-3 text-xs text-amber-600">
               Enter an amount greater than zero.
@@ -2068,10 +2176,48 @@ export default function JournalPage() {
               value={fullMemo}
               onChange={(e) => setFullMemo(e.target.value)}
             />
+            <select
+              className="h-10 rounded-md border bg-background px-3 text-sm text-foreground"
+              value={fullManualCategory}
+              onChange={(e) => setFullManualCategory(e.target.value as ManualCategory | "")}
+            >
+              <option value="">Manual category (required)</option>
+              {MANUAL_CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
             <div className="text-xs text-muted-foreground flex items-center justify-between border rounded-md px-3">
               <span>Debits: {formatCurrency(fullTotals.debitTotal)}</span>
               <span>Credits: {formatCurrency(fullTotals.creditTotal)}</span>
             </div>
+            <Input
+              className="sm:col-span-2 lg:col-span-3"
+              placeholder="Exception note (required outside period-end adjustment)"
+              value={fullManualExceptionNote}
+              onChange={(e) => setFullManualExceptionNote(e.target.value)}
+            />
+            <select
+              className="h-10 rounded-md border bg-background px-3 text-sm text-foreground sm:col-span-2 lg:col-span-3"
+              value={fullManualPriorPeriodId}
+              onChange={(e) => setFullManualPriorPeriodId(e.target.value)}
+            >
+              <option value="">No prior-period reference</option>
+              {closedPeriods.map((period) => (
+                <option key={period.id} value={period.id}>
+                  {period.name} ({new Date(period.startDate).toLocaleDateString()} - {new Date(period.endDate).toLocaleDateString()})
+                </option>
+              ))}
+            </select>
+            {fullManualPriorPeriodId ? (
+              <Input
+                className="sm:col-span-2 lg:col-span-3"
+                placeholder="Prior-period amendment note (required, 12+ chars)"
+                value={fullManualPriorPeriodNote}
+                onChange={(e) => setFullManualPriorPeriodNote(e.target.value)}
+              />
+            ) : null}
           </div>
           <div className="space-y-2">
             {fullLines.map((line) => (

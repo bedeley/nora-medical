@@ -47,10 +47,10 @@ export async function buildPeriodSnapshot(periodId: string) {
     period: {
       id: period.id,
       name: period.name,
-      startDate: period.startDate,
-      endDate: period.endDate,
+      startDate: period.startDate.toISOString(),
+      endDate: period.endDate.toISOString(),
     },
-    generatedAt: new Date(),
+    generatedAt: new Date().toISOString(),
     profitAndLoss: {
       income,
       expenses,
@@ -68,7 +68,7 @@ export async function buildPeriodSnapshot(periodId: string) {
         equity: equityTotal,
         liabilitiesPlusEquity: liabilitiesTotal + equityTotal,
       },
-      asOf: period.endDate,
+      asOf: period.endDate.toISOString(),
     },
   };
 }

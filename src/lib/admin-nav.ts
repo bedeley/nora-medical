@@ -40,6 +40,7 @@ export const ADMIN_NAV_ITEMS: AdminNavItem[] = [
   { href: "/admin/expenses", label: "Expenses", icon: "dollar", roles: ["ADMIN", "ACCOUNTANT"] },
   { href: "/admin/accounting", label: "Accounting", icon: "clipboard", roles: ["ADMIN", "ACCOUNTANT"] },
   { href: "/admin/accounting/aging", label: "AR/AP Aging", icon: "clipboard", roles: ["ADMIN", "ACCOUNTANT"] },
+  { href: "/admin/accounting/reconcile", label: "Reconcile Totals", icon: "clipboard", roles: ["ADMIN", "ACCOUNTANT"] },
   { href: "/admin/accounting/reconciliations", label: "Reconciliations", icon: "clipboard", roles: ["ADMIN", "ACCOUNTANT"] },
   { href: "/admin/accounting/banks", label: "Banks", icon: "clipboard", roles: ["ADMIN", "ACCOUNTANT"] },
   { href: "/admin/health", label: "Health Check", icon: "shield", roles: ["ADMIN", "ACCOUNTANT"] },

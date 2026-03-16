@@ -1033,10 +1033,110 @@ Inventory Planning — Reports
 
 ## Accounting — Fiscal Periods
 - Pages: /admin/accounting/periods, /admin/accounting/periods/[id]/snapshot
-- What it is: Open/close windows for accounting postings.
-- How to use: Create periods, close when ready, review close report snapshots.
-- Related: Closing a period prevents further postings in that date range.
-- Date handling: Period start is saved at `00:00:00.000Z` and period end at `23:59:59.999Z` so all postings on the selected end date are included in overlap checks and close validations.
+- What it is:
+  - Central control page for both monthly operational lock management and fiscal-period close governance.
+  - Monthly closes are operational posting locks by month.
+  - Fiscal period closes are statutory closes with checklist + control review.
+
+Top-to-bottom walkthrough
+1) Header and global actions:
+   - `Export close status CSV`: exports current period close status and related control state.
+2) `Period-end reminder`:
+   - Numeric input defines how many days before period end a reminder should appear.
+   - `Save reminder days` persists this notification threshold.
+3) `Reopen policy` (read-only summary):
+   - Shows current reopening rules:
+     - monthly reopen window (days after month-end),
+     - fiscal reopen window (days after period-end),
+     - fiscal hard-lock finalized years state.
+   - `Manage in Settings` opens `/admin/accounting/settings#reopen-policy` for policy edits.
+4) `Monthly close control`:
+   - `Month (YYYY-MM)`: select target month.
+   - `Note (optional)`: contextual note for normal close.
+   - `Override reason`: required for forced close with blockers.
+   - `Force close with blockers`: allows close with unresolved blockers (with reason).
+   - `Close month`: closes selected month.
+   - `Reopen month`: reopens selected month (subject to reopen policy windows).
+   - `Impact preview`: pre-close blocker counts (draft journals, open reconciliations, total blockers).
+   - `Current monthly status`: current selected month state.
+   - `Monthly details` + `Show details`: expandable list of closed months, close metadata, and quick links/actions.
+5) `Pre-close checklist`:
+   - Required operational checklist before fiscal close.
+   - Includes quick links:
+     - `Open Reconcile`
+     - `Open Cash Reconciliations`
+     - `Open Integrity`
+     - `Open VAT Filings`
+   - Checklist completion is evaluated in the close dialog.
+6) `Create period`:
+   - Manual fiscal period creation using name + start + end dates.
+   - Used for statutory periods when needed.
+7) `Monthly operational calendar`:
+   - Year input + `Initialize operational calendar` creates/ensures monthly operational months for the selected year.
+   - `Calendar view (YYYY)` displays Jan-Dec month chips and open/closed status.
+   - Shows initialization metadata (time + actor).
+8) `History`:
+   - Lists fiscal periods with status and control signals.
+   - `Status legend` explains state labels.
+   - `View blockers only` filters to actionable periods.
+   - Per-period actions:
+     - `Open close checklist` (modal with system controls + manual checklist + override controls)
+     - `Close period`
+     - quick links (`Journal`, `Reconcile`, `Integrity`)
+     - `Close report` (snapshot page for closed fiscal periods)
+9) `Close activity timeline`:
+   - Human-readable audit timeline for period/month actions.
+   - Filters:
+     - action type,
+     - actor text,
+     - date range.
+   - `Clear filters` resets timeline filters.
+
+Step-by-step testing script (with expected results)
+1) Open `/admin/accounting/periods`.
+   - Expected: all sections render (reminder, reopen policy summary, monthly close control, checklist, calendar, history, timeline).
+2) Reminder settings:
+   - Change reminder days and click `Save reminder days`.
+   - Expected: success toast and value persists after refresh.
+3) Reopen policy link:
+   - Click `Manage in Settings`.
+   - Expected: navigates to settings page and jumps to reopen-policy section.
+4) Monthly close preview:
+   - Select a month in `Month (YYYY-MM)`.
+   - Expected: `Impact preview` and `Current monthly status` update for that month.
+5) Normal month close:
+   - Add optional note and click `Close month`.
+   - Expected: success toast, month status changes to `Closed`, timeline gets a new close entry.
+6) Reopen month:
+   - Enter reopen reason in note field and click `Reopen month`.
+   - Expected: reopen succeeds only if within reopen-policy window; otherwise blocked with policy message.
+7) Force close behavior:
+   - For a month with blockers, enable `Force close with blockers`, provide override reason, click `Close month`.
+   - Expected: close succeeds with override; timeline records override context.
+8) Monthly details:
+   - Click `Show details`.
+   - Expected: closed-month rows show close/open metadata and quick links.
+9) Checklist links:
+   - Click each checklist link button.
+   - Expected: routes to correct page for reconciliation/integrity/VAT review.
+10) Create fiscal period:
+   - Enter period name + valid date range and click `Create period`.
+   - Expected: period appears in History; overlap/invalid ranges are blocked with clear message.
+11) Initialize operational calendar:
+   - Choose a year and click `Initialize operational calendar`.
+   - Expected: calendar view shows all 12 months with current status, plus initialized-by metadata.
+12) Open close checklist dialog:
+   - In History, click `Open close checklist`.
+   - Expected: modal opens showing system controls, manual checklist completion, and override option.
+13) Early-close guard:
+   - Try closing a period that has not ended yet.
+   - Expected: early-close warning appears; close requires override + sufficient reason; non-admin/invalid reason is blocked.
+14) Close report behavior:
+   - Click `Close report` for an open period.
+   - Expected: message indicates close snapshot is only available after period is closed.
+15) Timeline filters:
+   - Filter by action and actor/date; then clear filters.
+   - Expected: list updates correctly and entries remain plain-English summaries.
 
 ## Accounting — Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
@@ -1146,28 +1246,182 @@ Inventory Planning — Reports
 
 ## Accounting — Reconcile Totals
 - Page: /admin/accounting/reconcile
-- What it is: Operational vs ledger bridge for Revenue, COGS, Expenses, Net Profit, and Margin.
-- How to use:
-  1) Set date range.
-  2) Compare operational and ledger columns.
-  3) Inspect manual entries list shown under totals.
-  4) Validate return credits and auto-apply effects for the same period.
-- Typical deltas explained by:
-  - inventory valuation adjustments,
-  - manual journal entries,
-  - timing differences between operations and posting date.
+- What it is: Reconcile bridge that compares operational totals vs posted-ledger totals and highlights variance severity.
+- Why this page matters:
+  - Operational totals and ledger totals can differ due to timing and manual adjustments.
+  - This page is where accounting/admin confirms whether those differences are expected.
 
-## Accounting — Settings & Posting Rules
-- Pages: /admin/accounting/settings, /admin/accounting/posting-rules
-- What it is: Integrity thresholds + event-to-account mapping.
-- How to use:
-  - Settings page: configure alert thresholds and behavior.
-  - Posting Rules page: map system events to account codes.
-- New auto-post accounting lifecycles now included:
-  - MoMo/gateway pending -> success/cancel/failed clearing lifecycle.
-  - Customer deposit liability for unapplied customer cash.
-  - Payroll accrual and payroll paid settlement lifecycle.
-  - Expense smart routing into dedicated expense accounts.
+Top-to-bottom walkthrough
+1) Header
+   - `Operational vs Ledger Reconcile`: confirms this is a comparison page (not posting page).
+2) Filters block
+   - `Start date` / `End date`: defines the comparison period.
+   - `Search details`: filters the three detail sections below (manual entries, auto-apply, returns).
+   - `Refresh`: refetches data and updates `Last refreshed`.
+   - `Export reconcile CSV`: metric-level summary export (operational, ledger, delta, severity, notes).
+   - `Export details CSV`: row-level export for manual entries and payment-derived rows.
+   - `Copy share link`: copies current filter state URL for team review.
+   - Quick presets:
+     - `Today`
+     - `Last 7 days`
+     - `This month`
+     - `Active period`
+   - `Lock to active period`: keeps range pinned to active fiscal period boundaries.
+   - `Clear filters`: resets date/search/preset/lock.
+   - `Active period`: displays current fiscal period range.
+   - `Last refreshed`: displays latest successful refresh time.
+3) Totals variance
+   - Columns are labeled:
+     - `Metric`
+     - `Operational`
+     - `Ledger`
+     - `Delta`
+     - `Status`
+     - `Actions`
+   - Metrics shown:
+     - Revenue
+     - COGS
+     - Expenses
+     - Net Profit
+     - Margin %
+   - `Status` uses severity badges (`OK`, `Minor`, `Warning`, `Critical`) from configured reconcile thresholds.
+   - `Why different?` expands likely-driver notes.
+   - `Open ...` links provide drill-down to related source pages.
+4) Manual journal entries in range
+   - Lists posted manual-source journal entries in period.
+   - This section primarily explains ledger-only movements that can cause deltas.
+5) Store credit auto-apply entries
+   - Lists store-credit auto-apply payment effects in range.
+6) Return credits/refunds
+   - Lists return/refund payment effects in range.
+
+Step-by-step testing script (with expected result)
+1) Open `/admin/accounting/reconcile`.
+   - Expected: page loads all cards and `Last refreshed` shows a timestamp.
+2) Click `Today`.
+   - Expected: date fields update to today; totals and detail counts refresh.
+3) Click `Last 7 days`.
+   - Expected: range changes and results update.
+4) Click `Active period`, then `Lock to active period`.
+   - Expected: date inputs stay aligned to active period bounds and lock state is visible.
+5) Enter `Inventory valuation` in `Search details`.
+   - Expected: manual entry list narrows to matching rows; counts in section titles update.
+6) Click `Refresh`.
+   - Expected: success toast and `Last refreshed` changes to current time.
+7) In `Totals variance`, click `Why different?` for one metric with `OK`.
+   - Expected: note explicitly states no material variance.
+8) Click `Why different?` for a metric with non-zero delta (if available).
+   - Expected: note explicitly states variance detected with delta value and likely drivers.
+9) Click a drill-down action such as `Open Journal (COGS lines)` or `Open Expenses`.
+   - Expected: navigates to the related source page for investigation.
+10) Click `Export reconcile CSV`.
+   - Expected: CSV downloads with summary metrics/severity/notes.
+11) Click `Export details CSV`.
+   - Expected: CSV downloads with row-level details.
+12) Click `Copy share link`.
+   - Expected: success toast and copied URL opens the same filtered view.
+13) If no auto-apply or return rows exist in period:
+   - Expected: those cards show no-data messages; this is valid behavior.
+
+## Accounting — Settings
+- Page: /admin/accounting/settings
+- What it is: Central policy page for accounting guardrails used by integrity checks, reporting, store-credit behavior, bank transaction edits, manual-journal governance, and reconcile severity.
+- Who can use it:
+  - `ADMIN`: can change all settings on this page.
+  - `ACCOUNTANT`: can change integrity thresholds and store-credit policy. Restricted policy sections are admin-only.
+- Auditability:
+  - Every save/reset action writes to audit log (`app-setting.update`) with section name, operation type (`save`/`reset`), actor role, changed fields, and safe before/after previews.
+  - Use `Open settings audit trail` on the page to review these changes.
+
+Top-to-bottom page walkthrough
+1) Header
+   - `Accounting Settings`: confirms you are configuring accounting behavior (not daily transaction entry).
+   - `Open settings audit trail`: opens `/admin/audit` filtered for settings updates.
+2) Integrity thresholds
+   - Purpose: defines when Data Integrity should raise warnings for AR and inventory differences.
+   - `AR difference threshold (GHS)`: warning threshold for AR mismatch.
+   - `Inventory difference threshold (GHS)`: warning threshold for inventory mismatch.
+   - `Alert on draft journal entries`: includes draft journals in warning signal.
+   - `Alert on negative stock`: includes negative stock in warning signal.
+   - `Save integrity thresholds`: persists values.
+   - `Reset defaults`: restores default policy values.
+3) Reporting source
+   - Purpose: controls dashboard/main P&L source.
+   - `Use accounting ledger for dashboard and main P&L`: when enabled, reports use posted journal ledger totals.
+   - `Save reporting source` / `Reset default`: persist or restore.
+   - Note: ADMIN-only control.
+4) Store credit auto-apply policy
+   - Purpose: defines how customer store credit is consumed during checkout.
+   - Options:
+     - `Oldest open balances first (recommended)`
+     - `Current order first, then oldest balances`
+     - `Manual apply only (no checkout auto-apply)`
+   - `Save store-credit policy` / `Reset default`: persist or restore.
+5) Bank transaction edit policy
+   - Purpose: defines open-period edit window (in days) for bank transaction edits before ADMIN override is required.
+   - `Edit window (days)`: whole number 0-365.
+   - `Save edit policy` / `Reset default`: persist or restore.
+   - Note: ADMIN-only control.
+6) Manual journal policy
+   - Purpose: enforces controlled manual-entry behavior.
+   - `Period basis`:
+     - `Monthly close (recommended)`: period-end window is measured to each calendar month-end.
+     - `Fiscal period end`: period-end window is measured to configured fiscal period end date.
+   - `Period-end window (days)`: window where manual entries are treated as normal period-end adjustments under selected basis.
+   - `Minimum exception note length`: required note length for out-of-window manual entries.
+   - `Require exception note outside period-end window`: toggle enforcement.
+   - `Save manual policy` / `Reset default`: persist or restore.
+   - Note: ADMIN-only control.
+7) Reconcile severity thresholds
+   - Purpose: controls severity labeling in Reconcile page.
+   - `Currency minor threshold` / `Currency warning threshold`: ratio thresholds for amount metrics.
+   - `Margin minor threshold` / `Margin warning threshold`: absolute percentage-point thresholds for margin metric.
+   - `Save reconcile thresholds` / `Reset default`: persist or restore.
+   - Note: ADMIN-only control.
+8) Reset confirmation dialog
+   - Any reset action opens a confirmation dialog before overwrite.
+
+How to use and set each setting safely
+1) Set integrity thresholds
+   - Enter non-negative values for AR and inventory thresholds.
+   - Turn draft/negative-stock flags on/off based on monitoring strictness.
+   - Click `Save integrity thresholds`.
+   - Expected: success toast and no unsaved-changes indicator.
+2) Set reporting source
+   - Decide if management reporting should follow posted ledger (`on`) or operational totals (`off`).
+   - Click `Save reporting source`.
+   - Expected: success toast; value persists after refresh.
+3) Set store-credit policy
+   - Choose one policy from the dropdown.
+   - Click `Save store-credit policy`.
+   - Expected: success toast; checkout behavior follows selected rule.
+4) Set bank transaction edit window
+   - Enter a whole number (0-365).
+   - Click `Save edit policy`.
+   - Expected: success toast; bank transaction edit guard updates accordingly.
+5) Set manual journal policy
+   - Select period basis (`Monthly close` recommended).
+   - Set period-end window, minimum exception note length, and exception-note enforcement toggle.
+   - Click `Save manual policy`.
+   - Expected: manual journal API/UI enforce these rules for new manual entries using selected period basis.
+6) Set reconcile severity thresholds
+   - Set minor/warning thresholds for currency and margin.
+   - Click `Save reconcile thresholds`.
+   - Expected: Reconcile `Status` badge behavior updates to these values after refresh.
+7) Reset a section when needed
+   - Click `Reset default(s)` in that section.
+   - Confirm in modal.
+   - Expected: section returns to default values and audit entry is recorded.
+
+Validation and behavior notes
+- Save buttons stay disabled until there is a real change.
+- Invalid numeric input is blocked with inline validation text and error toast on save.
+- Closed accounting periods remain locked by period controls; edit window policy does not override closed-period lock.
+
+Related page
+- /admin/accounting/posting-rules
+  - Use this page to map accounting events to ledger accounts.
+  - Use `/admin/accounting/settings` first for policy, then Posting Rules for account mapping detail.
 
 ## System Settings — Feature Toggles
 - Page: /admin/settings/features

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
 import { ensureDefaultOpenFiscalPeriod, normalizeFiscalPeriodDateRange } from "@/lib/accounting-periods";
+import { extractAuditTrace, hashAuditState } from "@/lib/accounting-period-audit";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 
@@ -42,6 +43,7 @@ export async function POST(req: Request) {
   }
 
   try {
+    const trace = extractAuditTrace(req);
     const body = await req.json();
     const parsed = periodSchema.safeParse(body);
     if (!parsed.success) {
@@ -84,7 +86,26 @@ export async function POST(req: Request) {
       action: "fiscal-period.create",
       entityType: "FiscalPeriod",
       entityId: period.id,
-      meta: { name: period.name },
+      meta: {
+        reasonCode: "MANUAL_CREATE",
+        traceId: trace.traceId,
+        requestId: trace.requestId,
+        correlationId: trace.correlationId,
+        requestPath: trace.requestPath,
+        requestMethod: trace.requestMethod,
+        actorRole: (session.user as AuthenticatedUser).role || null,
+        beforeStatus: null,
+        afterStatus: period.status,
+        beforeHash: null,
+        afterHash: hashAuditState({
+          id: period.id,
+          name: period.name,
+          status: period.status,
+          startDate: period.startDate.toISOString(),
+          endDate: period.endDate.toISOString(),
+        }),
+        name: period.name,
+      },
     });
 
     return NextResponse.json(period);

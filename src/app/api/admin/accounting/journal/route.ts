@@ -8,6 +8,19 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MANUAL_CATEGORIES = [
+  "PERIOD_END_ADJUSTMENT",
+  "CORRECTION",
+  "RECLASSIFICATION",
+  "ACCRUAL_DEFERRAL",
+  "OTHER_EXCEPTION",
+] as const;
+const DEFAULT_MANUAL_POLICY = {
+  periodBasis: "MONTHLY_CALENDAR" as const,
+  periodEndWindowDays: 5,
+  requireExceptionOutsideWindow: true,
+  minExceptionNoteLength: 12,
+};
 
 const lineSchema = z.object({
   accountId: z.string().min(1),
@@ -22,6 +35,10 @@ const entrySchema = z
     entryDate: z.string().min(1),
     memo: z.string().max(500).optional(),
     sourceType: z.enum(["ORDER", "PAYMENT", "EXPENSE", "PURCHASE", "PAYROLL", "MANUAL"]),
+    manualCategory: z.enum(MANUAL_CATEGORIES).optional(),
+    manualExceptionNote: z.string().max(500).optional(),
+    priorPeriodId: z.string().max(120).optional().nullable(),
+    priorPeriodNote: z.string().max(500).optional(),
     sourceId: z.string().optional().nullable(),
     status: z.enum(["DRAFT", "POSTED", "VOID"]).optional(),
     lines: z.array(lineSchema).min(2),
@@ -297,6 +314,8 @@ export async function POST(req: Request) {
     }
     const user = session.user as AuthenticatedUser;
     const isManual = parsed.data.sourceType === "MANUAL";
+    let manualPeriodBasisForAudit: "MONTHLY_CALENDAR" | "FISCAL_PERIOD_END" | null = null;
+    const entryDate = new Date(parsed.data.entryDate);
     if (isManual && user.role !== "ADMIN") {
       return NextResponse.json(
         { error: "Manual journal entries are limited to admins." },
@@ -308,6 +327,134 @@ export async function POST(req: Request) {
         { error: "Manual journal entries require a reason in the memo field." },
         { status: 400 },
       );
+    }
+    if (isManual && !parsed.data.manualCategory) {
+      return NextResponse.json(
+        { error: "Manual journal entries require an adjustment category." },
+        { status: 400 },
+      );
+    }
+    const priorPeriodId = String(parsed.data.priorPeriodId || "").trim();
+    const priorPeriodNote = String(parsed.data.priorPeriodNote || "").trim();
+    let priorPeriodForAudit: { id: string; name: string; endDate: Date } | null = null;
+    if (isManual) {
+      const setting = await prisma.appSetting.findUnique({
+        where: { key: "accounting.manualEntries.policy" },
+        select: { value: true },
+      });
+      const raw = (setting?.value ?? null) as Record<string, unknown> | null;
+      const periodBasisRaw = String(raw?.periodBasis || DEFAULT_MANUAL_POLICY.periodBasis).toUpperCase();
+      const periodBasis = periodBasisRaw === "FISCAL_PERIOD_END" ? "FISCAL_PERIOD_END" : "MONTHLY_CALENDAR";
+      const policy: {
+        periodBasis: "MONTHLY_CALENDAR" | "FISCAL_PERIOD_END";
+        periodEndWindowDays: number;
+        requireExceptionOutsideWindow: boolean;
+        minExceptionNoteLength: number;
+      } = {
+        periodBasis,
+        periodEndWindowDays: Number(raw?.periodEndWindowDays ?? DEFAULT_MANUAL_POLICY.periodEndWindowDays),
+        requireExceptionOutsideWindow:
+          typeof raw?.requireExceptionOutsideWindow === "boolean"
+            ? raw.requireExceptionOutsideWindow
+            : DEFAULT_MANUAL_POLICY.requireExceptionOutsideWindow,
+        minExceptionNoteLength: Number(raw?.minExceptionNoteLength ?? DEFAULT_MANUAL_POLICY.minExceptionNoteLength),
+      };
+      const normalizedWindowDays = Number.isFinite(policy.periodEndWindowDays)
+        ? Math.max(0, Math.min(31, Math.floor(policy.periodEndWindowDays)))
+        : DEFAULT_MANUAL_POLICY.periodEndWindowDays;
+      const normalizedMinNote = Number.isFinite(policy.minExceptionNoteLength)
+        ? Math.max(8, Math.min(200, Math.floor(policy.minExceptionNoteLength)))
+        : DEFAULT_MANUAL_POLICY.minExceptionNoteLength;
+
+      manualPeriodBasisForAudit = policy.periodBasis;
+
+      let isWithinPeriodEndWindow = false;
+      if (policy.periodBasis === "MONTHLY_CALENDAR") {
+        const year = entryDate.getUTCFullYear();
+        const month = entryDate.getUTCMonth();
+        const monthEnd = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+        const daysToMonthEnd = Math.max(
+          0,
+          Math.floor((monthEnd.getTime() - entryDate.getTime()) / (24 * 60 * 60 * 1000)),
+        );
+        isWithinPeriodEndWindow = daysToMonthEnd <= normalizedWindowDays;
+      } else {
+        const period = await prisma.fiscalPeriod.findFirst({
+          where: {
+            startDate: { lte: entryDate },
+            endDate: { gte: entryDate },
+          },
+          select: { id: true, name: true, endDate: true },
+        });
+        isWithinPeriodEndWindow = Boolean(
+          period &&
+            Math.abs(
+              Math.floor((period.endDate.getTime() - entryDate.getTime()) / (24 * 60 * 60 * 1000)),
+            ) <= normalizedWindowDays,
+        );
+      }
+      const exceptionNote = String(parsed.data.manualExceptionNote || "").trim();
+      if (
+        policy.requireExceptionOutsideWindow &&
+        !isWithinPeriodEndWindow &&
+        exceptionNote.length < normalizedMinNote
+      ) {
+        return NextResponse.json(
+          {
+            error: `Manual entries outside period-end window require an exception note (${normalizedMinNote}+ chars).`,
+          },
+          { status: 400 },
+        );
+      }
+      if (priorPeriodId) {
+        const priorPeriod = await prisma.fiscalPeriod.findUnique({
+          where: { id: priorPeriodId },
+          select: { id: true, name: true, status: true, startDate: true, endDate: true },
+        });
+        if (!priorPeriod) {
+          return NextResponse.json(
+            { error: "Selected prior period was not found." },
+            { status: 400 },
+          );
+        }
+        if (priorPeriod.status !== "CLOSED") {
+          return NextResponse.json(
+            { error: "Prior-period adjustment requires a closed fiscal period reference." },
+            { status: 400 },
+          );
+        }
+        const activeOpenPeriod = await prisma.fiscalPeriod.findFirst({
+          where: {
+            status: "OPEN",
+            startDate: { lte: entryDate },
+            endDate: { gte: entryDate },
+          },
+          select: { id: true, name: true },
+        });
+        if (!activeOpenPeriod) {
+          return NextResponse.json(
+            { error: "Prior-period adjustments must be dated in a currently open fiscal period." },
+            { status: 400 },
+          );
+        }
+        if (entryDate.getTime() <= priorPeriod.endDate.getTime()) {
+          return NextResponse.json(
+            { error: "Prior-period adjustment entry date must be after the referenced closed period end date." },
+            { status: 400 },
+          );
+        }
+        if (priorPeriodNote.length < 12) {
+          return NextResponse.json(
+            { error: "Prior-period adjustment requires an amendment note of at least 12 characters." },
+            { status: 400 },
+          );
+        }
+        priorPeriodForAudit = {
+          id: priorPeriod.id,
+          name: priorPeriod.name,
+          endDate: priorPeriod.endDate,
+        };
+      }
     }
     if (isManual) {
       const allowPnl =
@@ -337,7 +484,6 @@ export async function POST(req: Request) {
       }
     }
 
-    const entryDate = new Date(parsed.data.entryDate);
     const closedPeriod = await findClosedPeriod(entryDate);
     if (closedPeriod) {
       return NextResponse.json(
@@ -351,7 +497,10 @@ export async function POST(req: Request) {
         entryDate,
         memo: parsed.data.memo,
         sourceType: parsed.data.sourceType,
-        sourceId: parsed.data.sourceId ?? null,
+        sourceId:
+          parsed.data.sourceType === "MANUAL"
+            ? `MANUAL:${parsed.data.manualCategory || "OTHER_EXCEPTION"}`
+            : parsed.data.sourceId ?? null,
         status: parsed.data.status ?? "POSTED",
         approvedById: parsed.data.status === "POSTED" ? (session.user as AuthenticatedUser).id : null,
         approvedAt: parsed.data.status === "POSTED" ? new Date() : null,
@@ -374,8 +523,33 @@ export async function POST(req: Request) {
       action: parsed.data.status === "POSTED" ? "journal.post" : "journal.create",
       entityType: "JournalEntry",
       entityId: entry.id,
-      meta: { status: parsed.data.status ?? "POSTED" },
+      meta: {
+        status: parsed.data.status ?? "POSTED",
+        manualCategory: parsed.data.manualCategory ?? null,
+        manualPeriodBasis: manualPeriodBasisForAudit,
+        manualExceptionNote: parsed.data.manualExceptionNote
+          ? `[len:${parsed.data.manualExceptionNote.trim().length}]`
+          : null,
+        priorPeriodId: priorPeriodForAudit?.id || null,
+        priorPeriodName: priorPeriodForAudit?.name || null,
+        priorPeriodEndDate: priorPeriodForAudit?.endDate?.toISOString() || null,
+        priorPeriodNote: priorPeriodNote ? `[len:${priorPeriodNote.length}]` : null,
+      },
     });
+    if (priorPeriodForAudit) {
+      await recordAuditLog({
+        actorId: (session.user as AuthenticatedUser).id,
+        action: "fiscal-period.prior_adjustment.note",
+        entityType: "FiscalPeriod",
+        entityId: priorPeriodForAudit.id,
+        meta: {
+          journalEntryId: entry.id,
+          journalStatus: parsed.data.status ?? "POSTED",
+          memo: (parsed.data.memo || "").slice(0, 200),
+          priorPeriodNote: priorPeriodNote.slice(0, 300),
+        },
+      });
+    }
     return NextResponse.json(entry);
   } catch (error) {
     console.error("Accounting journal create error:", error);
