@@ -2,25 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { normalizePeriodActivityFilters, PERIOD_ACTIVITY_ACTIONS } from "@/lib/accounting-period-activity-query";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
   return role === "ADMIN" || role === "ACCOUNTANT";
 }
-
-const ACTIONS = [
-  "fiscal-period.create",
-  "fiscal-period.close",
-  "fiscal-period.open",
-  "fiscal-month.close",
-  "fiscal-month.open",
-  "fiscal-month.batch.close",
-  "fiscal-month.batch.open",
-  "fiscal-month.calendar.initialize",
-  "fiscal-period.auto_generate.cron.run",
-  "fiscal-period.auto_generate.manual.run",
-  "fiscal-period.prior_adjustment.note",
-];
 
 function parsePositiveInt(value: string | null, fallback: number, min: number, max: number) {
   const parsed = Number(value);
@@ -38,18 +25,49 @@ export async function GET(request: NextRequest) {
   const limit = parsePositiveInt(params.get("limit"), 25, 10, 100);
   const daysBack = parsePositiveInt(params.get("daysBack"), 90, 1, 3650);
   const cursor = params.get("cursor")?.trim() || null;
-  const fromDate = new Date(Date.now() - daysBack * 86_400_000);
+  const normalized = normalizePeriodActivityFilters({
+    action: params.get("action"),
+    actor: params.get("actor"),
+    from: params.get("from"),
+    to: params.get("to"),
+    daysBack,
+  });
+  if (!normalized.ok) {
+    return NextResponse.json({ error: normalized.error }, { status: 400 });
+  }
+  const { filters } = normalized;
 
   const rows = await prisma.auditLog.findMany({
     where: {
-      action: { in: ACTIONS },
+      action: filters.action ? filters.action : { in: [...PERIOD_ACTIVITY_ACTIONS] },
       deletedAt: null,
-      createdAt: { gte: fromDate },
+      createdAt: {
+        gte: filters.effectiveFromDate,
+        ...(filters.toDate ? { lte: filters.toDate } : {}),
+      },
+      ...(filters.actor
+        ? {
+            actor: {
+              is: {
+                OR: [
+                  { name: { contains: filters.actor, mode: "insensitive" } },
+                  { email: { contains: filters.actor, mode: "insensitive" } },
+                ],
+              },
+            },
+          }
+        : {}),
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    include: {
+    select: {
+      id: true,
+      createdAt: true,
+      action: true,
+      entityType: true,
+      entityId: true,
+      meta: true,
       actor: {
         select: { id: true, name: true, email: true, role: true },
       },
@@ -80,5 +98,11 @@ export async function GET(request: NextRequest) {
     nextCursor,
     hasMore,
     daysBack,
+    appliedFilters: {
+      action: filters.action,
+      actor: filters.actor || null,
+      from: filters.from,
+      to: filters.to,
+    },
   });
 }

@@ -7,6 +7,7 @@ import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { fetchAppSetting, saveAppSetting } from "@/lib/app-settings-client";
 import { toast } from "sonner";
 
 type PlanSummary = {
@@ -63,13 +64,11 @@ export default function InventoryPlanningPage() {
   });
   const { data: autoSetting } = useClientQuery<{ value?: unknown }>({
     queryKey: ["app-setting", "inventoryPlanning.autoRecompute"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=inventoryPlanning.autoRecompute").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<string>("inventoryPlanning.autoRecompute"),
   });
   const { data: defaultReorderSetting } = useClientQuery<{ value?: unknown }>({
     queryKey: ["app-setting", "inventoryPlanning.defaultReorderPoint"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=inventoryPlanning.defaultReorderPoint").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<number>("inventoryPlanning.defaultReorderPoint"),
   });
   const rows = useMemo(() => (Array.isArray(data?.rows) ? data?.rows : []), [data]);
   const filtered = useMemo(() => {
@@ -115,13 +114,7 @@ export default function InventoryPlanningPage() {
     setAutoRecompute(value);
     setSavingAuto(true);
     try {
-      const res = await fetch("/api/admin/settings/app", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "inventoryPlanning.autoRecompute", value }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || "Failed to save setting.");
+      await saveAppSetting({ key: "inventoryPlanning.autoRecompute", value }, "Failed to save setting.");
       toast.success("Auto recompute setting updated.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save setting.");
@@ -138,13 +131,10 @@ export default function InventoryPlanningPage() {
     }
     setSavingDefaultReorder(true);
     try {
-      const res = await fetch("/api/admin/settings/app", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "inventoryPlanning.defaultReorderPoint", value: parsed }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || "Failed to save default reorder point.");
+      await saveAppSetting(
+        { key: "inventoryPlanning.defaultReorderPoint", value: parsed },
+        "Failed to save default reorder point.",
+      );
       toast.success("Default reorder point updated.");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save default reorder point.");

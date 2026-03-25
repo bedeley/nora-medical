@@ -6,9 +6,11 @@ async function signIn(page) {
   test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
 
   await page.goto("/login");
-  await page.getByLabel(/email/i).fill(email);
-  await page.getByLabel(/password/i).fill(password);
+  await page.getByPlaceholder(/email or username/i).fill(email);
+  await page.getByPlaceholder(/^password$/i).fill(password);
   await page.getByRole("button", { name: /sign in|login/i }).click();
+  await page.waitForURL(/\/($|admin)/);
+  await page.goto("/admin");
   await page.waitForURL(/\/admin/);
 }
 

@@ -1,8 +1,15 @@
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
+import { loadAccountingJournalPolicy } from "@/lib/accounting-journal-policy";
+import {
+  applyIdsOnlyCap,
+  compareJournalStatus,
+  normalizeJournalSearchQuery,
+} from "@/lib/accounting-journal-query";
 import { findClosedPeriod } from "@/lib/accounting-periods";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -15,6 +22,7 @@ const MANUAL_CATEGORIES = [
   "ACCRUAL_DEFERRAL",
   "OTHER_EXCEPTION",
 ] as const;
+const JOURNAL_SOURCE_TYPES = ["ORDER", "PAYMENT", "EXPENSE", "PURCHASE", "PAYROLL", "MANUAL"] as const;
 const DEFAULT_MANUAL_POLICY = {
   periodBasis: "MONTHLY_CALENDAR" as const,
   periodEndWindowDays: 5,
@@ -90,12 +98,33 @@ export async function GET(req: Request) {
   const start = searchParams.get("start");
   const end = searchParams.get("end");
   const includeArchive = searchParams.get("includeArchive") === "1";
+  const paginate = searchParams.get("paginate") === "1";
+  const idsOnly = searchParams.get("idsOnly") === "1";
+  const rawPage = Number(searchParams.get("page") || "1");
+  const rawPageSize = Number(searchParams.get("pageSize") || "25");
+  const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
+  const pageSize = Number.isFinite(rawPageSize) ? Math.max(10, Math.min(200, Math.floor(rawPageSize))) : 25;
+  const qRaw = String(searchParams.get("q") || "");
+  const normalizedQ = normalizeJournalSearchQuery(qRaw);
+  if (!normalizedQ.ok) {
+    return NextResponse.json(
+      { error: normalizedQ.error },
+      { status: 400 },
+    );
+  }
+  const q = normalizedQ.q;
+  const sortByRaw = String(searchParams.get("sortBy") || "date").toLowerCase();
+  const sortDirRaw = String(searchParams.get("sortDir") || "desc").toLowerCase();
+  const sortBy: "date" | "status" | "amount" =
+    sortByRaw === "status" || sortByRaw === "amount" ? sortByRaw : "date";
+  const sortDir: Prisma.SortOrder = sortDirRaw === "asc" ? "asc" : "desc";
 
   const where: {
     status?: "DRAFT" | "POSTED" | "VOID";
     sourceType?: "ORDER" | "PAYMENT" | "EXPENSE" | "PURCHASE" | "PAYROLL" | "MANUAL";
     entryDate?: { gte?: Date; lte?: Date };
     archivedAt?: Date | null;
+    AND?: Array<Record<string, unknown>>;
   } = {};
   if (!includeArchive) {
     where.archivedAt = null;
@@ -134,8 +163,8 @@ export async function GET(req: Request) {
   }
   const hasExplicitDateWindow = Boolean(start || end);
   if (!hasExplicitDateWindow && !includeArchive) {
-    const configuredDays = Number(process.env.JOURNAL_RECENT_WINDOW_DAYS || "90");
-    const recentWindowDays = Number.isFinite(configuredDays) && configuredDays > 0 ? Math.floor(configuredDays) : 90;
+    const policy = await loadAccountingJournalPolicy();
+    const recentWindowDays = policy.recentWindowDays;
     const recentStart = new Date();
     recentStart.setUTCDate(recentStart.getUTCDate() - recentWindowDays);
     recentStart.setUTCHours(0, 0, 0, 0);
@@ -144,20 +173,133 @@ export async function GET(req: Request) {
       gte: recentStart,
     };
   }
-
-  const entries = await prisma.journalEntry.findMany({
-    where,
-    orderBy: [{ entryDate: "desc" }, { createdAt: "desc" }],
-    include: {
-      approvedBy: { select: { id: true, name: true, email: true } },
-      lines: {
-        include: {
-          account: true,
-          taxCode: true,
-        },
+  if (q) {
+    const qAsSourceType = q.toUpperCase();
+    const sourceTypeExactMatch = JOURNAL_SOURCE_TYPES.includes(qAsSourceType as (typeof JOURNAL_SOURCE_TYPES)[number])
+      ? [{ sourceType: { equals: qAsSourceType } }]
+      : [];
+    where.AND = [
+      {
+        OR: [
+          { memo: { contains: q, mode: "insensitive" } },
+          ...sourceTypeExactMatch,
+          { sourceId: { contains: q, mode: "insensitive" } },
+          {
+            lines: {
+              some: {
+                OR: [
+                  { description: { contains: q, mode: "insensitive" } },
+                  { account: { code: { contains: q, mode: "insensitive" } } },
+                  { account: { name: { contains: q, mode: "insensitive" } } },
+                ],
+              },
+            },
+          },
+        ],
       },
-    },
-  });
+    ];
+  }
+
+  if (idsOnly) {
+    const rows = await prisma.journalEntry.findMany({
+      where,
+      orderBy: [{ entryDate: sortDir }, { createdAt: sortDir }],
+      select: { id: true },
+    });
+    const capped = applyIdsOnlyCap(rows.map((row) => row.id));
+    return NextResponse.json(capped);
+  }
+
+  let amountSortedEntryIds: string[] | null = null;
+  if (sortBy === "amount") {
+    const grouped = await prisma.journalLine.groupBy({
+      by: ["entryId"],
+      where: { entry: where },
+      _sum: { debit: true },
+      orderBy: { _sum: { debit: sortDir } },
+    });
+    amountSortedEntryIds = grouped.map((row) => row.entryId);
+    if (amountSortedEntryIds.length === 0) {
+      amountSortedEntryIds = [];
+    }
+  }
+
+  let entries: Awaited<ReturnType<typeof prisma.journalEntry.findMany>> = [];
+  let total = 0;
+  if (sortBy === "amount" && amountSortedEntryIds) {
+    total = amountSortedEntryIds.length;
+    const pagedIds = paginate
+      ? amountSortedEntryIds.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
+      : amountSortedEntryIds;
+    if (pagedIds.length > 0) {
+      const rows = await prisma.journalEntry.findMany({
+        where: { id: { in: pagedIds } },
+        include: {
+          approvedBy: { select: { id: true, name: true, email: true } },
+          lines: {
+            include: {
+              account: true,
+              taxCode: true,
+            },
+          },
+        },
+      });
+      const map = new Map(rows.map((row) => [row.id, row]));
+      entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
+    }
+  } else {
+    if (sortBy === "status") {
+      const statusRows = await prisma.journalEntry.findMany({
+        where,
+        select: { id: true, status: true, entryDate: true, createdAt: true },
+      });
+      statusRows.sort((a, b) => compareJournalStatus(a, b, sortDir));
+      total = statusRows.length;
+      const pagedIds = paginate
+        ? statusRows.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize).map((row) => row.id)
+        : statusRows.map((row) => row.id);
+      if (pagedIds.length > 0) {
+        const rows = await prisma.journalEntry.findMany({
+          where: { id: { in: pagedIds } },
+          include: {
+            approvedBy: { select: { id: true, name: true, email: true } },
+            lines: {
+              include: {
+                account: true,
+                taxCode: true,
+              },
+            },
+          },
+        });
+        const map = new Map(rows.map((row) => [row.id, row]));
+        entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
+      }
+    } else {
+      const orderBy: Prisma.JournalEntryOrderByWithRelationInput[] = [
+        { entryDate: sortDir },
+        { createdAt: sortDir },
+      ];
+      const [rows, count] = await Promise.all([
+        prisma.journalEntry.findMany({
+          where,
+          orderBy,
+          ...(paginate ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
+          include: {
+            approvedBy: { select: { id: true, name: true, email: true } },
+            lines: {
+              include: {
+                account: true,
+                taxCode: true,
+              },
+            },
+          },
+        }),
+        paginate ? prisma.journalEntry.count({ where }) : Promise.resolve(0),
+      ]);
+      entries = rows;
+      total = count;
+    }
+  }
   const orderIds = entries
     .filter((entry) => entry.sourceType === "ORDER" && entry.sourceId)
     .map((entry) => entry.sourceId as string);
@@ -280,7 +422,18 @@ export async function GET(req: Request) {
     ...entry,
     apBalanceAfter: apBalanceByEntryId.get(entry.id) ?? null,
   }));
-  return NextResponse.json(enrichedWithAp);
+  if (!paginate) {
+    return NextResponse.json(enrichedWithAp);
+  }
+  return NextResponse.json({
+    items: enrichedWithAp,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    sortBy,
+    sortDir,
+  });
 }
 
 export async function POST(req: Request) {
@@ -457,8 +610,8 @@ export async function POST(req: Request) {
       }
     }
     if (isManual) {
-      const allowPnl =
-        (process.env.ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL || "").toLowerCase() === "1";
+      const policy = await loadAccountingJournalPolicy();
+      const allowPnl = policy.manualEntryAllowPnl;
       const accountIds = Array.from(
         new Set(parsed.data.lines.map((line) => line.accountId)),
       );
@@ -477,7 +630,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             error:
-              "Manual entries cannot post to Income/Expense accounts unless ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL=1.",
+              "Manual entries cannot post to Income/Expense accounts under current journal policy.",
           },
           { status: 400 },
         );

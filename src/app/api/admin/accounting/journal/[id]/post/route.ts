@@ -43,6 +43,9 @@ export async function POST(
     if (existing.status === "POSTED") {
       return NextResponse.json({ error: "Entry already posted." }, { status: 400 });
     }
+    if (existing.status !== "DRAFT") {
+      return NextResponse.json({ error: "Only draft entries can be posted." }, { status: 400 });
+    }
     if (existing.archivedAt) {
       return NextResponse.json({ error: "Archived journal entries are read-only." }, { status: 400 });
     }
@@ -66,6 +69,11 @@ export async function POST(
       action: "journal.post",
       entityType: "JournalEntry",
       entityId: entryId,
+      meta: {
+        via: "journal.post.endpoint",
+        previousStatus: existing.status,
+        nextStatus: "POSTED",
+      },
     });
     return NextResponse.json(entry);
   } catch (error) {

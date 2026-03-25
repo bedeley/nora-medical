@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip } from "@/components/ui/tooltip";
+import { AppSettingSnapshot, fetchAppSetting, fetchJsonOrThrow, saveAppSetting } from "@/lib/app-settings-client";
 import {
   Dialog,
   DialogContent,
@@ -35,7 +36,6 @@ type PeriodChecklist = {
   negativeStockCount: number;
 };
 
-type AppSettingResponse = { key: string; value: unknown };
 type MonthlyCloseRow = {
   month: string;
   closedAt: string;
@@ -68,6 +68,19 @@ type PeriodActivityResponse = {
   nextCursor: string | null;
   hasMore: boolean;
   daysBack: number;
+  appliedFilters?: {
+    action?: string | null;
+    actor?: string | null;
+    from?: string | null;
+    to?: string | null;
+  };
+};
+type AuditListResponse = {
+  items: Array<{
+    id: string;
+    createdAt: string;
+    actor?: { name?: string | null; email?: string | null } | null;
+  }>;
 };
 type PeriodReadinessRow = {
   periodId: string;
@@ -158,6 +171,21 @@ function daysUntil(dateText: string) {
   const now = new Date();
   const target = endOfDay(dateText);
   return Math.ceil((target.getTime() - now.getTime()) / 86_400_000);
+}
+
+function monthRange(monthKey: string) {
+  const [yearText, monthText] = monthKey.split("-");
+  const year = Number(yearText);
+  const monthIndex = Number(monthText) - 1;
+  if (!Number.isInteger(year) || !Number.isInteger(monthIndex) || monthIndex < 0 || monthIndex > 11) {
+    return null;
+  }
+  const start = new Date(Date.UTC(year, monthIndex, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 0, 23, 59, 59, 999));
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
 }
 
 function parseMetaObject(meta: unknown): Record<string, unknown> | null {
@@ -265,30 +293,34 @@ export default function AccountingPeriodsPage() {
     queryKey: ["accounting", "period-snapshots"],
     queryFn: () => fetch("/api/admin/accounting/periods/snapshots").then((r) => r.json()),
   });
-  const { data: reminderData } = useClientQuery<AppSettingResponse>({
+  const { data: reminderData } = useClientQuery<AppSettingSnapshot<number>>({
     queryKey: ["app-setting", "accounting.periodClose.reminderDays"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=accounting.periodClose.reminderDays").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<number>("accounting.periodClose.reminderDays"),
   });
-  const { data: monthlyReopenWindowData } = useClientQuery<AppSettingResponse>({
+  const { data: monthlyReopenWindowData } = useClientQuery<AppSettingSnapshot<number>>({
     queryKey: ["app-setting", "accounting.reopen.monthlyWindowDays"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=accounting.reopen.monthlyWindowDays").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<number>("accounting.reopen.monthlyWindowDays"),
   });
-  const { data: fiscalReopenWindowData } = useClientQuery<AppSettingResponse>({
+  const { data: fiscalReopenWindowData } = useClientQuery<AppSettingSnapshot<number>>({
     queryKey: ["app-setting", "accounting.reopen.fiscalWindowDays"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=accounting.reopen.fiscalWindowDays").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<number>("accounting.reopen.fiscalWindowDays"),
   });
-  const { data: enforceFinalizedLockData } = useClientQuery<AppSettingResponse>({
+  const { data: enforceFinalizedLockData } = useClientQuery<AppSettingSnapshot<boolean | string>>({
     queryKey: ["app-setting", "accounting.reopen.enforceFinalizedYearLock"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=accounting.reopen.enforceFinalizedYearLock").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<boolean | string>("accounting.reopen.enforceFinalizedYearLock"),
   });
-  const { data: finalizedFiscalYearsData } = useClientQuery<AppSettingResponse>({
+  const { data: finalizedFiscalYearsData } = useClientQuery<AppSettingSnapshot<number[]>>({
     queryKey: ["app-setting", "accounting.reopen.finalizedFiscalYears"],
-    queryFn: () =>
-      fetch("/api/admin/settings/app?key=accounting.reopen.finalizedFiscalYears").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<number[]>("accounting.reopen.finalizedFiscalYears"),
+  });
+  const { data: reminderAuditData } = useClientQuery<AuditListResponse>({
+    queryKey: ["audit", "periods-reminder-setting-latest"],
+    queryFn: async () => {
+      const res = await fetch(
+        "/api/admin/audit?action=app-setting.update&entityId=accounting.periodClose.reminderDays&paginate=1&page=1&pageSize=1",
+      );
+      return fetchJsonOrThrow<AuditListResponse>(res, "Failed to load reminder setting audit.");
+    },
   });
   const { data: monthlyCloseData } = useClientQuery<{ rows: MonthlyCloseRow[] }>({
     queryKey: ["accounting", "periods", "monthly-close"],
@@ -348,6 +380,12 @@ export default function AccountingPeriodsPage() {
   const [periodActivityRows, setPeriodActivityRows] = useState<PeriodActivityRow[]>([]);
   const [periodActivityNextCursor, setPeriodActivityNextCursor] = useState<string | null>(null);
   const [periodActivityHasMore, setPeriodActivityHasMore] = useState(false);
+  const [periodActivityFilterEcho, setPeriodActivityFilterEcho] = useState<{
+    action: string | null;
+    actor: string | null;
+    from: string | null;
+    to: string | null;
+  }>({ action: null, actor: null, from: null, to: null });
   const [periodActivityLoading, setPeriodActivityLoading] = useState(false);
   const [periodActivityLoadingMore, setPeriodActivityLoadingMore] = useState(false);
   const [activityActionFilter, setActivityActionFilter] = useState("");
@@ -409,6 +447,12 @@ export default function AccountingPeriodsPage() {
         : [],
     [finalizedFiscalYearsData?.value],
   );
+  const reminderSettingAuditSummary = useMemo(() => {
+    const row = Array.isArray(reminderAuditData?.items) ? reminderAuditData.items[0] : null;
+    if (!row) return "No recent reminder-setting audit entry.";
+    const actor = row.actor?.name || row.actor?.email || "System";
+    return `Last reminder-setting update: ${new Date(row.createdAt).toLocaleString()} by ${actor}.`;
+  }, [reminderAuditData?.items]);
   const openPeriods = useMemo(
     () =>
       periods
@@ -516,6 +560,10 @@ export default function AccountingPeriodsPage() {
       const params = new URLSearchParams();
       params.set("limit", String(ACTIVITY_PAGE_SIZE));
       params.set("daysBack", String(DEFAULT_ACTIVITY_DAYS_BACK));
+      if (activityActionFilter) params.set("action", activityActionFilter);
+      if (activityActorFilter.trim()) params.set("actor", activityActorFilter.trim());
+      if (activityFromDate) params.set("from", activityFromDate);
+      if (activityToDate) params.set("to", activityToDate);
       const res = await fetch(`/api/admin/accounting/periods/activity?${params.toString()}`);
       const j = (await res.json().catch(() => ({}))) as Partial<PeriodActivityResponse> & { error?: string };
       if (!res.ok) throw new Error(j.error || "Failed to load close activity timeline.");
@@ -523,6 +571,12 @@ export default function AccountingPeriodsPage() {
       setPeriodActivityRows(rows);
       setPeriodActivityNextCursor(typeof j.nextCursor === "string" ? j.nextCursor : null);
       setPeriodActivityHasMore(Boolean(j.hasMore));
+      setPeriodActivityFilterEcho({
+        action: j.appliedFilters?.action || null,
+        actor: j.appliedFilters?.actor || null,
+        from: j.appliedFilters?.from || null,
+        to: j.appliedFilters?.to || null,
+      });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to load close activity timeline.");
       setPeriodActivityRows([]);
@@ -531,7 +585,7 @@ export default function AccountingPeriodsPage() {
     } finally {
       setPeriodActivityLoading(false);
     }
-  }, []);
+  }, [activityActionFilter, activityActorFilter, activityFromDate, activityToDate]);
 
   const loadMorePeriodActivity = useCallback(async () => {
     if (!periodActivityHasMore || !periodActivityNextCursor || periodActivityLoadingMore) return;
@@ -541,6 +595,10 @@ export default function AccountingPeriodsPage() {
       params.set("limit", String(ACTIVITY_PAGE_SIZE));
       params.set("daysBack", String(DEFAULT_ACTIVITY_DAYS_BACK));
       params.set("cursor", periodActivityNextCursor);
+      if (activityActionFilter) params.set("action", activityActionFilter);
+      if (activityActorFilter.trim()) params.set("actor", activityActorFilter.trim());
+      if (activityFromDate) params.set("from", activityFromDate);
+      if (activityToDate) params.set("to", activityToDate);
       const res = await fetch(`/api/admin/accounting/periods/activity?${params.toString()}`);
       const j = (await res.json().catch(() => ({}))) as Partial<PeriodActivityResponse> & { error?: string };
       if (!res.ok) throw new Error(j.error || "Failed to load more timeline rows.");
@@ -551,37 +609,48 @@ export default function AccountingPeriodsPage() {
       });
       setPeriodActivityNextCursor(typeof j.nextCursor === "string" ? j.nextCursor : null);
       setPeriodActivityHasMore(Boolean(j.hasMore));
+      setPeriodActivityFilterEcho({
+        action: j.appliedFilters?.action || null,
+        actor: j.appliedFilters?.actor || null,
+        from: j.appliedFilters?.from || null,
+        to: j.appliedFilters?.to || null,
+      });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to load more timeline rows.");
     } finally {
       setPeriodActivityLoadingMore(false);
     }
-  }, [periodActivityHasMore, periodActivityNextCursor, periodActivityLoadingMore]);
+  }, [
+    periodActivityHasMore,
+    periodActivityNextCursor,
+    periodActivityLoadingMore,
+    activityActionFilter,
+    activityActorFilter,
+    activityFromDate,
+    activityToDate,
+  ]);
 
   useEffect(() => {
     void refreshPeriodActivity();
   }, [refreshPeriodActivity]);
 
-  const activityRows = useMemo(() => {
-    const rows = periodActivityRows;
-    return rows.filter((row) => {
-      if (activityActionFilter && row.action !== activityActionFilter) return false;
-      if (activityActorFilter.trim()) {
-        const actorText = `${row.actor?.name || ""} ${row.actor?.email || ""}`.toLowerCase();
-        if (!actorText.includes(activityActorFilter.trim().toLowerCase())) return false;
-      }
-      const at = new Date(row.createdAt).getTime();
-      if (activityFromDate) {
-        const from = new Date(`${activityFromDate}T00:00:00`).getTime();
-        if (Number.isFinite(from) && at < from) return false;
-      }
-      if (activityToDate) {
-        const to = new Date(`${activityToDate}T23:59:59`).getTime();
-        if (Number.isFinite(to) && at > to) return false;
-      }
-      return true;
-    });
-  }, [periodActivityRows, activityActionFilter, activityActorFilter, activityFromDate, activityToDate]);
+  const activityRows = periodActivityRows;
+  const activeActivityFilterCount = useMemo(() => {
+    let count = 0;
+    if (activityActionFilter) count += 1;
+    if (activityActorFilter.trim()) count += 1;
+    if (activityFromDate) count += 1;
+    if (activityToDate) count += 1;
+    return count;
+  }, [activityActionFilter, activityActorFilter, activityFromDate, activityToDate]);
+  const activityFilterEchoText = useMemo(() => {
+    const parts: string[] = [];
+    if (periodActivityFilterEcho.action) parts.push(`Action: ${formatActivityActionLabel(periodActivityFilterEcho.action)}`);
+    if (periodActivityFilterEcho.actor) parts.push(`Actor: ${periodActivityFilterEcho.actor}`);
+    if (periodActivityFilterEcho.from) parts.push(`From: ${periodActivityFilterEcho.from}`);
+    if (periodActivityFilterEcho.to) parts.push(`To: ${periodActivityFilterEcho.to}`);
+    return parts.join(" | ");
+  }, [periodActivityFilterEcho]);
   const initializedYears = useMemo(
     () => (Array.isArray(monthlyCalendarData?.initializedYears) ? monthlyCalendarData.initializedYears : []),
     [monthlyCalendarData?.initializedYears],
@@ -767,19 +836,25 @@ export default function AccountingPeriodsPage() {
     }
     try {
       setSavingReminder(true);
-      const res = await fetch("/api/admin/settings/app", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await saveAppSetting(
+        {
           key: "accounting.periodClose.reminderDays",
           value: Math.trunc(parsed),
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || "Failed to save reminder setting.");
+          expectedUpdatedAt: reminderData?.updatedAt ?? null,
+          audit: {
+            sourcePage: "admin/accounting/periods",
+            section: "period-close-reminder-days",
+            operation: "save",
+          },
+        },
+        "Failed to save reminder setting.",
+      );
       toast.success("Reminder threshold saved.");
       queryClient.invalidateQueries({
         queryKey: ["app-setting", "accounting.periodClose.reminderDays"],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["audit", "periods-reminder-setting-latest"],
       });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to save reminder setting.");
@@ -1049,7 +1124,13 @@ export default function AccountingPeriodsPage() {
             <Button onClick={saveReminderThreshold} disabled={savingReminder}>
               {savingReminder ? "Saving..." : "Save reminder days"}
             </Button>
+            <Button asChild variant="outline">
+              <Link href="/admin/audit?scope=accounting_settings&sourcePage=admin/accounting/periods&settingSection=period-close-reminder-days&action=app-setting.update&entityId=accounting.periodClose.reminderDays">
+                Open reminder audit
+              </Link>
+            </Button>
           </div>
+          <p className="text-xs text-muted-foreground">{reminderSettingAuditSummary}</p>
           {showReminder && nextOpenPeriod ? (
             <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
               Period <span className="font-medium">{nextOpenPeriod.name}</span> ends in{" "}
@@ -1196,8 +1277,12 @@ export default function AccountingPeriodsPage() {
                 {monthlyClosedRows.length === 0 ? (
                   <p className="text-muted-foreground">No closed months configured.</p>
                 ) : (
-                  monthlyClosedRows.map((row) => (
-                    <div key={row.month} className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2">
+                  monthlyClosedRows.map((row) => {
+                    const range = monthRange(row.month);
+                    const start = range?.start || `${row.month}-01`;
+                    const end = range?.end || `${row.month}-31`;
+                    return (
+                      <div key={row.month} className="flex flex-wrap items-center justify-between gap-2 rounded border px-3 py-2">
                       <div>
                         <div className="font-medium">{row.month} <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] text-rose-700">Closed</span></div>
                         <div className="text-xs text-muted-foreground">
@@ -1207,18 +1292,19 @@ export default function AccountingPeriodsPage() {
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <a className="text-xs underline" href={`/admin/accounting/journal?start=${row.month}-01&end=${row.month}-31`}>
+                        <a className="text-xs underline" href={`/admin/accounting/journal?start=${start}&end=${end}`}>
                           Journal
                         </a>
-                        <a className="text-xs underline" href={`/admin/accounting/reconcile?start=${row.month}-01&end=${row.month}-31`}>
+                        <a className="text-xs underline" href={`/admin/accounting/reconcile?start=${start}&end=${end}`}>
                           Reconcile
                         </a>
                         <Button size="sm" variant="ghost" onClick={() => setMonthlyCloseState("open", row.month)} disabled={monthlyCloseBusy}>
                           Reopen
                         </Button>
                       </div>
-                    </div>
-                  ))
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </>
@@ -1437,7 +1523,14 @@ export default function AccountingPeriodsPage() {
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>Showing recent close/reopen activity (default last {DEFAULT_ACTIVITY_DAYS_BACK} days).</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span>Showing recent close/reopen activity (default last {DEFAULT_ACTIVITY_DAYS_BACK} days).</span>
+              {activeActivityFilterCount > 0 ? (
+                <span className="rounded bg-blue-100 px-2 py-0.5 text-blue-800">
+                  {activeActivityFilterCount} filter(s) active
+                </span>
+              ) : null}
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" size="sm" variant="outline" onClick={() => void refreshPeriodActivity()} disabled={periodActivityLoading}>
                 {periodActivityLoading ? "Refreshing..." : "Refresh"}
@@ -1447,6 +1540,9 @@ export default function AccountingPeriodsPage() {
               </Button>
             </div>
           </div>
+          {activityFilterEchoText ? (
+            <p className="text-xs text-muted-foreground">Server-applied filters: {activityFilterEchoText}</p>
+          ) : null}
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
             <select
               className="h-10 rounded-md border bg-background px-3 text-sm"

@@ -3391,14 +3391,85 @@ function AdminAuditContent() {
       return <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">{renderCollapsibleLines(lines)}</div>;
     }
 
-    if (row.entityType === "APPSETTING" && row.action === "app-setting.update") {
+    if (String(row.entityType || "").toUpperCase() === "APPSETTING" && row.action === "app-setting.update") {
       const hasMeta = Object.keys(meta).length > 0;
+      const changes = Array.isArray(meta.changes)
+        ? (meta.changes as Array<Record<string, unknown>>)
+        : [];
+      const primaryChange =
+        changes.find((change) => String(change.key || "") === row.entityId) || changes[0] || null;
+      const settingKey = String((primaryChange?.key as string | undefined) || row.entityId || "");
+      const formatVarianceNotesPreview = (raw: string) => {
+        if (!raw || raw === "Not provided" || raw === "[hidden]") return raw || "Not provided";
+        try {
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return raw;
+          const entries = Object.entries(parsed as Record<string, unknown>)
+            .map(([periodKey, note]) => {
+              const [start, end] = String(periodKey || "").split("|");
+              const startLabel = start ? new Date(`${start}T00:00:00`).toLocaleDateString() : "Unknown start";
+              const endLabel = end ? new Date(`${end}T00:00:00`).toLocaleDateString() : "Unknown end";
+              const noteText = String(note ?? "").trim() || "No note";
+              return `${startLabel} to ${endLabel}: ${noteText}`;
+            })
+            .filter(Boolean);
+          if (entries.length === 0) return "No variance notes saved.";
+          return entries.join(" | ");
+        } catch {
+          return raw;
+        }
+      };
+      const parsePreview = (value: unknown) => {
+        const text = String(value ?? "").trim();
+        if (!text) return "Not provided";
+        if (text === "[hidden]") return text;
+        if (settingKey === "accounting.reports.pl.varianceNotes") {
+          return formatVarianceNotesPreview(text);
+        }
+        try {
+          return JSON.stringify(JSON.parse(text));
+        } catch {
+          return text;
+        }
+      };
+      const beforeType = String(
+        (primaryChange?.previousType as string | undefined) || meta.previousType || "Not provided",
+      );
+      const afterType = String(
+        (primaryChange?.newType as string | undefined) || meta.newType || "Not provided",
+      );
+      const beforePreview = parsePreview(
+        primaryChange?.previousValuePreview ?? meta.previousValuePreview,
+      );
+      const afterPreview = parsePreview(
+        primaryChange?.newValuePreview ?? meta.newValuePreview,
+      );
+      const changedFieldNames = Array.isArray(primaryChange?.changedFields)
+        ? (primaryChange?.changedFields as unknown[])
+            .map((name) => String(name || "").trim())
+            .filter(Boolean)
+        : Array.isArray(meta.changedFields)
+          ? (meta.changedFields as unknown[])
+              .map((name) => String(name || "").trim())
+              .filter(Boolean)
+          : [];
       const lines: Array<{ key: string; content: React.ReactNode }> = [
         {
           key: "key",
           content: (
             <>
-              <span className="font-medium">Setting key:</span> {row.entityId}
+              <span className="font-medium">Setting key:</span>{" "}
+              {String((primaryChange?.key as string | undefined) || row.entityId || "Not provided")}
+            </>
+          ),
+        },
+        {
+          key: "source",
+          content: (
+            <>
+              <span className="font-medium">Source page / section / operation:</span>{" "}
+              {String(meta.sourcePage || "Not provided")} / {String(meta.section || "Not provided")} /{" "}
+              {String(meta.operation || "Not provided")}
             </>
           ),
         },
@@ -3416,9 +3487,25 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">Value type (before to after):</span>{" "}
-              {hasMeta
-                ? `${String(meta.previousType || "Not provided")} -> ${String(meta.newType || "Not provided")}`
-                : "Unknown (legacy entry)"}
+              {hasMeta ? `${beforeType} -> ${afterType}` : "Unknown (legacy entry)"}
+            </>
+          ),
+        },
+        {
+          key: "value",
+          content: (
+            <>
+              <span className="font-medium">Value (before to after):</span>{" "}
+              {hasMeta ? `${beforePreview} -> ${afterPreview}` : "Unknown (legacy entry)"}
+            </>
+          ),
+        },
+        {
+          key: "fields",
+          content: (
+            <>
+              <span className="font-medium">Changed fields:</span>{" "}
+              {changedFieldNames.length > 0 ? changedFieldNames.join(", ") : "None listed"}
             </>
           ),
         },

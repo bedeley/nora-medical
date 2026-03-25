@@ -1,8 +1,9 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { loadAccountTotals, parseDateRange, toNet, type AccountTotals } from "../../utils";
+import { recordAuditLog } from "@/lib/audit-log";
+import { loadAccountTotals, parseDateRange, parseValidatedDateRange, toNet, type AccountTotals } from "../../utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -12,7 +13,7 @@ function isAuthorized(user?: AuthenticatedUser | null) {
 const escapeCsv = (value: string) => {
   if (!value) return "";
   if (/[",\n]/.test(value)) {
-    return `"${value.replace(/"/g, "\"\"")}"`;
+    return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
 };
@@ -24,7 +25,8 @@ const asCsv = (rows: Array<Array<string | number>>) =>
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -32,11 +34,35 @@ export async function GET(req: Request) {
   const start = searchParams.get("start");
   const end = searchParams.get("end");
   const asOf = searchParams.get("asOf");
+  const fromJob = searchParams.get("job") === "1";
+
+  let parsedPlRange: ReturnType<typeof parseValidatedDateRange>;
+  let parsedAsOfRange: ReturnType<typeof parseValidatedDateRange>;
+  try {
+    parsedPlRange = parseValidatedDateRange(start, end);
+    parsedAsOfRange = parseValidatedDateRange(null, asOf || end || new Date().toISOString().slice(0, 10));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid date range.";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+
+  if (!fromJob && parsedPlRange.normalizedStart && parsedPlRange.normalizedEnd) {
+    const startDate = new Date(`${parsedPlRange.normalizedStart}T00:00:00`);
+    const endDate = new Date(`${parsedPlRange.normalizedEnd}T00:00:00`);
+    const dayMs = 24 * 60 * 60 * 1000;
+    const spanDays = Math.floor((endDate.getTime() - startDate.getTime()) / dayMs) + 1;
+    if (spanDays > 366) {
+      return NextResponse.json(
+        { error: "Range is large. Use the queued export job option for better performance." },
+        { status: 413 },
+      );
+    }
+  }
 
   const generatedAt = new Date().toISOString();
-  const asOfEffective = asOf || end || new Date().toISOString().slice(0, 10);
+  const asOfEffective = parsedAsOfRange.normalizedEnd || new Date().toISOString().slice(0, 10);
 
-  const plTotals = await loadAccountTotals(parseDateRange(start, end));
+  const plTotals = await loadAccountTotals(parsedPlRange.dateFilter);
   const plIncome = plTotals.filter((row) => row.type === "INCOME");
   const plExpenses = plTotals.filter((row) => row.type === "EXPENSE");
   const plIncomeTotal = plIncome.reduce((sum, row) => sum + (row.credit - row.debit), 0);
@@ -111,9 +137,9 @@ export async function GET(req: Request) {
   const rows: Array<Array<string | number>> = [
     ["REPORTING PACK", "Noralls Medical Supplies"],
     ["Generated At (UTC)", generatedAt],
-    ["Start", start || ""],
-    ["End", end || ""],
-    ["As Of", asOfEffective],
+    ["P&L Start", parsedPlRange.normalizedStart || ""],
+    ["P&L End", parsedPlRange.normalizedEnd || ""],
+    ["Balance Sheet As Of", asOfEffective],
     [],
     ["PROFIT & LOSS"],
     ["Section", "Code", "Account", "Amount"],
@@ -142,6 +168,31 @@ export async function GET(req: Request) {
 
   const csv = asCsv(rows);
   const filename = `reporting-pack-${generatedAt.slice(0, 10)}.csv`;
+
+  await recordAuditLog({
+    actorId: actor?.id || null,
+    action: "report.export.accounting-pack.csv",
+    entityType: "AccountingReport",
+    entityId: "reporting-pack",
+    meta: {
+      sourcePage: "admin/accounting/reports/pl",
+      report: "reporting-pack",
+      format: "csv",
+      basis: "accrual",
+      plStart: parsedPlRange.normalizedStart,
+      plEnd: parsedPlRange.normalizedEnd,
+      balanceSheetAsOf: asOfEffective,
+      generatedAt,
+      actorRole: actor?.role || null,
+      actorEmail: actor?.email || null,
+      sections: {
+        plRows: plIncome.length + plExpenses.length,
+        balanceSheetRows: bsAssets.length + bsLiabilities.length + equityWithEarnings.length,
+        trialBalanceRows: tbTotals.length,
+      },
+    },
+  });
+
   return new NextResponse(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
@@ -149,5 +200,3 @@ export async function GET(req: Request) {
     },
   });
 }
-
-

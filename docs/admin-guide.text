@@ -1,4 +1,4 @@
-﻿Nora Hospital Supplies — Admin Guide
+Nora Hospital Supplies � Admin Guide
 
 This guide uses collapsible sections in the app. Open any section for a concise walkthrough.
 
@@ -23,7 +23,7 @@ Phase 1 Index (where to find the pages)
 - How to use: Enable 2FA on first admin login; use TOTP codes to access admin routes.
 - Related: Admin sessions expire and are enforced in middleware.
 - Role gates: Admin-only actions include purchase creation/receiving, returns/refunds, supplier payments, and journal approvals.
-- Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use “Invite employee” to send a 24‑hour invite link with verification code via email → SMS → WhatsApp fallback.
+- Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use �Invite employee� to send a 24-hour invite link with verification code via email ? SMS ? WhatsApp fallback.
 
 ## Dashboard & Recent Activity
 - Pages: /admin/dashboard, /admin/recent
@@ -64,7 +64,7 @@ Phase 1 Index (where to find the pages)
 - Lead time validation: Min must be <= max; the form will block invalid ranges.
 - Related: Supplier status and lead time feed inventory planning and alerting.
 
-## Suppliers — Performance
+## Suppliers � Performance
 - Page: /admin/suppliers/performance
 - What it is: Supplier scorecard tracking fill rate, on-time delivery, lead time, and spend.
 - How to use: Review the breakdown table; click a supplier to open the filtered Suppliers list.
@@ -107,7 +107,7 @@ Phase 1 Index (where to find the pages)
   - Use `Show all` in the badge to return to normal full-order listing.
 - Related: Orders feed accounting, inventory movements, and customer balances.
 
-## Orders — OTC Sales
+## Orders � OTC Sales
 - Page: /admin/orders/otc
 - What it is: One-screen walk-in OTC checkout with shift lock control.
 - How to use:
@@ -120,10 +120,10 @@ Phase 1 Index (where to find the pages)
   - `Create Sale + Request MoMo` for in-app live request flow.
   - `Record Existing External Payment` for already-paid external transactions.
 - Notes:
-  - Walk‑in name is required by default.
+  - Walk-in name is required by default.
   - Anonymous sale is allowed only as an exception and requires a reason.
   - Anonymous OTC sales must be paid in full (no partial/unpaid balance allowed).
-  - Named walk‑in OTC sales can be full, partial, or unpaid.
+  - Named walk-in OTC sales can be full, partial, or unpaid.
   - Customer match supports registered users and prior walk-in history.
   - Non-cash reference is required only for `Record Existing External Payment`.
   - Live MoMo requires a valid 10-digit phone number; submit is blocked by inline validation if invalid.
@@ -136,7 +136,7 @@ Phase 1 Index (where to find the pages)
   - Keyboard shortcuts: `Alt+I` add item, `Alt+S` submit.
   - Submit button is guarded against duplicate clicks on slow networks.
   - Returns for OTC orders are tracked in Returns/RMA and customer account credit.
-- Related: OTC orders post to the journal when auto‑post is enabled.
+- Related: OTC orders post to the journal when auto-post is enabled.
 
 ## OTC Shift Close
 - Page: /admin/otc/shift-close
@@ -161,7 +161,7 @@ Phase 1 Index (where to find the pages)
 - Aging hub drill-through:
   - `Open customers` from Aging Hub opens `balance due` customers sorted by highest balance first.
   - A subtle `Applied from Aging Hub` badge appears when this context is active.
-- Statements & reminders: Use “Statement” or “Send reminder” to prompt overdue balances.
+- Statements & reminders: Use �Statement� or �Send reminder� to prompt overdue balances.
 - Related: Customer balances are validated in Accounting Integrity.
 
 ## Payments
@@ -170,9 +170,9 @@ Phase 1 Index (where to find the pages)
 - How to use: Reconcile MoMo payments, print/export receipts for bookkeeping.
 - Related: Payments update order balances and accounting entries.
 
-## Payments — MoMo Settlement & Reconciliation
+## Payments � MoMo Settlement & Reconciliation
 - Page: /admin/payments/momo
-- What it is: Ghana‑specific MoMo monitoring for provider requests, manual records, and reconciliation outcomes.
+- What it is: Ghana-specific MoMo monitoring for provider requests, manual records, and reconciliation outcomes.
 - How to use:
   - Use Status + Provider filters to isolate pending vs settled.
   - `Source` helps interpretation:
@@ -188,11 +188,11 @@ Phase 1 Index (where to find the pages)
     4) Click `Resolve to Credit` to move amount to customer store-credit liability.
 - When to act:
   - Pending for long periods: cancel and use alternate payment flow (avoid duplicate collection).
-  - Settled but Unposted: run Sync ledger in Accounting → Data Integrity.
+  - Settled but Unposted: run Sync ledger in Accounting ? Data Integrity.
   - Late success after cancel: resolve to credit, then refund from customer account if cash return is needed.
 - Note:
   - This page is operational control + monitoring.
-  - Detailed ledger behavior for these events is documented under Accounting → Posting Rules and Accounting → Journal.
+  - Detailed ledger behavior for these events is documented under Accounting ? Posting Rules and Accounting ? Journal.
 - Test-mode simulation (technical, not daily operations):
   - `Simulate Late Success` is hidden by default.
   - It appears only when test tools are enabled in non-production.
@@ -204,7 +204,7 @@ Phase 1 Index (where to find the pages)
 - How to use: Adjust stock, review alerts, schedule restocks. Use "Adjust inventory value" to revalue cost and post a matching journal entry.
 - Related: Inventory is used in sales, COGS, and integrity checks.
 
-## Inventory — Lots & Expiry
+## Inventory � Lots & Expiry
 - Page: /admin/inventory-lots
 - What it is: Batch/lot tracking with expiry dates for compliance and audits.
 - How to use: Review lot balances and expiry windows; use FEFO Priority + Days left to plan picking.
@@ -212,9 +212,9 @@ Phase 1 Index (where to find the pages)
 - FEFO visuals: Priority labels use threshold bands (High 0-high threshold, Medium high+1-medium threshold, Low medium+1+, No expiry). Threshold days are configurable in app settings (`inventory.lots.fefo.thresholdDays.high`, `inventory.lots.fefo.thresholdDays.medium`).
 - Traceability: Use `Trace` on any lot to view source purchase details and lot-level movement history, export adaptive CSV files (single combined export for 0-1 movement; separate summary/movements for 2+), and deep-link into Purchases or lot-filtered Movements.
 - Movement navigation: Use `View all lot movements` from Trace to open all movements for the selected lot (not a single reason-only subset).
-- Related: Lot details are captured on receive; batch code and expiry are required for lot‑tracked items.
+- Related: Lot details are captured on receive; batch code and expiry are required for lot-tracked items.
 
-## Inventory — Stock Adjustments
+## Inventory � Stock Adjustments
 - Page: /admin/stock-adjustments
 - What it is: Reconcile system stock to physical count.
 - How to use: Choose Cycle Count (periodic audit) or Stock Adjustment (one-off correction), enter the reason (e.g., damaged/expired), and save.
@@ -235,19 +235,19 @@ Phase 1 Index (where to find the pages)
 Step-by-step (enhanced workflow)
 1) Suppliers setup
    - Add supplier name, status, lead time avg/min/max, and defaults (MOQ/pack size).
-   - Example: “MedSupply Wholesale” · ACTIVE · lead time 14/10/21 · MOQ 50 · pack 10.
+   - Example: �MedSupply Wholesale� � ACTIVE � lead time 14/10/21 � MOQ 50 � pack 10.
    - Example (cartons): If a carton has 12 units and MOQ is 2 cartons, set MOQ = 24 and pack size = 12.
    - Use ON_HOLD/INACTIVE to pause new orders; alerts will flag products tied to them.
 2) Product linkage
    - Open a product and set the primary supplier in the main supplier selector.
    - Add alternates in the supplier links panel, with optional overrides for lead time/MOQ/pack size.
-   - Use “Set as primary” if you switch vendors.
+   - Use �Set as primary� if you switch vendors.
    - Example: Primary = MedSupply Wholesale (lead time 14), Alternate = HealthPro (lead time 21, MOQ 100).
 3) Purchase creation (PO)
    - Create a purchase with supplier + expected arrival date.
-   - Leave “Receive now” unchecked when it’s an order, not a delivery.
+   - Leave �Receive now� unchecked when it�s an order, not a delivery.
    - Large quantities go to PENDING_APPROVAL automatically.
-   - Example: 500 units @ 12.50 from MedSupply, expected 2026-01-15 → status PENDING_APPROVAL.
+   - Example: 500 units @ 12.50 from MedSupply, expected 2026-01-15 ? status PENDING_APPROVAL.
 4) Approval (admin)
    - Approve PENDING_APPROVAL purchases from the Purchases table.
    - Once approved, the PO can be received.
@@ -256,7 +256,7 @@ Step-by-step (enhanced workflow)
    - Click Receive and enter the quantity received (partial or full).
    - Stock, inventory movement, and accounting entry update on receipt.
    - Remaining on-order quantity stays in planning until fully received.
-   - Example: Receive 200/500 → status PARTIALLY_RECEIVED; on-order remains 300.
+   - Example: Receive 200/500 ? status PARTIALLY_RECEIVED; on-order remains 300.
 6) Alerts + Planning
    - Check Inventory Alerts for low stock, supplier inactive, lead time missing, and demand spikes.
    - Recompute Inventory Planning to refresh suggestions based on new receipts and demand.
@@ -267,7 +267,7 @@ Step-by-step (enhanced workflow)
 - What it is: Demand-driven planning using the last 60 days of sales, current stock, reserved stock, and on-order purchases.
 - How to use: Recompute demand, review suggestions, tune reorder points/lead times only when needed.
 - Related: Suggestions support purchasing decisions and reduce stockouts.
-Inventory Planning — Overview
+Inventory Planning � Overview
 - Page: /admin/inventory-planning
 - What it is: Main planning dashboard summarizing demand, available stock, effective planning values, and suggestions.
 - How to use: Recompute demand; the system auto-derives reorder/safety stock, and manual settings override.
@@ -281,7 +281,7 @@ Inventory Planning — Overview
   4) Schedule daily or weekly; the endpoint respects the toggle and last run time.
 - Related: Uses 60-day demand snapshots and open suggestions.
 
-Inventory Planning — Product Detail
+Inventory Planning � Product Detail
 - Page: /admin/inventory-planning/[id]
 - What it is: Per-product planning settings and suggestion details.
 - How to use: Review demand snapshot, adjust reorder point/safety stock/lead time, dismiss suggestions if needed.
@@ -298,7 +298,7 @@ Step-by-step (product detail)
 5) Save planning settings.
 6) Return to /admin/inventory-planning and click Recompute demand to refresh suggestions.
 
-Inventory Planning — Reports
+Inventory Planning � Reports
 - Page: /admin/inventory-planning/reports
 - What it is: Export center for restock suggestions.
 - How to use: Download CSV and share with purchasing/suppliers.
@@ -315,7 +315,7 @@ Inventory Planning — Reports
 - Fiscal period baseline:
   - After a fresh reset with no periods, the system auto-creates one OPEN period for the current calendar year on first load of accounting pages.
 
-## Accounting — Accounts
+## Accounting � Accounts
 - Page: /admin/accounting/accounts
 - What it is: Chart of accounts (COA) used by auto-posting and reporting.
 - Account code meanings (plain language):
@@ -373,7 +373,7 @@ Inventory Planning — Reports
   - 6700 Marketing Expense
 - How to use: Add business-specific subaccounts where needed; keep core codes unchanged for system consistency.
 
-## Accounting — Posting Rules
+## Accounting � Posting Rules
 - Page: /admin/accounting/posting-rules
 - What it is: Mapping layer between system events and ledger accounts.
 - Recommended mapping (already configured in this environment):
@@ -396,94 +396,136 @@ Inventory Planning — Reports
   - customer prepayments to deposits (when payment is not tied to AR settlement),
   - expense category routing into dedicated expense accounts.
 
-## Accounting — Journal
+## Accounting � Journal
 - Page: /admin/accounting/journal
 - What it is: Book of record for posted, draft, and void entries.
-- How to use:
-  1) Filter by account (dropdown), source, status, and date.
-  2) Use one-click source chips (`ORDER`, `PAYMENT`, `PURCHASE`, `EXPENSE`, `MANUAL`, `PAYROLL`) for faster slicing.
-  3) Use account drill chips (`1100`, `2000`, `1200`, `1000`, `2300`) for fast account-impact isolation.
-  4) Expand an entry and click an account code in line details to drill and apply that account filter immediately.
-  5) Use `Saved journal views` to save/apply/remove frequent filter combinations.
-  6) Use `Quick presets` (`Today posted`, `Draft only`, `Payments today`) for rapid review modes.
-  6.1) Default scope is now `Recent 90 days` for faster load on large datasets.
-  6.2) Turn on `Include archive` to include older historical entries (same page, no separate archive UI).
-  6.3) `Period filter` options:
-    - `Recent 90 days (default)` = fast operational review.
-    - `All non-archived entries` = full active history without archived rows.
-    - `Current open period` = fiscal-period review.
-    - `All time` = full history (best with `Include archive` on).
-    - Named periods = exact closed/open period boundaries.
-  6.4) If no explicit date range is set and `Include archive` is off, backend applies a fast recent-window guard.
-  7) Use `Export CSV (filtered)` for spreadsheet review.
-  8) Use `Export audit pack` to download both:
-    - Filtered CSV
-    - Current-filter summary TXT (scope, counts, debit/credit totals)
-  9) Toggle row density (`Comfortable` or `Compact`) based on your review pace.
-  10) Review the period summary strip (entries, posted/draft/void, debit total, credit total).
-  11) Review anomaly chips:
-    - `HIGH anomaly` = missing source reference risk.
-    - `MEDIUM anomaly` = unusually large amount risk.
-  12) Expand lines to inspect debit/credit composition and AR/AP effect.
-  13) Use `Review mode` for high-volume cleanup:
-    - Hides `Approved By` and `Entry totals` columns to focus on risk/action columns.
-    - Best used with `Out-of-balance only` and `Largest variance first`.
-  14) Confirm payment/order entries are posted after operational actions.
-  15) Use approval confirmation dialogs:
-    - Single approve: review memo and debit/credit before posting.
-    - Bulk approve: review entry count, totals, and sample memos before posting.
-  16) Use `Approve + next draft` in single-approve dialog to clear draft queues faster.
-  17) Use exception chips for fast review queues:
-    - `Missing source ref`
-    - `Large amount`
-    - `Out-of-balance only`
-    - `Stale drafts 7d+`
-  18) Use `Largest variance first` to sort out-of-balance entries by biggest absolute `Dr-Cr` gap.
-  19) Use source trace badges on each row to jump to the related source page quickly.
-  20) Saved views now support:
-    - Rename view
-    - Set default view
-    - Auto-restore last used view on page open
-  21) `Export audit pack` now includes 3 files:
-    - Filtered journal CSV
-    - Current-filter summary TXT
-    - Exceptions CSV (risk-only subset)
-  22) Keyboard workflow:
-    - `J/K` move row focus.
-    - `Shift+J/K` jump page.
-    - `Enter` expand/collapse focused entry lines.
-    - `A` open approval on focused draft (authorized roles).
-    - `Home/End` (or `G` / `Shift+G`) jump to first/last row on current page.
-  23) Use `Copy link` (entry permalink) to share a specific journal entry review.
-  24) Use `Copy source` to share the exact source page for that row (order/payment/purchase/expense).
-  25) Journal keeps filter + pagination state in URL:
-    - You can refresh, bookmark, or share the same scoped review view directly.
-    - `includeArchive=1` appears in URL when archive is enabled.
-  26) Draft queue strip (above filters):
-    - Shows total drafts, oldest draft age, and oldest memo.
-    - `Approve oldest` opens the approval flow for the oldest draft immediately.
-  27) First-visit `Journal quick tour` strip:
-    - Highlights `Review mode`, `?` shortcuts, and `Approve + next draft`.
-    - Dismiss with `Got it` (persisted in local browser storage).
-  28) Archive quick tutorial (concise):
-    - Keep daily work in default `Recent 90 days`.
-    - Use `Include archive` only when you need older history.
-    - Admin can run `Dry run archive` then `Run archive` in advanced filters.
-    - Use `Undo last batch` within 5 minutes if archive was run unintentionally.
-    - Use `Export archive runs CSV` for archive batch evidence/review.
-    - Automatic monthly archive uses `GET /api/admin/accounting/journal/archive` with `X-Cron-Secret`.
-    - For audit evidence, check archive log meta for:
-      - trigger (`manual`/`cron`), actor (name/email/role when manual), policy source (`default-policy`/`manual-override`), included statuses, result summary, and no-op reason.
-    - Legacy rows created before this enhancement can be upgraded with the backfill script (see `readme.text` journal archive setup block).
-    - Archived rows are read-only and remain searchable/auditable.
+- Top-to-bottom walkthrough:
+  1) Header and open period context:
+     - Shows page title and current open fiscal period.
+  2) Export/actions strip:
+     - `Export CSV (filtered)`, `Export PDF (filtered)`, `Export audit pack`, `Export audit pack PDF`.
+     - `Show manual entry` toggles manual entry forms.
+  3) Journal policy summary card:
+     - Shows effective journal policy currently in force:
+       - recent-window days,
+       - manual P&L allow/block state,
+       - archive default months,
+       - archive cron dry-run/live mode.
+  4) Quick tour + draft queue strips:
+     - Quick tour explains review flow and keyboard shortcuts.
+     - Draft queue shows draft count, oldest draft age/memo, and `Approve oldest`.
+  5) Scope summary row:
+     - Shows current scope/status/source/archive and entry counts for active query.
+  6) Primary filter row:
+     - Search box (`Search memo/source`) is debounced and server-side.
+     - Status and source selectors.
+     - `Out-of-balance only`.
+     - `Include archive`.
+     - Server sort toggles: `Date`, `Status`, `Amount`.
+  7) Advanced filter panel:
+     - Link/batch search, account text search, account dropdown, account drill chips.
+     - Source chips with per-source counts.
+     - Period/date controls.
+     - Exception toggles: `Missing source ref`, `Large amount`, `Stale drafts 7d+`.
+     - `Largest variance first`.
+     - `Clear filters`.
+  8) Saved view + work mode controls:
+     - Save/rename/remove views.
+     - Default view, auto-restore last view.
+     - Row density (`Comfortable`/`Compact`).
+     - `Review mode` for focused action columns.
+  9) Archive controls and timeline:
+     - Admin can run `Dry run archive`, `Run archive`, `Undo last batch` (5-minute window), and export archive run CSV.
+     - `Open archive logs` deep-links to Audit page with journal archive records.
+  10) Bulk approval controls:
+      - `Approve selected`.
+      - `Select drafts across pages` (with safety cap warning when result set is large).
+  11) Quick presets:
+      - `Today posted`, `Draft only`, `Payments today`.
+  12) Metrics and legends:
+      - Entry/status counts plus debit/credit totals for current result set.
+      - Plain-English status/source legend.
+  13) Table and row actions:
+      - Columns include Date, Memo, Source, Status, Balance, Approved By, totals, Actions.
+      - Draft rows show select checkbox and approve action.
+      - Posted/void rows show plain-English non-action reason.
+      - `View lines` expands journal lines and balance-after diagnostics.
+      - `Copy link` gives entry permalink; source badge links to source page.
+  14) Pagination and keyboard workflow:
+      - `First`, `Prev`, `Next`, `Last`, and page `Go`.
+      - Keyboard: `J/K`, `Shift+J/K`, `Enter`, `A`, `Home/End`, `G/Shift+G`.
+
+- Step-by-step testing script (with expected results):
+  1) Open `/admin/accounting/journal`.
+     - Expected: page loads with header, policy summary, filters, metrics, and table rows.
+  2) Validate policy summary card.
+     - Expected: 4 policy lines appear and read in plain English.
+  3) Search behavior (normal query).
+     - Action: type a short term in search and pause.
+     - Expected: brief loading indicator, then results update.
+  4) Search guard (long query).
+     - Action: enter text longer than 120 characters.
+     - Expected: sticky error banner appears with clear message and `Retry`.
+  5) Retry error flow.
+     - Action: correct query and click `Retry`.
+     - Expected: banner clears and table refreshes.
+  6) Sorting checks.
+     - Action: toggle `Date`, `Status`, `Amount`.
+     - Expected: row order updates; active sort direction indicator updates.
+  7) Status business order check.
+     - Action: sort by status ascending.
+     - Expected: rows grouped in business order `DRAFT`, then `POSTED`, then `VOID`.
+  8) Out-of-balance filter check.
+     - Action: toggle `Out-of-balance only` when count is zero.
+     - Expected: empty state appears saying no out-of-balance entries for current filters.
+  9) Advanced filter checks.
+     - Action: apply account/date/source filters and exception toggles.
+     - Expected: result set narrows correctly and URL reflects filter state.
+  10) Saved view round-trip.
+      - Action: save a view with advanced toggles/sort, reset, then re-apply.
+      - Expected: all saved settings restore (including sort, review mode, density, exception toggles).
+  11) Pagination controls.
+      - Action: use `First/Prev/Next/Last` and page `Go`.
+      - Expected: page moves within bounds and row window/count text stays correct.
+  12) Draft selection (page scope).
+      - Action: set `Draft only`, tick draft checkbox(es).
+      - Expected: sticky selection bar shows selected count and enables bulk approve.
+  13) Draft selection (cross-page).
+      - Action: click `Select drafts across pages`.
+      - Expected: selected count reflects cross-page IDs; if capped, warning text is shown.
+  14) Bulk approve dialog.
+      - Action: click `Approve selected`, confirm.
+      - Expected: selected drafts post successfully, counts refresh, selection clears.
+  15) Single approve flow.
+      - Action: on a draft row click `Approve`, then `Approve + next draft` where applicable.
+      - Expected: current draft posts and next draft opens.
+  16) Non-draft action messaging.
+      - Action: inspect posted/void rows.
+      - Expected: action column shows plain-English non-action reason (not selectable).
+  17) Archive dry run and run.
+      - Action: run dry run, then run archive.
+      - Expected: success toasts, candidate/archived counts, and timeline rows update.
+  18) Undo archive window.
+      - Action: click `Undo last batch` within 5 minutes.
+      - Expected: restore count returned; timeline updates with undo record.
+  19) Archive log deep-link.
+      - Action: click `Open archive logs`.
+      - Expected: audit page opens and shows journal archive actions in the list.
+  20) Unsaved manual form leave guard.
+      - Action: open manual entry, type data, navigate away or refresh.
+      - Expected: browser confirmation warns about unsaved manual journal changes.
+  21) Export checks.
+      - Action: run each export button with active filters.
+      - Expected: files download and match active scope/filters.
+
 - Manual entry policy:
   - Admin-only.
   - Requires reason.
-  - By default restricted to balance-sheet accounts.
-  - Set `ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL=1` to allow income/expense manual entries.
-- Note: Journal account filter supports code/name and deep-links from Cash Reconciliation diagnostics.
+  - Policy can block manual postings to Income/Expense accounts.
+  - Effective behavior follows app settings (`accounting.journal.policy`) with environment fallback.
+- Note: Journal account filter supports code/name lookup and account deep-links from line details.
 
-## Accounting — Aging Hub
+## Accounting � Aging Hub
 - Page: /admin/accounting/aging
 - What it is: One-screen AR/AP control tower before drilling into detailed aging pages.
 - How to use:
@@ -511,7 +553,7 @@ Inventory Planning — Reports
   - `Open collections queue` opens Orders in outstanding-only mode sorted by highest balance.
   - `Open supplier follow-up` opens Supplier Payments with `Outstanding only` applied across all aging buckets.
 
-## Accounting — AR Aging
+## Accounting � AR Aging
 - Page: /admin/accounting/aging/ar
 - What it is: Customer receivables grouped by age buckets (0-30, 31-60, 61-90, 90+).
 - How to use:
@@ -535,7 +577,7 @@ Inventory Planning — Reports
   - For operational payment and allocation workflows, use `/admin/customers` and `/admin/orders`.
 - Expected: AR Aging total should align with AR ledger (subject to as-of date).
 
-## Accounting — AP Aging
+## Accounting � AP Aging
 - Page: /admin/accounting/aging/ap
 - What it is: Supplier payables grouped by age buckets (0-30, 31-60, 61-90, 90+).
 - How to use:
@@ -553,7 +595,7 @@ Inventory Planning — Reports
   - Ordered/not-received exposure is operational and is tracked in `/admin/supplier-payments`.
 - Expected: AP Aging changes after supplier payments are posted/approved.
 
-## Accounting — Supplier Payments (AP)
+## Accounting � Supplier Payments (AP)
 - Pages: /admin/supplier-payments, /admin/purchases
 - What it is: AP subledger built from purchase receipts and supplier settlements.
 - How to use:
@@ -580,10 +622,10 @@ Inventory Planning — Reports
     - `Operational exposure`: includes full operational open exposure.
     - `Ledger AP basis`: focuses on received AP outstanding.
   - Meaning and use:
-    - `Operational exposure` answers: “What supplier obligations are still operationally open right now?”
+    - `Operational exposure` answers: �What supplier obligations are still operationally open right now?�
       - Includes open ordered/not-yet-received exposure plus received/unpaid exposure within current page scope.
       - Use for procurement execution, supplier follow-up, and expected-date discipline.
-    - `Ledger AP basis` answers: “What amount is currently represented as AP liability in accounting view?”
+    - `Ledger AP basis` answers: �What amount is currently represented as AP liability in accounting view?�
       - Anchors reconciliation toward received AP positioning.
       - Use for accounting controls, AP review, and period-close checks.
   - Why compare both:
@@ -611,7 +653,7 @@ Inventory Planning — Reports
   - "Pending payment approvals" reflects supplier payment requests awaiting approval.
   - "Pending purchase approvals" reflects purchase orders awaiting approval (separate from payment approvals).
   - Verify reconciliation line:
-    - `Total amount − Paid − Supplier credits + Refunds = Reconciliation net payable` (based on selected summary basis).
+    - `Total amount - Paid - Supplier credits + Refunds = Reconciliation net payable` (based on selected summary basis).
   - Desktop includes sticky mini-summary while scrolling (`Open exposure`, `Received AP`, active filter).
   - Supplier-specific aging mini-chart shows bucket concentration by selected supplier.
 - Pending approval behavior:
@@ -636,7 +678,7 @@ Inventory Planning — Reports
   - AP Aging cross-link:
     - `Open AP Aging` carries supplier and month context for faster cross-page reconciliation.
 
-## Operations — Returns & RMA
+## Operations � Returns & RMA
 - Page: /admin/returns
 - What it is: Central return ledger (cash refunds, store credit, and balance-applied returns).
 - Filters:
@@ -654,7 +696,7 @@ Inventory Planning — Reports
 - How to use: Filter by labeled fields above, open the linked order, and verify refund disposition/restock/source.
 - Related: Uses return notes + journal entries to reconcile applied-to-balance returns.
 
-## Accounting — Returns & Refunds (Journal Posting)
+## Accounting � Returns & Refunds (Journal Posting)
 - Pages: /admin/orders/[id], /admin/returns
 - What it is: Return accounting for AR, cash, store credit, and stock valuation.
 - Posting behavior:
@@ -665,14 +707,14 @@ Inventory Planning — Reports
 - Reconciliation on order page:
   - `Ledger total | Less non-ledger return credits | Net paid` should match `Amount Paid`.
 
-## Accounting — VAT / Tax
+## Accounting � VAT / Tax
 - Pages: /admin/accounting/tax-codes, /admin/accounting/vat-filings
 - What it is: VAT rates and filing packs.
 - How to use: Maintain tax codes, export VAT filings.
 - Related: Used in journal entries and VAT reports.
 - Validation behavior: Tax code names are trimmed, duplicate names return `409`, and editing a deleted/non-existent code returns `404`.
 
-## Accounting — Reports
+## Accounting � Reports
 - Pages: /admin/accounting/reports, /admin/accounting/reports/pl,
   /admin/accounting/reports/balance-sheet, /admin/accounting/reports/trial-balance,
   /admin/accounting/reports/vat, /admin/accounting/reports/order-discounts,
@@ -688,8 +730,57 @@ Inventory Planning — Reports
 - Email behavior:
   - Report email intentionally sends a link, not report payload.
   - Link should be clickable and opens admin report route with date parameters.
+- P&L page (`/admin/accounting/reports/pl`) top-to-bottom walkthrough:
+  1. Header and export actions:
+     - Open from Reports hub or direct URL.
+     - Exports support direct download and queued jobs; when job status is ready, UI shows a download-ready message.
+  2. Filter bar:
+     - Date range (`Start`, `End`) and quick preset (`YTD`).
+     - Basis selector (cash or accrual) for statement view.
+     - Guardrail: end date cannot be earlier than start date; invalid range is blocked for report refresh.
+  3. Date behavior:
+     - Default page load uses fiscal-year-to-date behavior.
+     - Clicking `YTD` forces start to January 1 of the selected end-date year.
+     - Filter state syncs to URL for share/reload consistency.
+  4. Comparison panel:
+     - Shows comparison period and quality indicator.
+     - For month-to-date style ranges, comparison uses previous-month-to-date alignment.
+  5. Main report table/cards:
+     - Revenue, discounts, COGS, operating expenses, and net profit lines are grouped for scanability.
+     - Variance uses current period vs comparison period values.
+  6. Variance controls:
+     - `Variance threshold %` is saved as app setting key `accounting.reports.pl.varianceThresholdPct`.
+     - Variance notes are saved by period under key `accounting.reports.pl.varianceNotes`.
+     - Note save is blocked until note length is at least 8 characters.
+  7. Audit and traceability:
+     - Threshold and note changes are audit-logged with source page `admin/accounting/reports/pl`, section, operation, and before/after value metadata.
+     - Audit page shows note metadata in plain English period-note format (not raw JSON blob).
+- P&L page step-by-step testing script (with expected results):
+  1. Open `/admin/accounting/reports/pl`.
+     - Expected result: statement loads with valid default date range and no error banner.
+  2. Set `Start` after `End` (invalid).
+     - Expected result: warning is shown and refresh/apply is blocked until range is valid.
+  3. Click `YTD`.
+     - Expected result: start date becomes `01/01/<end-year>`.
+     - Expected result: URL updates to match active dates and basis.
+  4. Switch basis from accrual to cash (or reverse).
+     - Expected result: URL basis updates and report totals refresh for selected basis.
+  5. Verify comparison period after date change.
+     - Expected result: comparison dates align with selected period logic (including previous-month-to-date for MTD-like windows).
+  6. Change `Variance threshold %` and save.
+     - Expected result: success message appears.
+     - Expected result: audit log contains one `app-setting.update` with before/after value and key `accounting.reports.pl.varianceThresholdPct`.
+  7. In variance note input, try saving empty or short note (`< 8` chars).
+     - Expected result: save action remains disabled or blocked.
+  8. Enter note with 8+ characters and save.
+     - Expected result: note saves for current period and audit log records key `accounting.reports.pl.varianceNotes`.
+     - Expected result: audit metadata for note change is human-readable (period and note), not raw object dump.
+  9. Trigger an export job.
+     - Expected result: queued state appears first, then a ready/download message when complete.
+  10. Open audit log from accounting settings/report context.
+      - Expected result: P&L setting updates appear under accounting settings scope with source page/section metadata.
 
-## Accounting — Bank Accounts
+## Accounting � Bank Accounts
 - Pages: /admin/accounting/banks, /admin/accounting/banks/all-transactions
 - What it is:
   - `/admin/accounting/banks`: bank-scoped working page for setup, controlled edits, matching rules, and import-run review.
@@ -794,7 +885,7 @@ Inventory Planning — Reports
   - Edit window days are configured in `/admin/accounting/settings` under `Bank transaction edit policy`.
   - Matching rules support reconciliation workflows and exception triage.
 
-## Import / Export Center — Assisted Extract (Beta)
+## Import / Export Center � Assisted Extract (Beta)
 - Page: /admin/import-export
 - What it is:
   - A review-first helper that extracts tabular candidates from PDF/image/DOCX/TXT/CSV into template-aligned CSV for imports.
@@ -812,7 +903,7 @@ Inventory Planning — Reports
   - OCR for images/PDF fallback requires server OCR configuration (`IMPORT_OCR_ENABLE=1` and `OCR_SPACE_API_KEY`).
   - When extraction warnings appear, use template download + manual correction before final import.
 
-## Accounting — Reconciliations
+## Accounting � Reconciliations
 - Pages: /admin/accounting/reconciliations, /admin/accounting/reconciliations/[id]
 - What it is:
   - Month/period-level bank reconciliation control center.
@@ -870,7 +961,7 @@ Inventory Planning — Reports
      - run `pnpm -s db:seed-reconciliations-page` when you need canonical seeded scenarios.
 - Related: Supports period close checklists and integrity checks.
 
-## Accounting — Reconciliation Match Workspace
+## Accounting � Reconciliation Match Workspace
 - Page: /admin/accounting/reconciliations/[id]
 - What it is:
   - The execution workspace where one reconciliation is completed and then closed.
@@ -932,7 +1023,7 @@ Inventory Planning — Reports
   4) Match `CURRENT-OPEN TXN 2 (-650)` to `1010 Bank 650` -> click `Save match`.
   5) Match `MOMO PAYMENT INV-1001 (+1380)` to `1010 Bank 1380` -> click `Save match`.
   6) Verify:
-     - each matched transaction shows checkmark (`✓`),
+     - each matched transaction shows checkmark (`?`),
      - unmatched journal line count drops toward zero,
      - close readiness card updates live,
      - workspace activity logs the actions.
@@ -942,7 +1033,7 @@ Inventory Planning — Reports
   9) Open `Review close checklist` and verify close is blocked while unmatched transactions remain.
 - Related: Matching rules from Bank Accounts can propose candidate matches.
 
-## Accounting — Cash Reconciliation
+## Accounting � Cash Reconciliation
 - Page: /admin/accounting/cash-reconciliations
 - What it is: Two-mode cash control page with strict day-close controls.
 - Top-to-bottom walkthrough (how to use the page):
@@ -1025,120 +1116,124 @@ Inventory Planning — Reports
      - Expand one history row with `View day details`.
      - Expected result: operational source-level in/out/net appears for that day.
 
-## Accounting — Owner Equity Contributions
+## Accounting � Owner Equity Contributions
 - Page: /admin/accounting
 - What it is: Quick way to record owner equity added to cash/bank.
-- How to use: Open “Record owner equity,” enter amount, select bank/cash account, and save.
+- How to use: Open �Record owner equity,� enter amount, select bank/cash account, and save.
 - Related: Posts a balanced journal entry (Debit Cash/Bank, Credit Equity).
 
-## Accounting — Fiscal Periods
+## Accounting � Fiscal Periods
 - Pages: /admin/accounting/periods, /admin/accounting/periods/[id]/snapshot
 - What it is:
-  - Central control page for both monthly operational lock management and fiscal-period close governance.
-  - Monthly closes are operational posting locks by month.
-  - Fiscal period closes are statutory closes with checklist + control review.
+  - Central control page for monthly operational locks and statutory fiscal-period close governance.
+  - Monthly close = operational posting lock by month.
+  - Fiscal-period close = statutory close with enforced checks and auditable overrides.
 
 Top-to-bottom walkthrough
-1) Header and global actions:
-   - `Export close status CSV`: exports current period close status and related control state.
-2) `Period-end reminder`:
-   - Numeric input defines how many days before period end a reminder should appear.
-   - `Save reminder days` persists this notification threshold.
-3) `Reopen policy` (read-only summary):
-   - Shows current reopening rules:
-     - monthly reopen window (days after month-end),
-     - fiscal reopen window (days after period-end),
-     - fiscal hard-lock finalized years state.
-   - `Manage in Settings` opens `/admin/accounting/settings#reopen-policy` for policy edits.
-4) `Monthly close control`:
-   - `Month (YYYY-MM)`: select target month.
-   - `Note (optional)`: contextual note for normal close.
-   - `Override reason`: required for forced close with blockers.
-   - `Force close with blockers`: allows close with unresolved blockers (with reason).
-   - `Close month`: closes selected month.
-   - `Reopen month`: reopens selected month (subject to reopen policy windows).
-   - `Impact preview`: pre-close blocker counts (draft journals, open reconciliations, total blockers).
-   - `Current monthly status`: current selected month state.
-   - `Monthly details` + `Show details`: expandable list of closed months, close metadata, and quick links/actions.
-5) `Pre-close checklist`:
-   - Required operational checklist before fiscal close.
-   - Includes quick links:
-     - `Open Reconcile`
-     - `Open Cash Reconciliations`
-     - `Open Integrity`
-     - `Open VAT Filings`
-   - Checklist completion is evaluated in the close dialog.
-6) `Create period`:
-   - Manual fiscal period creation using name + start + end dates.
-   - Used for statutory periods when needed.
-7) `Monthly operational calendar`:
-   - Year input + `Initialize operational calendar` creates/ensures monthly operational months for the selected year.
-   - `Calendar view (YYYY)` displays Jan-Dec month chips and open/closed status.
-   - Shows initialization metadata (time + actor).
-8) `History`:
-   - Lists fiscal periods with status and control signals.
-   - `Status legend` explains state labels.
-   - `View blockers only` filters to actionable periods.
-   - Per-period actions:
-     - `Open close checklist` (modal with system controls + manual checklist + override controls)
-     - `Close period`
-     - quick links (`Journal`, `Reconcile`, `Integrity`)
-     - `Close report` (snapshot page for closed fiscal periods)
-9) `Close activity timeline`:
-   - Human-readable audit timeline for period/month actions.
-   - Filters:
-     - action type,
-     - actor text,
-     - date range.
-   - `Clear filters` resets timeline filters.
+1) Period-end reminder
+   - `Reminder days`: number of days before open-period end to show warning.
+   - `Save reminder days`: persists threshold (audit-logged as app-setting update).
+   - `Open reminder audit`: opens audit filtered to reminder setting updates from source page `/admin/accounting/periods`.
+   - `Last reminder-setting update`: shows latest update timestamp and actor.
+2) Reopen policy summary (read-only)
+   - Shows effective monthly and fiscal reopen windows.
+   - Shows finalized-year hard-lock state and finalized years list.
+   - `Manage in Settings` jumps to `/admin/accounting/settings#reopen-policy`.
+3) Monthly close control
+   - `Month (YYYY-MM)`, optional note, override reason, force-close toggle.
+   - `Close month` and `Reopen month` actions.
+   - `Impact preview` shows draft journal count, open reconciliations, total blockers, and current monthly status.
+4) Monthly details (expandable)
+   - `Show details` reveals closed-month list and batch actions.
+   - Batch controls: add months, month list, note/reopen reason, `Batch close`, `Batch reopen`.
+   - Closed month rows show close metadata and quick links to Journal/Reconcile using correct start/end dates for that month.
+5) Pre-close checklist
+   - Required operational checklist guidance with quick links:
+     - Reconcile
+     - Cash Reconciliations
+     - Integrity
+     - VAT Filings
+6) Create period
+   - Create fiscal period with name + start/end dates.
+   - Overlapping periods are blocked.
+7) Monthly operational calendar
+   - Initialize calendar year and view month-by-month open/closed status.
+   - Shows initialization metadata.
+8) History / period list
+   - Shows fiscal periods, status, readiness signal, snapshot status.
+   - Actions: `Open close checklist`, `Close period`, `Reopen`, `Journal`, `Reconcile`, `Integrity`, `Close report`.
+9) Close period dialog
+   - Shows system controls + checklist state.
+   - Enforces draft-entry blocker and checklist/override requirements.
+   - Early close requires admin override and minimum reason length.
+10) Reopen period dialog
+   - Requires reopen reason.
+   - Enforces reopen window and finalized-year hard lock.
+11) Close activity timeline
+   - Displays period/month close/reopen activity with plain-English summaries.
+   - Filters: action, actor, from date, to date.
+   - Shows active-filter badge and `Server-applied filters` echo.
+   - Supports refresh, load-more, and audit-page deep link.
 
 Step-by-step testing script (with expected results)
 1) Open `/admin/accounting/periods`.
-   - Expected: all sections render (reminder, reopen policy summary, monthly close control, checklist, calendar, history, timeline).
-2) Reminder settings:
-   - Change reminder days and click `Save reminder days`.
-   - Expected: success toast and value persists after refresh.
-3) Reopen policy link:
-   - Click `Manage in Settings`.
-   - Expected: navigates to settings page and jumps to reopen-policy section.
-4) Monthly close preview:
-   - Select a month in `Month (YYYY-MM)`.
-   - Expected: `Impact preview` and `Current monthly status` update for that month.
-5) Normal month close:
-   - Add optional note and click `Close month`.
-   - Expected: success toast, month status changes to `Closed`, timeline gets a new close entry.
-6) Reopen month:
-   - Enter reopen reason in note field and click `Reopen month`.
-   - Expected: reopen succeeds only if within reopen-policy window; otherwise blocked with policy message.
-7) Force close behavior:
-   - For a month with blockers, enable `Force close with blockers`, provide override reason, click `Close month`.
-   - Expected: close succeeds with override; timeline records override context.
-8) Monthly details:
-   - Click `Show details`.
-   - Expected: closed-month rows show close/open metadata and quick links.
-9) Checklist links:
-   - Click each checklist link button.
-   - Expected: routes to correct page for reconciliation/integrity/VAT review.
-10) Create fiscal period:
-   - Enter period name + valid date range and click `Create period`.
-   - Expected: period appears in History; overlap/invalid ranges are blocked with clear message.
-11) Initialize operational calendar:
-   - Choose a year and click `Initialize operational calendar`.
-   - Expected: calendar view shows all 12 months with current status, plus initialized-by metadata.
-12) Open close checklist dialog:
-   - In History, click `Open close checklist`.
-   - Expected: modal opens showing system controls, manual checklist completion, and override option.
-13) Early-close guard:
-   - Try closing a period that has not ended yet.
-   - Expected: early-close warning appears; close requires override + sufficient reason; non-admin/invalid reason is blocked.
-14) Close report behavior:
-   - Click `Close report` for an open period.
-   - Expected: message indicates close snapshot is only available after period is closed.
-15) Timeline filters:
-   - Filter by action and actor/date; then clear filters.
-   - Expected: list updates correctly and entries remain plain-English summaries.
+   - Expected: reminder, reopen summary, monthly close controls, checklist, calendar, history, and timeline all load.
+2) Reminder save validation
+   - Enter invalid reminder days (`0` or `61`), click save.
+   - Expected: blocked with validation message.
+3) Reminder save + audit
+   - Set valid reminder days (for example, 10), click `Save reminder days`.
+   - Expected: success toast; value persists after refresh.
+   - Click `Open reminder audit`.
+   - Expected: audit shows this setting update from source page `admin/accounting/periods`, section `period-close-reminder-days`.
+4) Reopen policy summary check
+   - Compare values to `/admin/accounting/settings#reopen-policy`.
+   - Expected: values match.
+5) Monthly impact preview
+   - Select a month.
+   - Expected: preview counts update for selected month.
+6) Close month (normal)
+   - Choose past month with no blockers, click `Close month`.
+   - Expected: success; month appears closed; timeline logs close.
+7) Close month (blockers without force)
+   - Choose month with blockers and close without force.
+   - Expected: action blocked with blocker message.
+8) Forced close without override reason
+   - Enable force on blocker month but leave override reason empty.
+   - Expected: blocked; reason required.
+9) Reopen month policy checks
+   - Reopen with short/missing reason.
+   - Expected: blocked.
+   - Reopen with valid reason but expired reopen window.
+   - Expected: blocked with reopen-window message.
+10) Closed-month quick links
+   - In monthly details, open Journal/Reconcile links for a short month (e.g., Feb).
+   - Expected: URL date range uses valid month end (not fixed `-31`).
+11) Batch close checks
+   - Add months and run `Batch close`.
+   - Expected: early/current/future months are blocked; blocker months listed and confirmation prevented.
+12) Batch reopen checks
+   - Run `Batch reopen` with short reason.
+   - Expected: blocked for minimum reason length.
+   - Include expired month.
+   - Expected: blocked with expired-month list.
+13) Fiscal period close dialog
+   - Open checklist dialog for open period.
+   - Expected: readiness/checklist shown; close enforces blockers and override requirements.
+14) Early fiscal close guard
+   - Attempt early close.
+   - Expected: admin override + minimum reason required; otherwise blocked.
+15) Timeline filters server behavior
+   - Apply action/actor/date filters and refresh.
+   - Expected: rows match filters, active-filter badge appears, server-applied echo matches current filters.
+16) Timeline load more with filters
+   - Click `Load more` while filters are active.
+   - Expected: additional rows continue to honor same filters.
 
-## Accounting — Data Integrity
+Related page
+- /admin/accounting/settings
+  - Use Settings to manage reopen policy and shared accounting policies used by this page.
+## Accounting � Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
 - What it is: Consistency checks across AR, inventory, negative stock, and posting readiness.
 - Top-to-bottom walkthrough (what each line/control means):
@@ -1244,7 +1339,7 @@ Step-by-step testing script (with expected results)
 12) Click `Recalculate`.
    - Expected result: checks refresh immediately and all summary/metric cards update to current data.
 
-## Accounting — Reconcile Totals
+## Accounting � Reconcile Totals
 - Page: /admin/accounting/reconcile
 - What it is: Reconcile bridge that compares operational totals vs posted-ledger totals and highlights variance severity.
 - Why this page matters:
@@ -1323,107 +1418,188 @@ Step-by-step testing script (with expected result)
 13) If no auto-apply or return rows exist in period:
    - Expected: those cards show no-data messages; this is valid behavior.
 
-## Accounting — Settings
+## Accounting � Settings
 - Page: /admin/accounting/settings
-- What it is: Central policy page for accounting guardrails used by integrity checks, reporting, store-credit behavior, bank transaction edits, manual-journal governance, and reconcile severity.
+- What it is: Central policy page for accounting guardrails used by integrity checks, reporting, store-credit behavior, bank transaction edits, manual-journal governance, journal runtime defaults, reconcile severity, and period reopen policy.
 - Who can use it:
   - `ADMIN`: can change all settings on this page.
-  - `ACCOUNTANT`: can change integrity thresholds and store-credit policy. Restricted policy sections are admin-only.
+  - `ACCOUNTANT`: can view all sections and change allowed sections such as integrity/store-credit. Restricted sections remain admin-only.
 - Auditability:
-  - Every save/reset action writes to audit log (`app-setting.update`) with section name, operation type (`save`/`reset`), actor role, changed fields, and safe before/after previews.
+  - Every save/reset action writes to audit log (`app-setting.update`) with section name, operation type (`save`/`reset`), actor role, changed keys/fields, and safe before/after previews.
   - Use `Open settings audit trail` on the page to review these changes.
+  - Each section has `Open section audit` deep link for exact section filtering.
 
 Top-to-bottom page walkthrough
 1) Header
    - `Accounting Settings`: confirms you are configuring accounting behavior (not daily transaction entry).
+   - Status line: shows either all sections saved or count of sections with unsaved changes.
+   - `Save all changed sections`: attempts to save every dirty section in one action.
    - `Open settings audit trail`: opens `/admin/audit` filtered for settings updates.
-2) Integrity thresholds
+2) Load warning card (conditional)
+   - Appears only when one or more settings fail to load.
+   - Lists failed sections and warns that visible values may be stale defaults.
+   - `Retry failed loads`: retries only the failed sections.
+3) Save-all result summary (conditional)
+   - Appears after `Save all changed sections`.
+   - Shows per-section outcome as `saved`, `failed`, or `skipped`.
+4) Jump-to links
+   - Quick links to all settings sections on the same page.
+5) Integrity thresholds
    - Purpose: defines when Data Integrity should raise warnings for AR and inventory differences.
-   - `AR difference threshold (GHS)`: warning threshold for AR mismatch.
-   - `Inventory difference threshold (GHS)`: warning threshold for inventory mismatch.
-   - `Alert on draft journal entries`: includes draft journals in warning signal.
-   - `Alert on negative stock`: includes negative stock in warning signal.
-   - `Save integrity thresholds`: persists values.
-   - `Reset defaults`: restores default policy values.
-3) Reporting source
+   - Fields:
+     - `AR difference threshold (GHS)`
+     - `Inventory difference threshold (GHS)`
+     - `Alert on draft journal entries`
+     - `Alert on negative stock`
+   - Actions:
+     - `Save integrity thresholds`
+     - `Reset defaults`
+     - `Discard changes`
+   - Also shows:
+     - pending changed fields
+     - effective-now summary
+     - last-updated line with actor/time + section audit link
+6) Reporting source
    - Purpose: controls dashboard/main P&L source.
-   - `Use accounting ledger for dashboard and main P&L`: when enabled, reports use posted journal ledger totals.
-   - `Save reporting source` / `Reset default`: persist or restore.
-   - Note: ADMIN-only control.
-4) Store credit auto-apply policy
+   - Field:
+     - `Use accounting ledger for dashboard and main P&L`
+   - Actions:
+     - `Save reporting source`
+     - `Reset default`
+     - `Discard changes`
+   - Note: ADMIN-only write.
+7) Store credit auto-apply policy
    - Purpose: defines how customer store credit is consumed during checkout.
    - Options:
      - `Oldest open balances first (recommended)`
      - `Current order first, then oldest balances`
      - `Manual apply only (no checkout auto-apply)`
-   - `Save store-credit policy` / `Reset default`: persist or restore.
-5) Bank transaction edit policy
-   - Purpose: defines open-period edit window (in days) for bank transaction edits before ADMIN override is required.
-   - `Edit window (days)`: whole number 0-365.
-   - `Save edit policy` / `Reset default`: persist or restore.
-   - Note: ADMIN-only control.
-6) Manual journal policy
+   - Actions:
+     - `Save store-credit policy`
+     - `Reset default`
+     - `Discard changes`
+8) Bank transaction edit policy
+   - Purpose: defines open-period edit window (in days) before ADMIN override is required.
+   - Field:
+     - `Edit window (days)` (whole number 0-365)
+   - Actions:
+     - `Save edit policy`
+     - `Reset default`
+     - `Discard changes`
+   - Note: ADMIN-only write.
+9) Manual journal policy
    - Purpose: enforces controlled manual-entry behavior.
-   - `Period basis`:
-     - `Monthly close (recommended)`: period-end window is measured to each calendar month-end.
-     - `Fiscal period end`: period-end window is measured to configured fiscal period end date.
-   - `Period-end window (days)`: window where manual entries are treated as normal period-end adjustments under selected basis.
-   - `Minimum exception note length`: required note length for out-of-window manual entries.
-   - `Require exception note outside period-end window`: toggle enforcement.
-   - `Save manual policy` / `Reset default`: persist or restore.
-   - Note: ADMIN-only control.
-7) Reconcile severity thresholds
+   - Fields:
+     - `Period basis` (`Monthly close` or `Fiscal period end`)
+     - `Period-end window (days)`
+     - `Minimum exception note length`
+     - `Require exception note outside period-end window`
+   - Actions:
+     - `Save manual policy`
+     - `Reset default`
+     - `Discard changes`
+   - Note: ADMIN-only write.
+10) Reconcile severity thresholds
    - Purpose: controls severity labeling in Reconcile page.
-   - `Currency minor threshold` / `Currency warning threshold`: ratio thresholds for amount metrics.
-   - `Margin minor threshold` / `Margin warning threshold`: absolute percentage-point thresholds for margin metric.
-   - `Save reconcile thresholds` / `Reset default`: persist or restore.
-   - Note: ADMIN-only control.
-8) Reset confirmation dialog
+   - Fields:
+     - `Currency minor threshold` / `Currency warning threshold`
+     - `Margin minor threshold` / `Margin warning threshold`
+   - Actions:
+     - `Save reconcile thresholds`
+     - `Reset default`
+     - `Discard changes`
+   - Note: ADMIN-only write.
+11) Journal runtime policy (relocated from env-first behavior)
+   - Purpose: controls journal list/archive runtime defaults from app settings.
+   - Backing key: `accounting.journal.policy`.
+   - Fields:
+     - `Default recent window (days)` (`recentWindowDays`)
+     - `Allow manual entries to Income/Expense accounts` (`manualEntryAllowPnl`)
+     - `Archive entries older than (months)` (`archiveAfterMonths`)
+     - `Scheduled archive runs in dry-run mode by default` (`archiveCronDryRun`)
+   - Actions:
+     - `Save journal policy`
+     - `Reset default`
+     - `Discard changes`
+   - Runtime behavior:
+     - app setting value is primary
+     - environment variables are fallback only when setting is missing
+   - Related fallback env vars:
+     - `JOURNAL_RECENT_WINDOW_DAYS`
+     - `ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL`
+     - `JOURNAL_ARCHIVE_AFTER_MONTHS`
+     - `JOURNAL_ARCHIVE_CRON_DRY_RUN`
+12) Reopen policy
+   - Purpose: controls monthly/fiscal reopen windows and finalized-year lock behavior.
+   - Fields:
+     - `Monthly reopen window (days after month-end)`
+     - `Fiscal reopen window (days after period-end)`
+     - `Hard-lock finalized fiscal years`
+     - `Finalized fiscal years (YYYY list)`
+   - Actions:
+     - `Save reopen policy`
+     - `Reset default`
+     - `Discard changes`
+   - Save/reset are atomic multi-key updates in one request.
+13) Reset confirmation dialog
    - Any reset action opens a confirmation dialog before overwrite.
+14) Unsaved-leave guard
+   - Unsaved changes trigger confirmation on browser close/refresh and in-app link navigation.
+15) Optimistic lock behavior
+   - Save payload includes expected setting timestamp.
+   - If another user changed a setting first, save is blocked with conflict message to refresh and retry.
 
-How to use and set each setting safely
-1) Set integrity thresholds
-   - Enter non-negative values for AR and inventory thresholds.
-   - Turn draft/negative-stock flags on/off based on monitoring strictness.
-   - Click `Save integrity thresholds`.
-   - Expected: success toast and no unsaved-changes indicator.
-2) Set reporting source
-   - Decide if management reporting should follow posted ledger (`on`) or operational totals (`off`).
-   - Click `Save reporting source`.
-   - Expected: success toast; value persists after refresh.
-3) Set store-credit policy
-   - Choose one policy from the dropdown.
-   - Click `Save store-credit policy`.
-   - Expected: success toast; checkout behavior follows selected rule.
-4) Set bank transaction edit window
-   - Enter a whole number (0-365).
-   - Click `Save edit policy`.
-   - Expected: success toast; bank transaction edit guard updates accordingly.
-5) Set manual journal policy
-   - Select period basis (`Monthly close` recommended).
-   - Set period-end window, minimum exception note length, and exception-note enforcement toggle.
-   - Click `Save manual policy`.
-   - Expected: manual journal API/UI enforce these rules for new manual entries using selected period basis.
-6) Set reconcile severity thresholds
-   - Set minor/warning thresholds for currency and margin.
-   - Click `Save reconcile thresholds`.
-   - Expected: Reconcile `Status` badge behavior updates to these values after refresh.
-7) Reset a section when needed
-   - Click `Reset default(s)` in that section.
-   - Confirm in modal.
-   - Expected: section returns to default values and audit entry is recorded.
+Step-by-step testing script with expected results
+1) Open baseline
+   - Action: open `/admin/accounting/settings`.
+   - Expected: all sections render; no crash; save state indicator visible.
+2) Verify section audit deep link
+   - Action: click `Open section audit` from one section.
+   - Expected: audit page opens with accounting settings scope and that exact section filter.
+3) Unsaved + discard flow
+   - Action: edit one field in a section, do not save.
+   - Expected: unsaved count increases, pending changed fields appear.
+   - Action: click `Discard changes`.
+   - Expected: values revert to current saved values and unsaved marker clears for that section.
+4) Single-section save
+   - Action: change integrity threshold and click `Save integrity thresholds`.
+   - Expected: success toast, updated timestamp/actor line refreshes, audit row created.
+5) Reset flow
+   - Action: click `Reset defaults` for a section and confirm.
+   - Expected: default values restored and reset audit row recorded.
+6) Journal runtime policy save
+   - Action: as ADMIN, change journal runtime fields and click `Save journal policy`.
+   - Expected: success toast, effective-now text updates, values persist after refresh.
+7) Reopen policy atomic save
+   - Action: change multiple reopen fields and click `Save reopen policy`.
+   - Expected: all reopen values persist together; no partial-write behavior.
+8) Save all changed sections
+   - Action: edit 2+ sections and click `Save all changed sections`.
+   - Expected: summary card shows per-section result (`saved`/`failed`/`skipped`).
+9) Optimistic lock conflict
+   - Action: open page in two tabs; save same section in tab A, then save stale tab B.
+   - Expected: tab B gets conflict error asking to refresh and retry; no silent overwrite.
+10) Unsaved leave guard
+   - Action: with unsaved edits, click internal navigation link.
+   - Expected: confirmation prompt appears.
+   - Action: refresh/close tab with unsaved edits.
+   - Expected: browser leave warning appears.
+11) Load retry card
+   - Action: simulate temporary settings API failure and reload page.
+   - Expected: load warning card appears listing failed sections.
+   - Action: click `Retry failed loads` after API recovers.
+   - Expected: card clears and sections load normally.
 
-Validation and behavior notes
-- Save buttons stay disabled until there is a real change.
-- Invalid numeric input is blocked with inline validation text and error toast on save.
-- Closed accounting periods remain locked by period controls; edit window policy does not override closed-period lock.
+- Validation and behavior notes
+  - Save buttons stay disabled until there is a real change.
+  - Invalid numeric input is blocked with inline validation and save-time errors.
+  - Closed accounting periods remain locked by period controls; edit-window policy does not override closed-period lock.
 
 Related page
 - /admin/accounting/posting-rules
   - Use this page to map accounting events to ledger accounts.
   - Use `/admin/accounting/settings` first for policy, then Posting Rules for account mapping detail.
-
-## System Settings — Feature Toggles
+## System Settings � Feature Toggles
 - Page: /admin/settings/features
 - What it is: Global feature flags (includes Accounting auto-post).
 - How to use: Toggle "Accounting auto-post" on/off to control whether orders/payments/expenses post automatically. This toggle is locked by `ACCOUNTING_AUTO_POST_ENABLED` (set to 1 in `.env`/`.env.local`) and will be disabled in the UI while the env flag is on.
@@ -1704,13 +1880,13 @@ Related page
 - Auto-heal control: `Run auto-heal now` is enabled only when `ACCOUNTING_AUTO_HEAL_MISSING_POSTINGS=1` is set in `.env`/`.env.local`.
 - Related: Use cron for periodic health alerts and audit retention.
 
-## Platform Resilience — Monitoring & Alerts
+## Platform Resilience � Monitoring & Alerts
 - Pages: /admin/dashboard (Monitoring widget), /admin/health
 - What it is: Daily checks for missing postings, ledger mismatches, and MoMo settlement issues.
 - How to use: Review counts on the dashboard, then open Health Check to investigate and repair.
 - Related: Trigger the health alert cron to email admins when mismatches appear.
 
-## Platform Resilience — Backup & Restore
+## Platform Resilience � Backup & Restore
 - Runbook: docs/runbooks/backup-restore.text
 - What it is: Step-by-step backup and restore instructions for PostgreSQL.
 - How to use: Follow the runbook before risky changes and on a regular cadence.
@@ -1721,7 +1897,7 @@ Related page
 - HR and admin settings govern staff operations and system behavior.
 - Audit logs and health checks help detect issues early.
 
-## Session Tutorial Pack â€” B2B Procurement + Tender + Conversion
+## Session Tutorial Pack — B2B Procurement + Tender + Conversion
 - Scope: This section captures the exact end-to-end flows completed in the latest implementation cycle.
 - Main pages:
   - /admin/b2b/procurement
@@ -1729,7 +1905,7 @@ Related page
   - /admin/orders/new
   - /admin/purchases
 
-## B2B Procurement Workflow â€” Tested Behavior
+## B2B Procurement Workflow — Tested Behavior
 - Page: /admin/b2b/procurement
 - What to verify:
   1) Requests can be assigned and status-updated.
@@ -1742,7 +1918,7 @@ Related page
   - Bulk actions with safer status rules.
   - Better alignment and overflow handling for row action buttons.
 
-## B2B Procurement Analytics â€” How to Use
+## B2B Procurement Analytics — How to Use
 - Page: /admin/b2b/procurement/analytics
 - Purpose: Track request throughput, aging, response speed, and conversion quality.
 - Cards and meaning:
@@ -1771,7 +1947,7 @@ Related page
   4) Prepare a draft order from an approved request -> Drafts Prepared should increase.
   5) Compare oldest-open list with /admin/b2b/procurement queue ordering.
 
-## Tender Builder â€” Core Workflow
+## Tender Builder — Core Workflow
 - Page: /admin/b2b/tenders
 - Standard flow:
   1) Choose source (Paste/Upload or From Procurement Request).
@@ -1785,7 +1961,7 @@ Related page
   - NO BID lines are excluded from supply conversion.
   - Out-of-stock lines require lead time + split supply note.
 
-## Tender Builder â€” Template Packs
+## Tender Builder — Template Packs
 - Purpose: Reuse standard commercial terms quickly.
 - How to use:
   1) Fill validity, lead time, payment terms, notes.
@@ -1794,7 +1970,7 @@ Related page
   4) Later, apply template from dropdown to auto-fill those fields.
 - Expected result: Saved values restore exactly.
 
-## Tender Builder â€” Approval Gate
+## Tender Builder — Approval Gate
 - Send flow uses explicit approval controls.
 - UI card: "Send Tender by Email"
 - Steps:
@@ -1805,7 +1981,7 @@ Related page
   - Approval can be required by env policy.
   - Protected admin emails can operate one-user approve/send.
 
-## Session Tutorial Pack â€” Delivery Dispatch + Dispatcher
+## Session Tutorial Pack — Delivery Dispatch + Dispatcher
 - Scope: End-to-end tutorial for `/admin/delivery/dispatch` and `/dispatch/my-deliveries`.
 - Purpose: Assign deliveries safely, track POD/attempts, handle dispatcher cash claims, and prevent delivery/accounting mismatches.
 
@@ -1908,7 +2084,7 @@ Related page
 ### Delivery Scope Model (Important)
 - Assignment scope is set by admin, not dispatcher:
   - Dispatcher delivers what was assigned on manifest.
-  - Partial at order level may still be “delivered” for the assigned trip.
+  - Partial at order level may still be �delivered� for the assigned trip.
 - System representation:
   - Trip can be completed while overall order remains partially delivered if other lines are pending future assignments.
 
@@ -1925,13 +2101,13 @@ Related page
 7) Complete and verify order becomes fully delivered, then drops from active dispatch queue.
 
 ### Troubleshooting
-- “Delivered but item delivered qty is zero”:
+- �Delivered but item delivered qty is zero�:
   - Use `Partially delivered` with item-level quantities or `Set all delivered` as needed.
-- “POD missing warning unexpectedly”:
+- �POD missing warning unexpectedly�:
   - Ensure POD-required flag is only used for dispatch-managed drop-offs.
-- “Dispatcher claim exists but payment not in ledger”:
+- �Dispatcher claim exists but payment not in ledger�:
   - Admin confirmation step is still pending.
-- “Order not visible on admin dispatch queue”:
+- �Order not visible on admin dispatch queue�:
   - Check filters (`Include Delivered`, date range, status, rider, collection state).
 - Relevant env:
   - B2B_TENDER_REQUIRE_APPROVAL=1 (or 0 to disable gate)
@@ -2005,11 +2181,11 @@ Related page
 - Collection Review page only reflects resulting state.
 
 ### Troubleshooting
-- “Why is Actionable only empty?”:
+- �Why is Actionable only empty?�:
   - No pending dispatcher claims and no unposted settlements exist.
-- “Why do I see balance but settlement = n/a?”:
+- �Why do I see balance but settlement = n/a?�:
   - There is no dispatcher claim for that order yet.
-- “How do I move a row from unsettled to settled?”:
+- �How do I move a row from unsettled to settled?�:
   - Complete the claim confirmation/settlement flow from Dispatch and Settlement History workflows.
 
 ## Session Tutorial Pack - Delivery Settlement History
@@ -2105,7 +2281,7 @@ Related page
 - This page is reporting-only.
 - To fix missing POD, update delivery capture in dispatch/order workflows.
 
-## Tender Builder â€” Version Compare
+## Tender Builder — Version Compare
 - Compare panel is driven by selected tender.
 - Steps:
   1) Save at least two commercial edits.
@@ -2115,14 +2291,14 @@ Related page
   - Dropdown shows comparable commercial versions only.
   - Compare summary shows totals delta and changed line count.
 
-## Tender Builder â€” Expiry Reminders
+## Tender Builder — Expiry Reminders
 - Recent Tenders shows expiry countdown for eligible tenders.
 - Send Reminder is available for active expiring records from reminder feed.
 - Expected result:
   - Success toast after send.
   - Audit and recipient records are stored.
 
-## Tender Builder â€” Export Package
+## Tender Builder — Export Package
 - Action: Export Package on Recent Tenders row.
 - Expected zip contents:
   - *.pdf
@@ -2306,3 +2482,5 @@ Related page
   - Credit posts to Cash/Bank/MoMo clearing based on selected payment mode, or to Accrued Expenses when unpaid.
   - Later settlement posts: Dr `2300 Accrued Expenses`, Cr selected payment account.
   - Partial settlements are supported: each payment reduces outstanding balance and updates status (`UNPAID`, `PARTIALLY_PAID`, `PAID`).
+
+

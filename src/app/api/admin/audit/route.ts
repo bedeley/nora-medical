@@ -400,6 +400,8 @@ export async function GET(req: Request) {
   const actorId = searchParams.get("actorId") || undefined;
   const actorType = (searchParams.get("actorType") || "").toUpperCase();
   const scope = (searchParams.get("scope") || "").toLowerCase();
+  const settingSection = (searchParams.get("settingSection") || "").trim();
+  const sourcePage = (searchParams.get("sourcePage") || "").trim();
   const metaStatus = searchParams.get("metaStatus") || undefined;
   const riskMode = (searchParams.get("riskMode") || "all").toLowerCase() as AuditRiskMode;
   const queueMode = normalizeQueueMode(searchParams.get("queueMode"));
@@ -420,7 +422,11 @@ export async function GET(req: Request) {
   const { settings: riskSettings, mode: settingsMode, editable: settingsEditable } = await getEffectiveAuditRiskSettings();
 
   const andWhere: Prisma.AuditLogWhereInput[] = [];
-  if (entityType) andWhere.push({ entityType });
+  if (entityType) {
+    andWhere.push({
+      entityType: { equals: entityType, mode: "insensitive" },
+    });
+  }
   if (entityId) andWhere.push({ entityId });
   if (action) andWhere.push({ action });
   if (actorId === "system") {
@@ -474,7 +480,25 @@ export async function GET(req: Request) {
   }
   if (scope === "accounting_settings") {
     andWhere.push({ action: "app-setting.update" });
-    andWhere.push({ meta: { contains: `"sourcePage":"admin/accounting/settings"` } });
+    if (sourcePage) {
+      andWhere.push({
+        meta: { contains: `"sourcePage":"${sourcePage}"` },
+      });
+    } else {
+      andWhere.push({
+        OR: [
+          { meta: { contains: `"sourcePage":"admin/accounting/settings"` } },
+          { meta: { contains: `"sourcePage":"admin/accounting/periods"` } },
+          { meta: { contains: `"sourcePage":"admin/accounting/reports/pl"` } },
+        ],
+      });
+    }
+    if (settingSection) {
+      andWhere.push({ meta: { contains: `"section":"${settingSection}"` } });
+    }
+  }
+  if (sourcePage && scope !== "accounting_settings") {
+    andWhere.push({ meta: { contains: `"sourcePage":"${sourcePage}"` } });
   }
   const where: Prisma.AuditLogWhereInput = andWhere.length > 0 ? { AND: andWhere } : {};
   const appendAnd = (clause: Prisma.AuditLogWhereInput) => {

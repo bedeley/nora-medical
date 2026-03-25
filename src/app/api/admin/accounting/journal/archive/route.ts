@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { JournalStatus } from "@prisma/client";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
+import { loadAccountingJournalPolicy } from "@/lib/accounting-journal-policy";
 import { recordAuditLog } from "@/lib/audit-log";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -122,10 +123,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ enabled: false }, { status: 200 });
   }
   try {
-    const configuredMonths = Number(process.env.JOURNAL_ARCHIVE_AFTER_MONTHS || "18");
-    const defaultMonths = Number.isFinite(configuredMonths) && configuredMonths > 0 ? Math.floor(configuredMonths) : 18;
-    const cronDryRun = String(process.env.JOURNAL_ARCHIVE_CRON_DRY_RUN || "").trim();
-    const dryRun = cronDryRun ? cronDryRun === "1" || cronDryRun.toLowerCase() === "true" : false;
+    const policy = await loadAccountingJournalPolicy();
+    const defaultMonths = policy.archiveAfterMonths;
+    const dryRun = policy.archiveCronDryRun;
     const result = await executeArchiveRun({
       dryRun,
       months: defaultMonths,
@@ -158,8 +158,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid input", details: parsed.error.flatten() }, { status: 400 });
     }
 
-    const configuredMonths = Number(process.env.JOURNAL_ARCHIVE_AFTER_MONTHS || "18");
-    const defaultMonths = Number.isFinite(configuredMonths) && configuredMonths > 0 ? Math.floor(configuredMonths) : 18;
+    const policy = await loadAccountingJournalPolicy();
+    const defaultMonths = policy.archiveAfterMonths;
     const months = parsed.data.months ?? defaultMonths;
     const dryRun = parsed.data.dryRun !== false;
 

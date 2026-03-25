@@ -5,6 +5,7 @@ import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { fetchAppSetting, saveAppSetting } from "@/lib/app-settings-client";
 import { toast } from "sonner";
 
 type ScheduledReport = {
@@ -23,7 +24,7 @@ type SettingsPayload = {
 export default function ScheduledReportsPage() {
   const { data, refetch } = useClientQuery<SettingsPayload>({
     queryKey: ["accounting", "scheduled-reports"],
-    queryFn: () => fetch("/api/admin/settings/app?key=accounting.scheduledReports").then((r) => r.json()),
+    queryFn: () => fetchAppSetting<ScheduledReport[]>("accounting.scheduledReports"),
   });
 
   const current = useMemo(() => data?.value || [], [data]);
@@ -36,16 +37,13 @@ export default function ScheduledReportsPage() {
   const saveSettings = async (next: ScheduledReport[]) => {
     try {
       setSaving(true);
-      const res = await fetch("/api/admin/settings/app", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      await saveAppSetting(
+        {
           key: "accounting.scheduledReports",
           value: next,
-        }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j?.error || "Failed to save scheduled reports.");
+        },
+        "Failed to save scheduled reports.",
+      );
       toast.success("Scheduled reports saved.");
       refetch();
     } catch (e: unknown) {

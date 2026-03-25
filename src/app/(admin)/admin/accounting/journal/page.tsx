@@ -55,6 +55,13 @@ type JournalEntry = {
   lines: JournalLine[];
   apBalanceAfter?: number | null;
 };
+type JournalListResponse = {
+  items: JournalEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
 
 type TaxCode = {
   id: string;
@@ -69,6 +76,12 @@ type FiscalPeriod = {
   startDate: string;
   endDate: string;
   status: "OPEN" | "CLOSED";
+};
+type JournalPolicy = {
+  recentWindowDays: number;
+  manualEntryAllowPnl: boolean;
+  archiveAfterMonths: number;
+  archiveCronDryRun: boolean;
 };
 
 type JournalSavedView = {
@@ -88,6 +101,14 @@ type JournalSavedView = {
     includeArchive: boolean;
     accountFilterId: string;
     rowsPerPage: 25 | 50 | 100;
+    rowDensity?: "comfortable" | "compact";
+    largestVarianceFirst?: boolean;
+    reviewMode?: boolean;
+    exceptionMissingRefOnly?: boolean;
+    exceptionLargeAmountOnly?: boolean;
+    exceptionStaleDraftOnly?: boolean;
+    sortBy?: "date" | "status" | "amount";
+    sortDir?: "asc" | "desc";
   };
 };
 
@@ -112,6 +133,15 @@ function getEntryImbalance(entry: JournalEntry) {
   return debitTotal - creditTotal;
 }
 
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
 export default function JournalPage() {
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
@@ -130,6 +160,10 @@ export default function JournalPage() {
   const { data: taxCodesData } = useClientQuery<TaxCode[]>({
     queryKey: ["accounting", "tax-codes"],
     queryFn: () => fetch("/api/admin/accounting/tax-codes").then((r) => r.json()),
+  });
+  const { data: journalPolicyData } = useClientQuery<{ policy?: JournalPolicy | null }>({
+    queryKey: ["accounting", "journal", "policy"],
+    queryFn: () => fetch("/api/admin/accounting/journal/policy").then((r) => r.json()),
   });
   const periods = useMemo(() => (Array.isArray(periodsData) ? periodsData : []), [periodsData]);
   const taxCodes = useMemo(() => (Array.isArray(taxCodesData) ? taxCodesData : []), [taxCodesData]);
@@ -152,6 +186,7 @@ export default function JournalPage() {
   const [dateStart, setDateStart] = useState(() => String(searchParams.get("start") || ""));
   const [dateEnd, setDateEnd] = useState(() => String(searchParams.get("end") || ""));
   const [searchQuery, setSearchQuery] = useState(() => String(searchParams.get("q") || ""));
+  const debouncedSearchQuery = useDebouncedValue(searchQuery, 400);
   const [linkQuery, setLinkQuery] = useState(() => String(searchParams.get("link") || ""));
   const [accountQuery, setAccountQuery] = useState(() => String(searchParams.get("account") || ""));
   const [entryDirectionFilter, setEntryDirectionFilter] = useState(() => {
@@ -179,6 +214,7 @@ export default function JournalPage() {
     const raw = Number(searchParams.get("rows") || "25");
     return raw === 25 || raw === 50 || raw === 100 ? raw : 25;
   });
+  const [goToPageInput, setGoToPageInput] = useState("");
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [showOnboardingTip, setShowOnboardingTip] = useState(false);
@@ -194,7 +230,16 @@ export default function JournalPage() {
     () => String(searchParams.get("reviewMode") || "") === "1",
   );
   const [showAdvancedJournalFilters, setShowAdvancedJournalFilters] = useState(false);
+  const [sortBy, setSortBy] = useState<"date" | "status" | "amount">(() => {
+    const raw = String(searchParams.get("sortBy") || "date").toLowerCase();
+    return raw === "status" || raw === "amount" ? raw : "date";
+  });
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(() => {
+    const raw = String(searchParams.get("sortDir") || "desc").toLowerCase();
+    return raw === "asc" ? "asc" : "desc";
+  });
   const [archiveMonths, setArchiveMonths] = useState(18);
+  const archiveMonthsTouched = useRef(false);
   const [archiveRunning, setArchiveRunning] = useState(false);
   const [archiveEligibleCount, setArchiveEligibleCount] = useState<number | null>(null);
   const [lastArchiveRunAt, setLastArchiveRunAt] = useState<string | null>(null);
@@ -205,6 +250,12 @@ export default function JournalPage() {
     if (hasUserSelected.current) return;
     setPeriodFilter("recent");
   }, []);
+  useEffect(() => {
+    const policyMonths = Number(journalPolicyData?.policy?.archiveAfterMonths || 0);
+    if (!Number.isFinite(policyMonths) || policyMonths <= 0) return;
+    if (archiveMonthsTouched.current) return;
+    setArchiveMonths(Math.max(1, Math.min(120, Math.floor(policyMonths))));
+  }, [journalPolicyData?.policy?.archiveAfterMonths]);
   useEffect(() => {
     if (!undoArchiveUntilMs) return;
     const timer = window.setInterval(() => setUndoClockMs(Date.now()), 1000);
@@ -259,6 +310,8 @@ export default function JournalPage() {
         lastUsedViewId?: string;
         rowsPerPage?: number;
         lastPage?: number;
+        sortBy?: "date" | "status" | "amount";
+        sortDir?: "asc" | "desc";
       };
       setDefaultViewId(parsed.defaultViewId || "");
       setAutoRestoreLastView(parsed.autoRestoreLastView !== false);
@@ -268,6 +321,12 @@ export default function JournalPage() {
       }
       if (Number.isFinite(parsed.lastPage) && Number(parsed.lastPage) > 0) {
         setPage(Number(parsed.lastPage));
+      }
+      if (parsed.sortBy === "status" || parsed.sortBy === "amount" || parsed.sortBy === "date") {
+        setSortBy(parsed.sortBy);
+      }
+      if (parsed.sortDir === "asc" || parsed.sortDir === "desc") {
+        setSortDir(parsed.sortDir);
       }
     } catch {
       // ignore malformed preferences
@@ -285,9 +344,11 @@ export default function JournalPage() {
         lastUsedViewId,
         rowsPerPage,
         lastPage: page,
+        sortBy,
+        sortDir,
       }),
     );
-  }, [defaultViewId, autoRestoreLastView, lastUsedViewId, rowsPerPage, page, prefsHydrated]);
+  }, [defaultViewId, autoRestoreLastView, lastUsedViewId, rowsPerPage, page, prefsHydrated, sortBy, sortDir]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -308,6 +369,8 @@ export default function JournalPage() {
     write("includeArchive", includeArchive ? "1" : "");
     write("varianceSort", largestVarianceFirst ? "1" : "");
     write("reviewMode", reviewMode ? "1" : "");
+    write("sortBy", sortBy !== "date" ? sortBy : "");
+    write("sortDir", sortDir !== "desc" ? sortDir : "");
     write("accountId", accountFilterId);
     write("page", page > 1 ? String(page) : "");
     write("rows", rowsPerPage !== 25 ? String(rowsPerPage) : "");
@@ -327,6 +390,8 @@ export default function JournalPage() {
     includeArchive,
     largestVarianceFirst,
     reviewMode,
+    sortBy,
+    sortDir,
     accountFilterId,
     page,
     rowsPerPage,
@@ -349,7 +414,7 @@ export default function JournalPage() {
     return "Recent 90 days";
   }, [dateStart, dateEnd, periodFilter, selectedPeriod]);
 
-  const { data: entriesData, isLoading } = useClientQuery<JournalEntry[]>({
+  const { data: entriesData, isLoading, isFetching, error: entriesError, refetch: refetchEntries } = useClientQuery<JournalListResponse>({
     queryKey: [
       "accounting",
       "journal",
@@ -359,9 +424,17 @@ export default function JournalPage() {
       dateStart,
       dateEnd,
       includeArchive,
+      debouncedSearchQuery,
+      page,
+      rowsPerPage,
+      sortBy,
+      sortDir,
     ],
     queryFn: () => {
       const params = new URLSearchParams();
+      params.set("paginate", "1");
+      params.set("page", String(page));
+      params.set("pageSize", String(rowsPerPage));
       const hasCustomDates = dateStart || dateEnd;
       if (hasCustomDates) {
         if (dateStart) params.set("start", dateStart);
@@ -373,8 +446,18 @@ export default function JournalPage() {
       if (statusFilter) params.set("status", statusFilter);
       if (sourceFilter) params.set("sourceType", sourceFilter);
       if (includeArchive) params.set("includeArchive", "1");
+      if (debouncedSearchQuery.trim()) params.set("q", debouncedSearchQuery.trim());
+      params.set("sortBy", sortBy);
+      params.set("sortDir", sortDir);
       const suffix = params.toString();
-      return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then((r) => r.json());
+      return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then(async (r) => {
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          const message = String((payload as { error?: unknown })?.error || "Failed to load journal entries.");
+          throw new Error(message);
+        }
+        return payload as JournalListResponse;
+      });
     },
   });
   const { data: balanceEntriesData } = useClientQuery<JournalEntry[]>({
@@ -393,7 +476,14 @@ export default function JournalPage() {
     },
   });
   const accounts = useMemo(() => (Array.isArray(accountsData) ? accountsData : []), [accountsData]);
-  const entries = useMemo(() => (Array.isArray(entriesData) ? entriesData : []), [entriesData]);
+  const entries = useMemo(
+    () => (Array.isArray(entriesData?.items) ? entriesData.items : []),
+    [entriesData?.items],
+  );
+  const searchQueryPending = debouncedSearchQuery !== searchQuery;
+  const queryError = entriesError instanceof Error ? entriesError.message : "";
+  const totalEntries = Number(entriesData?.total || 0);
+  const totalPages = Math.max(1, Number(entriesData?.totalPages || 1));
   const balanceEntries = Array.isArray(balanceEntriesData) ? balanceEntriesData : entries;
   const { data: archiveAuditRaw } = useClientQuery<
     Array<{ action?: string; createdAt?: string; actor?: { name?: string | null; email?: string | null } | null; meta?: Record<string, unknown> | null }>
@@ -419,11 +509,46 @@ export default function JournalPage() {
       ) || null,
     [archiveAuditRows],
   );
+  const archiveTimelineRows = useMemo(() => {
+    const rows = [...archiveAuditRows].sort((a, b) => {
+      const at = new Date(String(a.createdAt || "")).getTime();
+      const bt = new Date(String(b.createdAt || "")).getTime();
+      return bt - at;
+    });
+    return rows.slice(0, 6).map((row) => {
+      const meta = (row.meta || {}) as Record<string, unknown>;
+      const actor = row.actor?.name || row.actor?.email || "System";
+      const action = String(row.action || "");
+      const when = row.createdAt ? new Date(row.createdAt).toLocaleString() : "Unknown time";
+      if (action === "journal.archive.undo") {
+        return `${when}: ${actor} restored ${Number(meta.restoredCount || 0)} archived entr${Number(meta.restoredCount || 0) === 1 ? "y" : "ies"}.`;
+      }
+      if (action.includes("dry_run")) {
+        return `${when}: ${actor} ran archive dry run. ${Number(meta.candidateCount || 0)} entr${Number(meta.candidateCount || 0) === 1 ? "y is" : "ies are"} currently eligible.`;
+      }
+      if (action.includes("archive.run") || action.includes("archive.cron.run")) {
+        return `${when}: ${actor} archived ${Number(meta.archivedCount || 0)} entr${Number(meta.archivedCount || 0) === 1 ? "y" : "ies"} using ${Number(meta.months || 0)} month cutoff.`;
+      }
+      return `${when}: ${actor} recorded ${action}.`;
+    });
+  }, [archiveAuditRows]);
   const filteredEntries = useMemo(() => {
-    const raw = searchQuery.trim().toLowerCase();
+    const raw = "";
     const linkRaw = linkQuery.trim().toLowerCase();
     const accountRaw = accountQuery.trim().toLowerCase();
-    if (!raw && !linkRaw && !accountRaw && !accountFilterId && !entryDirectionFilter) return entries;
+    if (
+      !raw &&
+      !linkRaw &&
+      !accountRaw &&
+      !accountFilterId &&
+      !entryDirectionFilter &&
+      !outOfBalanceOnly &&
+      !exceptionMissingRefOnly &&
+      !exceptionLargeAmountOnly &&
+      !exceptionStaleDraftOnly
+    ) {
+      return entries;
+    }
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
     const normalizedQuery = normalize(raw);
     const normalizedLinkQuery = normalize(linkRaw);
@@ -518,7 +643,6 @@ export default function JournalPage() {
     });
   }, [
     entries,
-    searchQuery,
     linkQuery,
     accountQuery,
     accountFilterId,
@@ -588,6 +712,14 @@ export default function JournalPage() {
         includeArchive,
         accountFilterId,
         rowsPerPage,
+        rowDensity,
+        largestVarianceFirst,
+        reviewMode,
+        exceptionMissingRefOnly,
+        exceptionLargeAmountOnly,
+        exceptionStaleDraftOnly,
+        sortBy,
+        sortDir,
       },
     };
     setSavedViews((prev) => [entry, ...prev]);
@@ -611,6 +743,14 @@ export default function JournalPage() {
     setOutOfBalanceOnly(Boolean(view.state.outOfBalanceOnly));
     setIncludeArchive(Boolean(view.state.includeArchive));
     setAccountFilterId(view.state.accountFilterId || "");
+    setRowDensity(view.state.rowDensity === "compact" ? "compact" : "comfortable");
+    setLargestVarianceFirst(Boolean(view.state.largestVarianceFirst));
+    setReviewMode(Boolean(view.state.reviewMode));
+    setExceptionMissingRefOnly(Boolean(view.state.exceptionMissingRefOnly));
+    setExceptionLargeAmountOnly(Boolean(view.state.exceptionLargeAmountOnly));
+    setExceptionStaleDraftOnly(Boolean(view.state.exceptionStaleDraftOnly));
+    setSortBy(view.state.sortBy === "status" || view.state.sortBy === "amount" ? view.state.sortBy : "date");
+    setSortDir(view.state.sortDir === "asc" ? "asc" : "desc");
     if (view.state.rowsPerPage === 25 || view.state.rowsPerPage === 50 || view.state.rowsPerPage === 100) {
       setRowsPerPage(view.state.rowsPerPage);
     }
@@ -680,6 +820,8 @@ export default function JournalPage() {
     setExceptionMissingRefOnly(false);
     setExceptionLargeAmountOnly(false);
     setExceptionStaleDraftOnly(false);
+    setSortBy("date");
+    setSortDir("desc");
     setPeriodFilter("recent");
     setDateStart("");
     setDateEnd("");
@@ -763,6 +905,20 @@ export default function JournalPage() {
     const trace = String(entry.sourceId || entry.sourceLabel || "").trim();
     if (!trace) return `${entry.sourceType} · -`;
     return `${entry.sourceType} · ${trace.slice(0, 12)}${trace.length > 12 ? "..." : ""}`;
+  };
+  const toggleSort = (nextBy: "date" | "status" | "amount") => {
+    if (sortBy === nextBy) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortBy(nextBy);
+    setSortDir(nextBy === "status" ? "asc" : "desc");
+  };
+  const jumpToPage = () => {
+    const next = Number(goToPageInput || 0);
+    if (!Number.isFinite(next)) return;
+    const target = Math.max(1, Math.min(totalPages, Math.floor(next)));
+    setPage(target);
   };
   const postEntryById = async (entryId: string) => {
     const res = await fetch(`/api/admin/accounting/journal/${entryId}/post`, {
@@ -1361,9 +1517,50 @@ export default function JournalPage() {
     [entries],
   );
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
+  const [selectDraftsAcrossPages, setSelectDraftsAcrossPages] = useState(false);
   const [lineSearchByEntryId, setLineSearchByEntryId] = useState<Record<string, string>>({});
   const [bulkApproving, setBulkApproving] = useState(false);
   const [showBulkApproveDialog, setShowBulkApproveDialog] = useState(false);
+  const { data: draftIdsData, isFetching: draftIdsFetching } = useClientQuery<{ ids?: string[]; total?: number; error?: string }>({
+    queryKey: [
+      "accounting",
+      "journal",
+      "draft-ids",
+      selectedPeriod?.id || periodFilter || "recent",
+      sourceFilter,
+      dateStart,
+      dateEnd,
+      includeArchive,
+      debouncedSearchQuery,
+      sortBy,
+      sortDir,
+    ],
+    enabled: canApprove && selectDraftsAcrossPages,
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("idsOnly", "1");
+      params.set("status", "DRAFT");
+      const hasCustomDates = dateStart || dateEnd;
+      if (hasCustomDates) {
+        if (dateStart) params.set("start", dateStart);
+        if (dateEnd) params.set("end", dateEnd);
+      } else if (selectedPeriod) {
+        params.set("start", selectedPeriod.startDate.slice(0, 10));
+        params.set("end", selectedPeriod.endDate.slice(0, 10));
+      }
+      if (sourceFilter) params.set("sourceType", sourceFilter);
+      if (includeArchive) params.set("includeArchive", "1");
+      if (debouncedSearchQuery.trim()) params.set("q", debouncedSearchQuery.trim());
+      params.set("sortBy", sortBy);
+      params.set("sortDir", sortDir);
+      return fetch(`/api/admin/accounting/journal?${params.toString()}`).then((r) => r.json());
+    },
+  });
+  useEffect(() => {
+    if (!selectDraftsAcrossPages) return;
+    const ids = Array.isArray(draftIdsData?.ids) ? draftIdsData.ids : [];
+    setSelectedEntryIds(ids);
+  }, [selectDraftsAcrossPages, draftIdsData?.ids]);
   const [singleApproveEntry, setSingleApproveEntry] = useState<JournalEntry | null>(null);
   const nextDraftFromSingleApprove = useMemo(() => {
     if (!singleApproveEntry) return null;
@@ -1374,6 +1571,11 @@ export default function JournalPage() {
   }, [singleApproveEntry, filteredEntries]);
   const allDraftSelected =
     draftEntries.length > 0 && selectedEntryIds.length === draftEntries.length;
+  const approveDisabledReason = !canApprove
+    ? "You do not have permission to approve entries."
+    : selectedEntryIds.length === 0
+      ? "Select at least one draft entry to approve."
+      : null;
   const selectedDraftEntries = useMemo(
     () => draftEntries.filter((entry) => selectedEntryIds.includes(entry.id)),
     [draftEntries, selectedEntryIds],
@@ -1394,17 +1596,14 @@ export default function JournalPage() {
       (a, b) => Math.abs(getEntryImbalance(b)) - Math.abs(getEntryImbalance(a)),
     );
   }, [filteredEntries, largestVarianceFirst]);
-  const totalPages = Math.max(1, Math.ceil(tableEntries.length / rowsPerPage));
-  const pagedEntries = useMemo(() => {
-    const startIdx = (page - 1) * rowsPerPage;
-    return tableEntries.slice(startIdx, startIdx + rowsPerPage);
-  }, [tableEntries, page, rowsPerPage]);
+  const pagedEntries = tableEntries;
   const activeEntry = useMemo(
     () => pagedEntries.find((entry) => entry.id === activeEntryId) || null,
     [pagedEntries, activeEntryId],
   );
   useEffect(() => {
     setPage(1);
+    setSelectDraftsAcrossPages(false);
   }, [
     periodFilter,
     statusFilter,
@@ -1421,6 +1620,8 @@ export default function JournalPage() {
     exceptionLargeAmountOnly,
     exceptionStaleDraftOnly,
     rowsPerPage,
+    sortBy,
+    sortDir,
   ]);
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -1495,19 +1696,15 @@ export default function JournalPage() {
       if (key === "j" && e.shiftKey) {
         if (page >= totalPages) return;
         e.preventDefault();
-        const nextGlobal = Math.min(tableEntries.length - 1, currentIdx + page * rowsPerPage);
-        const targetEntryId = tableEntries[nextGlobal]?.id || null;
         setPage((p) => Math.min(totalPages, p + 1));
-        setActiveEntryId(targetEntryId);
+        setActiveEntryId(null);
         return;
       }
       if (key === "k" && e.shiftKey) {
         if (page <= 1) return;
         e.preventDefault();
-        const prevGlobal = Math.max(0, currentIdx + (page - 2) * rowsPerPage);
-        const targetEntryId = tableEntries[prevGlobal]?.id || null;
         setPage((p) => Math.max(1, p - 1));
-        setActiveEntryId(targetEntryId);
+        setActiveEntryId(null);
         return;
       }
       if (key === "j") {
@@ -1558,7 +1755,7 @@ export default function JournalPage() {
     };
     document.addEventListener("keydown", onKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [pagedEntries, activeEntryId, canApprove, page, totalPages, tableEntries, rowsPerPage]);
+  }, [pagedEntries, activeEntryId, canApprove, page, totalPages]);
   const sameAccountSelected =
     debitAccountId.length > 0 &&
     creditAccountId.length > 0 &&
@@ -1755,6 +1952,83 @@ export default function JournalPage() {
     }
     return { debitTotal, creditTotal, diff: debitTotal - creditTotal };
   }, [fullLines]);
+  const hasUnsavedJournalForm = useMemo(() => {
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    const quickDirty =
+      entryDate !== todayYmd ||
+      memo.trim().length > 0 ||
+      manualCategory.length > 0 ||
+      manualExceptionNote.trim().length > 0 ||
+      manualPriorPeriodId.length > 0 ||
+      manualPriorPeriodNote.trim().length > 0 ||
+      debitAccountId.length > 0 ||
+      creditAccountId.length > 0 ||
+      amount.trim().length > 0;
+    const fullLinesDirty =
+      fullLines.length !== 2 ||
+      fullLines.some(
+        (line) =>
+          line.accountId.trim().length > 0 ||
+          line.debit.trim().length > 0 ||
+          line.credit.trim().length > 0 ||
+          line.taxCodeId.trim().length > 0 ||
+          line.description.trim().length > 0,
+      );
+    const fullDirty =
+      fullEntryDate !== todayYmd ||
+      fullMemo.trim().length > 0 ||
+      fullManualCategory.length > 0 ||
+      fullManualExceptionNote.trim().length > 0 ||
+      fullManualPriorPeriodId.length > 0 ||
+      fullManualPriorPeriodNote.trim().length > 0 ||
+      fullLinesDirty;
+    return quickDirty || fullDirty;
+  }, [
+    entryDate,
+    memo,
+    manualCategory,
+    manualExceptionNote,
+    manualPriorPeriodId,
+    manualPriorPeriodNote,
+    debitAccountId,
+    creditAccountId,
+    amount,
+    fullEntryDate,
+    fullMemo,
+    fullManualCategory,
+    fullManualExceptionNote,
+    fullManualPriorPeriodId,
+    fullManualPriorPeriodNote,
+    fullLines,
+  ]);
+  useEffect(() => {
+    if (!hasUnsavedJournalForm) return;
+    const warning = "You have unsaved manual journal changes. Leave this page and discard them?";
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = warning;
+    };
+    const onDocumentClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      if (anchor.target === "_blank") return;
+      const href = anchor.getAttribute("href") || "";
+      if (!href || href.startsWith("#")) return;
+      const nextUrl = new URL(anchor.href, window.location.href);
+      if (nextUrl.origin !== window.location.origin) return;
+      const keepEditing = !window.confirm(warning);
+      if (!keepEditing) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onDocumentClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onDocumentClick, true);
+    };
+  }, [hasUnsavedJournalForm]);
 
   const createEntry = async () => {
     if (!memo.trim()) {
@@ -1939,6 +2213,7 @@ export default function JournalPage() {
       setFullSaving(false);
     }
   };
+  const effectiveJournalPolicy = journalPolicyData?.policy || null;
 
   return (
     <section className="container mx-auto py-8 space-y-4">
@@ -2000,6 +2275,29 @@ export default function JournalPage() {
           </Button>
         </div>
       </div>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle>Journal policy summary</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-2 text-sm md:grid-cols-2">
+          <div className="rounded-md border bg-muted/30 px-3 py-2">
+            New entries default to last{" "}
+            <span className="font-medium">{effectiveJournalPolicy?.recentWindowDays ?? 90}</span> day(s) when no date range is selected.
+          </div>
+          <div className="rounded-md border bg-muted/30 px-3 py-2">
+            Manual entries to Income/Expense accounts are{" "}
+            <span className="font-medium">{effectiveJournalPolicy?.manualEntryAllowPnl ? "allowed" : "blocked"}</span>.
+          </div>
+          <div className="rounded-md border bg-muted/30 px-3 py-2">
+            Archive default is entries older than{" "}
+            <span className="font-medium">{effectiveJournalPolicy?.archiveAfterMonths ?? 18}</span> month(s).
+          </div>
+          <div className="rounded-md border bg-muted/30 px-3 py-2">
+            Scheduled archive runs default to{" "}
+            <span className="font-medium">{effectiveJournalPolicy?.archiveCronDryRun ? "dry run mode" : "live run mode"}</span>.
+          </div>
+        </CardContent>
+      </Card>
 
       {showManualEntry ? (
       <Card>
@@ -2381,7 +2679,7 @@ export default function JournalPage() {
                 Archive: {includeArchive ? "Included" : "Recent only"}
               </span>
               <span className="rounded-md border bg-muted/40 px-2 py-1">
-                Entries: {tableEntries.length}
+                Entries: {totalEntries}
               </span>
               <span className="rounded-md border bg-muted/40 px-2 py-1">
                 Archived in view: {tableEntries.filter((entry) => Boolean(entry.archivedAt)).length}
@@ -2396,7 +2694,7 @@ export default function JournalPage() {
                 Archive: {includeArchive ? "Included" : "Recent only"}
               </span>
               <span className="rounded-md border bg-muted/40 px-2 py-1">
-                Entries: {tableEntries.length}
+                Entries: {totalEntries}
               </span>
               <span className="rounded-md border bg-muted/40 px-2 py-1">
                 Archived: {tableEntries.filter((entry) => Boolean(entry.archivedAt)).length}
@@ -2460,7 +2758,44 @@ export default function JournalPage() {
             >
               Include archive
             </Button>
+            <div className="inline-flex items-center gap-1 rounded-md border px-1 py-1">
+              <Button
+                size="sm"
+                variant={sortBy === "date" ? "default" : "ghost"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() => toggleSort("date")}
+              >
+                Date {sortBy === "date" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+              </Button>
+              <Button
+                size="sm"
+                variant={sortBy === "status" ? "default" : "ghost"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() => toggleSort("status")}
+              >
+                Status {sortBy === "status" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+              </Button>
+              <Button
+                size="sm"
+                variant={sortBy === "amount" ? "default" : "ghost"}
+                className="h-7 px-2 text-[11px]"
+                onClick={() => toggleSort("amount")}
+              >
+                Amount {sortBy === "amount" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+              </Button>
+            </div>
+            {searchQueryPending || (isFetching && searchQuery.trim()) ? (
+              <span className="text-xs text-muted-foreground">Searching...</span>
+            ) : null}
           </div>
+          {queryError ? (
+            <div className="sticky top-[calc(var(--admin-nav-height,4rem)+8px)] z-20 mt-2 flex items-center justify-between gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
+              <span>{queryError}</span>
+              <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => refetchEntries()}>
+                Retry
+              </Button>
+            </div>
+          ) : null}
           {showAdvancedJournalFilters ? (
           <div className="mt-2 space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -2759,7 +3094,10 @@ export default function JournalPage() {
                   min={1}
                   max={120}
                   value={String(archiveMonths)}
-                  onChange={(e) => setArchiveMonths(Math.max(1, Math.min(120, Number(e.target.value || 18))))}
+                  onChange={(e) => {
+                    archiveMonthsTouched.current = true;
+                    setArchiveMonths(Math.max(1, Math.min(120, Number(e.target.value || 18))));
+                  }}
                 />
                 <span className="text-xs text-muted-foreground">months</span>
                 <Button
@@ -2816,13 +3154,42 @@ export default function JournalPage() {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={selectedEntryIds.length === 0 || bulkApproving}
+                    disabled={Boolean(approveDisabledReason) || bulkApproving}
                     onClick={() => setShowBulkApproveDialog(true)}
+                    title={approveDisabledReason || ""}
                   >
                     {bulkApproving ? "Approving..." : "Approve selected"}
                   </Button>
                 </span>
               </Tooltip>
+            ) : null}
+            {canApprove ? (
+              <div className="flex flex-col gap-1">
+                <Button
+                  size="sm"
+                  variant={selectDraftsAcrossPages ? "default" : "outline"}
+                  className="h-7 px-2 text-[11px]"
+                  disabled={draftIdsFetching}
+                  onClick={() => {
+                    setSelectDraftsAcrossPages((prev) => {
+                      const next = !prev;
+                      if (!next) setSelectedEntryIds([]);
+                      return next;
+                    });
+                  }}
+                >
+                  {draftIdsFetching
+                    ? "Loading drafts..."
+                    : selectDraftsAcrossPages
+                      ? `Across pages selected (${selectedEntryIds.length})`
+                      : "Select drafts across pages"}
+                </Button>
+                {selectDraftsAcrossPages && Boolean((draftIdsData as { truncated?: boolean } | undefined)?.truncated) ? (
+                  <span className="text-[11px] text-amber-700">
+                    Large result set: selection capped to first {Number((draftIdsData as { max?: number } | undefined)?.max || 0)} draft IDs.
+                  </span>
+                ) : null}
+              </div>
             ) : null}
           </div>
           {selectedEntryIds.length > 0 && canApprove ? (
@@ -2838,8 +3205,9 @@ export default function JournalPage() {
                   size="sm"
                   variant="outline"
                   className="h-7 px-2 text-[11px]"
-                  disabled={bulkApproving}
+                  disabled={Boolean(approveDisabledReason) || bulkApproving}
                   onClick={() => setShowBulkApproveDialog(true)}
+                  title={approveDisabledReason || ""}
                 >
                   {bulkApproving ? "Approving..." : "Approve selected"}
                 </Button>
@@ -2879,6 +3247,30 @@ export default function JournalPage() {
               </span>
             ) : null}
           </div>
+          {canArchive ? (
+            <div className="mt-2 rounded-md border bg-muted/20 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-medium text-foreground">Archive activity timeline</span>
+                <Link
+                  href="/admin/audit?entityType=JournalEntry"
+                  className="underline text-muted-foreground hover:text-foreground"
+                >
+                  Open archive logs
+                </Link>
+              </div>
+              {archiveTimelineRows.length === 0 ? (
+                <div className="text-muted-foreground">No archive activity has been recorded yet.</div>
+              ) : (
+                <div className="space-y-1">
+                  {archiveTimelineRows.map((line, idx) => (
+                    <div key={`${idx}-${line}`} className="text-muted-foreground">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
           </div>
           ) : null}
           </div>
@@ -2919,8 +3311,16 @@ export default function JournalPage() {
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
                   {searchQuery.trim()
-                    ? "No entries match your search."
-                    : "No journal entries yet."}
+                    ? "No entries match that search text."
+                    : statusFilter === "DRAFT"
+                      ? "No draft entries match this date/source selection."
+                      : statusFilter === "POSTED"
+                        ? "No posted entries match this date/source selection."
+                        : statusFilter === "VOID"
+                          ? "No void entries match this date/source selection."
+                          : accountFilterId
+                            ? "No entries found for the selected account."
+                            : "No journal entries yet."}
                 </p>
                 {!searchQuery.trim() && periodFilter === "recent" ? (
                   <div className="flex flex-wrap items-center gap-2">
@@ -3009,17 +3409,28 @@ export default function JournalPage() {
                             <input
                               type="checkbox"
                               checked={selectedEntryIds.includes(entry.id)}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                setSelectDraftsAcrossPages(false);
                                 setSelectedEntryIds((prev) =>
                                   e.target.checked ? [...prev, entry.id] : prev.filter((id) => id !== entry.id),
-                                )
-                              }
+                                );
+                              }}
                             />
                             <Button size="sm" variant="outline" onClick={() => setSingleApproveEntry(entry)}>
                               Approve
                             </Button>
                           </>
-                        ) : null}
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            {!canApprove
+                              ? "No approval permission"
+                              : entry.archivedAt
+                                ? "Archived entry"
+                                : entry.status !== "DRAFT"
+                                  ? "Already posted/void"
+                                  : "Cannot approve"}
+                          </span>
+                        )}
                         <Button
                           size="sm"
                           variant="ghost"
@@ -3104,14 +3515,14 @@ export default function JournalPage() {
                 <div className="text-muted-foreground">
                   Showing{" "}
                   <span className="font-medium text-foreground">
-                    {tableEntries.length === 0 ? 0 : (page - 1) * rowsPerPage + 1}
+                    {totalEntries === 0 ? 0 : (page - 1) * rowsPerPage + 1}
                   </span>{" "}
                   to{" "}
                   <span className="font-medium text-foreground">
-                    {Math.min(page * rowsPerPage, tableEntries.length)}
+                    {Math.min(page * rowsPerPage, totalEntries)}
                   </span>{" "}
                   of{" "}
-                  <span className="font-medium text-foreground">{tableEntries.length}</span> entries
+                  <span className="font-medium text-foreground">{totalEntries}</span> entries
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="text-muted-foreground" htmlFor="journal-rows-per-page-mobile">
@@ -3127,6 +3538,15 @@ export default function JournalPage() {
                     <option value={50}>50</option>
                     <option value={100}>100</option>
                   </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    disabled={page <= 1}
+                    onClick={() => setPage(1)}
+                  >
+                    First
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -3149,6 +3569,33 @@ export default function JournalPage() {
                   >
                     Next
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage(totalPages)}
+                  >
+                    Last
+                  </Button>
+                  <Input
+                    className="h-8 w-16"
+                    inputMode="numeric"
+                    placeholder="Page"
+                    value={goToPageInput}
+                    onChange={(e) => setGoToPageInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") jumpToPage();
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    onClick={jumpToPage}
+                  >
+                    Go
+                  </Button>
                 </div>
               </div>
               <div className="hidden sm:block">
@@ -3157,11 +3604,12 @@ export default function JournalPage() {
                   <TableRow>
                     <TableHead>
                       {draftEntries.length > 0 && canApprove ? (
-                        <Tooltip content="Select all draft entries.">
+                        <Tooltip content="Select all draft entries on this page.">
                           <input
                             type="checkbox"
-                            checked={allDraftSelected}
+                            checked={allDraftSelected && !selectDraftsAcrossPages}
                             onChange={(e) => {
+                              setSelectDraftsAcrossPages(false);
                               setSelectedEntryIds(
                                 e.target.checked
                                   ? draftEntries.map((entry) => entry.id)
@@ -3172,13 +3620,39 @@ export default function JournalPage() {
                         </Tooltip>
                       ) : null}
                     </TableHead>
-                    <TableHead>Date</TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1"
+                        onClick={() => toggleSort("date")}
+                      >
+                        Date {sortBy === "date" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                      </button>
+                    </TableHead>
                     <TableHead>Memo</TableHead>
                     <TableHead>Source</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1"
+                        onClick={() => toggleSort("status")}
+                      >
+                        Status {sortBy === "status" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                      </button>
+                    </TableHead>
                     <TableHead>Balance</TableHead>
                     {!reviewMode ? <TableHead>Approved By</TableHead> : null}
-                    {!reviewMode ? <TableHead className="text-right">Entry totals</TableHead> : null}
+                    {!reviewMode ? (
+                      <TableHead className="text-right">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1"
+                          onClick={() => toggleSort("amount")}
+                        >
+                          Entry totals {sortBy === "amount" ? (sortDir === "asc" ? "↑" : "↓") : ""}
+                        </button>
+                      </TableHead>
+                    ) : null}
                     <TableHead className="text-right">
                       {!canApprove ? (
                         <Tooltip content="Approval actions are limited to admin/accountant roles.">
@@ -3251,6 +3725,7 @@ export default function JournalPage() {
                               type="checkbox"
                                 checked={selectedEntryIds.includes(entry.id)}
                                 onChange={(e) => {
+                                  setSelectDraftsAcrossPages(false);
                                   setSelectedEntryIds((prev) =>
                                     e.target.checked
                                       ? [...prev, entry.id]
@@ -3360,7 +3835,15 @@ export default function JournalPage() {
                                 </Button>
                               </Tooltip>
                             ) : (
-                              <span className="text-xs text-muted-foreground">-</span>
+                              <span className="text-xs text-muted-foreground">
+                                {!canApprove
+                                  ? "No approval permission"
+                                  : entry.archivedAt
+                                    ? "Archived entry"
+                                    : entry.status !== "DRAFT"
+                                      ? "Already posted/void"
+                                      : "-"}
+                              </span>
                             )}
                             <Button
                               size="sm"
@@ -3532,14 +4015,14 @@ export default function JournalPage() {
                 <div className="text-muted-foreground">
                   Showing{" "}
                   <span className="font-medium text-foreground">
-                    {tableEntries.length === 0 ? 0 : (page - 1) * rowsPerPage + 1}
+                    {totalEntries === 0 ? 0 : (page - 1) * rowsPerPage + 1}
                   </span>{" "}
                   to{" "}
                   <span className="font-medium text-foreground">
-                    {Math.min(page * rowsPerPage, tableEntries.length)}
+                    {Math.min(page * rowsPerPage, totalEntries)}
                   </span>{" "}
                   of{" "}
-                  <span className="font-medium text-foreground">{tableEntries.length}</span>{" "}
+                  <span className="font-medium text-foreground">{totalEntries}</span>{" "}
                   entries
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -3577,6 +4060,33 @@ export default function JournalPage() {
                     onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   >
                     Next
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    disabled={page >= totalPages}
+                    onClick={() => setPage(totalPages)}
+                  >
+                    Last
+                  </Button>
+                  <Input
+                    className="h-8 w-16"
+                    inputMode="numeric"
+                    placeholder="Page"
+                    value={goToPageInput}
+                    onChange={(e) => setGoToPageInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") jumpToPage();
+                    }}
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-2 text-xs"
+                    onClick={jumpToPage}
+                  >
+                    Go
                   </Button>
                 </div>
               </div>
@@ -3618,29 +4128,37 @@ export default function JournalPage() {
           </DialogHeader>
           <div className="space-y-2 text-sm">
             <p>
-              You are about to post <span className="font-semibold">{selectedDraftEntries.length}</span> draft entr{selectedDraftEntries.length === 1 ? "y" : "ies"}.
+              You are about to post <span className="font-semibold">{selectedEntryIds.length}</span> draft entr{selectedEntryIds.length === 1 ? "y" : "ies"}.
             </p>
-            <div className="grid grid-cols-2 gap-2 rounded-md border p-2 text-xs">
-              <div>Debits: {formatCurrency(selectedDraftTotals.debit)}</div>
-              <div>Credits: {formatCurrency(selectedDraftTotals.credit)}</div>
-            </div>
-            <div className="rounded-md border p-2 text-xs">
-              <div className="mb-1 font-medium">Preview memos</div>
-              {selectedDraftEntries.slice(0, 3).map((entry) => (
-                <div key={entry.id} className="truncate">
-                  - {entry.memo || "(no memo)"}
+            {selectDraftsAcrossPages ? (
+              <div className="rounded-md border p-2 text-xs text-muted-foreground">
+                Cross-page selection is enabled. This action will approve all selected draft IDs across pages for the active server filters.
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2 rounded-md border p-2 text-xs">
+                  <div>Debits: {formatCurrency(selectedDraftTotals.debit)}</div>
+                  <div>Credits: {formatCurrency(selectedDraftTotals.credit)}</div>
                 </div>
-              ))}
-              {selectedDraftEntries.length > 3 ? (
-                <div className="text-muted-foreground">...and {selectedDraftEntries.length - 3} more</div>
-              ) : null}
-            </div>
+                <div className="rounded-md border p-2 text-xs">
+                  <div className="mb-1 font-medium">Preview memos</div>
+                  {selectedDraftEntries.slice(0, 3).map((entry) => (
+                    <div key={entry.id} className="truncate">
+                      - {entry.memo || "(no memo)"}
+                    </div>
+                  ))}
+                  {selectedDraftEntries.length > 3 ? (
+                    <div className="text-muted-foreground">...and {selectedDraftEntries.length - 3} more</div>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowBulkApproveDialog(false)} disabled={bulkApproving}>
               Cancel
             </Button>
-            <Button onClick={approveSelectedEntries} disabled={bulkApproving || selectedDraftEntries.length === 0}>
+            <Button onClick={approveSelectedEntries} disabled={bulkApproving || selectedEntryIds.length === 0}>
               {bulkApproving ? "Approving..." : "Confirm approval"}
             </Button>
           </DialogFooter>
@@ -3713,6 +4231,3 @@ export default function JournalPage() {
     </section>
   );
 }
-
-
-
