@@ -24,6 +24,7 @@ const rowSchema = z.object({
 
 const payloadSchema = z.object({
   rows: z.array(z.record(z.string(), z.string())).min(1),
+  dryRun: z.boolean().optional(),
 });
 
 const defaultOnboardingTasks = [
@@ -63,6 +64,8 @@ export async function POST(req: Request) {
   const errors: string[] = [];
   let created = 0;
   let skipped = 0;
+  let valid = 0;
+  const dryRun = Boolean(parsed.data.dryRun);
 
   for (const [index, raw] of parsed.data.rows.entries()) {
     const normalized = Object.fromEntries(
@@ -73,6 +76,7 @@ export async function POST(req: Request) {
       errors.push(`Row ${index + 1}: Invalid data.`);
       continue;
     }
+    valid += 1;
 
     const email = normalizeOptional(row.data.email);
     const phone = normalizeOptional(row.data.phone);
@@ -88,6 +92,11 @@ export async function POST(req: Request) {
     }
 
     const hireDate = normalizeOptional(row.data.hiredate);
+    if (dryRun) {
+      created += 1;
+      continue;
+    }
+
     try {
       const employee = await prisma.employee.create({
         data: {
@@ -124,11 +133,30 @@ export async function POST(req: Request) {
       action: "HR_EMPLOYEE_IMPORT",
       entityType: "EMPLOYEE",
       entityId: "bulk",
-      meta: { created, skipped, errors: errors.length },
+      meta: {
+        actor: { id: user.id, role: user.role },
+        sourcePage: "admin/hr/staff",
+        section: "employee-import",
+        operation: dryRun ? "preview_employee_import_csv" : "import_employees_csv",
+        before: { created: 0, skipped: 0, errors: 0, valid: 0, dryRun },
+        after: { created, skipped, errors: errors.length, valid, dryRun },
+        resultSummary: dryRun
+          ? `Employee import preview completed (would create: ${created}, skipped: ${skipped}, errors: ${errors.length}).`
+          : `Employee import completed (created: ${created}, skipped: ${skipped}, errors: ${errors.length}).`,
+      },
     });
   } catch {
     // best-effort
   }
 
-  return NextResponse.json({ created, skipped, errors });
+  return NextResponse.json({
+    created,
+    skipped,
+    valid,
+    dryRun,
+    errors,
+    resultSummary: dryRun
+      ? `Preview complete: ${created} would be created, ${skipped} skipped, ${errors.length} error(s).`
+      : `Import complete: ${created} created, ${skipped} skipped, ${errors.length} error(s).`,
+  });
 }

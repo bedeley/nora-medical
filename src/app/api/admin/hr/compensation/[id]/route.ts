@@ -33,6 +33,51 @@ function dayBounds(date: Date) {
   return { start, end };
 }
 
+function compactChangedFields(
+  existing: {
+    baseSalary: unknown;
+    allowances: unknown;
+    deductions: unknown;
+    bonus: unknown;
+    currency: unknown;
+    effectiveDate: Date | null;
+    status: unknown;
+    approvedAt: Date | null;
+    note: string | null;
+  },
+  next: {
+    baseSalary: unknown;
+    allowances: unknown;
+    deductions: unknown;
+    bonus: unknown;
+    currency: unknown;
+    effectiveDate: Date | null;
+    status: unknown;
+    approvedAt: Date | null;
+    note: string | null;
+  },
+) {
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  const pushIfChanged = (key: string, beforeValue: unknown, afterValue: unknown) => {
+    if (JSON.stringify(beforeValue) === JSON.stringify(afterValue)) return;
+    before[key] = beforeValue;
+    after[key] = afterValue;
+  };
+
+  pushIfChanged("baseSalary", Number(existing.baseSalary), Number(next.baseSalary));
+  pushIfChanged("allowances", Number(existing.allowances), Number(next.allowances));
+  pushIfChanged("deductions", Number(existing.deductions), Number(next.deductions));
+  pushIfChanged("bonus", Number(existing.bonus), Number(next.bonus));
+  pushIfChanged("currency", String(existing.currency || ""), String(next.currency || ""));
+  pushIfChanged("effectiveDate", existing.effectiveDate?.toISOString?.() ?? null, next.effectiveDate?.toISOString?.() ?? null);
+  pushIfChanged("status", String(existing.status || ""), String(next.status || ""));
+  pushIfChanged("approvedAt", existing.approvedAt?.toISOString?.() ?? null, next.approvedAt?.toISOString?.() ?? null);
+  pushIfChanged("note", existing.note ?? null, next.note ?? null);
+
+  return { before, after };
+}
+
 async function markCompensationOnboardingTask(employeeId: string) {
   const existing = await prisma.onboardingTask.findFirst({
     where: { employeeId, title: onboardingCompensationTitle },
@@ -84,7 +129,19 @@ export async function PATCH(
 
   const existing = await prisma.compensation.findUnique({
     where: { id: resolvedParams.id },
-    select: { id: true, employeeId: true, effectiveDate: true },
+    select: {
+      id: true,
+      employeeId: true,
+      baseSalary: true,
+      allowances: true,
+      deductions: true,
+      bonus: true,
+      currency: true,
+      effectiveDate: true,
+      status: true,
+      approvedAt: true,
+      note: true,
+    },
   });
   if (!existing) {
     return NextResponse.json({ error: "Compensation not found" }, { status: 404 });
@@ -108,7 +165,16 @@ export async function PATCH(
     data.approvedAt = null;
   }
 
-  try {
+    try {
+    const operation =
+      parsed.data.status === "ACTIVE"
+        ? "approve_compensation"
+        : parsed.data.status === "PENDING"
+          ? "submit_for_approval"
+          : parsed.data.status === "DRAFT"
+            ? "set_draft"
+            : "update_compensation";
+
     if ("effectiveDate" in parsed.data && parsed.data.effectiveDate) {
       const nextDate = new Date(parsed.data.effectiveDate);
       const bounds = dayBounds(nextDate);
@@ -143,19 +209,31 @@ export async function PATCH(
       }
     }
     try {
+      const changeSummary = compactChangedFields(existing, {
+        baseSalary: compensation.baseSalary,
+        allowances: compensation.allowances,
+        deductions: compensation.deductions,
+        bonus: compensation.bonus,
+        currency: compensation.currency,
+        effectiveDate: compensation.effectiveDate,
+        status: compensation.status,
+        approvedAt: compensation.approvedAt,
+        note: compensation.note ?? null,
+      });
       await recordAuditLog({
         actorId: user.id,
         action: "COMPENSATION_UPDATE",
         entityType: "COMPENSATION",
         entityId: compensation.id,
         meta: {
-          baseSalary: Number(compensation.baseSalary),
-          allowances: Number(compensation.allowances),
-          deductions: Number(compensation.deductions),
-          bonus: Number(compensation.bonus),
-          effectiveDate: compensation.effectiveDate?.toISOString?.() ?? null,
-          status: compensation.status,
-          approvedAt: compensation.approvedAt?.toISOString?.() ?? null,
+          sourcePage: "admin/hr/compensation",
+          section: "compensation-records",
+          operation,
+          employeeId: compensation.employeeId,
+          before: changeSummary.before,
+          after: changeSummary.after,
+          status: "SUCCESS",
+          resultSummary: "Compensation record updated successfully.",
         },
       });
     } catch {

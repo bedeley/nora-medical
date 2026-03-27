@@ -17,6 +17,10 @@ const rowSchema = z.object({
 
 const payloadSchema = z.object({
   rows: z.array(z.record(z.string(), z.string())).min(1),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -94,7 +98,24 @@ export async function POST(req: Request) {
       action: "HR_APPLICANT_IMPORT",
       entityType: "APPLICANT",
       entityId: "bulk",
-      meta: { created, skipped, errors: errors.length },
+      meta: {
+        actor: { id: user.id, role: user.role },
+        sourcePage: String(parsed.data.sourcePage || "admin/hr/hiring").trim() || "admin/hr/hiring",
+        section: String(parsed.data.section || "applicants").trim() || "applicants",
+        operation: String(parsed.data.operation || "import_applicants_csv").trim() || "import_applicants_csv",
+        before: {
+          requestedCount: parsed.data.rows.length,
+        },
+        after: {
+          createdCount: created,
+          skippedCount: skipped,
+          errorCount: errors.length,
+        },
+        status: "SUCCESS",
+        resultSummary:
+          String(parsed.data.resultSummary || "").trim() ||
+          `Applicant import completed. Created ${created}, skipped ${skipped}, errors ${errors.length}.`,
+      },
     });
   } catch {
     // best-effort

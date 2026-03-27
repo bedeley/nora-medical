@@ -78,8 +78,11 @@ type AuditSavedFilter = {
   id: string;
   name: string;
   state: {
+    logId?: string;
     entityType: string;
     entityId: string;
+    payrollRunId?: string;
+    correlationId?: string;
     customerId: string;
     customerSearch: string;
     action: string;
@@ -88,6 +91,7 @@ type AuditSavedFilter = {
     start: string;
     end: string;
     metaStatus: string;
+    sourcePage?: string;
     riskMode?: AuditRiskMode;
     queueMode?: AuditQueueMode;
     pageSize: number;
@@ -157,6 +161,59 @@ type CustomerSuggestItem = {
   source: "REGISTERED" | "WALK_IN_HISTORY";
 };
 
+const HR_SOURCE_PAGE_OPTIONS = [
+  { value: "", label: "All pages" },
+  { value: "admin/accounting/settings", label: "Accounting Settings" },
+  { value: "admin/accounting/periods", label: "Accounting Periods" },
+  { value: "admin/accounting/journal", label: "Accounting Journal" },
+  { value: "admin/accounting/reports/pl", label: "Accounting P&L Report" },
+  { value: "admin/accounting/reports/trial-balance", label: "Accounting Trial Balance" },
+  { value: "admin/accounting/reports/balance-sheet", label: "Accounting Balance Sheet" },
+  { value: "admin/accounting/reports/scheduled", label: "Accounting Scheduled Reports" },
+  { value: "admin/orders", label: "Orders" },
+  { value: "admin/orders/[id]", label: "Order Details" },
+  { value: "admin/orders/otc", label: "OTC Orders" },
+  { value: "admin/otc/shift-close", label: "OTC Shift Close" },
+  { value: "admin/users", label: "Users & Roles" },
+  { value: "admin/customers/[id]/view", label: "Customer View" },
+  { value: "admin/health/incidents", label: "Health Incidents" },
+  { value: "admin/hr/hiring", label: "HR Hiring" },
+  { value: "admin/hr/reviews", label: "HR Reviews" },
+  { value: "admin/hr/compensation", label: "HR Compensation" },
+  { value: "admin/hr/payroll", label: "HR Payroll" },
+  { value: "admin/hr/payroll/[id]", label: "HR Payroll Run Detail" },
+  { value: "admin/hr/payroll/cron", label: "HR Payroll Cron" },
+  { value: "admin/hr/leave", label: "HR Leave" },
+  { value: "admin/hr/staff", label: "HR Staff Directory" },
+  { value: "admin/hr/staff/[id]", label: "HR Staff Profile" },
+  { value: "admin/hr/issues", label: "HR Issues" },
+  { value: "admin/hr/settings", label: "HR Settings" },
+] as const;
+
+function normalizeSourcePage(value: string): string {
+  return value.trim().replace(/^\/+/, "");
+}
+
+function replaceAuditBrowserUrl(params: URLSearchParams) {
+  if (typeof window === "undefined") return;
+  const next = new URLSearchParams(params.toString());
+  next.delete("paginate");
+  next.delete("includeSummary");
+  next.delete("page");
+  next.delete("pageSize");
+  const query = next.toString();
+  window.history.replaceState({}, "", query ? `/admin/audit?${query}` : "/admin/audit");
+}
+
+function resolveSourcePageHref(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/^\/+/, "");
+  if (!normalized) return null;
+  // App Router does not allow template href values such as /admin/hr/staff/[id].
+  if (normalized.includes("[") || normalized.includes("]")) return null;
+  return `/${normalized}`;
+}
+
 const fetcher = async (u: string) => {
   const r = await fetch(u);
   const j = await r.json().catch(() => ({}));
@@ -176,8 +233,12 @@ function AdminAuditContent() {
     return raw === "accounting_periods" || raw === "accounting_settings" ? raw : "";
   })();
   const initialized = useRef(false);
+  const [logId, setLogId] = useState("");
   const [entityType, setEntityType] = useState("");
   const [entityId, setEntityId] = useState("");
+  const [payrollRunId, setPayrollRunId] = useState("");
+  const [correlationId, setCorrelationId] = useState("");
+  const [sourcePage, setSourcePage] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerOptions, setCustomerOptions] = useState<CustomerSuggestItem[]>([]);
@@ -256,8 +317,11 @@ function AdminAuditContent() {
 
   useEffect(() => {
     if (initialized.current) return;
+    const lid = searchParams.get("logId") || "";
     const et = searchParams.get("entityType") || "";
     const ei = searchParams.get("entityId") || "";
+    const payrollRun = searchParams.get("payrollRunId") || "";
+    const cid = searchParams.get("correlationId") || "";
     const ci = searchParams.get("customerId") || "";
     const cq = searchParams.get("customerQuery") || "";
     const act = searchParams.get("action") || "";
@@ -266,10 +330,14 @@ function AdminAuditContent() {
     const s = searchParams.get("start") || "";
     const e = searchParams.get("end") || "";
     const ms = searchParams.get("metaStatus") || "";
+    const sp = searchParams.get("sourcePage") || "";
     const rm = (searchParams.get("riskMode") || "all").toLowerCase() as AuditRiskMode;
     const qm = (searchParams.get("queueMode") || "all").toLowerCase() as AuditQueueMode;
+    setLogId(lid);
     setEntityType(et.toUpperCase());
     setEntityId(ei);
+    setPayrollRunId(payrollRun);
+    setCorrelationId(cid);
     setCustomerId(ci);
     setCustomerSearch(cq || ci);
     setAction(act);
@@ -278,6 +346,7 @@ function AdminAuditContent() {
     setStart(s);
     setEnd(e);
     setMetaStatus(ms.toUpperCase());
+    setSourcePage(normalizeSourcePage(sp));
     setRiskMode(["all", "exceptions", "critical", "needs_review"].includes(rm) ? rm : "all");
     setQueueMode(
       ["all", "critical_unreviewed", "archive_soon_unreviewed", "needs_assignment", "overdue_tasks"].includes(qm)
@@ -438,8 +507,11 @@ function AdminAuditContent() {
   const safeEnd = dateRangeError ? "" : end;
 
   const params = new URLSearchParams();
+  if (logId) params.set("logId", logId);
   if (entityType) params.set("entityType", entityType);
   if (entityId) params.set("entityId", entityId);
+  if (payrollRunId) params.set("payrollRunId", payrollRunId);
+  if (correlationId) params.set("correlationId", correlationId);
   if (customerId) params.set("customerId", customerId);
   if (!customerId && customerSearch.trim().length >= 2) {
     params.set("customerQuery", customerSearch.trim());
@@ -450,6 +522,7 @@ function AdminAuditContent() {
   if (safeStart) params.set("start", safeStart);
   if (safeEnd) params.set("end", safeEnd);
   if (metaStatus) params.set("metaStatus", metaStatus);
+  if (sourcePage) params.set("sourcePage", sourcePage);
   if (riskMode !== "all") params.set("riskMode", riskMode);
   if (queueMode !== "all") params.set("queueMode", queueMode);
   if (scopedView) params.set("scope", scopedView);
@@ -460,8 +533,11 @@ function AdminAuditContent() {
   const queryKey = [
     "admin",
     "audit",
+    logId,
     entityType,
     entityId,
+    payrollRunId,
+    correlationId,
     customerId,
     customerSearch,
     action,
@@ -470,6 +546,7 @@ function AdminAuditContent() {
     safeStart,
     safeEnd,
     metaStatus,
+    sourcePage,
     riskMode,
     queueMode,
     scopedView,
@@ -630,8 +707,11 @@ function AdminAuditContent() {
     // Reset to first page when filters change.
   }, [
     page,
+    logId,
     entityType,
     entityId,
+    payrollRunId,
+    correlationId,
     customerId,
     customerSearch,
     action,
@@ -640,6 +720,7 @@ function AdminAuditContent() {
     safeStart,
     safeEnd,
     metaStatus,
+    sourcePage,
     riskMode,
     queueMode,
   ]);
@@ -686,8 +767,11 @@ function AdminAuditContent() {
   }, [tableScrollWidth]);
 
   const clearFilters = () => {
+    setLogId("");
     setEntityType("");
     setEntityId("");
+    setPayrollRunId("");
+    setCorrelationId("");
     setCustomerId("");
     setCustomerSearch("");
     setCustomerOptions([]);
@@ -696,6 +780,7 @@ function AdminAuditContent() {
     setActorId("");
     setActorType("");
     setMetaStatus("");
+    setSourcePage("");
     setRiskMode("all");
     setQueueMode("all");
     setEmployeeStatus("");
@@ -703,6 +788,9 @@ function AdminAuditContent() {
     setIssueStatus("");
     setSelectedRowIds(new Set());
     setPage(1);
+    const nextParams = new URLSearchParams();
+    if (scopedView) nextParams.set("scope", scopedView);
+    replaceAuditBrowserUrl(nextParams);
   };
 
   const clearAll = () => {
@@ -713,8 +801,11 @@ function AdminAuditContent() {
   };
 
   const buildCurrentFilterState = () => ({
+    logId,
     entityType,
     entityId,
+    payrollRunId,
+    correlationId,
     customerId,
     customerSearch,
     action,
@@ -723,6 +814,7 @@ function AdminAuditContent() {
     start,
     end,
     metaStatus,
+    sourcePage,
     riskMode,
     queueMode,
     pageSize,
@@ -823,8 +915,11 @@ function AdminAuditContent() {
 
   const applySavedFilter = (entry: AuditSavedFilter) => {
     const s = entry.state;
+    setLogId(s.logId || "");
     setEntityType(s.entityType);
     setEntityId(s.entityId);
+    setPayrollRunId(s.payrollRunId || "");
+    setCorrelationId(s.correlationId || "");
     setCustomerId(s.customerId);
     setCustomerSearch(s.customerSearch || s.customerId);
     setAction(s.action);
@@ -833,6 +928,7 @@ function AdminAuditContent() {
     setStart(s.start);
     setEnd(s.end);
     setMetaStatus(s.metaStatus || "");
+    setSourcePage(normalizeSourcePage(s.sourcePage || ""));
     const nextRiskMode = (s.riskMode || "all") as AuditRiskMode;
     const nextQueueMode = (s.queueMode || "all") as AuditQueueMode;
     setRiskMode(
@@ -959,7 +1055,20 @@ function AdminAuditContent() {
     const id = String(row.entityId || "").trim();
     const meta = (row.meta || {}) as Record<string, unknown>;
     if (!id) return null;
+    const sourcePageHref = resolveSourcePageHref(meta.sourcePage);
     switch (type) {
+      case "ACCOUNTINGREPORT":
+        if (id.toLowerCase() === "balance-sheet") return "/admin/accounting/reports/balance-sheet";
+        if (id.toLowerCase() === "reporting-pack") return "/admin/accounting/reports/pl";
+        if (sourcePageHref) return sourcePageHref;
+        return "/admin/accounting/reports/balance-sheet";
+      case "ACCOUNTINGREPORTEXPORTJOB":
+        if (sourcePageHref) return sourcePageHref;
+        return "/admin/accounting/reports/balance-sheet";
+      case "EMPLOYEE":
+        return id.toLowerCase() === "staff_export"
+          ? "/admin/hr/staff"
+          : `/admin/hr/staff/${encodeURIComponent(id)}`;
       case "ORDER":
         return `/admin/orders/${id}`;
       case "PAYMENT":
@@ -969,6 +1078,8 @@ function AdminAuditContent() {
       case "EXPENSE":
         return `/admin/expenses/${id}`;
       case "PAYROLL_RUN":
+        return `/admin/hr/payroll/${id}`;
+      case "PAYROLLRUNREPORT":
         return `/admin/hr/payroll/${id}`;
       case "PAYSLIP":
         return `/admin/hr/paystubs/${id}`;
@@ -993,6 +1104,7 @@ function AdminAuditContent() {
       case "AUDIT_LOG":
         return `/admin/audit?entityType=AUDIT_LOG&entityId=${encodeURIComponent(id)}`;
       default:
+        if (sourcePageHref) return sourcePageHref;
         return null;
     }
   };
@@ -1559,6 +1671,248 @@ function AdminAuditContent() {
         </div>
       );
     };
+
+    if (String(row.entityType || "").toUpperCase() === "EMPLOYEE" && row.action === "HR_EMPLOYEE_UPDATE") {
+      const before =
+        meta.before && typeof meta.before === "object" && !Array.isArray(meta.before)
+          ? (meta.before as Record<string, unknown>)
+          : null;
+      const after =
+        meta.after && typeof meta.after === "object" && !Array.isArray(meta.after)
+          ? (meta.after as Record<string, unknown>)
+          : null;
+      const section = String(meta.section || "").trim();
+      const operation = String(meta.operation || "").trim();
+      const summary = String(meta.resultSummary || "").trim();
+      const employeeFirstName = String(after?.firstName ?? before?.firstName ?? "").trim();
+      const employeeLastName = String(after?.lastName ?? before?.lastName ?? "").trim();
+      const employeeName = `${employeeFirstName} ${employeeLastName}`.trim();
+      const employeeId = String(
+        after?.employeeId ?? before?.employeeId ?? row.entityId ?? "",
+      ).trim();
+      const labelByKey: Record<string, string> = {
+        email: "Email",
+        phone: "Phone",
+        bankName: "Bank name",
+        bankCode: "Bank code",
+        bankBranch: "Bank branch",
+        bankAccountName: "Account name",
+        bankAccountNumber: "Account number",
+      };
+      const formatValue = (value: unknown) => {
+        if (value === null || value === undefined) return "Not provided";
+        if (typeof value === "string") {
+          const text = value.trim();
+          if (!text) return "Not provided";
+          if (!Number.isNaN(new Date(text).getTime()) && /(T|\d{4}-\d{2}-\d{2})/.test(text)) {
+            return new Date(text).toLocaleString();
+          }
+          return text;
+        }
+        if (typeof value === "boolean") return value ? "Yes" : "No";
+        if (typeof value === "number") return Number.isFinite(value) ? String(value) : "-";
+        return String(value);
+      };
+      const preferredKeys = section === "contact-details"
+        ? ["email", "phone"]
+        : section === "payroll-details"
+          ? [
+              "bankName",
+              "bankCode",
+              "bankBranch",
+              "bankAccountName",
+              "bankAccountNumber",
+            ]
+          : [];
+      const candidateKeys = preferredKeys.length > 0
+        ? preferredKeys
+        : Array.from(new Set([...Object.keys(before || {}), ...Object.keys(after || {})]));
+      const changes = candidateKeys
+        .map((key) => {
+          const from = before ? before[key] : undefined;
+          const to = after ? after[key] : undefined;
+          const same = JSON.stringify(from) === JSON.stringify(to);
+          return { key, from, to, same };
+        })
+        .filter((item) => !item.same);
+      const lines: Array<{ key: string; content: React.ReactNode }> = [
+        {
+          key: "employee",
+          content: (
+            <>
+              <span className="font-medium">Employee:</span>{" "}
+              {employeeName || "Not provided"}
+              {employeeId ? ` (${formatIdReadable(employeeId)})` : ""}
+            </>
+          ),
+        },
+        {
+          key: "summary",
+          content: (
+            <>
+              <span className="font-medium">Result:</span> {summary || "Employee profile updated."}
+            </>
+          ),
+        },
+        {
+          key: "scope",
+          content: (
+            <>
+              <span className="font-medium">Section / operation:</span>{" "}
+              {section || "Not provided"} / {operation || "Not provided"}
+            </>
+          ),
+        },
+      ];
+      if (changes.length === 0) {
+        lines.push({
+          key: "changed",
+          content: (
+            <>
+              <span className="font-medium">Changed fields:</span> No field changes detected.
+            </>
+          ),
+        });
+      } else {
+        lines.push({
+          key: "changed-header",
+          content: (
+            <>
+              <span className="font-medium">Changed fields:</span>
+            </>
+          ),
+        });
+        changes.forEach((change) => {
+          lines.push({
+            key: `changed-${change.key}`,
+            content: (
+              <>
+                <span className="font-medium">{labelByKey[change.key] || change.key}:</span>{" "}
+                {formatValue(change.from)} {"->"} {formatValue(change.to)}
+              </>
+            ),
+          });
+        });
+      }
+      return (
+        <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">
+          {renderCollapsibleLines(lines)}
+        </div>
+      );
+    }
+
+    if (
+      String(row.entityType || "").toUpperCase() === "HRPAYROLLREMITTANCE" &&
+      row.action === "PAYROLL_REMITTANCE_STATUS_UPDATE"
+    ) {
+      const before =
+        meta.before && typeof meta.before === "object" && !Array.isArray(meta.before)
+          ? (meta.before as Record<string, unknown>)
+          : null;
+      const after =
+        meta.after && typeof meta.after === "object" && !Array.isArray(meta.after)
+          ? (meta.after as Record<string, unknown>)
+          : null;
+      const operation = String(meta.operation || "").trim().toLowerCase();
+      const inferredLiability =
+        operation.includes("ssnit") ? "SSNIT" : operation.includes("paye") ? "PAYE tax" : "";
+      const liability = String(meta.liability || "").trim() || inferredLiability || "Statutory remittance";
+      const month = String(meta.month || row.entityId || "").trim() || "Not provided";
+      const beforeStatus = String(
+        before?.status ??
+          (liability === "SSNIT" ? before?.ssnitStatus : liability === "PAYE tax" ? before?.payeStatus : undefined) ??
+          "",
+      ).trim();
+      const afterStatus = String(
+        after?.status ??
+          (liability === "SSNIT" ? after?.ssnitStatus : liability === "PAYE tax" ? after?.payeStatus : undefined) ??
+          "",
+      ).trim();
+      const statusChange =
+        beforeStatus || afterStatus
+          ? `${beforeStatus || "Not provided"} -> ${afterStatus || "Not provided"}`
+          : "Not provided";
+      const paymentMethod = String(
+        after?.paymentMethod ??
+          before?.paymentMethod ??
+          (liability === "SSNIT" ? after?.ssnitPaymentMethod ?? before?.ssnitPaymentMethod : undefined) ??
+          (liability === "PAYE tax" ? after?.payePaymentMethod ?? before?.payePaymentMethod : undefined) ??
+          "",
+      ).trim();
+      const remittedAt = String(after?.remittedAt || "").trim();
+      const reference = String(after?.reference || "").trim();
+      const summary = String(meta.resultSummary || "").trim();
+      const lines: Array<{ key: string; content: React.ReactNode }> = [
+        {
+          key: "liability",
+          content: (
+            <>
+              <span className="font-medium">Liability:</span> {liability}
+            </>
+          ),
+        },
+        {
+          key: "month",
+          content: (
+            <>
+              <span className="font-medium">Month:</span> {month}
+            </>
+          ),
+        },
+        {
+          key: "status",
+          content: (
+            <>
+              <span className="font-medium">Status:</span> {statusChange}
+            </>
+          ),
+        },
+      ];
+      if (paymentMethod) {
+        lines.push({
+          key: "method",
+          content: (
+            <>
+              <span className="font-medium">Payment method:</span>{" "}
+              {paymentMethod === "CASH" ? "Cash" : paymentMethod === "BANK" ? "Bank" : paymentMethod}
+            </>
+          ),
+        });
+      }
+      if (remittedAt) {
+        lines.push({
+          key: "remittedAt",
+          content: (
+            <>
+              <span className="font-medium">Remitted at:</span> {new Date(remittedAt).toLocaleString()}
+            </>
+          ),
+        });
+      }
+      if (reference) {
+        lines.push({
+          key: "reference",
+          content: (
+            <>
+              <span className="font-medium">Reference:</span> {reference}
+            </>
+          ),
+        });
+      }
+      lines.push({
+        key: "summary",
+        content: (
+          <>
+            <span className="font-medium">Result:</span> {summary || "Remittance status updated."}
+          </>
+        ),
+      });
+      return (
+        <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">
+          {renderCollapsibleLines(lines)}
+        </div>
+      );
+    }
 
     if (row.entityType === "AUDIT_LOG" && row.action === "AUDIT_REVIEW_MARKED") {
       const lines: Array<{ key: string; content: React.ReactNode }> = [
@@ -3433,13 +3787,18 @@ function AdminAuditContent() {
         }
       };
       const beforeType = String(
-        (primaryChange?.previousType as string | undefined) || meta.previousType || "Not provided",
+        (primaryChange?.effectivePreviousType as string | undefined) ||
+          (primaryChange?.previousType as string | undefined) ||
+          meta.previousType ||
+          "Not provided",
       );
       const afterType = String(
         (primaryChange?.newType as string | undefined) || meta.newType || "Not provided",
       );
       const beforePreview = parsePreview(
-        primaryChange?.previousValuePreview ?? meta.previousValuePreview,
+        primaryChange?.effectivePreviousValuePreview ??
+          primaryChange?.previousValuePreview ??
+          meta.previousValuePreview,
       );
       const afterPreview = parsePreview(
         primaryChange?.newValuePreview ?? meta.newValuePreview,
@@ -3500,6 +3859,18 @@ function AdminAuditContent() {
             </>
           ),
         },
+        ...(Boolean(primaryChange?.baselineDerivedFromDefault)
+          ? [
+              {
+                key: "baseline",
+                content: (
+                  <>
+                    <span className="font-medium">Baseline source:</span> Default value (no prior saved setting row)
+                  </>
+                ),
+              },
+            ]
+          : []),
         {
           key: "fields",
           content: (
@@ -3778,10 +4149,53 @@ function AdminAuditContent() {
       return <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">{renderCollapsibleLines(lines)}</div>;
     }
 
-    if (
-      row.action.toUpperCase().includes("EXPORT") &&
-      (meta.fileName || meta.format || meta.byteSize || meta.rowCount || meta.columnCount || meta.scopeSnapshot)
-    ) {
+    if (row.action.toUpperCase().includes("EXPORT")) {
+      const afterMeta =
+        meta.after && typeof meta.after === "object" && !Array.isArray(meta.after)
+          ? (meta.after as Record<string, unknown>)
+          : null;
+      const integrity = (meta.integrity && typeof meta.integrity === "object")
+        ? (meta.integrity as Record<string, unknown>)
+        : null;
+      const normalizedRowCount =
+        Number(meta.rowCount || meta.totalRowCount || afterMeta?.rowCount || integrity?.rowCount || 0) || 0;
+      const normalizedColumnCount = Number(meta.columnCount || afterMeta?.columnCount || 0) || 0;
+      const normalizedByteSize = Number(meta.byteSize || afterMeta?.byteSize || 0) || 0;
+      const derivedFileName =
+        String(meta.fileName || "").trim() ||
+        String(afterMeta?.fileName || "").trim() ||
+        (() => {
+          const url = String(meta.downloadUrl || "").trim();
+          const match = /filename="?([^"&]+)"?/i.exec(url);
+          return match?.[1] ? decodeURIComponent(match[1]) : "";
+        })();
+      const inferredFormat =
+        String(meta.format || "").trim() ||
+        (() => {
+          const name = derivedFileName.toLowerCase();
+          const contentType = String(meta.contentType || "").toLowerCase();
+          if (name.endsWith(".pdf") || contentType.includes("application/pdf")) return "pdf";
+          if (name.endsWith(".csv") || contentType.includes("text/csv")) return "csv";
+          return "";
+        })();
+      const normalizedScope =
+        String(meta.scopeSnapshot || "").trim() ||
+        (() => {
+          const before = (meta.before && typeof meta.before === "object") ? (meta.before as Record<string, unknown>) : null;
+          const after = (meta.after && typeof meta.after === "object") ? (meta.after as Record<string, unknown>) : null;
+          const asOf = String(after?.asOf || before?.asOf || meta.asOf || "").trim();
+          const start = String(after?.start || before?.start || meta.start || "").trim();
+          const end = String(after?.end || before?.end || meta.end || "").trim();
+          if (start || end) return `${start || "-"} to ${end || "-"}`;
+          if (asOf) return `As of ${asOf}`;
+          return "";
+        })();
+      const normalizedResult =
+        String(meta.resultSummary || meta.failReason || "").trim() ||
+        (String(meta.status || "").trim() ? `Status: ${String(meta.status)}` : "");
+      if (!(derivedFileName || inferredFormat || normalizedByteSize || normalizedRowCount || normalizedColumnCount || normalizedScope || normalizedResult)) {
+        return null;
+      }
       const lines: Array<{ key: string; content: React.ReactNode }> = [
         {
           key: "export",
@@ -3796,7 +4210,7 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">File / Format:</span>{" "}
-              {String(meta.fileName || "Not provided")} / {String(meta.format || "Not provided")}
+              {String(derivedFileName || "Not provided")} / {String(inferredFormat || "Not provided")}
             </>
           ),
         },
@@ -3805,7 +4219,7 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">Rows / Columns / Size:</span>{" "}
-              {Number(meta.rowCount || 0)} / {Number(meta.columnCount || 0)} / {formatByteSize(meta.byteSize)}
+              {normalizedRowCount} / {normalizedColumnCount} / {formatByteSize(normalizedByteSize)}
             </>
           ),
         },
@@ -3813,7 +4227,7 @@ function AdminAuditContent() {
           key: "scope",
           content: (
             <>
-              <span className="font-medium">Scope snapshot:</span> {String(meta.scopeSnapshot || "Not provided")}
+              <span className="font-medium">Scope snapshot:</span> {String(normalizedScope || "Not provided")}
             </>
           ),
         },
@@ -3821,7 +4235,7 @@ function AdminAuditContent() {
           key: "result",
           content: (
             <>
-              <span className="font-medium">Result:</span> {String(meta.resultSummary || "Not provided")}
+              <span className="font-medium">Result:</span> {String(normalizedResult || "Not provided")}
             </>
           ),
         },
@@ -3831,8 +4245,6 @@ function AdminAuditContent() {
 
     const entries = Object.entries(meta);
     const isExpanded = expandedMetaRows.has(row.id);
-    const hasMore = entries.length > 5;
-    const visibleEntries = isExpanded ? entries : entries.slice(0, 5);
 
     const keyLabels: Record<string, string> = {
       supplierId: "Supplier ID",
@@ -3864,7 +4276,8 @@ function AdminAuditContent() {
       reversalOfId: "Reversal of",
       status: "Status",
       previousStatus: "Previous status",
-      nextStatus: "New status",
+      nextStatus: "After status",
+      targetEmployeeIds: "Target employees",
       paymentMethod: "Payment method",
       paymentMethodLabel: "Payment method",
       invoiceNumber: "Invoice number",
@@ -3895,6 +4308,9 @@ function AdminAuditContent() {
       if (typeof value === "string") {
         const text = value.trim();
         if (!text) return "Not provided";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+          return text;
+        }
         if (!Number.isNaN(new Date(text).getTime()) && /(T|\d{4}-\d{2}-\d{2})/.test(text)) {
           return new Date(text).toLocaleString();
         }
@@ -4026,11 +4442,329 @@ function AdminAuditContent() {
       );
     };
 
+    const countMetaLines = (value: unknown, depth = 0): number => {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const nested = Object.entries(value as Record<string, unknown>);
+        if (nested.length === 0) return 1;
+        return 1 + nested.reduce((sum, [, child]) => sum + countMetaLines(child, depth + 1), 0);
+      }
+      if (Array.isArray(value)) {
+        if (value.length === 0) return 1;
+        const visibleCount = Math.min(value.length, 6);
+        const nestedLines = value.slice(0, visibleCount).reduce((sum, child) => sum + countMetaLines(child, depth + 1), 0);
+        return Math.max(1, nestedLines);
+      }
+      return 1;
+    };
+
+    if (String(row.action || "").toUpperCase() === "HR_SETTING_UPDATE" && String(row.entityType || "").toUpperCase() === "APPSETTING") {
+      const beforeObj =
+        meta.before && typeof meta.before === "object" ? (meta.before as Record<string, unknown>) : null;
+      const afterObj =
+        meta.after && typeof meta.after === "object" ? (meta.after as Record<string, unknown>) : null;
+      const settingKey = String(row.entityId || afterObj?.key || beforeObj?.key || "").trim();
+      const settingLabel =
+        settingKey === "hr.reviewCadence"
+          ? "Review cadence"
+          : settingKey === "hr.workweekDays"
+            ? "Workweek days"
+            : settingKey === "hr.payroll.ghana.autoStatutoryCalc"
+              ? "Automatic Ghana statutory calculation"
+              : settingKey === "hr.payroll.ghana.enablePaye"
+                ? "Collect PAYE"
+                : settingKey === "hr.payroll.ghana.enableSsnitEmployee"
+                  ? "Collect SSNIT (employee)"
+                  : settingKey === "hr.payroll.ghana.enableSsnitEmployer"
+                    ? "Track SSNIT (employer)"
+                    : settingKey === "hr.payroll.ghana.ssnitEmployeeRate"
+                      ? "SSNIT employee rate (%)"
+                      : settingKey === "hr.payroll.ghana.ssnitEmployerRate"
+                        ? "SSNIT employer rate (%)"
+                        : settingKey === "hr.payroll.ghana.taxableAllowancePercent"
+                          ? "Taxable allowance percent (%)"
+                          : settingKey === "hr.payroll.ghana.payeBands"
+                            ? "PAYE monthly bands"
+            : settingKey || "HR setting";
+      const operationRaw = String(meta.operation || "").trim().toLowerCase();
+      const operationLabel =
+        operationRaw === "update_review_cadence"
+          ? "Updated review cadence"
+          : operationRaw === "update_workweek_days"
+            ? "Updated workweek days"
+            : operationRaw === "update_ghana_auto_calculation_toggle"
+              ? "Updated automatic Ghana statutory calculation"
+              : operationRaw === "update_ghana_enable_paye"
+                ? "Updated PAYE collection policy"
+                : operationRaw === "update_ghana_enable_ssnit_employee"
+                  ? "Updated SSNIT employee collection policy"
+                  : operationRaw === "update_ghana_enable_ssnit_employer"
+                    ? "Updated SSNIT employer tracking policy"
+                    : operationRaw === "update_ghana_ssnit_rate"
+                      ? "Updated SSNIT employee rate"
+                      : operationRaw === "update_ghana_employer_ssnit_rate"
+                        ? "Updated SSNIT employer rate"
+                        : operationRaw === "update_ghana_taxable_allowance_percent"
+                          ? "Updated taxable allowance percent"
+                          : operationRaw === "update_ghana_paye_bands"
+                            ? "Updated PAYE monthly bands"
+            : operationRaw === "reset_review_cadence_default"
+              ? "Reset review cadence to default"
+              : operationRaw === "reset_workweek_days_default"
+                ? "Reset workweek days to default"
+                : "Updated HR setting";
+      const beforeValue = beforeObj?.value;
+      const afterValue = afterObj?.value;
+      const hasValueSnapshot = beforeValue !== undefined || afterValue !== undefined;
+      const hasValueChange = JSON.stringify(beforeValue) !== JSON.stringify(afterValue);
+      const lines: Array<{ key: string; content: React.ReactNode }> = [
+        { key: "initiator", content: initiatorLine.content },
+        {
+          key: "setting",
+          content: (
+            <>
+              <span className="font-medium">Setting:</span> {settingLabel}
+            </>
+          ),
+        },
+        {
+          key: "operation",
+          content: (
+            <>
+              <span className="font-medium">Operation:</span> {operationLabel}
+            </>
+          ),
+        },
+        ...(hasValueSnapshot
+          ? [
+              {
+                key: "change",
+                content: (
+                  <>
+                    <span className="font-medium">{hasValueChange ? "Changed value:" : "Value:"}</span>{" "}
+                    {formatUnknownMetaValue(beforeValue)} {"->"} {formatUnknownMetaValue(afterValue)}
+                  </>
+                ),
+              },
+              ...(hasValueChange
+                ? [
+                    {
+                      key: "change-before",
+                      content: (
+                        <>
+                          <span className="font-medium">Before:</span> {formatUnknownMetaValue(beforeValue)}
+                        </>
+                      ),
+                    },
+                    {
+                      key: "change-after",
+                      content: (
+                        <>
+                          <span className="font-medium">After:</span> {formatUnknownMetaValue(afterValue)}
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
+            ]
+          : []),
+        {
+          key: "result",
+          content: (
+            <>
+              <span className="font-medium">Result:</span>{" "}
+              {String(meta.resultSummary || "HR setting updated successfully.")}
+            </>
+          ),
+        },
+      ];
+      return <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">{renderCollapsibleLines(lines)}</div>;
+    }
+
+    const actionUpper = String(row.action || "").toUpperCase();
+    if (
+      (actionUpper === "PAYROLL_GENERATE_MONTHLY" || actionUpper === "PAYROLL_GENERATE") &&
+      String(row.entityType || "").toUpperCase() === "PAYROLL_RUN"
+    ) {
+      const statutory = meta.statutory && typeof meta.statutory === "object"
+        ? (meta.statutory as Record<string, unknown>)
+        : null;
+      const lines: Array<{ key: string; content: React.ReactNode }> = [
+        { key: "initiator", content: initiatorLine.content },
+        {
+          key: "run",
+          content: (
+            <>
+              <span className="font-medium">Payroll run:</span>{" "}
+              {String(meta.payrollRunId || row.entityId || "Not provided")}
+            </>
+          ),
+        },
+        ...(meta.year !== undefined || meta.month !== undefined
+          ? [
+              {
+                key: "period",
+                content: (
+                  <>
+                    <span className="font-medium">Period:</span>{" "}
+                    {meta.year !== undefined && meta.month !== undefined
+                      ? `${meta.year}-${String(meta.month).padStart(2, "0")}`
+                      : "Not provided"}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        {
+          key: "counts",
+          content: (
+            <>
+              <span className="font-medium">Generated / Updated / Skipped:</span>{" "}
+              {Number(meta.created || 0)} / {Number(meta.updated || 0)} / {Number(meta.skipped || 0)}
+            </>
+          ),
+        },
+        {
+          key: "policy",
+          content: (
+            <>
+              <span className="font-medium">Policy:</span>{" "}
+              Auto {statutory?.autoCalculation === false ? "Off" : "On"} | PAYE{" "}
+              {statutory?.collectPaye === false ? "Off" : "On"} | SSNIT (employee){" "}
+              {statutory?.collectSsnitEmployee === false ? "Off" : "On"} | SSNIT (employer){" "}
+              {statutory?.trackSsnitEmployer === false ? "Off" : "On"}
+            </>
+          ),
+        },
+        {
+          key: "result",
+          content: (
+            <>
+              <span className="font-medium">Result:</span>{" "}
+              {String(meta.resultSummary || "Payroll payslips generated.")}
+            </>
+          ),
+        },
+      ];
+      return <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">{renderCollapsibleLines(lines)}</div>;
+    }
+
+    if (actionUpper === "PAYROLL_STATUS_UPDATE" && String(row.entityType || "").toUpperCase() === "PAYROLL_RUN") {
+      const beforeObj =
+        meta.before && typeof meta.before === "object" ? (meta.before as Record<string, unknown>) : null;
+      const afterObj =
+        meta.after && typeof meta.after === "object" ? (meta.after as Record<string, unknown>) : null;
+      const periodObj =
+        meta.period && typeof meta.period === "object" ? (meta.period as Record<string, unknown>) : null;
+      const operationRaw = String(meta.operation || "").trim().toLowerCase();
+      const operationLabel =
+        operationRaw === "finalize_run"
+          ? "Finalized payroll run"
+          : operationRaw === "mark_paid"
+            ? "Marked payroll run as paid"
+            : operationRaw === "cancel_run"
+              ? "Cancelled payroll run"
+              : "Updated payroll run status";
+      const lines: Array<{ key: string; content: React.ReactNode }> = [
+        { key: "initiator", content: initiatorLine.content },
+        {
+          key: "operation",
+          content: (
+            <>
+              <span className="font-medium">Operation:</span> {operationLabel}
+            </>
+          ),
+        },
+        {
+          key: "run",
+          content: (
+            <>
+              <span className="font-medium">Payroll run:</span> {String(row.entityId || "Not provided")}
+            </>
+          ),
+        },
+        ...(periodObj
+          ? [
+              {
+                key: "period",
+                content: (
+                  <>
+                    <span className="font-medium">Period:</span>{" "}
+                    {periodObj.periodStart
+                      ? `${new Date(String(periodObj.periodStart)).toLocaleDateString()} - ${new Date(String(periodObj.periodEnd || periodObj.periodStart)).toLocaleDateString()}`
+                      : "Not provided"}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        {
+          key: "status",
+          content: (
+            <>
+              <span className="font-medium">Status:</span>{" "}
+              {String(beforeObj?.status || "Not provided")} {"->"} {String(afterObj?.status || "Not provided")}
+            </>
+          ),
+        },
+        ...(afterObj?.totalGross !== undefined || afterObj?.totalNet !== undefined
+          ? [
+              {
+                key: "totals",
+                content: (
+                  <>
+                    <span className="font-medium">Totals:</span>{" "}
+                    Gross {formatCurrency(Number(afterObj?.totalGross || 0))} | Net{" "}
+                    {formatCurrency(Number(afterObj?.totalNet || 0))}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        ...(meta.expenseId
+          ? [
+              {
+                key: "expense",
+                content: (
+                  <>
+                    <span className="font-medium">Expense link:</span> {String(meta.expenseId)}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        {
+          key: "result",
+          content: (
+            <>
+              <span className="font-medium">Result:</span>{" "}
+              {String(meta.resultSummary || "Payroll run status updated successfully.")}
+            </>
+          ),
+        },
+      ];
+      return <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">{renderCollapsibleLines(lines)}</div>;
+    }
+
     const diffRows: Array<{ label: string; from: unknown; to: unknown }> = [];
+    const isAuditOutcomeStatus = (value: unknown) => {
+      const normalized = String(value ?? "")
+        .trim()
+        .toUpperCase();
+      return (
+        normalized === "SUCCESS" ||
+        normalized === "FAILED" ||
+        normalized === "ERROR" ||
+        normalized === "PARTIAL" ||
+        normalized === "SKIPPED"
+      );
+    };
     if (meta.from !== undefined || meta.to !== undefined) {
       diffRows.push({ label: "Value", from: meta.from, to: meta.to });
     }
-    if (meta.previousStatus !== undefined || meta.status !== undefined) {
+    if (
+      meta.previousStatus !== undefined ||
+      (meta.status !== undefined && !isAuditOutcomeStatus(meta.status))
+    ) {
       diffRows.push({ label: "Status", from: meta.previousStatus, to: meta.status });
     }
     Object.keys(meta).forEach((key) => {
@@ -4043,6 +4777,11 @@ function AdminAuditContent() {
       const label = toFriendlyLabel(suffix || key);
       diffRows.push({ label, from: meta[key], to: toVal });
     });
+    const estimatedLineCount =
+      1 +
+      Math.min(diffRows.length + (diffRows.length > 0 ? 1 : 0), 6) +
+      entries.reduce((sum, [, value]) => sum + countMetaLines(value), 0);
+    const hasMore = estimatedLineCount > 6;
 
     return (
       <div
@@ -4057,30 +4796,44 @@ function AdminAuditContent() {
           });
         }}
       >
-        <div>{initiatorLine.content}</div>
-        {diffRows.length > 0 ? (
-          <div className="space-y-0.5">
-            <div className="font-medium">What changed:</div>
-            {diffRows.slice(0, 5).map((row) => (
-              <div key={`diff-${row.label}`}>
-                <span className="font-medium">{row.label}:</span>{" "}
-                {formatUnknownMetaValue(row.from)} {"->"} {formatUnknownMetaValue(row.to)}
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {visibleEntries.map(([k, v]) => {
-          if (v && typeof v === "object" && !Array.isArray(v)) {
-            return renderMetaObject(k, v as Record<string, unknown>, k, 0);
+        <div
+          className="space-y-0.5"
+          style={
+            !isExpanded && hasMore
+              ? {
+                  display: "-webkit-box",
+                  WebkitLineClamp: 6,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }
+              : undefined
           }
-          const display = formatPrimitiveMetaValue(k, v);
-          return (
-            <div key={k}>
-              <span className="font-medium">{toFriendlyLabel(k)}:</span>{" "}
-              <span>{display}</span>
+        >
+          <div>{initiatorLine.content}</div>
+          {diffRows.length > 0 ? (
+            <div className="space-y-0.5">
+              <div className="font-medium">What changed:</div>
+              {diffRows.slice(0, 5).map((row) => (
+                <div key={`diff-${row.label}`}>
+                  <span className="font-medium">{row.label}:</span>{" "}
+                  {formatUnknownMetaValue(row.from)} {"->"} {formatUnknownMetaValue(row.to)}
+                </div>
+              ))}
             </div>
-          );
-        })}
+          ) : null}
+          {entries.map(([k, v]) => {
+            if (v && typeof v === "object" && !Array.isArray(v)) {
+              return renderMetaObject(k, v as Record<string, unknown>, k, 0);
+            }
+            const display = formatPrimitiveMetaValue(k, v);
+            return (
+              <div key={k}>
+                <span className="font-medium">{toFriendlyLabel(k)}:</span>{" "}
+                <span>{display}</span>
+              </div>
+            );
+          })}
+        </div>
         {hasMore ? (
           <button
             type="button"
@@ -4285,6 +5038,25 @@ function AdminAuditContent() {
           </div>
 
           <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-7">
+        {payrollRunId ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 sm:col-span-2 lg:col-span-7">
+            <div>
+              Showing activity related to payroll run <span className="font-medium">{formatIdReadable(payrollRunId)}</span>.
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 border-blue-300 bg-white text-blue-800 hover:bg-blue-100"
+              onClick={() => {
+                setPayrollRunId("");
+                setPage(1);
+              }}
+            >
+              Clear payroll filter
+            </Button>
+          </div>
+        ) : null}
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Entity type</label>
           <select
@@ -4306,6 +5078,14 @@ function AdminAuditContent() {
             placeholder="Order or payment ID"
             value={entityId}
             onChange={(e) => setEntityId(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Correlation ID</label>
+          <Input
+            placeholder="Export correlation ID"
+            value={correlationId}
+            onChange={(e) => setCorrelationId(e.target.value)}
           />
         </div>
         <div className="space-y-1">
@@ -4438,6 +5218,20 @@ function AdminAuditContent() {
             <option value="archive_soon_unreviewed">Archive soon unreviewed</option>
             <option value="needs_assignment">Needs assignment</option>
             <option value="overdue_tasks">Overdue tasks</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Source page</label>
+          <select
+            className="h-9 w-full rounded border bg-background px-2 text-sm"
+            value={sourcePage}
+            onChange={(e) => setSourcePage(normalizeSourcePage(e.target.value))}
+          >
+            {HR_SOURCE_PAGE_OPTIONS.map((item) => (
+              <option key={item.value || "all"} value={item.value}>
+                {item.label}
+              </option>
+            ))}
           </select>
         </div>
           </div>
@@ -5023,43 +5817,45 @@ function AdminAuditContent() {
         </CardContent>
       </Card>
 
-      <Card className="shadow-md !border-none">
-        <CardHeader>
-          <CardTitle className="text-base">Reviewer Performance (30 days)</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-xs">
-          {!performanceData?.items?.length ? (
-            <p className="text-muted-foreground">No reviewer performance data yet.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-[720px] w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b">
-                    <th className="py-1 pr-3">Reviewer</th>
-                    <th className="py-1 pr-3">Reviewed</th>
-                    <th className="py-1 pr-3">Avg hours to review</th>
-                    <th className="py-1 pr-3">Assigned open</th>
-                    <th className="py-1 pr-3">Assigned in progress</th>
-                    <th className="py-1 pr-3">Assigned overdue</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {performanceData.items.slice(0, 8).map((item) => (
-                    <tr key={item.reviewerId} className="border-b last:border-b-0">
-                      <td className="py-1 pr-3">{item.reviewerName}</td>
-                      <td className="py-1 pr-3">{item.reviewedCount}</td>
-                      <td className="py-1 pr-3">{item.avgHoursToReview}</td>
-                      <td className="py-1 pr-3">{item.assignedOpen}</td>
-                      <td className="py-1 pr-3">{item.assignedInProgress}</td>
-                      <td className="py-1 pr-3">{item.assignedOverdue}</td>
+      {!sourcePage.trim() ? (
+        <Card className="shadow-md !border-none">
+          <CardHeader>
+            <CardTitle className="text-base">Reviewer Performance (30 days)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            {!performanceData?.items?.length ? (
+              <p className="text-muted-foreground">No reviewer performance data yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-[720px] w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="py-1 pr-3">Reviewer</th>
+                      <th className="py-1 pr-3">Reviewed</th>
+                      <th className="py-1 pr-3">Avg hours to review</th>
+                      <th className="py-1 pr-3">Assigned open</th>
+                      <th className="py-1 pr-3">Assigned in progress</th>
+                      <th className="py-1 pr-3">Assigned overdue</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                  </thead>
+                  <tbody>
+                    {performanceData.items.slice(0, 8).map((item) => (
+                      <tr key={item.reviewerId} className="border-b last:border-b-0">
+                        <td className="py-1 pr-3">{item.reviewerName}</td>
+                        <td className="py-1 pr-3">{item.reviewedCount}</td>
+                        <td className="py-1 pr-3">{item.avgHoursToReview}</td>
+                        <td className="py-1 pr-3">{item.assignedOpen}</td>
+                        <td className="py-1 pr-3">{item.assignedInProgress}</td>
+                        <td className="py-1 pr-3">{item.assignedOverdue}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="shadow-md !border-none">
         <CardContent className="p-0">

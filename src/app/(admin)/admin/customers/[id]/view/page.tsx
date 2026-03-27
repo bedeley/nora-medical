@@ -244,7 +244,7 @@ export default function AdminCustomerReadOnlyView() {
             <Link
               href={`/admin/audit?customerId=${encodeURIComponent(
                 String(userId),
-              )}`}
+              )}&sourcePage=admin/customers/[id]/view`}
             >
               Audit log
             </Link>

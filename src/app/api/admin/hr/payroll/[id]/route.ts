@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 import { postExpenseEntry, postPayrollAccrualEntry, postPayrollSettlementEntry } from "@/lib/accounting-posting";
+import { getPayrollRunYtdTotalsForEmployees } from "@/lib/hr-paystub-detail";
 
 const updateSchema = z.object({
   status: z.enum(["DRAFT", "FINALIZED", "PAID", "CANCELLED"]).optional(),
@@ -14,12 +15,34 @@ const updateSchema = z.object({
   createExpense: z.boolean().optional(),
 });
 
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  DRAFT: ["FINALIZED", "CANCELLED"],
+  FINALIZED: ["PAID"],
+  PAID: [],
+  CANCELLED: [],
+};
+
 async function requireAdmin() {
   const session = await getServerSession(authOptions);
   if (!session) return null;
   const user = session.user as AuthenticatedUser;
   if (user.role !== "ADMIN") return null;
   return user;
+}
+
+function buildAuditActor(user: AuthenticatedUser) {
+  return {
+    id: user.id,
+    name: user.name || null,
+    email: user.email || null,
+    role: user.role,
+  };
+}
+
+function summarizePayrollStatusResult(status: "FINALIZED" | "PAID" | "CANCELLED") {
+  if (status === "FINALIZED") return "Payroll run finalized successfully.";
+  if (status === "PAID") return "Payroll run marked as paid successfully.";
+  return "Payroll run cancelled successfully.";
 }
 
 export async function GET(
@@ -47,61 +70,31 @@ export async function GET(
   const adjustmentsCount = await prisma.payrollRun.count({
     where: { adjustmentForId: run.id, runType: "ADJUSTMENT" },
   });
+  const adjustments =
+    run.runType === "ADJUSTMENT"
+      ? []
+      : await prisma.payrollRun.findMany({
+          where: { adjustmentForId: run.id, runType: "ADJUSTMENT" },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            periodStart: true,
+            periodEnd: true,
+            status: true,
+            adjustmentNote: true,
+            totalGross: true,
+            totalNet: true,
+          },
+        });
 
   const employeeIds = run.payslips.map((slip) => slip.employeeId);
-  const periodEnd = run.periodEnd || new Date();
-  const yearStart = new Date(periodEnd.getFullYear(), 0, 1);
-  const yearEnd = new Date(periodEnd.getFullYear(), 11, 31, 23, 59, 59, 999);
+  const ytdTotals = await getPayrollRunYtdTotalsForEmployees({
+    employeeIds,
+    payrollRunId: run.id,
+    periodEnd: run.periodEnd || new Date(),
+  });
 
-  const ytdPayslips = employeeIds.length
-    ? await prisma.payslip.findMany({
-        where: {
-          employeeId: { in: employeeIds },
-          payrollRun: {
-            periodEnd: {
-              gte: yearStart,
-              lte: yearEnd,
-            },
-          },
-        },
-        select: {
-          employeeId: true,
-          grossPay: true,
-          netPay: true,
-          lineItems: true,
-        },
-      })
-    : [];
-
-  const ytdTotals = ytdPayslips.reduce<
-    Record<string, { gross: number; net: number; deductions: number; tax: number; pension: number }>
-  >(
-    (acc, slip) => {
-      const gross = Number(slip.grossPay || 0);
-      const net = Number(slip.netPay || 0);
-      const lineItems = slip.lineItems as Record<string, unknown> | null | undefined;
-      const tax = Number(lineItems?.tax ?? 0);
-      const pension = Number(lineItems?.pension ?? 0);
-      const deductions = Math.max(0, Number(lineItems?.deductions ?? gross - net));
-      const entry = acc[slip.employeeId] || {
-        gross: 0,
-        net: 0,
-        deductions: 0,
-        tax: 0,
-        pension: 0,
-      };
-      entry.gross += gross;
-      entry.net += net;
-      entry.deductions += deductions;
-      entry.tax += tax;
-      entry.pension += pension;
-      acc[slip.employeeId] = entry;
-      return acc;
-    },
-    {}
-  );
-
-  return NextResponse.json({ ...run, adjustmentsCount, ytdTotals });
+  return NextResponse.json({ ...run, adjustmentsCount, adjustments, ytdTotals });
 }
 
 export async function PATCH(
@@ -121,6 +114,12 @@ export async function PATCH(
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid input", details: parsed.error.flatten() }, { status: 400 });
   }
+  if (typeof parsed.data.totalGross === "number" || typeof parsed.data.totalNet === "number") {
+    return NextResponse.json(
+      { error: "Manual run total overrides are not allowed. Totals are derived from payslips." },
+      { status: 400 },
+    );
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -133,9 +132,32 @@ export async function PATCH(
       const data: Record<string, unknown> = {};
       let cancelledPayslips = 0;
       let cancelledTotals: { gross: number; net: number } | null = null;
-      if (parsed.data.status) {
-        if (existing.status !== "DRAFT" && parsed.data.status === "CANCELLED") {
-          throw new Error("Only DRAFT payroll runs can be cancelled.");
+      const statusChanged =
+        parsed.data.status != null && parsed.data.status !== existing.status;
+      if (parsed.data.status && statusChanged) {
+        if (parsed.data.status !== existing.status) {
+          const allowedTargets = ALLOWED_TRANSITIONS[existing.status] || [];
+          if (!allowedTargets.includes(parsed.data.status)) {
+            throw new Error(
+              `Invalid payroll status transition: ${existing.status} to ${parsed.data.status}.`,
+            );
+          }
+        }
+        if (parsed.data.status === "FINALIZED") {
+          const [payslipCount, totals] = await Promise.all([
+            tx.payslip.count({ where: { payrollRunId: existing.id } }),
+            tx.payslip.aggregate({
+              where: { payrollRunId: existing.id },
+              _sum: { grossPay: true, netPay: true },
+            }),
+          ]);
+          if (payslipCount <= 0) {
+            throw new Error("Cannot finalize run without at least one payslip.");
+          }
+          const grossTotal = Number(totals._sum.grossPay || 0);
+          const netTotal = Number(totals._sum.netPay || 0);
+          data.totalGross = grossTotal;
+          data.totalNet = netTotal;
         }
         if (parsed.data.status === "CANCELLED") {
           cancelledTotals = {
@@ -151,18 +173,25 @@ export async function PATCH(
         }
         data.status = parsed.data.status;
       }
-      if (typeof parsed.data.totalGross === "number") data.totalGross = parsed.data.totalGross;
-      if (typeof parsed.data.totalNet === "number") data.totalNet = parsed.data.totalNet;
-      if (parsed.data.status && parsed.data.status !== "DRAFT" && parsed.data.status !== "CANCELLED") {
+      if (
+        statusChanged &&
+        parsed.data.status &&
+        parsed.data.status !== "DRAFT" &&
+        parsed.data.status !== "CANCELLED"
+      ) {
         data.finalizedAt = existing.finalizedAt ?? new Date();
       }
 
-      const updated = await tx.payrollRun.update({
-        where: { id: resolvedParams.id },
-        data,
-      });
+      const updated =
+        Object.keys(data).length > 0
+          ? await tx.payrollRun.update({
+              where: { id: resolvedParams.id },
+              data,
+            })
+          : existing;
 
       let expense = existing.expense;
+      let createdExpense = false;
       if (
         parsed.data.createExpense &&
         !expense &&
@@ -184,14 +213,30 @@ export async function PATCH(
             payrollRunId: updated.id,
           },
         });
+        createdExpense = true;
       }
 
-      return { updated, expense, cancelledPayslips, cancelledTotals };
+      return {
+        updated,
+        expense,
+        createdExpense,
+        cancelledPayslips,
+        cancelledTotals,
+        previousStatus: existing.status,
+        previousExpenseId: existing.expense?.id ?? null,
+        statusChanged,
+      };
     });
 
     if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    if (parsed.data.status && (parsed.data.status === "FINALIZED" || parsed.data.status === "PAID" || parsed.data.status === "CANCELLED")) {
+    if (
+      parsed.data.status &&
+      result.statusChanged &&
+      (parsed.data.status === "FINALIZED" ||
+        parsed.data.status === "PAID" ||
+        parsed.data.status === "CANCELLED")
+    ) {
       try {
         await recordAuditLog({
           actorId: user.id,
@@ -199,12 +244,69 @@ export async function PATCH(
           entityType: "PAYROLL_RUN",
           entityId: result.updated.id,
           meta: {
-            status: result.updated.status,
-            totalGross: Number(result.updated.totalGross),
-            totalNet: Number(result.updated.totalNet),
-            expenseId: result.expense?.id ?? null,
+            actor: buildAuditActor(user),
+            sourcePage: "admin/hr/payroll/[id]",
+            section: "run-actions",
+            operation:
+              parsed.data.status === "FINALIZED"
+                ? "finalize_run"
+                : parsed.data.status === "PAID"
+                  ? "mark_paid"
+                  : "cancel_run",
+            period: {
+              periodStart: result.updated.periodStart.toISOString(),
+              periodEnd: result.updated.periodEnd.toISOString(),
+            },
+            before: {
+              status: result.previousStatus,
+              expenseId: result.previousExpenseId,
+            },
+            after: {
+              status: result.updated.status,
+              totalGross: Number(result.updated.totalGross),
+              totalNet: Number(result.updated.totalNet),
+              expenseId: result.expense?.id ?? result.previousExpenseId ?? null,
+            },
             cancelledPayslips: result.cancelledPayslips ?? 0,
             cancelledTotals: result.cancelledTotals ?? null,
+            status: "SUCCESS",
+            resultSummary: summarizePayrollStatusResult(parsed.data.status),
+          },
+        });
+      } catch {
+        // best-effort
+      }
+    }
+
+    if (result.createdExpense && result.expense) {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "PAYROLL_EXPENSE_CREATE",
+          entityType: "PAYROLL_RUN",
+          entityId: result.updated.id,
+          meta: {
+            actor: buildAuditActor(user),
+            sourcePage: "admin/hr/payroll/[id]",
+            section: "run-actions",
+            operation: "create_expense_entry",
+            period: {
+              periodStart: result.updated.periodStart.toISOString(),
+              periodEnd: result.updated.periodEnd.toISOString(),
+            },
+            before: {
+              status: result.updated.status,
+              expenseId: result.previousExpenseId,
+            },
+            after: {
+              status: result.updated.status,
+              expenseId: result.expense.id,
+              amount: Number(result.expense.amount || 0),
+              category: result.expense.category,
+              note: result.expense.note || result.expense.reason || null,
+            },
+            status: "SUCCESS",
+            resultSummary: "Expense entry created for payroll run successfully.",
           },
         });
       } catch {
@@ -246,6 +348,13 @@ export async function PATCH(
   } catch (err) {
     console.error("Error updating payroll run:", err);
     const message = err instanceof Error ? err.message : "Failed to update payroll run";
+    if (
+      /Cannot finalize run without at least one payslip/i.test(message) ||
+      /Invalid payroll status transition/i.test(message) ||
+      /Manual run total overrides are not allowed/i.test(message)
+    ) {
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

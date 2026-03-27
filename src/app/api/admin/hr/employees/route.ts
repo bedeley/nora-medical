@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -47,6 +48,44 @@ async function requireAdmin() {
   return user;
 }
 
+function buildMissingProfileWhere(): Prisma.EmployeeWhereInput {
+  return {
+    OR: [
+      { email: null },
+      { email: "" },
+      { phone: null },
+      { phone: "" },
+      { department: null },
+      { department: "" },
+      { position: null },
+      { position: "" },
+      { hireDate: null },
+    ],
+  };
+}
+
+function buildDepartmentClause(departmentRaw: string): Prisma.EmployeeWhereInput | undefined {
+  if (departmentRaw === "__MISSING__") {
+    return {
+      OR: [{ department: null }, { department: "" }],
+    };
+  }
+  if (departmentRaw) return { department: departmentRaw };
+  return undefined;
+}
+
+function buildSearchClause(q: string): Prisma.EmployeeWhereInput | undefined {
+  if (!q) return undefined;
+  return {
+    OR: [
+      { firstName: { contains: q, mode: "insensitive" as const } },
+      { lastName: { contains: q, mode: "insensitive" as const } },
+      { email: { contains: q, mode: "insensitive" as const } },
+      { phone: { contains: q, mode: "insensitive" as const } },
+    ],
+  };
+}
+
 export async function GET(req: Request) {
   const user = await requireAdmin();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -54,30 +93,114 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim() || "";
   const statusRaw = searchParams.get("status")?.trim() || "";
-  const department = searchParams.get("department")?.trim() || "";
+  const departmentRaw = searchParams.get("department")?.trim() || "";
+  const roleRaw = searchParams.get("role")?.trim().toUpperCase() || "";
+  const completenessRaw = searchParams.get("completeness")?.trim().toLowerCase() || "";
+  const sortRaw = searchParams.get("sort")?.trim().toLowerCase() || "recent";
+  const pageRaw = Number(searchParams.get("page") || "1");
+  const pageSizeRaw = Number(searchParams.get("pageSize") || "25");
+  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.trunc(pageRaw) : 1;
+  const pageSize =
+    Number.isFinite(pageSizeRaw) && pageSizeRaw > 0
+      ? Math.min(100, Math.max(10, Math.trunc(pageSizeRaw)))
+      : 25;
+  const skip = (page - 1) * pageSize;
   const allowedStatuses = new Set(["ACTIVE", "ON_LEAVE", "SUSPENDED", "TERMINATED"]);
+  const allowedRoles = new Set(["ADMIN", "STAFF", "ACCOUNTANT"]);
   const status = allowedStatuses.has(statusRaw) ? statusRaw : "";
+  const role = allowedRoles.has(roleRaw) ? roleRaw : "";
+  const completeness = completenessRaw === "complete" || completenessRaw === "missing" ? completenessRaw : "";
 
-  const employees = await prisma.employee.findMany({
-    where: {
-      ...(status ? { status: status as "ACTIVE" } : {}),
-      ...(department ? { department } : {}),
-      ...(q
-        ? {
-            OR: [
-              { firstName: { contains: q, mode: "insensitive" } },
-              { lastName: { contains: q, mode: "insensitive" } },
-              { email: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+  const baseClauses: Prisma.EmployeeWhereInput[] = [];
+  const departmentFilter = buildDepartmentClause(departmentRaw);
+  const searchClause = buildSearchClause(q);
+  if (departmentFilter) baseClauses.push(departmentFilter);
+  if (role) {
+    baseClauses.push({
+      user: {
+        role: role as "ADMIN" | "STAFF" | "ACCOUNTANT",
+      },
+    });
+  }
+  if (searchClause) baseClauses.push(searchClause);
+  const baseWhere: Prisma.EmployeeWhereInput = baseClauses.length > 0 ? { AND: baseClauses } : {};
+
+  const missingProfileWhere = buildMissingProfileWhere();
+  const whereClauses: Prisma.EmployeeWhereInput[] = [...baseClauses];
+  if (status) {
+    whereClauses.push({
+      status: status as "ACTIVE" | "ON_LEAVE" | "SUSPENDED" | "TERMINATED",
+    });
+  }
+  if (completeness === "missing") whereClauses.push(missingProfileWhere);
+  if (completeness === "complete") whereClauses.push({ NOT: missingProfileWhere });
+  const where: Prisma.EmployeeWhereInput = whereClauses.length > 0 ? { AND: whereClauses } : {};
+
+  const orderBy =
+    sortRaw === "name_asc"
+      ? [{ firstName: "asc" as const }, { lastName: "asc" as const }]
+      : sortRaw === "name_desc"
+        ? [{ firstName: "desc" as const }, { lastName: "desc" as const }]
+        : [{ createdAt: "desc" as const }];
+
+  const [employees, total, departmentRows, totalAll, activeCount, onLeaveCount, suspendedCount, terminatedCount, missingCount] =
+    await Promise.all([
+      prisma.employee.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              role: true,
+            },
+          },
+        },
+        orderBy,
+        skip,
+        take: pageSize,
+      }),
+      prisma.employee.count({ where }),
+      prisma.employee.findMany({
+        where: baseWhere,
+        select: { department: true },
+        distinct: ["department"],
+        orderBy: { department: "asc" },
+      }),
+      prisma.employee.count({ where: baseWhere }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, { status: "ACTIVE" }] },
+      }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, { status: "ON_LEAVE" }] },
+      }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, { status: "SUSPENDED" }] },
+      }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, { status: "TERMINATED" }] },
+      }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, missingProfileWhere] },
+      }),
+    ]);
+
+  return NextResponse.json({
+    rows: employees,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    departmentOptions: departmentRows
+      .map((row) => row.department)
+      .filter((value): value is string => Boolean(value && value.trim())),
+    summary: {
+      total: totalAll,
+      active: activeCount,
+      onLeave: onLeaveCount,
+      suspended: suspendedCount,
+      terminated: terminatedCount,
+      missingProfile: missingCount,
     },
-    orderBy: { createdAt: "desc" },
-    take: 200,
   });
-
-  return NextResponse.json({ rows: employees });
 }
 
 export async function POST(req: Request) {
@@ -126,9 +249,24 @@ export async function POST(req: Request) {
         entityType: "EMPLOYEE",
         entityId: employee.id,
         meta: {
+          actor: { id: user.id, role: user.role },
+          sourcePage: "admin/hr/staff",
+          section: "employee-create",
+          operation: "create_employee",
+          before: null,
+          after: {
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            phone: employee.phone,
+            department: employee.department,
+            position: employee.position,
+            status: employee.status,
+          },
           status: employee.status,
           department: employee.department,
           position: employee.position,
+          resultSummary: "Employee created successfully.",
         },
       });
     } catch {

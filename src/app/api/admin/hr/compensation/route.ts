@@ -5,6 +5,10 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import {
+  buildCompensationWhereClause,
+  normalizeCompensationQueryState,
+} from "@/lib/hr-compensation-utils";
 
 const compensationSchema = z.object({
   employeeId: z.string().min(1),
@@ -73,15 +77,31 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
-  const employeeId = searchParams.get("employeeId")?.trim() || "";
+  const queryState = normalizeCompensationQueryState(searchParams);
+  const where = buildCompensationWhereClause(queryState);
 
-  const compensations = await prisma.compensation.findMany({
-    where: employeeId ? { employeeId } : undefined,
-    orderBy: { effectiveDate: "desc" },
-    take: 200,
+  const [total, compensations] = await Promise.all([
+    prisma.compensation.count({ where }),
+    prisma.compensation.findMany({
+      where,
+      orderBy: [{ effectiveDate: "desc" }, { id: "desc" }],
+      skip: queryState.skip,
+      take: queryState.take,
+    }),
+  ]);
+
+  return NextResponse.json({
+    rows: compensations,
+    total,
+    page: queryState.page,
+    pageSize: queryState.pageSize,
+    totalPages: Math.max(1, Math.ceil(total / queryState.pageSize)),
+    filters: {
+      employeeId: queryState.employeeId,
+      status: queryState.status,
+      search: queryState.search,
+    },
   });
-
-  return NextResponse.json({ rows: compensations });
 }
 
 export async function POST(req: Request) {
@@ -144,14 +164,22 @@ export async function POST(req: Request) {
         entityType: "COMPENSATION",
         entityId: compensation.id,
         meta: {
+          sourcePage: "admin/hr/compensation",
+          section: "compensation-records",
+          operation: "create_compensation",
           employeeId: compensation.employeeId,
-          baseSalary: Number(compensation.baseSalary),
-          allowances: Number(compensation.allowances),
-          deductions: Number(compensation.deductions),
-          bonus: Number(compensation.bonus),
-          effectiveDate: compensation.effectiveDate?.toISOString?.() ?? null,
-          status: compensation.status,
-          approvedAt: compensation.approvedAt?.toISOString?.() ?? null,
+          before: null,
+          after: {
+            baseSalary: Number(compensation.baseSalary),
+            allowances: Number(compensation.allowances),
+            deductions: Number(compensation.deductions),
+            bonus: Number(compensation.bonus),
+            effectiveDate: compensation.effectiveDate?.toISOString?.() ?? null,
+            status: compensation.status,
+            approvedAt: compensation.approvedAt?.toISOString?.() ?? null,
+          },
+          status: "SUCCESS",
+          resultSummary: "Compensation record created successfully.",
         },
       });
     } catch {

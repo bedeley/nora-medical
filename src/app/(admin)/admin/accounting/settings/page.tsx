@@ -441,7 +441,7 @@ export default function AccountingSettingsPage() {
     return `Last updated ${new Date(row.createdAt).toLocaleString()} (${formatRelativeTime(row.createdAt)}) by ${actor}.`;
   };
   const getSectionAuditLink = (section: string) =>
-    `/admin/audit?scope=accounting_settings&settingSection=${encodeURIComponent(section)}`;
+    `/admin/audit?scope=accounting_settings&sourcePage=admin/accounting/settings&settingSection=${encodeURIComponent(section)}`;
   const sectionLoadErrors = [
     thresholdsLoadError ? "Integrity thresholds" : null,
     reportingLoadError ? "Reporting source" : null,
@@ -1122,7 +1122,7 @@ export default function AccountingSettingsPage() {
             Save all changed sections
           </Button>
           <Button asChild size="sm" variant="outline">
-            <Link href="/admin/audit?scope=accounting_settings">Open settings audit trail</Link>
+            <Link href="/admin/audit?scope=accounting_settings&sourcePage=admin/accounting/settings">Open settings audit trail</Link>
           </Button>
         </div>
       </div>

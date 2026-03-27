@@ -6,14 +6,11 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Users, Briefcase, Banknote, AlertTriangle, FileDown, CalendarDays, ClipboardList } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Users, Briefcase, Banknote, AlertTriangle, FileDown, CalendarDays, ClipboardList, Wallet, SlidersHorizontal } from "lucide-react";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export default function AdminHrPage() {
-  const [workweekDays, setWorkweekDays] = useState(5);
   const { data: settingsData } = useQuery({
     queryKey: ["admin", "hr", "settings", "workweekDays"],
     queryFn: () => fetcher("/api/admin/hr/settings?keys=hr.workweekDays"),
@@ -36,19 +33,7 @@ export default function AdminHrPage() {
     if (Number.isFinite(num) && num >= 5 && num <= 7) return Math.floor(num);
     return 5;
   };
-
-  useEffect(() => {
-    const remote = settingsData?.values?.["hr.workweekDays"];
-    setWorkweekDays(resolveWorkweekDays(remote));
-  }, [settingsData]);
-
-  useEffect(() => {
-    fetch("/api/admin/hr/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "hr.workweekDays", value: workweekDays }),
-    }).catch(() => {});
-  }, [workweekDays]);
+  const workweekDays = resolveWorkweekDays(settingsData?.values?.["hr.workweekDays"]);
 
   const employeeCount = Array.isArray(employeesData?.rows) ? employeesData.rows.length : null;
   const jobCount = Array.isArray(jobsData?.rows) ? jobsData.rows.length : null;
@@ -64,17 +49,10 @@ export default function AdminHrPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">Workweek days</span>
-          <Select value={String(workweekDays)} onValueChange={(value) => setWorkweekDays(Number(value))}>
-            <SelectTrigger className="w-full sm:w-[180px]">
-              <SelectValue placeholder="Workweek" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="5">5-day week (Mon-Fri)</SelectItem>
-              <SelectItem value="6">6-day week (Mon-Sat)</SelectItem>
-              <SelectItem value="7">7-day week</SelectItem>
-            </SelectContent>
-          </Select>
+          <span className="text-xs text-muted-foreground">Default workweek: {workweekDays} day(s)</span>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/admin/hr/settings">Manage HR settings</Link>
+          </Button>
         </div>
       </header>
 
@@ -130,6 +108,21 @@ export default function AdminHrPage() {
             </p>
             <Link href="/admin/hr/compensation">
               <Button className="w-full">Open Payroll</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex items-center gap-3">
+            <Wallet className="h-6 w-6 text-primary" />
+            <CardTitle>Payroll Runs</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Open payroll runs and complete final review actions.
+            </p>
+            <Link href="/admin/hr/payroll">
+              <Button className="w-full">Open Payroll Runs</Button>
             </Link>
           </CardContent>
         </Card>
@@ -203,6 +196,21 @@ export default function AdminHrPage() {
             </p>
             <Link href="/admin/hr/reviews">
               <Button className="w-full">Open Reviews</Button>
+            </Link>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex items-center gap-3">
+            <SlidersHorizontal className="h-6 w-6 text-primary" />
+            <CardTitle>HR Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Manage shared defaults for leave and review workflows.
+            </p>
+            <Link href="/admin/hr/settings">
+              <Button className="w-full" variant="outline">Open Settings</Button>
             </Link>
           </CardContent>
         </Card>

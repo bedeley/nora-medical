@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { normalizeAuditText } from "@/lib/hr-hiring-utils";
 
 const jobSchema = z.object({
   title: z.string().min(2),
@@ -17,6 +18,10 @@ const jobSchema = z.object({
   salaryMax: z.number().optional(),
   openedAt: z.string().datetime().optional().or(z.literal("")),
   closedAt: z.string().datetime().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -96,9 +101,19 @@ export async function POST(req: Request) {
         entityType: "JOB_POSTING",
         entityId: job.id,
         meta: {
-          status: job.status,
-          department: job.department,
-          title: job.title,
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(parsed.data.section, "job-postings"),
+          operation: normalizeAuditText(parsed.data.operation, "create_job_posting"),
+          before: null,
+          after: {
+            title: job.title,
+            department: job.department,
+            location: job.location,
+            status: job.status,
+          },
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Job posting created successfully."),
         },
       });
     } catch {

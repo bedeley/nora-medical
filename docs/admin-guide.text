@@ -1,4 +1,4 @@
-Nora Hospital Supplies ó Admin Guide
+Nora Hospital Supplies ‚Äî Admin Guide
 
 This guide uses collapsible sections in the app. Open any section for a concise walkthrough.
 
@@ -23,7 +23,7 @@ Phase 1 Index (where to find the pages)
 - How to use: Enable 2FA on first admin login; use TOTP codes to access admin routes.
 - Related: Admin sessions expire and are enforced in middleware.
 - Role gates: Admin-only actions include purchase creation/receiving, returns/refunds, supplier payments, and journal approvals.
-- Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use ìInvite employeeî to send a 24-hour invite link with verification code via email ? SMS ? WhatsApp fallback.
+- Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use ‚ÄúInvite employee‚Äù to send a 24-hour invite link with verification code via email ? SMS ? WhatsApp fallback.
 
 ## Dashboard & Recent Activity
 - Pages: /admin/dashboard, /admin/recent
@@ -64,7 +64,7 @@ Phase 1 Index (where to find the pages)
 - Lead time validation: Min must be <= max; the form will block invalid ranges.
 - Related: Supplier status and lead time feed inventory planning and alerting.
 
-## Suppliers ó Performance
+## Suppliers ‚Äî Performance
 - Page: /admin/suppliers/performance
 - What it is: Supplier scorecard tracking fill rate, on-time delivery, lead time, and spend.
 - How to use: Review the breakdown table; click a supplier to open the filtered Suppliers list.
@@ -107,7 +107,7 @@ Phase 1 Index (where to find the pages)
   - Use `Show all` in the badge to return to normal full-order listing.
 - Related: Orders feed accounting, inventory movements, and customer balances.
 
-## Orders ó OTC Sales
+## Orders ‚Äî OTC Sales
 - Page: /admin/orders/otc
 - What it is: One-screen walk-in OTC checkout with shift lock control.
 - How to use:
@@ -161,7 +161,7 @@ Phase 1 Index (where to find the pages)
 - Aging hub drill-through:
   - `Open customers` from Aging Hub opens `balance due` customers sorted by highest balance first.
   - A subtle `Applied from Aging Hub` badge appears when this context is active.
-- Statements & reminders: Use ìStatementî or ìSend reminderî to prompt overdue balances.
+- Statements & reminders: Use ‚ÄúStatement‚Äù or ‚ÄúSend reminder‚Äù to prompt overdue balances.
 - Related: Customer balances are validated in Accounting Integrity.
 
 ## Payments
@@ -170,7 +170,7 @@ Phase 1 Index (where to find the pages)
 - How to use: Reconcile MoMo payments, print/export receipts for bookkeeping.
 - Related: Payments update order balances and accounting entries.
 
-## Payments ó MoMo Settlement & Reconciliation
+## Payments ‚Äî MoMo Settlement & Reconciliation
 - Page: /admin/payments/momo
 - What it is: Ghana-specific MoMo monitoring for provider requests, manual records, and reconciliation outcomes.
 - How to use:
@@ -204,7 +204,7 @@ Phase 1 Index (where to find the pages)
 - How to use: Adjust stock, review alerts, schedule restocks. Use "Adjust inventory value" to revalue cost and post a matching journal entry.
 - Related: Inventory is used in sales, COGS, and integrity checks.
 
-## Inventory ó Lots & Expiry
+## Inventory ‚Äî Lots & Expiry
 - Page: /admin/inventory-lots
 - What it is: Batch/lot tracking with expiry dates for compliance and audits.
 - How to use: Review lot balances and expiry windows; use FEFO Priority + Days left to plan picking.
@@ -214,7 +214,7 @@ Phase 1 Index (where to find the pages)
 - Movement navigation: Use `View all lot movements` from Trace to open all movements for the selected lot (not a single reason-only subset).
 - Related: Lot details are captured on receive; batch code and expiry are required for lot-tracked items.
 
-## Inventory ó Stock Adjustments
+## Inventory ‚Äî Stock Adjustments
 - Page: /admin/stock-adjustments
 - What it is: Reconcile system stock to physical count.
 - How to use: Choose Cycle Count (periodic audit) or Stock Adjustment (one-off correction), enter the reason (e.g., damaged/expired), and save.
@@ -235,17 +235,17 @@ Phase 1 Index (where to find the pages)
 Step-by-step (enhanced workflow)
 1) Suppliers setup
    - Add supplier name, status, lead time avg/min/max, and defaults (MOQ/pack size).
-   - Example: ìMedSupply Wholesaleî ∑ ACTIVE ∑ lead time 14/10/21 ∑ MOQ 50 ∑ pack 10.
+   - Example: ‚ÄúMedSupply Wholesale‚Äù ¬∑ ACTIVE ¬∑ lead time 14/10/21 ¬∑ MOQ 50 ¬∑ pack 10.
    - Example (cartons): If a carton has 12 units and MOQ is 2 cartons, set MOQ = 24 and pack size = 12.
    - Use ON_HOLD/INACTIVE to pause new orders; alerts will flag products tied to them.
 2) Product linkage
    - Open a product and set the primary supplier in the main supplier selector.
    - Add alternates in the supplier links panel, with optional overrides for lead time/MOQ/pack size.
-   - Use ìSet as primaryî if you switch vendors.
+   - Use ‚ÄúSet as primary‚Äù if you switch vendors.
    - Example: Primary = MedSupply Wholesale (lead time 14), Alternate = HealthPro (lead time 21, MOQ 100).
 3) Purchase creation (PO)
    - Create a purchase with supplier + expected arrival date.
-   - Leave ìReceive nowî unchecked when itís an order, not a delivery.
+   - Leave ‚ÄúReceive now‚Äù unchecked when it‚Äôs an order, not a delivery.
    - Large quantities go to PENDING_APPROVAL automatically.
    - Example: 500 units @ 12.50 from MedSupply, expected 2026-01-15 ? status PENDING_APPROVAL.
 4) Approval (admin)
@@ -267,7 +267,7 @@ Step-by-step (enhanced workflow)
 - What it is: Demand-driven planning using the last 60 days of sales, current stock, reserved stock, and on-order purchases.
 - How to use: Recompute demand, review suggestions, tune reorder points/lead times only when needed.
 - Related: Suggestions support purchasing decisions and reduce stockouts.
-Inventory Planning ó Overview
+Inventory Planning ‚Äî Overview
 - Page: /admin/inventory-planning
 - What it is: Main planning dashboard summarizing demand, available stock, effective planning values, and suggestions.
 - How to use: Recompute demand; the system auto-derives reorder/safety stock, and manual settings override.
@@ -281,7 +281,7 @@ Inventory Planning ó Overview
   4) Schedule daily or weekly; the endpoint respects the toggle and last run time.
 - Related: Uses 60-day demand snapshots and open suggestions.
 
-Inventory Planning ó Product Detail
+Inventory Planning ‚Äî Product Detail
 - Page: /admin/inventory-planning/[id]
 - What it is: Per-product planning settings and suggestion details.
 - How to use: Review demand snapshot, adjust reorder point/safety stock/lead time, dismiss suggestions if needed.
@@ -298,7 +298,7 @@ Step-by-step (product detail)
 5) Save planning settings.
 6) Return to /admin/inventory-planning and click Recompute demand to refresh suggestions.
 
-Inventory Planning ó Reports
+Inventory Planning ‚Äî Reports
 - Page: /admin/inventory-planning/reports
 - What it is: Export center for restock suggestions.
 - How to use: Download CSV and share with purchasing/suppliers.
@@ -315,7 +315,7 @@ Inventory Planning ó Reports
 - Fiscal period baseline:
   - After a fresh reset with no periods, the system auto-creates one OPEN period for the current calendar year on first load of accounting pages.
 
-## Accounting ó Accounts
+## Accounting ‚Äî Accounts
 - Page: /admin/accounting/accounts
 - What it is: Chart of accounts (COA) used by auto-posting and reporting.
 - Account code meanings (plain language):
@@ -373,7 +373,7 @@ Inventory Planning ó Reports
   - 6700 Marketing Expense
 - How to use: Add business-specific subaccounts where needed; keep core codes unchanged for system consistency.
 
-## Accounting ó Posting Rules
+## Accounting ‚Äî Posting Rules
 - Page: /admin/accounting/posting-rules
 - What it is: Mapping layer between system events and ledger accounts.
 - Recommended mapping (already configured in this environment):
@@ -396,7 +396,7 @@ Inventory Planning ó Reports
   - customer prepayments to deposits (when payment is not tied to AR settlement),
   - expense category routing into dedicated expense accounts.
 
-## Accounting ó Journal
+## Accounting ‚Äî Journal
 - Page: /admin/accounting/journal
 - What it is: Book of record for posted, draft, and void entries.
 - Top-to-bottom walkthrough:
@@ -525,7 +525,7 @@ Inventory Planning ó Reports
   - Effective behavior follows app settings (`accounting.journal.policy`) with environment fallback.
 - Note: Journal account filter supports code/name lookup and account deep-links from line details.
 
-## Accounting ó Aging Hub
+## Accounting ‚Äî Aging Hub
 - Page: /admin/accounting/aging
 - What it is: One-screen AR/AP control tower before drilling into detailed aging pages.
 - How to use:
@@ -553,7 +553,7 @@ Inventory Planning ó Reports
   - `Open collections queue` opens Orders in outstanding-only mode sorted by highest balance.
   - `Open supplier follow-up` opens Supplier Payments with `Outstanding only` applied across all aging buckets.
 
-## Accounting ó AR Aging
+## Accounting ‚Äî AR Aging
 - Page: /admin/accounting/aging/ar
 - What it is: Customer receivables grouped by age buckets (0-30, 31-60, 61-90, 90+).
 - How to use:
@@ -577,7 +577,7 @@ Inventory Planning ó Reports
   - For operational payment and allocation workflows, use `/admin/customers` and `/admin/orders`.
 - Expected: AR Aging total should align with AR ledger (subject to as-of date).
 
-## Accounting ó AP Aging
+## Accounting ‚Äî AP Aging
 - Page: /admin/accounting/aging/ap
 - What it is: Supplier payables grouped by age buckets (0-30, 31-60, 61-90, 90+).
 - How to use:
@@ -595,7 +595,7 @@ Inventory Planning ó Reports
   - Ordered/not-received exposure is operational and is tracked in `/admin/supplier-payments`.
 - Expected: AP Aging changes after supplier payments are posted/approved.
 
-## Accounting ó Supplier Payments (AP)
+## Accounting ‚Äî Supplier Payments (AP)
 - Pages: /admin/supplier-payments, /admin/purchases
 - What it is: AP subledger built from purchase receipts and supplier settlements.
 - How to use:
@@ -622,10 +622,10 @@ Inventory Planning ó Reports
     - `Operational exposure`: includes full operational open exposure.
     - `Ledger AP basis`: focuses on received AP outstanding.
   - Meaning and use:
-    - `Operational exposure` answers: ìWhat supplier obligations are still operationally open right now?î
+    - `Operational exposure` answers: ‚ÄúWhat supplier obligations are still operationally open right now?‚Äù
       - Includes open ordered/not-yet-received exposure plus received/unpaid exposure within current page scope.
       - Use for procurement execution, supplier follow-up, and expected-date discipline.
-    - `Ledger AP basis` answers: ìWhat amount is currently represented as AP liability in accounting view?î
+    - `Ledger AP basis` answers: ‚ÄúWhat amount is currently represented as AP liability in accounting view?‚Äù
       - Anchors reconciliation toward received AP positioning.
       - Use for accounting controls, AP review, and period-close checks.
   - Why compare both:
@@ -678,7 +678,7 @@ Inventory Planning ó Reports
   - AP Aging cross-link:
     - `Open AP Aging` carries supplier and month context for faster cross-page reconciliation.
 
-## Operations ó Returns & RMA
+## Operations ‚Äî Returns & RMA
 - Page: /admin/returns
 - What it is: Central return ledger (cash refunds, store credit, and balance-applied returns).
 - Filters:
@@ -696,7 +696,7 @@ Inventory Planning ó Reports
 - How to use: Filter by labeled fields above, open the linked order, and verify refund disposition/restock/source.
 - Related: Uses return notes + journal entries to reconcile applied-to-balance returns.
 
-## Accounting ó Returns & Refunds (Journal Posting)
+## Accounting ‚Äî Returns & Refunds (Journal Posting)
 - Pages: /admin/orders/[id], /admin/returns
 - What it is: Return accounting for AR, cash, store credit, and stock valuation.
 - Posting behavior:
@@ -707,14 +707,14 @@ Inventory Planning ó Reports
 - Reconciliation on order page:
   - `Ledger total | Less non-ledger return credits | Net paid` should match `Amount Paid`.
 
-## Accounting ó VAT / Tax
+## Accounting ‚Äî VAT / Tax
 - Pages: /admin/accounting/tax-codes, /admin/accounting/vat-filings
 - What it is: VAT rates and filing packs.
 - How to use: Maintain tax codes, export VAT filings.
 - Related: Used in journal entries and VAT reports.
 - Validation behavior: Tax code names are trimmed, duplicate names return `409`, and editing a deleted/non-existent code returns `404`.
 
-## Accounting ó Reports
+## Accounting ‚Äî Reports
 - Pages: /admin/accounting/reports, /admin/accounting/reports/pl,
   /admin/accounting/reports/balance-sheet, /admin/accounting/reports/trial-balance,
   /admin/accounting/reports/vat, /admin/accounting/reports/order-discounts,
@@ -780,7 +780,7 @@ Inventory Planning ó Reports
   10. Open audit log from accounting settings/report context.
       - Expected result: P&L setting updates appear under accounting settings scope with source page/section metadata.
 
-## Accounting ó Bank Accounts
+## Accounting ‚Äî Bank Accounts
 - Pages: /admin/accounting/banks, /admin/accounting/banks/all-transactions
 - What it is:
   - `/admin/accounting/banks`: bank-scoped working page for setup, controlled edits, matching rules, and import-run review.
@@ -885,7 +885,7 @@ Inventory Planning ó Reports
   - Edit window days are configured in `/admin/accounting/settings` under `Bank transaction edit policy`.
   - Matching rules support reconciliation workflows and exception triage.
 
-## Import / Export Center ó Assisted Extract (Beta)
+## Import / Export Center ‚Äî Assisted Extract (Beta)
 - Page: /admin/import-export
 - What it is:
   - A review-first helper that extracts tabular candidates from PDF/image/DOCX/TXT/CSV into template-aligned CSV for imports.
@@ -903,7 +903,7 @@ Inventory Planning ó Reports
   - OCR for images/PDF fallback requires server OCR configuration (`IMPORT_OCR_ENABLE=1` and `OCR_SPACE_API_KEY`).
   - When extraction warnings appear, use template download + manual correction before final import.
 
-## Accounting ó Reconciliations
+## Accounting ‚Äî Reconciliations
 - Pages: /admin/accounting/reconciliations, /admin/accounting/reconciliations/[id]
 - What it is:
   - Month/period-level bank reconciliation control center.
@@ -961,7 +961,7 @@ Inventory Planning ó Reports
      - run `pnpm -s db:seed-reconciliations-page` when you need canonical seeded scenarios.
 - Related: Supports period close checklists and integrity checks.
 
-## Accounting ó Reconciliation Match Workspace
+## Accounting ‚Äî Reconciliation Match Workspace
 - Page: /admin/accounting/reconciliations/[id]
 - What it is:
   - The execution workspace where one reconciliation is completed and then closed.
@@ -1033,7 +1033,7 @@ Inventory Planning ó Reports
   9) Open `Review close checklist` and verify close is blocked while unmatched transactions remain.
 - Related: Matching rules from Bank Accounts can propose candidate matches.
 
-## Accounting ó Cash Reconciliation
+## Accounting ‚Äî Cash Reconciliation
 - Page: /admin/accounting/cash-reconciliations
 - What it is: Two-mode cash control page with strict day-close controls.
 - Top-to-bottom walkthrough (how to use the page):
@@ -1116,13 +1116,13 @@ Inventory Planning ó Reports
      - Expand one history row with `View day details`.
      - Expected result: operational source-level in/out/net appears for that day.
 
-## Accounting ó Owner Equity Contributions
+## Accounting ‚Äî Owner Equity Contributions
 - Page: /admin/accounting
 - What it is: Quick way to record owner equity added to cash/bank.
-- How to use: Open ìRecord owner equity,î enter amount, select bank/cash account, and save.
+- How to use: Open ‚ÄúRecord owner equity,‚Äù enter amount, select bank/cash account, and save.
 - Related: Posts a balanced journal entry (Debit Cash/Bank, Credit Equity).
 
-## Accounting ó Fiscal Periods
+## Accounting ‚Äî Fiscal Periods
 - Pages: /admin/accounting/periods, /admin/accounting/periods/[id]/snapshot
 - What it is:
   - Central control page for monthly operational locks and statutory fiscal-period close governance.
@@ -1233,7 +1233,7 @@ Step-by-step testing script (with expected results)
 Related page
 - /admin/accounting/settings
   - Use Settings to manage reopen policy and shared accounting policies used by this page.
-## Accounting ó Data Integrity
+## Accounting ‚Äî Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
 - What it is: Consistency checks across AR, inventory, negative stock, and posting readiness.
 - Top-to-bottom walkthrough (what each line/control means):
@@ -1339,7 +1339,7 @@ Related page
 12) Click `Recalculate`.
    - Expected result: checks refresh immediately and all summary/metric cards update to current data.
 
-## Accounting ó Reconcile Totals
+## Accounting ‚Äî Reconcile Totals
 - Page: /admin/accounting/reconcile
 - What it is: Reconcile bridge that compares operational totals vs posted-ledger totals and highlights variance severity.
 - Why this page matters:
@@ -1418,7 +1418,7 @@ Step-by-step testing script (with expected result)
 13) If no auto-apply or return rows exist in period:
    - Expected: those cards show no-data messages; this is valid behavior.
 
-## Accounting ó Settings
+## Accounting ‚Äî Settings
 - Page: /admin/accounting/settings
 - What it is: Central policy page for accounting guardrails used by integrity checks, reporting, store-credit behavior, bank transaction edits, manual-journal governance, journal runtime defaults, reconcile severity, and period reopen policy.
 - Who can use it:
@@ -1599,7 +1599,7 @@ Related page
 - /admin/accounting/posting-rules
   - Use this page to map accounting events to ledger accounts.
   - Use `/admin/accounting/settings` first for policy, then Posting Rules for account mapping detail.
-## System Settings ó Feature Toggles
+## System Settings ‚Äî Feature Toggles
 - Page: /admin/settings/features
 - What it is: Global feature flags (includes Accounting auto-post).
 - How to use: Toggle "Accounting auto-post" on/off to control whether orders/payments/expenses post automatically. This toggle is locked by `ACCOUNTING_AUTO_POST_ENABLED` (set to 1 in `.env`/`.env.local`) and will be disabled in the UI while the env flag is on.
@@ -1880,13 +1880,13 @@ Related page
 - Auto-heal control: `Run auto-heal now` is enabled only when `ACCOUNTING_AUTO_HEAL_MISSING_POSTINGS=1` is set in `.env`/`.env.local`.
 - Related: Use cron for periodic health alerts and audit retention.
 
-## Platform Resilience ó Monitoring & Alerts
+## Platform Resilience ‚Äî Monitoring & Alerts
 - Pages: /admin/dashboard (Monitoring widget), /admin/health
 - What it is: Daily checks for missing postings, ledger mismatches, and MoMo settlement issues.
 - How to use: Review counts on the dashboard, then open Health Check to investigate and repair.
 - Related: Trigger the health alert cron to email admins when mismatches appear.
 
-## Platform Resilience ó Backup & Restore
+## Platform Resilience ‚Äî Backup & Restore
 - Runbook: docs/runbooks/backup-restore.text
 - What it is: Step-by-step backup and restore instructions for PostgreSQL.
 - How to use: Follow the runbook before risky changes and on a regular cadence.
@@ -1897,7 +1897,7 @@ Related page
 - HR and admin settings govern staff operations and system behavior.
 - Audit logs and health checks help detect issues early.
 
-## Session Tutorial Pack ‚Äî B2B Procurement + Tender + Conversion
+## Session Tutorial Pack √¢‚Ç¨‚Äù B2B Procurement + Tender + Conversion
 - Scope: This section captures the exact end-to-end flows completed in the latest implementation cycle.
 - Main pages:
   - /admin/b2b/procurement
@@ -1905,7 +1905,7 @@ Related page
   - /admin/orders/new
   - /admin/purchases
 
-## B2B Procurement Workflow ‚Äî Tested Behavior
+## B2B Procurement Workflow √¢‚Ç¨‚Äù Tested Behavior
 - Page: /admin/b2b/procurement
 - What to verify:
   1) Requests can be assigned and status-updated.
@@ -1918,7 +1918,7 @@ Related page
   - Bulk actions with safer status rules.
   - Better alignment and overflow handling for row action buttons.
 
-## B2B Procurement Analytics ‚Äî How to Use
+## B2B Procurement Analytics √¢‚Ç¨‚Äù How to Use
 - Page: /admin/b2b/procurement/analytics
 - Purpose: Track request throughput, aging, response speed, and conversion quality.
 - Cards and meaning:
@@ -1947,7 +1947,7 @@ Related page
   4) Prepare a draft order from an approved request -> Drafts Prepared should increase.
   5) Compare oldest-open list with /admin/b2b/procurement queue ordering.
 
-## Tender Builder ‚Äî Core Workflow
+## Tender Builder √¢‚Ç¨‚Äù Core Workflow
 - Page: /admin/b2b/tenders
 - Standard flow:
   1) Choose source (Paste/Upload or From Procurement Request).
@@ -1961,7 +1961,7 @@ Related page
   - NO BID lines are excluded from supply conversion.
   - Out-of-stock lines require lead time + split supply note.
 
-## Tender Builder ‚Äî Template Packs
+## Tender Builder √¢‚Ç¨‚Äù Template Packs
 - Purpose: Reuse standard commercial terms quickly.
 - How to use:
   1) Fill validity, lead time, payment terms, notes.
@@ -1970,7 +1970,7 @@ Related page
   4) Later, apply template from dropdown to auto-fill those fields.
 - Expected result: Saved values restore exactly.
 
-## Tender Builder ‚Äî Approval Gate
+## Tender Builder √¢‚Ç¨‚Äù Approval Gate
 - Send flow uses explicit approval controls.
 - UI card: "Send Tender by Email"
 - Steps:
@@ -1981,7 +1981,7 @@ Related page
   - Approval can be required by env policy.
   - Protected admin emails can operate one-user approve/send.
 
-## Session Tutorial Pack ‚Äî Delivery Dispatch + Dispatcher
+## Session Tutorial Pack √¢‚Ç¨‚Äù Delivery Dispatch + Dispatcher
 - Scope: End-to-end tutorial for `/admin/delivery/dispatch` and `/dispatch/my-deliveries`.
 - Purpose: Assign deliveries safely, track POD/attempts, handle dispatcher cash claims, and prevent delivery/accounting mismatches.
 
@@ -2084,7 +2084,7 @@ Related page
 ### Delivery Scope Model (Important)
 - Assignment scope is set by admin, not dispatcher:
   - Dispatcher delivers what was assigned on manifest.
-  - Partial at order level may still be ìdeliveredî for the assigned trip.
+  - Partial at order level may still be ‚Äúdelivered‚Äù for the assigned trip.
 - System representation:
   - Trip can be completed while overall order remains partially delivered if other lines are pending future assignments.
 
@@ -2101,13 +2101,13 @@ Related page
 7) Complete and verify order becomes fully delivered, then drops from active dispatch queue.
 
 ### Troubleshooting
-- ìDelivered but item delivered qty is zeroî:
+- ‚ÄúDelivered but item delivered qty is zero‚Äù:
   - Use `Partially delivered` with item-level quantities or `Set all delivered` as needed.
-- ìPOD missing warning unexpectedlyî:
+- ‚ÄúPOD missing warning unexpectedly‚Äù:
   - Ensure POD-required flag is only used for dispatch-managed drop-offs.
-- ìDispatcher claim exists but payment not in ledgerî:
+- ‚ÄúDispatcher claim exists but payment not in ledger‚Äù:
   - Admin confirmation step is still pending.
-- ìOrder not visible on admin dispatch queueî:
+- ‚ÄúOrder not visible on admin dispatch queue‚Äù:
   - Check filters (`Include Delivered`, date range, status, rider, collection state).
 - Relevant env:
   - B2B_TENDER_REQUIRE_APPROVAL=1 (or 0 to disable gate)
@@ -2181,11 +2181,11 @@ Related page
 - Collection Review page only reflects resulting state.
 
 ### Troubleshooting
-- ìWhy is Actionable only empty?î:
+- ‚ÄúWhy is Actionable only empty?‚Äù:
   - No pending dispatcher claims and no unposted settlements exist.
-- ìWhy do I see balance but settlement = n/a?î:
+- ‚ÄúWhy do I see balance but settlement = n/a?‚Äù:
   - There is no dispatcher claim for that order yet.
-- ìHow do I move a row from unsettled to settled?î:
+- ‚ÄúHow do I move a row from unsettled to settled?‚Äù:
   - Complete the claim confirmation/settlement flow from Dispatch and Settlement History workflows.
 
 ## Session Tutorial Pack - Delivery Settlement History
@@ -2281,7 +2281,7 @@ Related page
 - This page is reporting-only.
 - To fix missing POD, update delivery capture in dispatch/order workflows.
 
-## Tender Builder ‚Äî Version Compare
+## Tender Builder √¢‚Ç¨‚Äù Version Compare
 - Compare panel is driven by selected tender.
 - Steps:
   1) Save at least two commercial edits.
@@ -2291,14 +2291,14 @@ Related page
   - Dropdown shows comparable commercial versions only.
   - Compare summary shows totals delta and changed line count.
 
-## Tender Builder ‚Äî Expiry Reminders
+## Tender Builder √¢‚Ç¨‚Äù Expiry Reminders
 - Recent Tenders shows expiry countdown for eligible tenders.
 - Send Reminder is available for active expiring records from reminder feed.
 - Expected result:
   - Success toast after send.
   - Audit and recipient records are stored.
 
-## Tender Builder ‚Äî Export Package
+## Tender Builder √¢‚Ç¨‚Äù Export Package
 - Action: Export Package on Recent Tenders row.
 - Expected zip contents:
   - *.pdf
@@ -2483,4 +2483,205 @@ Related page
   - Later settlement posts: Dr `2300 Accrued Expenses`, Cr selected payment account.
   - Partial settlements are supported: each payment reduces outstanding balance and updates status (`UNPAID`, `PARTIALLY_PAID`, `PAID`).
 
+## HR ‚Äî Payroll Run Detail
+- Page: /admin/hr/payroll/[id]
+- What it is: Payroll run control page for reviewing one payroll period, processing run actions, checking employee-level payslips, resolving blockers, exporting payroll data, and reviewing recent audit activity.
+- Core outcomes:
+  - Move the run safely through draft, finalized, paid, and cancelled states with confirmation guardrails.
+  - Keep run totals, employee payslips, exports, and blocker resolution in one workspace.
+  - Use consistent year-to-date values across payroll run detail and paystub detail pages.
+  - Keep important payroll actions audit-logged with actor, page, section, operation, before/after context, and result summary.
+
+Top-to-bottom walkthrough with explanations
+1) Open page and confirm run context
+   - Review the top summary area for run status, run type, integrity state, payroll period, gross pay, net pay, payslip count, and current blocker summary.
+   - Use the utility actions to export the run, export the bank file, copy the run link, return to the payroll list, or open the full audit history.
+2) Review `Run Actions`
+   - This section is the main operational area.
+   - Draft regular runs can generate payslips, add manual payslips, finalize the run, or cancel it.
+   - Finalized runs can be marked as paid and can create a payroll expense entry if one does not yet exist.
+   - Paid and cancelled runs are locked from further lifecycle transitions.
+3) Use confirmation dialogs for important actions
+   - Finalize, cancel, mark paid, and create expense entry all open a confirmation dialog first.
+   - The dialog shows the period, payslip count, and gross/net totals before the action is confirmed.
+   - Cancelling a draft run warns that all payslips attached to that draft run will be removed.
+4) Use the generate payslips dialog
+   - The dialog is grouped into `Payroll policy`, `Run input`, and `Preview result`.
+   - It reads the live Ghana payroll policy from HR Settings.
+   - If automatic statutory calculation is off, the admin must enter manual tax and SSNIT values before generating the run.
+   - Preview shows employee count, created/updated counts, skipped employees, and total preview gross/net before saving.
+5) Use the manual payslip dialog
+   - The form is grouped into `Employee and base pay`, `Deductions`, and `Extra earnings`.
+   - It is intended for one-off corrections or adjustment runs.
+6) Review `Employee Paystub Breakdown`
+   - This is the main employee-level review area.
+   - It shows current-period and year-to-date values per payslip.
+   - The toolbar above it is sticky on long pages and includes search, sort, row count, filtered export, clear filters, and copy-filter-link actions.
+   - Desktop shows a table. Small screens show stacked employee cards instead of the table.
+   - Each employee row/card includes bank-export readiness plus direct links to open the paystub and the staff profile.
+7) Use filtered review and export
+   - Search by employee name or id.
+   - Sort by employee name, gross pay, or net pay.
+   - Change rows per page and use paging controls.
+   - `Export Filtered CSV` exports the current filtered scope and includes the year-to-date columns shown on the page.
+   - `Copy Export Filters Link` copies the current filter state so the same view can be reopened later.
+8) Resolve `Missing Bank Details`
+   - This section lists employees who block bank export.
+   - It shows the missing bank fields in plain English and links directly to each affected staff profile.
+   - Long lists are collapsed by default and can be expanded with `Show all missing employees`.
+9) Review `Run Health`
+   - This section confirms whether the payroll run totals match the summed payslips.
+   - If there is a mismatch, it shows the gross and net delta so the issue can be investigated before finalizing.
+   - It also shows supporting totals such as employer SSNIT and expense-entry state.
+10) Review related adjustments and recent payroll activity
+   - If adjustment runs exist for the same payroll period, they appear in `Related Adjustment Runs`.
+   - `Recent Payroll Activity` shows the latest run-scoped audit entries with title, status, actor, time, section, operation, result summary, and compact detail chips such as file name, row count, blocked count, size, or amount.
+11) Verify audit traceability
+   - `View Full Audit Log` opens /admin/audit filtered to this payroll run.
+   - Audit entries should show useful metadata rather than generic activity only.
+
+Step-by-step testing script with expected results
+1) Page load smoke
+   - Action: open `/admin/hr/payroll/<runId>`.
+   - Expected: the page loads and shows the hero summary, `Run Actions`, `Employee Paystub Breakdown`, `Missing Bank Details`, `Run Health`, `Recent Payroll Activity`, and adjustment runs if applicable.
+2) Draft with no payslips guard
+   - Action: open a draft run with zero payslips.
+   - Expected: finalize is unavailable and the page explains why.
+3) Generate preview
+   - Action: open `Generate Payslips` and request a preview.
+   - Expected: preview summary returns employee count, created/updated counts, skipped employees, and total gross/net without saving payslips yet.
+4) Generate payslips
+   - Action: confirm generation on a draft regular run.
+   - Expected: success toast appears and the run totals and employee breakdown refresh.
+5) Manual mode policy guard
+   - Action: test a run where automatic statutory calculation is off.
+   - Expected: manual tax and SSNIT values are required before generation can continue.
+6) Manual payslip create
+   - Action: add a manual payslip with valid values.
+   - Expected: success toast appears, the employee row/card appears in the breakdown, and totals refresh.
+7) Finalize confirmation
+   - Action: click `Finalize Run`.
+   - Expected: a confirmation dialog appears first and shows period, payslip count, and gross/net totals.
+8) Finalize transition
+   - Action: confirm finalize on an eligible draft run.
+   - Expected: status becomes finalized and `Mark Run Paid` becomes available.
+9) Mark paid confirmation and transition
+   - Action: click `Mark Run Paid`, then confirm.
+   - Expected: the confirmation dialog appears first, then the run status becomes paid.
+10) Cancel draft confirmation
+    - Action: click `Cancel Draft` on a draft run.
+    - Expected: the confirmation dialog warns that all payslips in the draft run will be removed.
+11) Create expense entry
+    - Action: click `Create Expense Entry`, then confirm.
+    - Expected: expense state updates to created and a success toast appears.
+12) Bank export blocked case
+    - Action: attempt `Export Bank CSV` when one or more employees are missing bank details.
+    - Expected: export is blocked and the page shows the affected employees in `Missing Bank Details`.
+13) Bank export success case
+    - Action: complete required staff bank fields, then export bank CSV again.
+    - Expected: the file downloads successfully and a success toast appears.
+14) Full CSV export
+    - Action: click `Export CSV`.
+    - Expected: the run CSV downloads successfully.
+15) Breakdown search, sort, paging, and row count
+    - Action: apply search, sort, page size, and paging changes.
+    - Expected: the breakdown updates correctly and the URL stores the filter state.
+16) Empty-state behavior
+    - Action: search for a value that returns no payslips.
+    - Expected: the page shows a clear empty state and `Clear Filters` restores the default view.
+17) Copy export filters link
+    - Action: set non-default filters, click `Copy Export Filters Link`, then open the copied link.
+    - Expected: the same filtered breakdown is restored.
+18) Filtered export behavior
+    - Action: export filtered CSV while filters are active.
+    - Expected: only the current filtered scope is exported, including the year-to-date columns shown on the page.
+19) Missing bank details behavior
+    - Action: review `Missing Bank Details` when many employees are affected.
+    - Expected: the list starts collapsed and expands with `Show all missing employees`.
+20) Run health check
+    - Action: compare `Run Health` with the run totals.
+    - Expected: if totals match, the page reports the run is aligned; if not, it shows gross and net deltas.
+21) Recent payroll activity behavior
+    - Action: perform one or more exports or run actions, then refresh.
+    - Expected: the newest entries appear in `Recent Payroll Activity` with title, status, actor, time, summary, and compact detail chips.
+22) Small-screen behavior
+    - Action: review the page on a narrow viewport.
+    - Expected: cards and controls stack cleanly, the employee breakdown uses cards instead of the table, and no section overflows horizontally.
+23) Audit verification (required)
+    - Action: open `/admin/audit` from `View Full Audit Log`.
+    - Expected: run-scoped entries show useful metadata such as sourcePage, section, operation, before/after context, result summary, and export or blocker details where relevant.
+
+## HR ‚Äî Paystub Detail
+- Page: /admin/hr/paystubs/[id]
+- What it is: Detailed employee paystub page for review, PDF download, email delivery, printing, and paystub-specific audit traceability.
+- Core outcomes:
+  - Review a clean official paystub with current-period and year-to-date totals.
+  - Jump quickly to the linked payroll run, employee profile, and filtered audit history.
+  - Send, download, copy-link, and print from one page.
+  - Keep important paystub actions audit-logged with concise essential metadata.
+
+Top-to-bottom walkthrough with explanations
+1) Open page and confirm summary context
+   - Verify the paystub heading, run status, run type, employee summary, pay period, gross pay, and net pay.
+   - Use header links for `Open payroll run`, `Open employee profile`, and `View full audit log`.
+2) Use paystub actions
+   - `Email` opens a dialog and prefills employee email when available.
+   - `Download PDF` downloads the official paystub file.
+   - `Copy link` copies the current paystub URL for internal sharing.
+   - `Print` records the action and opens the browser print dialog.
+3) Review the official paystub card
+   - Confirm company header, phone, paystub ID, run status, employee block, and payroll run block.
+   - This card is the print-friendly official view of the paystub.
+4) Review current-period pay details
+   - Confirm Gross pay, Net pay, Tax, Employee SSNIT, Employer SSNIT, Taxable allowances, Non-taxable allowances, Chargeable income, and Deductions.
+5) Review year-to-date totals
+   - Confirm Gross pay, Net pay, Tax, Employee SSNIT, and Deductions.
+   - These totals are calculated from eligible year-to-date payslips for the employee.
+6) Review recent paystub activity
+   - Check the `Recent paystub activity` card for email, PDF download, print, and payslip creation entries.
+   - Each row should show a clear action title, status badge, summary, actor, timestamp, and compact useful detail chips such as recipient, file name, size, and channel.
+7) Confirm print presentation
+   - Print preview should reduce admin chrome and present the official paystub card cleanly as the main printed output.
+8) Verify audit quality
+   - Open the full audit view and confirm paystub actions use concise metadata only:
+     source page, section, operation, compact before/after context, status, and result summary.
+
+Step-by-step testing script with expected results
+1) Page load smoke
+   - Action: open `/admin/hr/paystubs/<payslipId>`.
+   - Expected: page loads without error and shows header summary, action buttons, official paystub card, and activity card.
+2) Context link behavior
+   - Action: click `Open payroll run`, `Open employee profile`, and `View full audit log`.
+   - Expected: links route to the correct payroll run, employee profile, and filtered audit view.
+3) Official paystub content
+   - Action: review the main paystub card.
+   - Expected: company details, employee details, payroll run details, current-period rows, and year-to-date rows all render clearly.
+4) Email flow
+   - Action: click `Email`, confirm or enter a valid recipient, then send.
+   - Expected: success toast appears, dialog closes, and a new `Paystub emailed` activity entry appears.
+5) Invalid email handling
+   - Action: attempt send with invalid or empty email.
+   - Expected: operation is blocked or returns a clear error; no false success state is shown.
+6) PDF download flow
+   - Action: click `Download PDF`.
+   - Expected: a PDF file downloads successfully and a `PDF downloaded` activity entry appears.
+7) Copy link flow
+   - Action: click `Copy link`, then paste into a text field.
+   - Expected: pasted value matches the current paystub URL.
+8) Print flow
+   - Action: click `Print`.
+   - Expected: browser print dialog opens and a `Paystub printed` activity entry appears.
+9) Activity detail quality
+   - Action: review recent activity after email/download/print actions.
+   - Expected: entries show clear titles, status, summary, actor, time, and compact detail chips for recipient/file/size/channel where relevant.
+10) Print preview quality
+    - Action: inspect browser print preview.
+    - Expected: admin-only controls are hidden and the official paystub card prints cleanly.
+11) Missing paystub guard
+    - Action: open `/admin/hr/paystubs/<invalidId>`.
+    - Expected: page shows `Paystub not found.` instead of crashing.
+12) Audit verification (required)
+    - Action: open `/admin/audit` after running the actions above.
+    - Expected: paystub entries such as `PAYSLIP_EMAIL`, `PAYSLIP_PDF_DOWNLOAD`, and `PAYSLIP_PRINT` include concise metadata:
+      source page, section, operation, compact before/after context, status, and result summary.
 

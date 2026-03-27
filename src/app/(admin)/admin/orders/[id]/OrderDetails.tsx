@@ -1050,7 +1050,7 @@ export default function OrderDetails({ orderId }: OrderDetailsProps) {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => router.push(`/admin/audit?entityType=ORDER&entityId=${order.id}`)}
+            onClick={() => router.push(`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders/[id]`)}
           >
             Audit Log
           </Button>

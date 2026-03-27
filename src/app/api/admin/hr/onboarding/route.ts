@@ -10,6 +10,10 @@ const taskSchema = z.object({
   employeeId: z.string().min(1),
   title: z.string().min(2),
   dueDate: z.string().datetime().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 async function requireAdmin() {
@@ -67,9 +71,23 @@ export async function POST(req: Request) {
       entityType: "ONBOARDING_TASK",
       entityId: task.id,
       meta: {
-        employeeId: task.employeeId,
-        status: task.status,
-        title: task.title,
+        actor: {
+          id: user.id,
+          role: user.role,
+        },
+        sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
+        section: parsed.data.section?.trim() || "onboarding-checklist",
+        operation: parsed.data.operation?.trim() || "create_onboarding_task",
+        before: null,
+        after: {
+          employeeId: task.employeeId,
+          status: task.status,
+          title: task.title,
+          dueDate: task.dueDate?.toISOString?.() ?? null,
+          completedAt: task.completedAt?.toISOString?.() ?? null,
+        },
+        status: "SUCCESS",
+        resultSummary: parsed.data.resultSummary?.trim() || "Onboarding task created successfully.",
       },
     });
   } catch {

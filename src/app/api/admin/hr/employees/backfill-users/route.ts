@@ -94,7 +94,15 @@ export async function POST(req: Request) {
         action: "HR_EMPLOYEE_BACKFILL",
         entityType: "Employee",
         entityId: "bulk",
-        meta: { created, linked, skipped },
+        meta: {
+          actor: { id: user.id, role: user.role },
+          sourcePage: "admin/hr/staff",
+          section: "employee-backfill",
+          operation: "backfill_users_to_employees",
+          before: { created: 0, linked: 0, skipped: users.length },
+          after: { created, linked, skipped },
+          resultSummary: `Employee backfill completed (created: ${created}, linked: ${linked}, skipped: ${skipped}).`,
+        },
       });
     } catch {
       // best-effort

@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { normalizeAuditText } from "@/lib/hr-hiring-utils";
 
 const applicantSchema = z.object({
   firstName: z.string().min(1),
@@ -13,6 +14,10 @@ const applicantSchema = z.object({
   phone: z.string().min(5).optional().or(z.literal("")),
   resumeUrl: z.string().url().optional().or(z.literal("")),
   source: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -87,9 +92,20 @@ export async function POST(req: Request) {
         entityType: "APPLICANT",
         entityId: applicant.id,
         meta: {
-          email: applicant.email,
-          phone: applicant.phone,
-          source: applicant.source,
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(parsed.data.section, "applicants"),
+          operation: normalizeAuditText(parsed.data.operation, "create_applicant"),
+          before: null,
+          after: {
+            firstName: applicant.firstName,
+            lastName: applicant.lastName,
+            email: applicant.email,
+            phone: applicant.phone,
+            source: applicant.source,
+          },
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Applicant created successfully."),
         },
       });
     } catch {

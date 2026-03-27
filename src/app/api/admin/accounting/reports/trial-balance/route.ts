@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { rateLimit } from "@/lib/rate-limit";
 import { loadAccountTotals, parseDateRange } from "../utils";
+import { resolveTrialBalanceDateRange } from "@/lib/trial-balance-report-utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -62,20 +64,30 @@ export async function GET(req: Request) {
   if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const limited = await rateLimit(req, "admin-accounting-trial-balance-view", 60_000, 120);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests. Please wait and retry." }, { status: 429 });
+  }
 
   const { searchParams } = new URL(req.url);
   const start = searchParams.get("start");
   const end = searchParams.get("end");
   const includeZero = searchParams.get("includeZero") === "1";
+  const parsedRange = resolveTrialBalanceDateRange(start, end);
+  if (!parsedRange.ok) {
+    return NextResponse.json({ error: parsedRange.error }, { status: 400 });
+  }
 
-  const openingEnd = start
-    ? new Date(new Date(`${start}T00:00:00`).getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const openingEnd = parsedRange.start
+    ? new Date(new Date(`${parsedRange.start}T00:00:00`).getTime() - 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10)
     : null;
 
   const [openingTotals, movementTotals, closingTotals, allAccounts] = await Promise.all([
     openingEnd ? loadAccountTotals(parseDateRange(null, openingEnd)) : Promise.resolve([]),
-    loadAccountTotals(parseDateRange(start, end)),
-    loadAccountTotals(parseDateRange(null, end)),
+    loadAccountTotals(parseDateRange(parsedRange.start, parsedRange.end)),
+    loadAccountTotals(parseDateRange(null, parsedRange.end)),
     includeZero
       ? prisma.ledgerAccount.findMany({
           where: { isActive: true },
@@ -88,6 +100,7 @@ export async function GET(req: Request) {
   const openingMap = new Map(openingTotals.map((row) => [row.accountId, row]));
   const movementMap = new Map(movementTotals.map((row) => [row.accountId, row]));
   const closingMap = new Map(closingTotals.map((row) => [row.accountId, row]));
+  const allAccountsMap = includeZero ? new Map(allAccounts.map((row) => [row.id, row])) : null;
 
   const accountIds = includeZero
     ? allAccounts.map((row) => row.id)
@@ -99,7 +112,7 @@ export async function GET(req: Request) {
       const movement = movementMap.get(accountId);
       const closing = closingMap.get(accountId);
       const base = opening || movement || closing;
-      const account = includeZero ? allAccounts.find((row) => row.id === accountId) : null;
+      const account = includeZero ? allAccountsMap?.get(accountId) || null : null;
       if (!base && !account) return null;
 
       const type = base?.type || account?.type;
@@ -155,7 +168,7 @@ export async function GET(req: Request) {
   );
 
   return NextResponse.json({
-    range: { start, end },
+    range: { start: parsedRange.start, end: parsedRange.end },
     totals: rows,
     summary,
   });

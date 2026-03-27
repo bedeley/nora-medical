@@ -1536,7 +1536,7 @@ export default function AccountingPeriodsPage() {
                 {periodActivityLoading ? "Refreshing..." : "Refresh"}
               </Button>
               <Button asChild type="button" size="sm" variant="outline">
-                <Link href="/admin/audit?scope=accounting_periods">Open audit page</Link>
+                <Link href="/admin/audit?scope=accounting_periods&sourcePage=admin/accounting/periods">Open audit page</Link>
               </Button>
             </div>
           </div>

@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { downloadFileFromR2 } from "@/lib/r2-storage";
+import { recordAuditLog } from "@/lib/audit-log";
+import { resolveDocumentDownloadAuditMetaFromUrl } from "@/lib/hr-document-download-audit-utils";
 
 export const runtime = "nodejs";
 
@@ -46,9 +48,38 @@ export async function GET(
 
   const doc = await prisma.employeeDocument.findUnique({
     where: { id: resolvedParams.id },
-    select: { id: true, fileUrl: true, fileType: true, title: true },
+    select: { id: true, employeeId: true, fileUrl: true, fileType: true, title: true },
   });
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const auditMeta = resolveDocumentDownloadAuditMetaFromUrl(req.url);
+
+  try {
+    await recordAuditLog({
+      actorId: user.id,
+      action: "HR_DOCUMENT_DOWNLOAD",
+      entityType: "EMPLOYEE_DOCUMENT",
+      entityId: doc.id,
+      meta: {
+        actor: {
+          id: user.id,
+          role: user.role,
+        },
+        sourcePage: auditMeta.sourcePage,
+        section: auditMeta.section,
+        operation: auditMeta.operation,
+        before: null,
+        after: {
+          employeeId: doc.employeeId,
+          title: doc.title,
+          fileType: doc.fileType,
+        },
+        status: "SUCCESS",
+        resultSummary: auditMeta.resultSummary,
+      },
+    });
+  } catch {
+    // best-effort
+  }
 
   const location = parseStorageLocation(doc.fileUrl);
   if (location.type === "r2") {

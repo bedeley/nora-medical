@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { canTransitionIssueStatus, statusRequiresResolution } from "@/lib/hr-issues-utils";
 
 const updateSchema = z.object({
   type: z.string().min(2).optional(),
@@ -46,29 +47,46 @@ export async function PATCH(
   }
 
   const data: Record<string, unknown> = {};
-  if (typeof parsed.data.type === "string") data.type = parsed.data.type.trim();
-  if (parsed.data.severity) data.severity = parsed.data.severity;
-  if (parsed.data.status) data.status = parsed.data.status;
-  if (typeof parsed.data.description === "string") data.description = parsed.data.description.trim();
-  if ("resolution" in parsed.data) data.resolution = normalizeOptional(parsed.data.resolution);
-  if ("openedAt" in parsed.data) data.openedAt = parsed.data.openedAt ? new Date(parsed.data.openedAt) : null;
-  if ("closedAt" in parsed.data) data.closedAt = parsed.data.closedAt ? new Date(parsed.data.closedAt) : null;
-  if (
-    parsed.data.status &&
-    !("closedAt" in parsed.data) &&
-    (parsed.data.status === "RESOLVED" || parsed.data.status === "CLOSED")
-  ) {
-    data.closedAt = new Date();
-  }
-  if (
-    parsed.data.status &&
-    !("closedAt" in parsed.data) &&
-    (parsed.data.status === "OPEN" || parsed.data.status === "IN_PROGRESS")
-  ) {
-    data.closedAt = null;
-  }
-
   try {
+    const existing = await prisma.staffIssue.findUnique({
+      where: { id: resolvedParams.id },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Issue not found." }, { status: 404 });
+    }
+
+    if (typeof parsed.data.type === "string") data.type = parsed.data.type.trim();
+    if (parsed.data.severity) data.severity = parsed.data.severity;
+    if (typeof parsed.data.description === "string") data.description = parsed.data.description.trim();
+    const resolution =
+      "resolution" in parsed.data
+        ? normalizeOptional(parsed.data.resolution)
+        : existing.resolution;
+    if ("resolution" in parsed.data) data.resolution = resolution;
+    if ("openedAt" in parsed.data) data.openedAt = parsed.data.openedAt ? new Date(parsed.data.openedAt) : null;
+    if ("closedAt" in parsed.data) data.closedAt = parsed.data.closedAt ? new Date(parsed.data.closedAt) : null;
+
+    const nextStatus = parsed.data.status ?? existing.status;
+    if (parsed.data.status && !canTransitionIssueStatus(existing.status, parsed.data.status)) {
+      return NextResponse.json(
+        { error: `Invalid status transition from ${existing.status} to ${parsed.data.status}.` },
+        { status: 400 },
+      );
+    }
+    if (statusRequiresResolution(nextStatus) && !resolution) {
+      return NextResponse.json(
+        { error: "Resolution note is required when resolving or closing an issue." },
+        { status: 400 },
+      );
+    }
+    if (parsed.data.status) data.status = parsed.data.status;
+    if (!("closedAt" in parsed.data) && statusRequiresResolution(nextStatus)) {
+      data.closedAt = new Date();
+    }
+    if (!("closedAt" in parsed.data) && (nextStatus === "OPEN" || nextStatus === "IN_PROGRESS")) {
+      data.closedAt = null;
+    }
+
     const issue = await prisma.staffIssue.update({
       where: { id: resolvedParams.id },
       data,
@@ -80,8 +98,32 @@ export async function PATCH(
         entityType: "STAFF_ISSUE",
         entityId: issue.id,
         meta: {
-          status: issue.status,
-          severity: issue.severity,
+          sourcePage: "admin/hr/issues",
+          section: "issue-list",
+          operation:
+            parsed.data.status
+              ? "update_issue_status"
+              : "update_issue",
+          before: {
+            type: existing.type,
+            severity: existing.severity,
+            status: existing.status,
+            descriptionLength: existing.description.length,
+            resolutionLength: existing.resolution?.length || 0,
+            openedAt: existing.openedAt?.toISOString() || null,
+            closedAt: existing.closedAt?.toISOString() || null,
+          },
+          after: {
+            type: issue.type,
+            severity: issue.severity,
+            status: issue.status,
+            descriptionLength: issue.description.length,
+            resolutionLength: issue.resolution?.length || 0,
+            openedAt: issue.openedAt?.toISOString() || null,
+            closedAt: issue.closedAt?.toISOString() || null,
+          },
+          status: "SUCCESS",
+          resultSummary: "Staff issue updated successfully.",
         },
       });
     } catch {

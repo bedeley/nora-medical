@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import crypto from "node:crypto";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
+import { buildBalanceSheetExportAuditMeta, resolveBalanceSheetAsOf } from "@/lib/balance-sheet-report-utils";
 import { type AccountTotals, loadAccountTotals, parseDateRange, toNet } from "../../utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -34,17 +38,33 @@ function isCurrentAccount(
   return row.code.startsWith("2");
 }
 
+const MAX_EXPORT_ROWS = 5000;
+
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { searchParams } = new URL(req.url);
+  const fromJob = searchParams.get("job") === "1";
+  const limited = await rateLimit(req, "admin-accounting-balance-sheet-export-csv", 60_000, fromJob ? 180 : 40);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many export requests. Please wait and retry." }, { status: 429 });
+  }
   const asOf = searchParams.get("asOf");
-  const dateFilter = parseDateRange(null, asOf || new Date().toISOString());
+  const correlationId = String(searchParams.get("correlationId") || "").trim() || null;
+  const defaultAsOf = new Date().toISOString().slice(0, 10);
+  const parsed = resolveBalanceSheetAsOf(asOf, defaultAsOf);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+  const asOfEffective = parsed.asOf;
+
+  const dateFilter = parseDateRange(null, asOfEffective);
   const totals = await loadAccountTotals(dateFilter);
-  const asOfDate = new Date(asOf || new Date().toISOString());
+  const asOfDate = new Date(`${asOfEffective}T00:00:00`);
   const currentPeriod = await prisma.fiscalPeriod.findFirst({
     where: {
       startDate: { lte: asOfDate },
@@ -112,16 +132,50 @@ export async function GET(req: Request) {
     ]),
     ...equityWithEarnings.map((row) => ["Equity", "-", row.code, row.name, toNet(row).toFixed(2)]),
   ];
+  if (rows.length + 1 > MAX_EXPORT_ROWS) {
+    return NextResponse.json(
+      { error: `Export is too large (${rows.length + 1} rows). Narrow the date or account scope before exporting.` },
+      { status: 413 },
+    );
+  }
 
   const csv = [header, ...rows]
     .map((row) => row.map((value) => escapeCsv(String(value))).join(","))
     .join("\n");
+  const integrityRowCount = rows.length + 1;
+  const checksumSha256 = crypto.createHash("sha256").update(csv, "utf8").digest("hex");
 
-  const filename = `balance-sheet${asOf ? `-${asOf}` : ""}.csv`;
-  return new NextResponse(csv, {
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-    },
+  const filename = `balance-sheet${asOfEffective ? `-${asOfEffective}` : ""}.csv`;
+
+  await recordAuditLog({
+    actorId: actor?.id || null,
+    action: "report.export.balance-sheet.csv",
+    entityType: "AccountingReport",
+    entityId: "balance-sheet",
+    meta: buildBalanceSheetExportAuditMeta({
+      correlationId,
+      inputAsOf: asOf || null,
+      effectiveAsOf: asOfEffective,
+      actorRole: actor?.role || null,
+      actorEmail: actor?.email || null,
+      assetsRowCount: assets.length,
+      liabilitiesRowCount: liabilities.length,
+      equityRowCount: equityWithEarnings.length,
+      totalRowCount: rows.length,
+      integrityRowCount,
+      checksumSha256,
+    }),
   });
+
+  const headers: Record<string, string> = {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+  };
+  if (correlationId) {
+    headers["X-Report-Correlation-Id"] = correlationId;
+  }
+  headers["X-Export-Row-Count"] = String(integrityRowCount);
+  headers["X-Export-Checksum-Sha256"] = checksumSha256;
+
+  return new NextResponse(csv, { headers });
 }

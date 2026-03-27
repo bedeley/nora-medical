@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import crypto from "node:crypto";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
+import { rateLimit } from "@/lib/rate-limit";
 import { loadAccountTotals, parseDateRange, parseValidatedDateRange, toNet, type AccountTotals } from "../../utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -23,6 +25,8 @@ const asCsv = (rows: Array<Array<string | number>>) =>
     .map((row) => row.map((value) => escapeCsv(String(value))).join(","))
     .join("\n");
 
+const MAX_EXPORT_ROWS = 20000;
+
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const actor = session?.user as AuthenticatedUser | undefined;
@@ -31,10 +35,24 @@ export async function GET(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
+  const fromJob = searchParams.get("job") === "1";
+  const limited = await rateLimit(req, "admin-accounting-reporting-pack-export", 60_000, fromJob ? 180 : 40);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many export requests. Please wait and retry." }, { status: 429 });
+  }
   const start = searchParams.get("start");
   const end = searchParams.get("end");
   const asOf = searchParams.get("asOf");
-  const fromJob = searchParams.get("job") === "1";
+  const correlationId = String(searchParams.get("correlationId") || "").trim() || null;
+  const source = String(searchParams.get("source") || "").trim().toLowerCase();
+  const sourcePage =
+    source === "balance-sheet"
+      ? "admin/accounting/reports/balance-sheet"
+      : source === "trial-balance"
+        ? "admin/accounting/reports/trial-balance"
+        : "admin/accounting/reports/pl";
+  const sourceSection =
+    source === "balance-sheet" ? "balance-sheet" : source === "trial-balance" ? "trial-balance" : "profit-loss";
 
   let parsedPlRange: ReturnType<typeof parseValidatedDateRange>;
   let parsedAsOfRange: ReturnType<typeof parseValidatedDateRange>;
@@ -165,9 +183,19 @@ export async function GET(req: Request) {
     ["", "", "Total debits", tbSummary.debit.toFixed(2), ""],
     ["", "", "Total credits", "", tbSummary.credit.toFixed(2)],
   ];
+  if (rows.length > MAX_EXPORT_ROWS) {
+    return NextResponse.json(
+      { error: `Reporting pack export is too large (${rows.length} rows). Use a smaller date range.` },
+      { status: 413 },
+    );
+  }
 
   const csv = asCsv(rows);
+  const integrityRowCount = rows.length;
+  const checksumSha256 = crypto.createHash("sha256").update(csv, "utf8").digest("hex");
   const filename = `reporting-pack-${generatedAt.slice(0, 10)}.csv`;
+  const columnCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+  const byteSize = Buffer.byteLength(csv, "utf8");
 
   await recordAuditLog({
     actorId: actor?.id || null,
@@ -175,9 +203,29 @@ export async function GET(req: Request) {
     entityType: "AccountingReport",
     entityId: "reporting-pack",
     meta: {
-      sourcePage: "admin/accounting/reports/pl",
+      sourcePage,
+      section: sourceSection,
+      operation: "export_reporting_pack",
+      correlationId,
+      before: {
+        start: start || null,
+        end: end || null,
+        asOf: asOf || null,
+      },
+      after: {
+        start: parsedPlRange.normalizedStart,
+        end: parsedPlRange.normalizedEnd,
+        asOf: asOfEffective,
+      },
       report: "reporting-pack",
+      exportLabel: "Accounting reporting pack CSV",
       format: "csv",
+      fileName: filename,
+      rowCount: integrityRowCount,
+      columnCount,
+      byteSize,
+      resultSummary: "Export completed successfully.",
+      status: "SUCCESS",
       basis: "accrual",
       plStart: parsedPlRange.normalizedStart,
       plEnd: parsedPlRange.normalizedEnd,
@@ -190,13 +238,22 @@ export async function GET(req: Request) {
         balanceSheetRows: bsAssets.length + bsLiabilities.length + equityWithEarnings.length,
         trialBalanceRows: tbTotals.length,
       },
+      integrity: {
+        rowCount: integrityRowCount,
+        checksumSha256,
+      },
     },
   });
 
-  return new NextResponse(csv, {
-    headers: {
-      "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+  };
+  if (correlationId) {
+    headers["X-Report-Correlation-Id"] = correlationId;
+  }
+  headers["X-Export-Row-Count"] = String(integrityRowCount);
+  headers["X-Export-Checksum-Sha256"] = checksumSha256;
+
+  return new NextResponse(csv, { headers });
 }

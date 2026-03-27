@@ -12,6 +12,10 @@ const createSchema = z.object({
   title: z.string().min(1),
   fileUrl: z.string().min(1),
   fileType: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 async function requireAdmin() {
@@ -72,10 +76,24 @@ export async function POST(req: Request) {
         action: "HR_DOCUMENT_CREATE",
         entityType: "EMPLOYEE_DOCUMENT",
         entityId: doc.id,
-        meta: {
-          employeeId: doc.employeeId,
-          title: doc.title,
-          fileType: doc.fileType,
+      meta: {
+          actor: {
+            id: user.id,
+            role: user.role,
+          },
+          sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
+          section: parsed.data.section?.trim() || "documents",
+          operation: parsed.data.operation?.trim() || "create_document",
+          before: null,
+          after: {
+            employeeId: doc.employeeId,
+            title: doc.title,
+            fileType: doc.fileType,
+            fileUrl: doc.fileUrl,
+            uploadedAt: doc.uploadedAt?.toISOString?.() ?? null,
+          },
+          status: "SUCCESS",
+          resultSummary: parsed.data.resultSummary?.trim() || "Employee document added successfully.",
         },
       });
     } catch {

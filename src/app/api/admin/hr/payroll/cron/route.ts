@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { generatePayslipsForRun } from "@/lib/hr-payroll";
 import { prisma } from "@/lib/prisma";
+import { recordAuditLog } from "@/lib/audit-log";
+import { getGhanaStatutoryConfigFromSettings } from "@/lib/hr-ghana-statutory";
 
 function parseNumber(value?: string | null) {
   if (!value) return null;
@@ -24,9 +26,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ enabled: false }, { status: 200 });
   }
 
-  const taxPercent = parseNumber(process.env.HR_PAYROLL_TAX_PERCENT) ?? 0;
-  const pensionPercent = parseNumber(process.env.HR_PAYROLL_PENSION_PERCENT) ?? 0;
   const bonus = parseNumber(process.env.HR_PAYROLL_BONUS) ?? 0;
+  const ghanaConfig = await getGhanaStatutoryConfigFromSettings();
 
   const now = new Date();
   const year = now.getFullYear();
@@ -76,13 +77,68 @@ export async function GET(req: Request) {
 
   const result = await generatePayslipsForRun({
     payrollRunId: ensuredRun.id,
-    taxPercent,
-    pensionPercent,
+    taxPercent: 0,
+    pensionPercent: 0,
     bonus,
+    statutory: {
+      mode: "ghana",
+      enablePaye: ghanaConfig.enablePaye,
+      enableSsnitEmployee: ghanaConfig.enableSsnitEmployee,
+      enableSsnitEmployer: ghanaConfig.enableSsnitEmployer,
+      ssnitEmployeeRate: ghanaConfig.ssnitEmployeeRate,
+      ssnitEmployerRate: ghanaConfig.ssnitEmployerRate,
+      taxableAllowancePercent: ghanaConfig.taxableAllowancePercent,
+      payeBands: ghanaConfig.payeBands,
+    },
   });
 
   if (result.error) {
     return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+  try {
+    await recordAuditLog({
+      actorId: null,
+      action: "PAYROLL_GENERATE_CRON",
+      entityType: "PAYROLL_RUN",
+      entityId: ensuredRun.id,
+      meta: {
+        sourcePage: "admin/hr/payroll/cron",
+        section: "monthly-generation",
+        operation: "generate_monthly_paystubs_cron",
+        before: {
+          payrollRunId: ensuredRun.id,
+          status: ensuredRun.status,
+          year,
+          month,
+        },
+        after: {
+          payrollRunId: ensuredRun.id,
+          status: ensuredRun.status,
+          created: result.created,
+          updated: result.updated ?? 0,
+          skipped: result.skipped,
+        },
+        taxPercent: "AUTO_GHANA_PAYE",
+        pensionPercent: "AUTO_GHANA_SSNIT",
+        bonus,
+        statutory: {
+          mode: "ghana",
+          enablePaye: ghanaConfig.enablePaye,
+          enableSsnitEmployee: ghanaConfig.enableSsnitEmployee,
+          enableSsnitEmployer: ghanaConfig.enableSsnitEmployer,
+          ssnitEmployeeRate: ghanaConfig.ssnitEmployeeRate,
+          ssnitEmployerRate: ghanaConfig.ssnitEmployerRate,
+          taxableAllowancePercent: ghanaConfig.taxableAllowancePercent,
+          payeBands: ghanaConfig.payeBands,
+          autoCalculation: true,
+        },
+        actor: "System",
+        status: "SUCCESS",
+        resultSummary: `Cron generated ${result.created} payslip(s), updated ${result.updated ?? 0}, skipped ${result.skipped}.`,
+      },
+    });
+  } catch {
+    // best-effort
   }
 
   return NextResponse.json({

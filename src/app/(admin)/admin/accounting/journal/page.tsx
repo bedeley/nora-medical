@@ -3252,7 +3252,7 @@ export default function JournalPage() {
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-medium text-foreground">Archive activity timeline</span>
                 <Link
-                  href="/admin/audit?entityType=JournalEntry"
+                  href="/admin/audit?entityType=JournalEntry&sourcePage=admin/accounting/journal"
                   className="underline text-muted-foreground hover:text-foreground"
                 >
                   Open archive logs

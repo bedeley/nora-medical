@@ -4,6 +4,8 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAuditLog } from "@/lib/audit-log";
+import { normalizeAuditText, validateHiringConflict } from "@/lib/hr-hiring-utils";
 
 const updateSchema = z.object({
   firstName: z.string().min(1).optional(),
@@ -12,6 +14,11 @@ const updateSchema = z.object({
   phone: z.string().min(5).optional().or(z.literal("")),
   resumeUrl: z.string().url().optional().or(z.literal("")),
   source: z.string().optional().or(z.literal("")),
+  expectedUpdatedAt: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -71,10 +78,53 @@ export async function PATCH(
   if ("source" in parsed.data) data.source = normalizeOptional(parsed.data.source);
 
   try {
+    const existing = await prisma.applicant.findUnique({
+      where: { id: params.id },
+    });
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const conflictCheck = validateHiringConflict(existing.updatedAt, parsed.data.expectedUpdatedAt);
+    if (!conflictCheck.ok) {
+      return NextResponse.json({ error: conflictCheck.error }, { status: conflictCheck.status });
+    }
+
     const applicant = await prisma.applicant.update({
       where: { id: params.id },
       data,
     });
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "HR_APPLICANT_UPDATE",
+        entityType: "APPLICANT",
+        entityId: applicant.id,
+        meta: {
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(parsed.data.section, "applicants"),
+          operation: normalizeAuditText(parsed.data.operation, "update_applicant"),
+          before: {
+            firstName: existing.firstName,
+            lastName: existing.lastName,
+            email: existing.email,
+            phone: existing.phone,
+            resumeUrl: existing.resumeUrl,
+            source: existing.source,
+          },
+          after: {
+            firstName: applicant.firstName,
+            lastName: applicant.lastName,
+            email: applicant.email,
+            phone: applicant.phone,
+            resumeUrl: applicant.resumeUrl,
+            source: applicant.source,
+          },
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Applicant updated successfully."),
+        },
+      });
+    } catch {
+      // best-effort
+    }
     return NextResponse.json(applicant);
   } catch (err) {
     console.error("Error updating applicant:", err);

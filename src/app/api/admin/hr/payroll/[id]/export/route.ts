@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordAuditLog } from "@/lib/audit-log";
+import { buildPayrollRunExportAuditMeta } from "@/lib/hr-payroll-report-utils";
+import { buildPayrollExportFileName, buildPayrollExportRows } from "@/lib/hr-payroll-export-routes";
 
 async function requireAdmin() {
   const session = await getServerSession(authOptions);
@@ -9,6 +12,15 @@ async function requireAdmin() {
   const user = session.user as AuthenticatedUser;
   if (user.role !== "ADMIN") return null;
   return user;
+}
+
+function buildAuditActor(user: AuthenticatedUser) {
+  return {
+    id: user.id,
+    name: user.name || null,
+    email: user.email || null,
+    role: user.role,
+  };
 }
 
 function toCsv(rows: string[][]) {
@@ -38,27 +50,43 @@ export async function GET(
   });
   if (!run) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const rows = [
-    ["Employee", "Gross Pay", "Net Pay", "Deductions"],
-    ...run.payslips.map((slip) => {
-      const gross = Number(slip.grossPay || 0);
-      const net = Number(slip.netPay || 0);
-      const deductions = Math.max(0, gross - net);
-      return [
-        `${slip.employee.firstName} ${slip.employee.lastName}`,
-        gross.toFixed(2),
-        net.toFixed(2),
-        deductions.toFixed(2),
-      ];
-    }),
-  ];
+  const rows = buildPayrollExportRows(run.payslips);
 
   const csv = toCsv(rows);
+  const periodStart = run.periodStart.toISOString().slice(0, 10);
+  const periodEnd = run.periodEnd.toISOString().slice(0, 10);
+  const fileName = buildPayrollExportFileName(run.id, run.periodStart, run.periodEnd);
+  const byteSize = Buffer.byteLength(csv, "utf8");
+  try {
+    await recordAuditLog({
+      actorId: user.id,
+      action: "report.export.payroll.csv",
+      entityType: "PayrollRunReport",
+      entityId: run.id,
+      meta: {
+        actor: buildAuditActor(user),
+        ...buildPayrollRunExportAuditMeta({
+          format: "csv",
+          payrollRunId: run.id,
+          runType: run.runType,
+          runStatus: run.status,
+          periodStart,
+          periodEnd,
+          fileName,
+          rowCount: rows.length - 1,
+          columnCount: rows[0].length,
+          byteSize,
+        }),
+      },
+    });
+  } catch {
+    // best-effort
+  }
   return new NextResponse(csv, {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="payroll-${run.id}.csv"`,
+      "Content-Disposition": `attachment; filename="${fileName}"`,
     },
   });
 }

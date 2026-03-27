@@ -996,7 +996,7 @@ export default function ProfitLossReportPage() {
   const showPlaywrightHelper = isAdmin && !isProduction;
   const selectedHistoryJob = exportJobsHistory.find((job) => job.id === selectedHistoryJobId) || null;
   const selectedJobAuditLink = selectedHistoryJob
-    ? `/admin/audit?scope=accounting_reports&action=report.export.job.create&entityType=AccountingReportExportJob&entityId=${encodeURIComponent(selectedHistoryJob.id)}`
+    ? `/admin/audit?scope=accounting_reports&action=report.export.job.create&sourcePage=admin/accounting/reports/pl&entityType=AccountingReportExportJob&entityId=${encodeURIComponent(selectedHistoryJob.id)}`
     : null;
 
   const simulateExportFailure = async (jobId: string) => {

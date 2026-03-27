@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { validateExpectedUpdatedAt } from "@/lib/hr-staff-profile-utils";
 
 const updateSchema = z.object({
   firstName: z.string().min(1).optional(),
@@ -23,6 +24,11 @@ const updateSchema = z.object({
   bankAccountNumber: z.string().optional().or(z.literal("")),
   bankCode: z.string().optional().or(z.literal("")),
   bankBranch: z.string().optional().or(z.literal("")),
+  expectedUpdatedAt: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -108,6 +114,37 @@ export async function PATCH(
   }
 
   try {
+    const existing = await prisma.employee.findUnique({
+      where: { id: resolvedParams.id },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        department: true,
+        position: true,
+        status: true,
+        hireDate: true,
+        terminationDate: true,
+        managerId: true,
+        notes: true,
+        bankName: true,
+        bankAccountName: true,
+        bankAccountNumber: true,
+        bankCode: true,
+        bankBranch: true,
+        updatedAt: true,
+      },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Employee not found." }, { status: 404 });
+    }
+    const conflictCheck = validateExpectedUpdatedAt(existing.updatedAt, parsed.data.expectedUpdatedAt);
+    if (!conflictCheck.ok) {
+      return NextResponse.json({ error: conflictCheck.error }, { status: conflictCheck.status });
+    }
+
     const employee = await prisma.employee.update({
       where: { id: resolvedParams.id },
       data,
@@ -119,9 +156,51 @@ export async function PATCH(
         entityType: "EMPLOYEE",
         entityId: employee.id,
         meta: {
-          status: employee.status,
-          department: employee.department,
-          position: employee.position,
+          actor: {
+            id: user.id,
+            role: user.role,
+          },
+          sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
+          section: parsed.data.section?.trim() || "staff-profile",
+          operation: parsed.data.operation?.trim() || "update_employee_profile",
+          before: {
+            firstName: existing.firstName,
+            lastName: existing.lastName,
+            email: existing.email,
+            phone: existing.phone,
+            department: existing.department,
+            position: existing.position,
+            status: existing.status,
+            hireDate: existing.hireDate?.toISOString?.() ?? null,
+            terminationDate: existing.terminationDate?.toISOString?.() ?? null,
+            managerId: existing.managerId,
+            notesLength: existing.notes?.length || 0,
+            bankName: existing.bankName,
+            bankAccountName: existing.bankAccountName,
+            bankAccountNumber: existing.bankAccountNumber ? "masked" : null,
+            bankCode: existing.bankCode,
+            bankBranch: existing.bankBranch,
+          },
+          after: {
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            phone: employee.phone,
+            department: employee.department,
+            position: employee.position,
+            status: employee.status,
+            hireDate: employee.hireDate?.toISOString?.() ?? null,
+            terminationDate: employee.terminationDate?.toISOString?.() ?? null,
+            managerId: employee.managerId,
+            notesLength: employee.notes?.length || 0,
+            bankName: employee.bankName,
+            bankAccountName: employee.bankAccountName,
+            bankAccountNumber: employee.bankAccountNumber ? "masked" : null,
+            bankCode: employee.bankCode,
+            bankBranch: employee.bankBranch,
+          },
+          status: "SUCCESS",
+          resultSummary: parsed.data.resultSummary?.trim() || "Employee profile updated successfully.",
         },
       });
     } catch {

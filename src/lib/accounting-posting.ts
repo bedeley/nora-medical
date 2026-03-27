@@ -26,12 +26,16 @@ const DEFAULT_ACCOUNT_CODES = {
   STORE_CREDIT: "2200",
   ACCRUED_EXPENSES: "2300",
   PAYROLL_PAYABLE: "2400",
+  PAYE_PAYABLE: "2410",
+  SSNIT_EMPLOYEE_PAYABLE: "2420",
+  SSNIT_EMPLOYER_PAYABLE: "2430",
   CUSTOMER_DEPOSITS: "2500",
   SALES: "4000",
   SALES_DISCOUNTS: "4010",
   COGS: "5000",
   OPERATING_EXPENSE: "6000",
   PAYROLL_EXPENSE: "6100",
+  EMPLOYER_SSNIT_EXPENSE: "6110",
   DELIVERY_EXPENSE: "6200",
   BANK_CHARGES_EXPENSE: "6300",
   UTILITIES_EXPENSE: "6400",
@@ -58,6 +62,9 @@ const DEFAULT_ACCOUNTS_BY_CODE: Record<string, { name: string; type: "ASSET" | "
   "2200": { name: "Store Credit", type: "LIABILITY" },
   "2300": { name: "Accrued Expenses", type: "LIABILITY" },
   "2400": { name: "Payroll Payable", type: "LIABILITY" },
+  "2410": { name: "PAYE Tax Payable", type: "LIABILITY" },
+  "2420": { name: "SSNIT Employee Payable", type: "LIABILITY" },
+  "2430": { name: "SSNIT Employer Payable", type: "LIABILITY" },
   "2500": { name: "Unearned Revenue / Customer Deposits", type: "LIABILITY" },
   "3000": { name: "Owner's Equity", type: "EQUITY" },
   "4000": { name: "Sales Revenue", type: "INCOME" },
@@ -65,6 +72,7 @@ const DEFAULT_ACCOUNTS_BY_CODE: Record<string, { name: string; type: "ASSET" | "
   "5000": { name: "Cost of Goods Sold", type: "EXPENSE" },
   "6000": { name: "Operating Expenses", type: "EXPENSE" },
   "6100": { name: "Payroll Expense", type: "EXPENSE" },
+  "6110": { name: "Employer SSNIT Expense", type: "EXPENSE" },
   "6200": { name: "Delivery & Logistics Expense", type: "EXPENSE" },
   "6300": { name: "Bank Charges & Fees", type: "EXPENSE" },
   "6400": { name: "Utilities Expense", type: "EXPENSE" },
@@ -222,6 +230,28 @@ function formatItemSummary(items: Array<{ name?: string | null; sku?: string | n
 function clampLine(value: string, maxLength = 200) {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 1)}…`;
+}
+
+export function computePayrollAccrualBreakdown(input: {
+  totalGross: number;
+  totalNet: number;
+  tax: number;
+  employeeSsnit: number;
+  employerSsnit: number;
+}) {
+  const gross = Math.max(0, Number(input.totalGross || 0));
+  const net = Math.max(0, Number(input.totalNet || 0));
+  const tax = Math.max(0, Number(input.tax || 0));
+  const employeeSsnit = Math.max(0, Number(input.employeeSsnit || 0));
+  const employerSsnit = Math.max(0, Number(input.employerSsnit || 0));
+  const otherDeductions = Math.max(0, Number((gross - net - tax - employeeSsnit).toFixed(2)));
+  return {
+    payrollPayable: Number(net.toFixed(2)),
+    payePayable: Number(tax.toFixed(2)),
+    ssnitEmployeePayable: Number(employeeSsnit.toFixed(2)),
+    ssnitEmployerPayable: Number(employerSsnit.toFixed(2)),
+    otherDeductionsPayable: otherDeductions,
+  };
 }
 
 export async function postExpenseEntry(opts: {
@@ -981,31 +1011,104 @@ export async function postPayrollAccrualEntry(opts: {
   const ACCOUNT_CODES = await getAccountCodes();
   const run = await prisma.payrollRun.findUnique({ where: { id: opts.payrollRunId } });
   if (!run) return null;
+  const payslips = await prisma.payslip.findMany({
+    where: { payrollRunId: run.id },
+    select: {
+      grossPay: true,
+      netPay: true,
+      lineItems: true,
+    },
+  });
   const gross = Number(run.totalGross || 0);
-  if (!(gross > 0)) return null;
+  const totalGross = gross > 0
+    ? gross
+    : payslips.reduce((sum, slip) => sum + Number(slip.grossPay || 0), 0);
+  const totalNet = Number(run.totalNet || 0) > 0
+    ? Number(run.totalNet || 0)
+    : payslips.reduce((sum, slip) => sum + Number(slip.netPay || 0), 0);
+  if (!(totalGross > 0)) return null;
+  const statutory = payslips.reduce(
+    (acc, slip) => {
+      const lineItems = slip.lineItems as Record<string, unknown> | null | undefined;
+      acc.tax += Number(lineItems?.tax || 0);
+      acc.employeeSsnit += Number(lineItems?.pension || 0);
+      acc.employerSsnit += Number(lineItems?.employerSsnit || 0);
+      return acc;
+    },
+    { tax: 0, employeeSsnit: 0, employerSsnit: 0 },
+  );
+  const tax = Math.max(0, Number(statutory.tax.toFixed(2)));
+  const employeeSsnit = Math.max(0, Number(statutory.employeeSsnit.toFixed(2)));
+  const employerSsnit = Math.max(0, Number(statutory.employerSsnit.toFixed(2)));
+  const accrual = computePayrollAccrualBreakdown({
+    totalGross,
+    totalNet,
+    tax,
+    employeeSsnit,
+    employerSsnit,
+  });
   const runLabel =
     run.runType === "ADJUSTMENT"
       ? `Payroll adjustment ${run.periodStart.toISOString()} - ${run.periodEnd.toISOString()}`
       : `Payroll accrual ${run.periodStart.toISOString()} - ${run.periodEnd.toISOString()}`;
+  const lines: LineInput[] = [
+    {
+      accountCode: ACCOUNT_CODES.PAYROLL_EXPENSE,
+      debit: totalGross,
+      credit: 0,
+      description: "Payroll expense recognized",
+    },
+    {
+      accountCode: ACCOUNT_CODES.PAYROLL_PAYABLE,
+      debit: 0,
+      credit: accrual.payrollPayable,
+      description: "Net salaries payable to employees",
+    },
+  ];
+  if (accrual.ssnitEmployerPayable > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.EMPLOYER_SSNIT_EXPENSE || ACCOUNT_CODES.PAYROLL_EXPENSE,
+      debit: accrual.ssnitEmployerPayable,
+      credit: 0,
+      description: "Employer SSNIT expense recognized",
+    });
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYER_PAYABLE,
+      debit: 0,
+      credit: accrual.ssnitEmployerPayable,
+      description: "Employer SSNIT payable recognized",
+    });
+  }
+  if (accrual.payePayable > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.PAYE_PAYABLE,
+      debit: 0,
+      credit: accrual.payePayable,
+      description: "PAYE tax withheld payable",
+    });
+  }
+  if (accrual.ssnitEmployeePayable > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYEE_PAYABLE,
+      debit: 0,
+      credit: accrual.ssnitEmployeePayable,
+      description: "Employee SSNIT withheld payable",
+    });
+  }
+  if (accrual.otherDeductionsPayable > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.ACCRUED_EXPENSES,
+      debit: 0,
+      credit: accrual.otherDeductionsPayable,
+      description: "Other payroll deductions accrued",
+    });
+  }
   return ensureEntry({
     sourceType: "PAYROLL",
     sourceId: run.id,
     entryDate: run.finalizedAt || run.updatedAt || run.createdAt,
     memo: clampLine(runLabel, 500),
-    lines: [
-      {
-        accountCode: ACCOUNT_CODES.PAYROLL_EXPENSE,
-        debit: gross,
-        credit: 0,
-        description: "Payroll expense recognized",
-      },
-      {
-        accountCode: ACCOUNT_CODES.PAYROLL_PAYABLE,
-        debit: 0,
-        credit: gross,
-        description: "Payroll liability recognized",
-      },
-    ],
+    lines,
   });
 }
 
@@ -1015,16 +1118,14 @@ export async function postPayrollSettlementEntry(opts: {
   const ACCOUNT_CODES = await getAccountCodes();
   const run = await prisma.payrollRun.findUnique({ where: { id: opts.payrollRunId } });
   if (!run) return null;
-  const gross = Number(run.totalGross || 0);
   const net = Number(run.totalNet || 0);
-  if (!(gross > 0) || !(net > 0)) return null;
-  const accruedPortion = Math.max(0, Number((gross - net).toFixed(2)));
+  if (!(net > 0)) return null;
   const lines: LineInput[] = [
     {
       accountCode: ACCOUNT_CODES.PAYROLL_PAYABLE,
-      debit: gross,
+      debit: net,
       credit: 0,
-      description: "Payroll liability cleared",
+      description: "Net payroll liability cleared",
     },
     {
       accountCode: ACCOUNT_CODES.BANK,
@@ -1033,14 +1134,6 @@ export async function postPayrollSettlementEntry(opts: {
       description: "Payroll paid from bank",
     },
   ];
-  if (accruedPortion > 0) {
-    lines.push({
-      accountCode: ACCOUNT_CODES.ACCRUED_EXPENSES,
-      debit: 0,
-      credit: accruedPortion,
-      description: "Payroll deductions accrued",
-    });
-  }
 
   return ensureEntry({
     sourceType: "PAYROLL",
@@ -1051,6 +1144,158 @@ export async function postPayrollSettlementEntry(opts: {
       500,
     ),
     lines,
+  });
+}
+
+export async function postPayrollStatutoryRemittanceEntry(opts: {
+  monthKey: string;
+  kind: "PAYE" | "SSNIT";
+  paidAt?: Date;
+  payeAmount?: number;
+  ssnitEmployeeAmount?: number;
+  ssnitEmployerAmount?: number;
+  paymentMethod?: "BANK" | "CASH";
+}) {
+  const ACCOUNT_CODES = await getAccountCodes();
+  const entryDate = opts.paidAt || new Date();
+  const settlementAccount = opts.paymentMethod === "CASH" ? ACCOUNT_CODES.CASH : ACCOUNT_CODES.BANK;
+  const settlementLabel = opts.paymentMethod === "CASH" ? "cash" : "bank";
+  if (opts.kind === "PAYE") {
+    const payeAmount = Math.max(0, Number(opts.payeAmount || 0));
+    if (!(payeAmount > 0)) return null;
+    return ensureEntry({
+      sourceType: "PAYROLL",
+      sourceId: `STATUTORY:${opts.monthKey}:PAYE`,
+      entryDate,
+      memo: `PAYE remittance ${opts.monthKey}`,
+      lines: [
+        {
+          accountCode: ACCOUNT_CODES.PAYE_PAYABLE,
+          debit: payeAmount,
+          credit: 0,
+          description: "PAYE remittance",
+        },
+        {
+          accountCode: settlementAccount,
+          debit: 0,
+          credit: payeAmount,
+          description: `PAYE payment from ${settlementLabel}`,
+        },
+      ],
+      allowDuplicateSource: true,
+    });
+  }
+
+  const employee = Math.max(0, Number(opts.ssnitEmployeeAmount || 0));
+  const employer = Math.max(0, Number(opts.ssnitEmployerAmount || 0));
+  const total = Number((employee + employer).toFixed(2));
+  if (!(total > 0)) return null;
+  const lines: LineInput[] = [];
+  if (employee > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYEE_PAYABLE,
+      debit: employee,
+      credit: 0,
+      description: "Employee SSNIT remittance",
+    });
+  }
+  if (employer > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYER_PAYABLE,
+      debit: employer,
+      credit: 0,
+      description: "Employer SSNIT remittance",
+    });
+  }
+  lines.push({
+    accountCode: settlementAccount,
+    debit: 0,
+    credit: total,
+    description: `SSNIT payment from ${settlementLabel}`,
+  });
+  return ensureEntry({
+    sourceType: "PAYROLL",
+    sourceId: `STATUTORY:${opts.monthKey}:SSNIT`,
+    entryDate,
+    memo: `SSNIT remittance ${opts.monthKey}`,
+    lines,
+    allowDuplicateSource: true,
+  });
+}
+
+export async function postPayrollStatutoryRemittanceReversalEntry(opts: {
+  monthKey: string;
+  kind: "PAYE" | "SSNIT";
+  reversedAt?: Date;
+  payeAmount?: number;
+  ssnitEmployeeAmount?: number;
+  ssnitEmployerAmount?: number;
+  paymentMethod?: "BANK" | "CASH";
+}) {
+  const ACCOUNT_CODES = await getAccountCodes();
+  const entryDate = opts.reversedAt || new Date();
+  const settlementAccount = opts.paymentMethod === "CASH" ? ACCOUNT_CODES.CASH : ACCOUNT_CODES.BANK;
+  const settlementLabel = opts.paymentMethod === "CASH" ? "cash" : "bank";
+  if (opts.kind === "PAYE") {
+    const payeAmount = Math.max(0, Number(opts.payeAmount || 0));
+    if (!(payeAmount > 0)) return null;
+    return ensureEntry({
+      sourceType: "PAYROLL",
+      sourceId: `STATUTORY:${opts.monthKey}:PAYE:REVERSAL`,
+      entryDate,
+      memo: `PAYE remittance reversal ${opts.monthKey}`,
+      lines: [
+        {
+          accountCode: ACCOUNT_CODES.PAYE_PAYABLE,
+          debit: 0,
+          credit: payeAmount,
+          description: "PAYE remittance reversal",
+        },
+        {
+          accountCode: settlementAccount,
+          debit: payeAmount,
+          credit: 0,
+          description: `PAYE remittance reversal to ${settlementLabel}`,
+        },
+      ],
+      allowDuplicateSource: true,
+    });
+  }
+
+  const employee = Math.max(0, Number(opts.ssnitEmployeeAmount || 0));
+  const employer = Math.max(0, Number(opts.ssnitEmployerAmount || 0));
+  const total = Number((employee + employer).toFixed(2));
+  if (!(total > 0)) return null;
+  const lines: LineInput[] = [];
+  if (employee > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYEE_PAYABLE,
+      debit: 0,
+      credit: employee,
+      description: "Employee SSNIT remittance reversal",
+    });
+  }
+  if (employer > 0) {
+    lines.push({
+      accountCode: ACCOUNT_CODES.SSNIT_EMPLOYER_PAYABLE,
+      debit: 0,
+      credit: employer,
+      description: "Employer SSNIT remittance reversal",
+    });
+  }
+  lines.push({
+    accountCode: settlementAccount,
+    debit: total,
+    credit: 0,
+    description: `SSNIT remittance reversal to ${settlementLabel}`,
+  });
+  return ensureEntry({
+    sourceType: "PAYROLL",
+    sourceId: `STATUTORY:${opts.monthKey}:SSNIT:REVERSAL`,
+    entryDate,
+    memo: `SSNIT remittance reversal ${opts.monthKey}`,
+    lines,
+    allowDuplicateSource: true,
   });
 }
 

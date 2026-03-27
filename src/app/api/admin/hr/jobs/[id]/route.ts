@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { normalizeAuditText, validateHiringConflict } from "@/lib/hr-hiring-utils";
 
 const updateSchema = z.object({
   title: z.string().min(2).optional(),
@@ -17,6 +18,11 @@ const updateSchema = z.object({
   salaryMax: z.number().optional(),
   openedAt: z.string().datetime().optional().or(z.literal("")),
   closedAt: z.string().datetime().optional().or(z.literal("")),
+  expectedUpdatedAt: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -99,20 +105,70 @@ export async function PATCH(
   }
 
   try {
+    const existing = await prisma.jobPosting.findUnique({
+      where: { id: resolvedParams.id },
+    });
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const conflictCheck = validateHiringConflict(existing.updatedAt, parsed.data.expectedUpdatedAt);
+    if (!conflictCheck.ok) {
+      return NextResponse.json({ error: conflictCheck.error }, { status: conflictCheck.status });
+    }
+
     const job = await prisma.jobPosting.update({
       where: { id: resolvedParams.id },
       data,
     });
     try {
+      const operation = normalizeAuditText(parsed.data.operation, "update_job_posting");
+      const isStatusOnlyOperation = operation === "update_job_status";
+      const beforeMeta = isStatusOnlyOperation
+        ? {
+            status: existing.status,
+            closedAt: existing.closedAt?.toISOString?.() ?? null,
+          }
+        : {
+            title: existing.title,
+            department: existing.department,
+            location: existing.location,
+            status: existing.status,
+            description: existing.description,
+            requirements: existing.requirements,
+            salaryMin: existing.salaryMin?.toString?.() ?? null,
+            salaryMax: existing.salaryMax?.toString?.() ?? null,
+            openedAt: existing.openedAt?.toISOString?.() ?? null,
+            closedAt: existing.closedAt?.toISOString?.() ?? null,
+          };
+      const afterMeta = isStatusOnlyOperation
+        ? {
+            status: job.status,
+            closedAt: job.closedAt?.toISOString?.() ?? null,
+          }
+        : {
+            title: job.title,
+            department: job.department,
+            location: job.location,
+            status: job.status,
+            description: job.description,
+            requirements: job.requirements,
+            salaryMin: job.salaryMin?.toString?.() ?? null,
+            salaryMax: job.salaryMax?.toString?.() ?? null,
+            openedAt: job.openedAt?.toISOString?.() ?? null,
+            closedAt: job.closedAt?.toISOString?.() ?? null,
+          };
       await recordAuditLog({
         actorId: user.id,
         action: "HR_JOB_UPDATE",
         entityType: "JOB_POSTING",
         entityId: job.id,
         meta: {
-          status: job.status,
-          department: job.department,
-          title: job.title,
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(parsed.data.section, "job-postings"),
+          operation,
+          before: beforeMeta,
+          after: afterMeta,
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Job posting updated successfully."),
         },
       });
     } catch {
@@ -135,6 +191,28 @@ export async function DELETE(
   if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
 
   try {
+    const body = await req.json().catch(() => ({}));
+    const metadata = z
+      .object({
+        expectedUpdatedAt: z.string().optional().or(z.literal("")),
+        sourcePage: z.string().optional().or(z.literal("")),
+        section: z.string().optional().or(z.literal("")),
+        operation: z.string().optional().or(z.literal("")),
+        resultSummary: z.string().optional().or(z.literal("")),
+      })
+      .safeParse(body);
+    if (!metadata.success) {
+      return NextResponse.json({ error: "Invalid input", details: metadata.error.flatten() }, { status: 400 });
+    }
+    const existing = await prisma.jobPosting.findUnique({
+      where: { id: resolvedParams.id },
+    });
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const conflictCheck = validateHiringConflict(existing.updatedAt, metadata.data.expectedUpdatedAt);
+    if (!conflictCheck.ok) {
+      return NextResponse.json({ error: conflictCheck.error }, { status: conflictCheck.status });
+    }
+
     const job = await prisma.jobPosting.update({
       where: { id: resolvedParams.id },
       data: {
@@ -149,8 +227,23 @@ export async function DELETE(
         entityType: "JOB_POSTING",
         entityId: job.id,
         meta: {
-          status: job.status,
-          closedAt: job.closedAt,
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(metadata.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(metadata.data.section, "job-postings"),
+          operation: normalizeAuditText(metadata.data.operation, "close_job_posting"),
+          before: {
+            status: existing.status,
+            closedAt: existing.closedAt?.toISOString?.() ?? null,
+          },
+          after: {
+            status: job.status,
+            closedAt: job.closedAt?.toISOString?.() ?? null,
+          },
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(
+            metadata.data.resultSummary,
+            "Job posting closed successfully.",
+          ),
         },
       });
     } catch {

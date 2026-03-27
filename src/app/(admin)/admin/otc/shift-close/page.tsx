@@ -699,7 +699,7 @@ export default function OtcShiftClosePage() {
                       <TableCell>
                         <Link
                           className="underline text-sm"
-                          href={`/admin/audit?action=OTC_SHIFT_CLOSE&entityType=OTC_SHIFT&entityId=${encodeURIComponent(row.shiftCloseId)}`}
+                          href={`/admin/audit?action=OTC_SHIFT_CLOSE&entityType=OTC_SHIFT&entityId=${encodeURIComponent(row.shiftCloseId)}&sourcePage=admin/otc/shift-close`}
                         >
                           View
                         </Link>

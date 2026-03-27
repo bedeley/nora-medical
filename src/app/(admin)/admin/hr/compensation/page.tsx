@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -51,21 +51,53 @@ type Compensation = {
   effectiveDate: string;
   status?: "DRAFT" | "PENDING" | "ACTIVE";
 };
+type CompensationStatusFilter = "ALL" | "DRAFT" | "PENDING" | "ACTIVE";
 
 type PayrollRun = {
   id: string;
   periodStart: string;
   periodEnd: string;
+  createdAt?: string;
+  updatedAt?: string;
   status: "DRAFT" | "FINALIZED" | "PAID" | "CANCELLED";
   runType?: "REGULAR" | "ADJUSTMENT";
   adjustmentForId?: string | null;
   adjustmentNote?: string | null;
   totalGross: number | string;
   totalNet: number | string;
+  payslipCount?: number;
+  missingBankDetailsCount?: number;
+  firstMissingBankEmployeeId?: string | null;
   expense?: { id: string } | null;
 };
 
+type MonthlyStatutorySummary = {
+  monthKey: string;
+  runCount: number;
+  payslipCount: number;
+  employeeCount: number;
+  totalGross: number;
+  totalNet: number;
+  payeTax: number;
+  ssnitEmployee: number;
+  ssnitEmployer: number;
+  otherDeductions: number;
+  remittance: {
+    payeStatus: "PENDING" | "REMITTED";
+    ssnitStatus: "PENDING" | "REMITTED";
+    payeRemittedAt: string | null;
+    ssnitRemittedAt: string | null;
+    payeReference: string | null;
+    ssnitReference: string | null;
+  };
+};
+
+type HrSettingsResponse = {
+  values?: Record<string, unknown>;
+};
+
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const COMP_PAGE_SIZES = [10, 25, 50] as const;
 
 export default function AdminHrCompensationPage() {
   const queryClient = useQueryClient();
@@ -78,6 +110,12 @@ export default function AdminHrCompensationPage() {
   const [pendingComp, setPendingComp] = useState<Compensation | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [pendingCancelRun, setPendingCancelRun] = useState<PayrollRun | null>(null);
+  const [statusConfirmOpen, setStatusConfirmOpen] = useState(false);
+  const [pendingStatusAction, setPendingStatusAction] = useState<{
+    run: PayrollRun;
+    status: "FINALIZED" | "PAID";
+    createExpense: boolean;
+  } | null>(null);
   const checklistStorageKey = "hr-compensation-checklist-open";
 
   useEffect(() => {
@@ -112,50 +150,193 @@ export default function AdminHrCompensationPage() {
   const [payrollForm, setPayrollForm] = useState({
     periodStart: "",
     periodEnd: "",
-    status: "DRAFT",
-    totalGross: "",
-    totalNet: "",
   });
   const [monthlyForm, setMonthlyForm] = useState({
     year: new Date().getFullYear().toString(),
     month: (new Date().getMonth() + 1).toString(),
-    taxPercent: "",
-    pensionPercent: "",
     bonus: "",
   });
+  const [previewResult, setPreviewResult] = useState<{
+    previewRows?: Array<{ employeeId: string; grossPay: number; netPay: number; lineItems?: Record<string, number> }>;
+    skipped?: number;
+  } | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
+  const [showDraftsMissingBankOnly, setShowDraftsMissingBankOnly] = useState(false);
+  const [selectedPendingCompIds, setSelectedPendingCompIds] = useState<string[]>([]);
+  const [compStatusFilter, setCompStatusFilter] = useState<CompensationStatusFilter>("ALL");
+  const [compSearch, setCompSearch] = useState("");
+  const [compPage, setCompPage] = useState(1);
+  const [compPageSize, setCompPageSize] = useState<(typeof COMP_PAGE_SIZES)[number]>(25);
+  const [isExportingCompCsv, setIsExportingCompCsv] = useState(false);
+  const [remittanceYear, setRemittanceYear] = useState(new Date().getFullYear().toString());
+  const [remittanceMonth, setRemittanceMonth] = useState((new Date().getMonth() + 1).toString());
+  const remittanceYearNum = Number(remittanceYear);
+  const remittanceMonthNum = Number(remittanceMonth);
+  const remittanceQueryEnabled =
+    Number.isFinite(remittanceYearNum) &&
+    remittanceYearNum >= 2000 &&
+    remittanceYearNum <= 2100 &&
+    Number.isFinite(remittanceMonthNum) &&
+    remittanceMonthNum >= 1 &&
+    remittanceMonthNum <= 12;
 
-  const { data: employeesData } = useQuery({
+  const employeesQuery = useQuery({
     queryKey: ["admin", "hr", "employees"],
     queryFn: () => fetcher("/api/admin/hr/employees"),
   });
-  const { data: compensationData } = useQuery({
-    queryKey: ["admin", "hr", "compensation"],
-    queryFn: () => fetcher("/api/admin/hr/compensation"),
+  const compensationQuery = useQuery({
+    queryKey: [
+      "admin",
+      "hr",
+      "compensation",
+      compStatusFilter,
+      compSearch.trim(),
+      compPage,
+      compPageSize,
+    ],
+    queryFn: () => {
+      const query = new URLSearchParams({
+        status: compStatusFilter,
+        page: String(compPage),
+        pageSize: String(compPageSize),
+      });
+      const trimmedSearch = compSearch.trim();
+      if (trimmedSearch) query.set("search", trimmedSearch);
+      return fetcher(`/api/admin/hr/compensation?${query.toString()}`);
+    },
   });
-  const { data: payrollData } = useQuery({
+  const pendingCompSummaryQuery = useQuery({
+    queryKey: ["admin", "hr", "compensation", "summary", "pending"],
+    queryFn: () => fetcher("/api/admin/hr/compensation?status=PENDING&page=1&pageSize=1"),
+  });
+  const payrollQuery = useQuery({
     queryKey: ["admin", "hr", "payroll"],
     queryFn: () => fetcher("/api/admin/hr/payroll"),
   });
-  const { data: cronStatus } = useQuery({
+  const cronStatusQuery = useQuery({
     queryKey: ["admin", "hr", "cron-status"],
     queryFn: () => fetcher("/api/admin/hr/payroll/cron/status"),
   });
+  const payrollSettingsQuery = useQuery<HrSettingsResponse>({
+    queryKey: ["admin", "hr", "settings", "payroll-policy-summary"],
+    queryFn: () =>
+      fetcher(
+        "/api/admin/hr/settings?keys=hr.payroll.ghana.autoStatutoryCalc,hr.payroll.ghana.enablePaye,hr.payroll.ghana.enableSsnitEmployee,hr.payroll.ghana.enableSsnitEmployer",
+      ),
+  });
+  const statutorySummaryQuery = useQuery({
+    queryKey: ["admin", "hr", "payroll", "statutory-summary", remittanceYear, remittanceMonth],
+    queryFn: () =>
+      fetcher(
+        `/api/admin/hr/payroll/statutory/summary?year=${encodeURIComponent(remittanceYear)}&month=${encodeURIComponent(remittanceMonth)}`,
+      ),
+    enabled: remittanceQueryEnabled,
+  });
 
-  const employees = Array.isArray(employeesData?.rows) ? (employeesData.rows as Employee[]) : [];
-  const compensations = Array.isArray(compensationData?.rows) ? (compensationData.rows as Compensation[]) : [];
-  const payrollRuns = Array.isArray(payrollData?.rows) ? (payrollData.rows as PayrollRun[]) : [];
-  const visibleRuns = payrollRuns.filter((run) => showCancelled || run.status !== "CANCELLED");
+  const employeesData = employeesQuery.data;
+  const compensationData = compensationQuery.data;
+  const payrollData = payrollQuery.data;
+  const cronStatus = cronStatusQuery.data;
+  const statutorySummary = statutorySummaryQuery.data as MonthlyStatutorySummary | undefined;
+  const employees = useMemo(
+    () => (Array.isArray(employeesData?.rows) ? (employeesData.rows as Employee[]) : []),
+    [employeesData],
+  );
+  const compensations = useMemo(
+    () => (Array.isArray(compensationData?.rows) ? (compensationData.rows as Compensation[]) : []),
+    [compensationData],
+  );
+  const payrollRuns = useMemo(
+    () => (Array.isArray(payrollData?.rows) ? (payrollData.rows as PayrollRun[]) : []),
+    [payrollData],
+  );
+  const visibleRuns = payrollRuns.filter((run) => {
+    if (!showCancelled && run.status === "CANCELLED") return false;
+    if (showDraftsMissingBankOnly) {
+      return run.status === "DRAFT" && Number(run.missingBankDetailsCount || 0) > 0;
+    }
+    return true;
+  });
+  const pendingCompensations = compensations.filter(
+    (comp) => (comp.status || "ACTIVE") === "PENDING",
+  );
+  const pendingCompensationCount = Number(pendingCompSummaryQuery.data?.total || 0);
+  const draftRunCount = payrollRuns.filter((run) => run.status === "DRAFT").length;
+  const latestRun = payrollRuns[0] || null;
+  const riskyDraftRuns = payrollRuns.filter((run) => {
+    if (run.status !== "DRAFT") return false;
+    const hasPayslips = Number(run.payslipCount || 0) > 0;
+    const hasTotals = Number(run.totalGross || 0) > 0 || Number(run.totalNet || 0) > 0;
+    return hasPayslips || hasTotals;
+  });
   const cronEnabled = Boolean(cronStatus?.enabled);
+  const payrollPolicyValues = payrollSettingsQuery.data?.values || {};
+  const policyAutoCalculation = payrollPolicyValues["hr.payroll.ghana.autoStatutoryCalc"] !== false;
+  const policyEnablePaye = payrollPolicyValues["hr.payroll.ghana.enablePaye"] !== false;
+  const policyEnableSsnitEmployee =
+    payrollPolicyValues["hr.payroll.ghana.enableSsnitEmployee"] !== false;
+  const policyEnableSsnitEmployer =
+    payrollPolicyValues["hr.payroll.ghana.enableSsnitEmployer"] !== false;
+  const remittanceAuditHref = `/admin/audit?sourcePage=admin%2Fhr%2Fpayroll%2Fremittance&entityType=HRPayrollRemittance&entityId=${encodeURIComponent(statutorySummary?.monthKey || `${remittanceYear}-${String(remittanceMonth).padStart(2, "0")}`)}`;
+  const compensationAuditHref = "/admin/audit?sourcePage=admin%2Fhr%2Fcompensation";
+
+  const lastRefreshedLabel = useMemo(() => {
+    const points = [
+      employeesQuery.dataUpdatedAt,
+      compensationQuery.dataUpdatedAt,
+      payrollQuery.dataUpdatedAt,
+      cronStatusQuery.dataUpdatedAt,
+      statutorySummaryQuery.dataUpdatedAt,
+    ].filter((v) => Number(v) > 0) as number[];
+    if (points.length === 0) return null;
+    return new Date(Math.max(...points)).toLocaleString();
+  }, [
+    compensationQuery.dataUpdatedAt,
+    cronStatusQuery.dataUpdatedAt,
+    employeesQuery.dataUpdatedAt,
+    payrollQuery.dataUpdatedAt,
+    statutorySummaryQuery.dataUpdatedAt,
+  ]);
+
+  useEffect(() => {
+    setSelectedPendingCompIds((current) =>
+      current.filter((id) =>
+        compensations.some((comp) => comp.id === id && (comp.status || "ACTIVE") === "PENDING"),
+      ),
+    );
+  }, [compensations]);
+  useEffect(() => {
+    setCompPage(1);
+  }, [compSearch, compStatusFilter, compPageSize]);
+  const payrollDateInvalid =
+    Boolean(payrollForm.periodStart) &&
+    Boolean(payrollForm.periodEnd) &&
+    new Date(payrollForm.periodEnd).getTime() < new Date(payrollForm.periodStart).getTime();
 
   const handleCreateCompensation = async () => {
     try {
+      if (!form.employeeId) {
+        toast.error("Select an employee before saving compensation.");
+        return;
+      }
+      const baseSalary = Number(form.baseSalary || 0);
+      const allowances = Number(form.allowances || 0);
+      const deductions = Number(form.deductions || 0);
+      const bonus = Number(form.bonus || 0);
+      if (baseSalary <= 0) {
+        toast.error("Base salary must be greater than 0.");
+        return;
+      }
+      if ([allowances, deductions, bonus].some((value) => value < 0)) {
+        toast.error("Allowances, deductions, and bonus cannot be negative.");
+        return;
+      }
       const payload = {
         employeeId: form.employeeId,
-        baseSalary: Number(form.baseSalary || 0),
-        allowances: Number(form.allowances || 0),
-        deductions: Number(form.deductions || 0),
-        bonus: Number(form.bonus || 0),
+        baseSalary,
+        allowances,
+        deductions,
+        bonus,
         currency: form.currency,
         effectiveDate: form.effectiveDate ? new Date(form.effectiveDate).toISOString() : undefined,
         status: requiresApproval ? "PENDING" : "ACTIVE",
@@ -183,6 +364,7 @@ export default function AdminHrCompensationPage() {
       });
       setRequiresApproval(false);
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation", "summary", "pending"] });
     } catch (err) {
       console.error(err);
       toast.error("Failed to add compensation.");
@@ -191,14 +373,19 @@ export default function AdminHrCompensationPage() {
 
   const handleCreatePayroll = async () => {
     try {
+      if (!payrollForm.periodStart || !payrollForm.periodEnd) {
+        toast.error("Select both period start and period end.");
+        return;
+      }
+      if (payrollDateInvalid) {
+        toast.error("Period end cannot be earlier than period start.");
+        return;
+      }
       const payload = {
         periodStart: payrollForm.periodStart
           ? new Date(payrollForm.periodStart).toISOString()
           : "",
         periodEnd: payrollForm.periodEnd ? new Date(payrollForm.periodEnd).toISOString() : "",
-        status: payrollForm.status,
-        totalGross: Number(payrollForm.totalGross || 0),
-        totalNet: Number(payrollForm.totalNet || 0),
       };
       const res = await fetch("/api/admin/hr/payroll", {
         method: "POST",
@@ -207,6 +394,18 @@ export default function AdminHrCompensationPage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
+        if (res.status === 409 && err?.overlap) {
+          const overlapStart = err.overlap.periodStart
+            ? new Date(err.overlap.periodStart).toLocaleDateString()
+            : "";
+          const overlapEnd = err.overlap.periodEnd
+            ? new Date(err.overlap.periodEnd).toLocaleDateString()
+            : "";
+          toast.error(
+            `Overlapping payroll period: ${overlapStart} - ${overlapEnd} (${err.overlap.status}).`,
+          );
+          return;
+        }
         toast.error(err.error || "Failed to create payroll run.");
         return;
       }
@@ -215,9 +414,6 @@ export default function AdminHrCompensationPage() {
       setPayrollForm({
         periodStart: "",
         periodEnd: "",
-        status: "DRAFT",
-        totalGross: "",
-        totalNet: "",
       });
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "payroll"] });
     } catch (err) {
@@ -231,8 +427,6 @@ export default function AdminHrCompensationPage() {
       const payload = {
         year: Number(monthlyForm.year),
         month: Number(monthlyForm.month),
-        taxPercent: Number(monthlyForm.taxPercent || 0),
-        pensionPercent: Number(monthlyForm.pensionPercent || 0),
         bonus: Number(monthlyForm.bonus || 0),
       };
       const res = await fetch("/api/admin/hr/payroll/generate-monthly", {
@@ -245,7 +439,9 @@ export default function AdminHrCompensationPage() {
         toast.error(body.error || "Failed to generate monthly paystubs.");
         return;
       }
-      toast.success(`Generated ${body.created ?? 0} payslip(s).`);
+      toast.success(
+        `Generated ${body.created ?? 0}, updated ${body.updated ?? 0}, skipped ${body.skipped ?? 0}.`,
+      );
       setMonthlyDialogOpen(false);
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "payroll"] });
     } catch (err) {
@@ -283,11 +479,23 @@ export default function AdminHrCompensationPage() {
   const handleUpdateCompensation = async () => {
     if (!editingId) return;
     try {
+      const baseSalary = Number(editForm.baseSalary || 0);
+      const allowances = Number(editForm.allowances || 0);
+      const deductions = Number(editForm.deductions || 0);
+      const bonus = Number(editForm.bonus || 0);
+      if (baseSalary <= 0) {
+        toast.error("Base salary must be greater than 0.");
+        return;
+      }
+      if ([allowances, deductions, bonus].some((value) => value < 0)) {
+        toast.error("Allowances, deductions, and bonus cannot be negative.");
+        return;
+      }
       const payload = {
-        baseSalary: Number(editForm.baseSalary || 0),
-        allowances: Number(editForm.allowances || 0),
-        deductions: Number(editForm.deductions || 0),
-        bonus: Number(editForm.bonus || 0),
+        baseSalary,
+        allowances,
+        deductions,
+        bonus,
         currency: editForm.currency,
         effectiveDate: editForm.effectiveDate
           ? new Date(editForm.effectiveDate).toISOString()
@@ -306,6 +514,7 @@ export default function AdminHrCompensationPage() {
       toast.success("Compensation updated.");
       setEditingId(null);
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation", "summary", "pending"] });
     } catch (err) {
       console.error(err);
       toast.error("Failed to update compensation.");
@@ -329,6 +538,7 @@ export default function AdminHrCompensationPage() {
       }
       toast.success("Compensation status updated.");
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation", "summary", "pending"] });
     } catch (err) {
       console.error(err);
       toast.error("Failed to update status.");
@@ -363,8 +573,144 @@ export default function AdminHrCompensationPage() {
     }
   };
 
+  const handleBulkApprovePending = async () => {
+    if (selectedPendingCompIds.length === 0) {
+      toast.error("Select at least one pending compensation record.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/hr/compensation/bulk-approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedPendingCompIds }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to run bulk approval.");
+        return;
+      }
+      if (Number(body.approvedCount || 0) > 0) {
+        toast.success(`Approved ${body.approvedCount} compensation record(s).`);
+      }
+      if (Number(body.skippedCount || 0) > 0) {
+        const notFound = Number(body?.skippedBreakdown?.notFoundIds?.length || 0);
+        const alreadyActive = Number(body?.skippedBreakdown?.alreadyActiveIds?.length || 0);
+        const alreadyDraft = Number(body?.skippedBreakdown?.alreadyDraftIds?.length || 0);
+        const reasonParts = [
+          notFound > 0 ? `${notFound} not found` : "",
+          alreadyActive > 0 ? `${alreadyActive} already active` : "",
+          alreadyDraft > 0 ? `${alreadyDraft} draft` : "",
+        ].filter(Boolean);
+        toast.error(
+          reasonParts.length > 0
+            ? `Some records were skipped (${reasonParts.join(", ")}).`
+            : "Some selected records could not be approved.",
+        );
+      }
+      setSelectedPendingCompIds([]);
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation"] });
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "compensation", "summary", "pending"] });
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to run bulk approval.");
+    }
+  };
+
+  const handleRefreshPageData = async () => {
+    try {
+      await Promise.all([
+        employeesQuery.refetch(),
+        compensationQuery.refetch(),
+        pendingCompSummaryQuery.refetch(),
+        payrollQuery.refetch(),
+        cronStatusQuery.refetch(),
+        statutorySummaryQuery.refetch(),
+      ]);
+      toast.success("Page data refreshed.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to refresh page data.");
+    }
+  };
+
+  const requestPayrollStatusConfirm = (
+    run: PayrollRun,
+    status: "FINALIZED" | "PAID",
+    createExpense: boolean,
+  ) => {
+    setPendingStatusAction({ run, status, createExpense });
+    setStatusConfirmOpen(true);
+  };
+
+  const handlePreviewMonthly = async () => {
+    try {
+      const payload = {
+        year: Number(monthlyForm.year),
+        month: Number(monthlyForm.month),
+        bonus: Number(monthlyForm.bonus || 0),
+        previewOnly: true,
+      };
+      const res = await fetch("/api/admin/hr/payroll/generate-monthly", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to preview monthly paystubs.");
+        return;
+      }
+      setPreviewResult(body);
+      toast.success(`Preview ready for ${Array.isArray(body.previewRows) ? body.previewRows.length : 0} employee(s).`);
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to preview monthly paystubs.");
+    }
+  };
+
+  const handleExportCompensationCsv = async () => {
+    try {
+      setIsExportingCompCsv(true);
+      const query = new URLSearchParams();
+      query.set("status", compStatusFilter);
+      const trimmedSearch = compSearch.trim();
+      if (trimmedSearch) query.set("search", trimmedSearch);
+      const res = await fetch(`/api/admin/hr/compensation/export?${query.toString()}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || "Failed to export compensation CSV.");
+        return;
+      }
+      const blob = await res.blob();
+      const contentDisposition = res.headers.get("Content-Disposition") || "";
+      const nameMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+      const filename = nameMatch?.[1] || "compensation-export.csv";
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Compensation CSV exported.");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to export compensation CSV.");
+    } finally {
+      setIsExportingCompCsv(false);
+    }
+  };
+
   const formatPeriod = (run: PayrollRun) =>
     `${new Date(run.periodStart).toLocaleDateString()} - ${new Date(run.periodEnd).toLocaleDateString()}`;
+
+  const getPayrollStatusHint = (run: PayrollRun) => {
+    if (run.status === "DRAFT") return "Draft runs can be finalized or cancelled.";
+    if (run.status === "FINALIZED") return "Finalized runs can be marked paid.";
+    if (run.status === "PAID") return "Paid runs are locked for status changes.";
+    return "Cancelled runs are locked.";
+  };
 
   return (
     <section className="space-y-6">
@@ -375,8 +721,20 @@ export default function AdminHrCompensationPage() {
           <p className="text-xs text-muted-foreground mt-1">
             Cron status: {cronEnabled ? "enabled" : "disabled"}
           </p>
+          {lastRefreshedLabel ? (
+            <p className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href={compensationAuditHref}>View compensation audit</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/admin/hr/payroll/remittance">Open remittance register</Link>
+          </Button>
+          <Button variant="outline" onClick={handleRefreshPageData}>
+            Refresh data
+          </Button>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
               <Button>+ Compensation</Button>
@@ -407,6 +765,9 @@ export default function AdminHrCompensationPage() {
                   value={form.baseSalary}
                   onChange={(e) => setForm((prev) => ({ ...prev, baseSalary: e.target.value }))}
                 />
+                <p className="text-xs text-muted-foreground -mt-1">
+                  Use positive numbers. Leave optional fields blank for 0.
+                </p>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Input
                     type="number"
@@ -490,22 +851,6 @@ export default function AdminHrCompensationPage() {
                 </Select>
                 <Input
                   type="number"
-                  placeholder="Tax %"
-                  value={monthlyForm.taxPercent}
-                  onChange={(e) =>
-                    setMonthlyForm((prev) => ({ ...prev, taxPercent: e.target.value }))
-                  }
-                />
-                <Input
-                  type="number"
-                  placeholder="Pension %"
-                  value={monthlyForm.pensionPercent}
-                  onChange={(e) =>
-                    setMonthlyForm((prev) => ({ ...prev, pensionPercent: e.target.value }))
-                  }
-                />
-                <Input
-                  type="number"
                   placeholder="Bonus (flat)"
                   value={monthlyForm.bonus}
                   onChange={(e) =>
@@ -514,14 +859,48 @@ export default function AdminHrCompensationPage() {
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                Bonus here is a default. Per-employee bonus in compensation overrides it.
+                Tax and SSNIT follow your Ghana payroll policy in HR Settings.
+              </p>
+              <div className="rounded-md border p-3 text-xs text-muted-foreground space-y-1">
+                <div className="font-medium text-foreground">Current policy from HR Settings</div>
+                <div>Auto statutory calculation: {policyAutoCalculation ? "On" : "Off"}</div>
+                <div>Collect PAYE: {policyEnablePaye ? "On" : "Off"}</div>
+                <div>Collect SSNIT (employee): {policyEnableSsnitEmployee ? "On" : "Off"}</div>
+                <div>Track SSNIT (employer): {policyEnableSsnitEmployer ? "On" : "Off"}</div>
+                {!policyAutoCalculation ? (
+                  <div className="text-amber-700">
+                    Turn on automatic statutory calculation in HR Settings before generating paystubs.
+                  </div>
+                ) : null}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Bonus here is a default add-on. Per-employee bonus in compensation overrides it.
               </p>
               <p className="text-xs text-muted-foreground">
                 Month is required and must be between 1 and 12.
               </p>
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={handlePreviewMonthly}>
+                  Preview
+                </Button>
                 <Button onClick={handleGenerateMonthly}>Generate</Button>
               </div>
+              {previewResult ? (
+                <div className="rounded-md border p-3 text-xs text-muted-foreground">
+                  Preview employees: {Array.isArray(previewResult.previewRows) ? previewResult.previewRows.length : 0}
+                  {" | "}Skipped: {Number(previewResult.skipped || 0)}
+                  {Array.isArray(previewResult.previewRows) && previewResult.previewRows.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      {previewResult.previewRows.slice(0, 5).map((row) => (
+                        <div key={row.employeeId}>
+                          {row.employeeId.slice(0, 8)}... Gross {formatCurrency(Number(row.grossPay || 0))} Net{" "}
+                          {formatCurrency(Number(row.netPay || 0))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </DialogContent>
           </Dialog>
           <Button
@@ -534,6 +913,36 @@ export default function AdminHrCompensationPage() {
           </Button>
         </div>
       </header>
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>Pending Approvals</CardTitle>
+          </CardHeader>
+          <CardContent className="text-2xl font-semibold">{pendingCompensationCount}</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Open Draft Runs</CardTitle>
+          </CardHeader>
+          <CardContent className="text-2xl font-semibold">{draftRunCount}</CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Latest Run</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1">
+            {latestRun ? (
+              <>
+                <div className="text-sm">{formatPeriod(latestRun)}</div>
+                <div className="text-xs text-muted-foreground">{latestRun.status}</div>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground">No payroll runs yet.</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">
@@ -580,6 +989,62 @@ export default function AdminHrCompensationPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={statusConfirmOpen} onOpenChange={setStatusConfirmOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {pendingStatusAction?.status === "FINALIZED" ? "Finalize Payroll Run" : "Mark Payroll Run as Paid"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <div>
+              Period:{" "}
+              <span className="font-medium text-foreground">
+                {pendingStatusAction ? formatPeriod(pendingStatusAction.run) : "-"}
+              </span>
+            </div>
+            <div>
+              Total gross / net:{" "}
+              <span className="font-medium text-foreground">
+                {pendingStatusAction
+                  ? `${formatCurrency(Number(pendingStatusAction.run.totalGross || 0))} / ${formatCurrency(Number(pendingStatusAction.run.totalNet || 0))}`
+                  : "-"}
+              </span>
+            </div>
+            <div>
+              Payslips:{" "}
+              <span className="font-medium text-foreground">
+                {pendingStatusAction ? Number(pendingStatusAction.run.payslipCount || 0) : 0}
+              </span>
+            </div>
+            {pendingStatusAction?.status === "FINALIZED" ? (
+              <div>Finalizing will lock this run and create payroll expense entries when applicable.</div>
+            ) : (
+              <div>Marking paid confirms payment settlement for this payroll run.</div>
+            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setStatusConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!pendingStatusAction) return;
+                handleUpdatePayrollStatus(
+                  pendingStatusAction.run.id,
+                  pendingStatusAction.status,
+                  pendingStatusAction.createExpense,
+                );
+                setStatusConfirmOpen(false);
+                setPendingStatusAction(null);
+              }}
+            >
+              Confirm
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {advancedOpen ? (
         <Card>
           <CardHeader>
@@ -608,40 +1073,56 @@ export default function AdminHrCompensationPage() {
                   <Input
                     type="date"
                     value={payrollForm.periodEnd}
+                    min={payrollForm.periodStart || undefined}
                     onChange={(e) =>
                       setPayrollForm((prev) => ({ ...prev, periodEnd: e.target.value }))
                     }
                   />
-                  <Input
-                    type="number"
-                    placeholder="Total gross"
-                    value={payrollForm.totalGross}
-                    onChange={(e) =>
-                      setPayrollForm((prev) => ({ ...prev, totalGross: e.target.value }))
-                    }
-                  />
-                  <Input
-                    type="number"
-                    placeholder="Total net"
-                    value={payrollForm.totalNet}
-                    onChange={(e) =>
-                      setPayrollForm((prev) => ({ ...prev, totalNet: e.target.value }))
-                    }
-                  />
-                  <Select
-                    value={payrollForm.status}
-                    onValueChange={(value) => setPayrollForm((prev) => ({ ...prev, status: value }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Status" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="DRAFT">Draft</SelectItem>
-                      <SelectItem value="FINALIZED">Finalized</SelectItem>
-                      <SelectItem value="PAID">Paid</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const now = new Date();
+                      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+                      setPayrollForm((prev) => ({
+                        ...prev,
+                        periodStart: start.toISOString().slice(0, 10),
+                        periodEnd: end.toISOString().slice(0, 10),
+                      }));
+                    }}
+                  >
+                    This month
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const now = new Date();
+                      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                      const end = new Date(now.getFullYear(), now.getMonth(), 0);
+                      setPayrollForm((prev) => ({
+                        ...prev,
+                        periodStart: start.toISOString().slice(0, 10),
+                        periodEnd: end.toISOString().slice(0, 10),
+                      }));
+                    }}
+                  >
+                    Last month
+                  </Button>
+                </div>
+                {payrollDateInvalid ? (
+                  <p className="text-xs text-red-600">
+                    Period end cannot be earlier than period start.
+                  </p>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  New payroll runs are created as Draft. Gross and net totals are computed after payslips are generated.
+                </p>
                 <div className="flex justify-end">
                   <Button onClick={handleCreatePayroll}>Save payroll run</Button>
                 </div>
@@ -650,6 +1131,123 @@ export default function AdminHrCompensationPage() {
           </CardContent>
         </Card>
       ) : null}
+
+      <Card>
+        <CardHeader className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>Monthly Statutory Remittance</CardTitle>
+            <Button asChild size="sm" variant="outline">
+              <Link href={remittanceAuditHref}>View remittance audit</Link>
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Track PAYE and SSNIT liabilities for a payroll month and mark each as pending or remitted.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="h-8 w-28"
+              type="number"
+              min={2000}
+              max={2100}
+              value={remittanceYear}
+              onChange={(e) => setRemittanceYear(e.target.value)}
+            />
+            <Select value={remittanceMonth} onValueChange={setRemittanceMonth}>
+              <SelectTrigger className="h-8 w-40">
+                <SelectValue placeholder="Month" />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: 12 }).map((_, index) => {
+                  const month = String(index + 1);
+                  return (
+                    <SelectItem key={month} value={month}>
+                      {new Date(2000, index, 1).toLocaleString(undefined, { month: "long" })}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => statutorySummaryQuery.refetch()}
+              disabled={!remittanceQueryEnabled}
+            >
+              Refresh remittance totals
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded border p-3 text-sm">
+              <div className="text-xs text-muted-foreground">Runs / Payslips / Employees</div>
+              <div className="font-medium">
+                {Number(statutorySummary?.runCount || 0)} / {Number(statutorySummary?.payslipCount || 0)} /{" "}
+                {Number(statutorySummary?.employeeCount || 0)}
+              </div>
+            </div>
+            <div className="rounded border p-3 text-sm">
+              <div className="text-xs text-muted-foreground">Gross / Net</div>
+              <div className="font-medium">
+                {formatCurrency(Number(statutorySummary?.totalGross || 0))} /{" "}
+                {formatCurrency(Number(statutorySummary?.totalNet || 0))}
+              </div>
+            </div>
+            <div className="rounded border p-3 text-sm">
+              <div className="text-xs text-muted-foreground">Other payroll deductions</div>
+              <div className="font-medium">{formatCurrency(Number(statutorySummary?.otherDeductions || 0))}</div>
+            </div>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Liability</TableHead>
+                <TableHead>Amount</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Remitted at</TableHead>
+                <TableHead>Reference</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              <TableRow>
+                <TableCell>PAYE tax</TableCell>
+                <TableCell>{formatCurrency(Number(statutorySummary?.payeTax || 0))}</TableCell>
+                <TableCell>{statutorySummary?.remittance?.payeStatus || "PENDING"}</TableCell>
+                <TableCell>
+                  {statutorySummary?.remittance?.payeRemittedAt
+                    ? new Date(statutorySummary.remittance.payeRemittedAt).toLocaleString()
+                    : "-"}
+                </TableCell>
+                <TableCell>{statutorySummary?.remittance?.payeReference || "-"}</TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>SSNIT (employee + employer)</TableCell>
+                <TableCell>
+                  {formatCurrency(
+                    Number(statutorySummary?.ssnitEmployee || 0) +
+                      Number(statutorySummary?.ssnitEmployer || 0),
+                  )}
+                </TableCell>
+                <TableCell>{statutorySummary?.remittance?.ssnitStatus || "PENDING"}</TableCell>
+                <TableCell>
+                  {statutorySummary?.remittance?.ssnitRemittedAt
+                    ? new Date(statutorySummary.remittance.ssnitRemittedAt).toLocaleString()
+                    : "-"}
+                </TableCell>
+                <TableCell>{statutorySummary?.remittance?.ssnitReference || "-"}</TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild size="sm" variant="outline">
+              <Link href={remittanceAuditHref}>View remittance audit</Link>
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link href="/admin/hr/payroll/remittance">Manage remittance on dedicated page</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2">
@@ -669,26 +1267,97 @@ export default function AdminHrCompensationPage() {
         {checklistOpen ? (
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <div>1) Add or update compensation records for any staff changes.</div>
-            <div>2) Click “Generate Monthly Paystubs” and enter tax/pension/bonus.</div>
-            <div>3) Review the payroll run totals and employee breakdown.</div>
-            <div>4) Click “Finalize Run” to lock and create the payroll expense.</div>
-            <div>5) After payments are sent, click “Mark Run Paid”.</div>
-            <div>6) Print paystubs for employees as needed.</div>
+            <div>2) Confirm Ghana payroll settings in HR Settings (auto/manual mode, PAYE bands, SSNIT, taxable allowances).</div>
+            <div>3) Click Generate Monthly Paystubs and enter optional bonus values.</div>
+            <div>4) Use Preview first when needed, then review payroll totals and employee statutory breakdown.</div>
+            <div>5) Click Finalize Run to lock and create the payroll expense.</div>
+            <div>6) After payments are sent, click Mark Paid.</div>
+            <div>7) Print or email paystubs for employees as needed.</div>
           </CardContent>
         ) : null}
       </Card>
 
       <Card>
-        <CardHeader className="space-y-1">
+        <CardHeader className="space-y-2">
           <CardTitle>Compensation Records</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Use “Correct” to fix mistakes. Add a new record for salary changes.
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs text-muted-foreground">
+              Use Correct to fix mistakes. Add a new record for salary changes.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                setSelectedPendingCompIds(pendingCompensations.map((comp) => comp.id))
+              }
+              disabled={pendingCompensations.length === 0}
+            >
+              Select all pending
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSelectedPendingCompIds([])}
+              disabled={selectedPendingCompIds.length === 0}
+            >
+              Clear selection
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleBulkApprovePending}
+              disabled={selectedPendingCompIds.length === 0}
+            >
+              Approve selected ({selectedPendingCompIds.length})
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleExportCompensationCsv}
+              disabled={isExportingCompCsv}
+            >
+              {isExportingCompCsv ? "Exporting..." : "Export CSV"}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Filter:</span>
+            {(["ALL", "PENDING", "ACTIVE", "DRAFT"] as CompensationStatusFilter[]).map((status) => (
+              <Button
+                key={status}
+                size="sm"
+                variant={compStatusFilter === status ? "default" : "outline"}
+                onClick={() => setCompStatusFilter(status)}
+              >
+                {status === "ALL" ? "All" : status}
+              </Button>
+            ))}
+            <Input
+              className="h-8 w-56"
+              placeholder="Search employee id, name, or email"
+              value={compSearch}
+              onChange={(e) => setCompSearch(e.target.value)}
+            />
+            <Select
+              value={String(compPageSize)}
+              onValueChange={(value) => setCompPageSize(Number(value) as (typeof COMP_PAGE_SIZES)[number])}
+            >
+              <SelectTrigger className="h-8 w-28">
+                <SelectValue placeholder="Rows" />
+              </SelectTrigger>
+              <SelectContent>
+                {COMP_PAGE_SIZES.map((size) => (
+                  <SelectItem key={size} value={String(size)}>
+                    {size} rows
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Select</TableHead>
                 <TableHead>Employee</TableHead>
                 <TableHead>Base</TableHead>
                 <TableHead>Allowances</TableHead>
@@ -699,12 +1368,12 @@ export default function AdminHrCompensationPage() {
                 <TableHead>Actions</TableHead>
               </TableRow>
             </TableHeader>
-          <TableBody>
-            {compensations.length === 0 ? (
+            <TableBody>
+              {compensations.length === 0 ? (
                 <TableRow>
-                      <TableCell colSpan={8} className="text-center text-sm text-muted-foreground">
-                        No compensation records yet.
-                      </TableCell>
+                  <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
+                    No compensation records for the selected filter.
+                  </TableCell>
                 </TableRow>
               ) : (
                 compensations.map((comp) => {
@@ -713,7 +1382,23 @@ export default function AdminHrCompensationPage() {
                   return (
                     <TableRow key={comp.id}>
                       <TableCell>
-                        {employee ? `${employee.firstName} ${employee.lastName}` : "—"}
+                        {(comp.status || "ACTIVE") === "PENDING" ? (
+                          <input
+                            aria-label={`Select pending compensation ${comp.id}`}
+                            type="checkbox"
+                            checked={selectedPendingCompIds.includes(comp.id)}
+                            onChange={(e) => {
+                              setSelectedPendingCompIds((current) =>
+                                e.target.checked
+                                  ? [...new Set([...current, comp.id])]
+                                  : current.filter((id) => id !== comp.id),
+                              );
+                            }}
+                          />
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        {employee ? `${employee.firstName} ${employee.lastName}` : "-"}
                       </TableCell>
                       <TableCell>
                         {isEditing ? (
@@ -779,7 +1464,7 @@ export default function AdminHrCompensationPage() {
                         ) : comp.effectiveDate ? (
                           new Date(comp.effectiveDate).toLocaleDateString()
                         ) : (
-                          "—"
+                          "-"
                         )}
                       </TableCell>
                       <TableCell>
@@ -837,19 +1522,92 @@ export default function AdminHrCompensationPage() {
               )}
             </TableBody>
           </Table>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <div>
+              Page {Number(compensationData?.page || 1)} of {Number(compensationData?.totalPages || 1)} | Total{" "}
+              {Number(compensationData?.total || 0)} record(s)
+            </div>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCompPage((current) => Math.max(1, current - 1))}
+                disabled={Number(compensationData?.page || 1) <= 1}
+              >
+                Previous
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  setCompPage((current) =>
+                    Math.min(Number(compensationData?.totalPages || 1), current + 1),
+                  )
+                }
+                disabled={Number(compensationData?.page || 1) >= Number(compensationData?.totalPages || 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
+
+      {riskyDraftRuns.length > 0 ? (
+        <Card className="border-amber-400/60">
+          <CardHeader className="space-y-1">
+            <CardTitle>Draft Runs Requiring Review</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              These draft payroll runs already have totals or payslips. Review and finalize or cancel them.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {riskyDraftRuns.map((run) => (
+              <div key={run.id} className="rounded-md border p-2 text-sm">
+                <div className="font-medium">{formatPeriod(run)}</div>
+                <div className="text-xs text-muted-foreground">
+                  Payslips: {Number(run.payslipCount || 0)} | Gross:{" "}
+                  {formatCurrency(Number(run.totalGross || 0))} | Net:{" "}
+                  {formatCurrency(Number(run.totalNet || 0))}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Missing bank details: {Number(run.missingBankDetailsCount || 0)} | Statutory mode:{" "}
+                  {policyAutoCalculation ? "Auto" : "Auto off"}
+                </div>
+                {Number(run.missingBankDetailsCount || 0) > 0 && run.firstMissingBankEmployeeId ? (
+                  <div className="mt-1">
+                    <Button asChild size="sm" variant="outline">
+                      <Link href={`/admin/hr/staff/${run.firstMissingBankEmployeeId}`}>
+                        Open first affected staff
+                      </Link>
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>Payroll Runs</CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowCancelled((prev) => !prev)}
-          >
-            {showCancelled ? "Hide cancelled" : "Show cancelled"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant={showDraftsMissingBankOnly ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowDraftsMissingBankOnly((prev) => !prev)}
+            >
+              {showDraftsMissingBankOnly ? "Showing missing-bank drafts" : "Drafts missing bank only"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowCancelled((prev) => !prev)}
+            >
+              {showCancelled ? "Hide cancelled" : "Show cancelled"}
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -858,6 +1616,7 @@ export default function AdminHrCompensationPage() {
                 <TableHead>Period</TableHead>
                 <TableHead>Type</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead>Payslips</TableHead>
                 <TableHead>Gross</TableHead>
                 <TableHead>Net</TableHead>
                 <TableHead>Actions</TableHead>
@@ -866,7 +1625,7 @@ export default function AdminHrCompensationPage() {
             <TableBody>
               {visibleRuns.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center text-sm text-muted-foreground">
                     No payroll runs to show.
                   </TableCell>
                 </TableRow>
@@ -891,75 +1650,142 @@ export default function AdminHrCompensationPage() {
                       ) : null}
                     </TableCell>
                     <TableCell>{run.status}</TableCell>
+                    <TableCell>{Number(run.payslipCount || 0)}</TableCell>
                     <TableCell>{formatCurrency(Number(run.totalGross || 0))}</TableCell>
                     <TableCell>{formatCurrency(Number(run.totalNet || 0))}</TableCell>
                     <TableCell>
-                      {run.status === "CANCELLED" ? (
-                        <span className="text-xs text-muted-foreground">Cancelled</span>
-                      ) : run.status === "DRAFT" ? (
+                      <div className="space-y-2">
+                        {run.status === "DRAFT" ? (
+                          <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+                            Health: Payslips {Number(run.payslipCount || 0)} |{" "}
+                            <span title="Current computed net total for the run">Net</span>{" "}
+                            {formatCurrency(Number(run.totalNet || 0))} |{" "}
+                            <span title="Number of payslips where employee bank details are incomplete">
+                              Missing bank
+                            </span>{" "}
+                            {Number(run.missingBankDetailsCount || 0)} |{" "}
+                            <span title="Statutory calculation mode from HR Settings">Statutory</span>{" "}
+                            {policyAutoCalculation ? "Auto" : "Auto off"}
+                          </div>
+                        ) : null}
+                        {run.status === "DRAFT" && Number(run.missingBankDetailsCount || 0) > 0 ? (
+                          <div className="text-[11px] text-amber-700">
+                            Warning: {Number(run.missingBankDetailsCount || 0)} payslip(s) missing bank details.
+                            {run.firstMissingBankEmployeeId ? (
+                              <>
+                                {" "}
+                                <Link
+                                  href={`/admin/hr/staff/${run.firstMissingBankEmployeeId}`}
+                                  className="underline"
+                                >
+                                  Open first affected staff
+                                </Link>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {run.status === "DRAFT" ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => requestPayrollStatusConfirm(run, "FINALIZED", !run.expense)}
+                              disabled={Number(run.payslipCount || 0) <= 0}
+                            >
+                              Finalize Run
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setPendingCancelRun(run);
+                                setCancelOpen(true);
+                              }}
+                            >
+                              Cancel Draft
+                            </Button>
+                            <Button asChild size="sm" variant="secondary">
+                              <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
+                            </Button>
+                          </div>
+                        ) : null}
+                        {run.status === "FINALIZED" ? (
+                          <div className="flex flex-wrap gap-2">
+                            {!run.expense ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleUpdatePayrollStatus(run.id, "FINALIZED", true)}
+                              >
+                                Create Expense
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => requestPayrollStatusConfirm(run, "PAID", false)}
+                            >
+                              Mark Paid
+                            </Button>
+                            <Button asChild size="sm" variant="secondary">
+                              <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
+                            </Button>
+                          </div>
+                        ) : null}
+                        {run.status === "PAID" ? (
+                          <div className="flex flex-wrap gap-2">
+                            {!run.expense ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleUpdatePayrollStatus(run.id, "PAID", true)}
+                              >
+                                Create Expense
+                              </Button>
+                            ) : null}
+                            <Button asChild size="sm" variant="secondary">
+                              <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
+                            </Button>
+                          </div>
+                        ) : null}
+                        {run.status === "CANCELLED" ? (
+                          <div className="flex flex-wrap gap-2">
+                            <Button asChild size="sm" variant="secondary">
+                              <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
+                            </Button>
+                          </div>
+                        ) : null}
                         <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              handleUpdatePayrollStatus(run.id, "FINALIZED", !run.expense)
-                            }
-                          >
-                            Finalize Run
+                          <Button asChild size="sm" variant="outline">
+                            <Link
+                              href={`/admin/audit?entityType=PAYROLL_RUN&entityId=${encodeURIComponent(run.id)}&sourcePage=admin%2Fhr%2Fpayroll`}
+                            >
+                              Open run audit
+                            </Link>
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setPendingCancelRun(run);
-                              setCancelOpen(true);
-                            }}
-                          >
-                            Cancel Draft
-                          </Button>
-                          <Button asChild size="sm" variant="secondary">
-                            <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
+                          <Button asChild size="sm" variant="outline">
+                            <Link
+                              href={`/admin/accounting/journal?sourceType=PAYROLL&q=${encodeURIComponent(run.id)}`}
+                            >
+                              Open run journal
+                            </Link>
                           </Button>
                         </div>
-                      ) : !run.expense ? (
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              handleUpdatePayrollStatus(
-                                run.id,
-                                run.status as "FINALIZED" | "PAID" | "CANCELLED",
-                                true
-                              )
-                            }
-                          >
-                            Create Expense
-                          </Button>
-                          <Button asChild size="sm" variant="secondary">
-                            <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
-                          </Button>
+                        {run.status === "DRAFT" && Number(run.payslipCount || 0) <= 0 ? (
+                          <div className="text-[11px] text-amber-700">
+                            Finalize blocked: add at least one payslip before finalizing this run.
+                          </div>
+                        ) : null}
+                        {run.status === "DRAFT" && !policyAutoCalculation ? (
+                          <div className="text-[11px] text-amber-700">
+                            Generation helper: automatic statutory calculation is off in HR Settings.
+                          </div>
+                        ) : null}
+                        <div className="text-[11px] text-muted-foreground">
+                          Last action:{" "}
+                          {new Date(run.updatedAt || run.createdAt || run.periodEnd).toLocaleString()}
                         </div>
-                      ) : run.status === "FINALIZED" ? (
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleUpdatePayrollStatus(run.id, "PAID", false)}
-                          >
-                            Mark Paid
-                          </Button>
-                          <Button asChild size="sm" variant="secondary">
-                            <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-wrap gap-2">
-                          <span className="text-xs text-muted-foreground">Complete</span>
-                          <Button asChild size="sm" variant="secondary">
-                            <Link href={`/admin/hr/payroll/${run.id}`}>View</Link>
-                          </Button>
-                        </div>
-                      )}
+                        <div className="text-xs text-muted-foreground">{getPayrollStatusHint(run)}</div>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -971,3 +1797,4 @@ export default function AdminHrCompensationPage() {
     </section>
   );
 }
+

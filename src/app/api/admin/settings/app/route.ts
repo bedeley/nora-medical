@@ -6,6 +6,10 @@ import { Prisma } from "@prisma/client";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import {
+  DEFAULT_BALANCE_TOLERANCE,
+  DEFAULT_DELTA_WARNING_THRESHOLD_PCT,
+} from "@/lib/balance-sheet-settings";
 
 type AppSettingAuditPayload = {
   sourcePage?: string;
@@ -52,6 +56,12 @@ function changedObjectFields(previous: unknown, next: unknown) {
   const nextObj = next as Record<string, unknown>;
   const keySet = new Set([...Object.keys(prevObj), ...Object.keys(nextObj)]);
   return [...keySet].filter((k) => JSON.stringify(prevObj[k] ?? null) !== JSON.stringify(nextObj[k] ?? null));
+}
+
+function getDefaultAuditBaselineForSetting(key: string) {
+  if (key === "accounting.reports.balanceSheet.balanceTolerance") return DEFAULT_BALANCE_TOLERANCE;
+  if (key === "accounting.reports.balanceSheet.deltaWarningThresholdPct") return DEFAULT_DELTA_WARNING_THRESHOLD_PCT;
+  return undefined;
 }
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -307,6 +317,26 @@ const SETTING_POLICIES: Record<string, SettingPolicy> = {
       return { ok: true, value: threshold };
     },
   },
+  "accounting.reports.balanceSheet.balanceTolerance": {
+    writeRoles: ["ADMIN"],
+    validate(value) {
+      const tolerance = normalizeNumber(value, 0);
+      if (tolerance === null || tolerance > 1000) {
+        return { ok: false, error: "Balance tolerance must be a number between 0 and 1000." };
+      }
+      return { ok: true, value: tolerance };
+    },
+  },
+  "accounting.reports.balanceSheet.deltaWarningThresholdPct": {
+    writeRoles: ["ADMIN"],
+    validate(value) {
+      const threshold = normalizeNumber(value, 0);
+      if (threshold === null || threshold > 1000) {
+        return { ok: false, error: "Delta warning threshold must be a number between 0 and 1000." };
+      }
+      return { ok: true, value: threshold };
+    },
+  },
   "accounting.scheduledReports": {
     writeRoles: ["ADMIN", "ACCOUNTANT"],
     validate(value) {
@@ -519,7 +549,10 @@ export async function POST(req: Request) {
     const key = update.key;
     const previousValue = previousByKey.get(key) ?? null;
     const newValue = updatedByKey.get(key) ?? null;
+    const defaultBaseline = previousValue === null ? getDefaultAuditBaselineForSetting(key) : undefined;
+    const effectivePreviousValue = previousValue === null && defaultBaseline !== undefined ? defaultBaseline : previousValue;
     const previousText = previousValue === null ? null : JSON.stringify(previousValue);
+    const effectivePreviousText = effectivePreviousValue === null ? null : JSON.stringify(effectivePreviousValue);
     const newText = newValue === null ? null : JSON.stringify(newValue);
     const changed = previousText !== newText;
     if (changed) changedKeys.push(key);
@@ -536,6 +569,11 @@ export async function POST(req: Request) {
       newSummary: summarizeValue(newValue),
       previousValuePreview: isSensitiveKey ? "[hidden]" : previousText?.slice(0, previewLimit) ?? null,
       newValuePreview: isSensitiveKey ? "[hidden]" : newText?.slice(0, previewLimit) ?? null,
+      effectivePreviousType:
+        effectivePreviousValue === null ? "NULL" : Array.isArray(effectivePreviousValue) ? "ARRAY" : typeof effectivePreviousValue,
+      effectivePreviousSummary: summarizeValue(effectivePreviousValue),
+      effectivePreviousValuePreview: isSensitiveKey ? "[hidden]" : effectivePreviousText?.slice(0, previewLimit) ?? null,
+      baselineDerivedFromDefault: previousValue === null && defaultBaseline !== undefined,
       isSensitive: isSensitiveKey,
     };
   });

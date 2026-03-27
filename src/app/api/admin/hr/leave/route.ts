@@ -5,6 +5,12 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import {
+  buildLeaveCreateAuditMeta,
+  isLeaveDateRangeValid,
+  parseLeaveDateInput,
+} from "@/lib/hr-leave-utils";
+import { normalizeLeaveListFilters } from "@/lib/hr-leave-route-helpers";
 
 const createSchema = z.object({
   employeeId: z.string().min(1),
@@ -27,26 +33,26 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
-  const employeeId = searchParams.get("employeeId")?.trim() || "";
-  const statusRaw = searchParams.get("status")?.trim() || "";
-  const typeRaw = searchParams.get("type")?.trim() || "";
-  const allowedStatus = new Set(["REQUESTED", "APPROVED", "REJECTED", "CANCELLED"]);
-  const allowedType = new Set(["ANNUAL", "SICK", "UNPAID", "OTHER"]);
-  const status = allowedStatus.has(statusRaw) ? statusRaw : "";
-  const type = allowedType.has(typeRaw) ? typeRaw : "";
+  const { page, pageSize, skip, take, where } = normalizeLeaveListFilters(searchParams);
 
-  const rows = await prisma.leaveRequest.findMany({
-    where: {
-      ...(employeeId ? { employeeId } : {}),
-      ...(status ? { status: status as "REQUESTED" } : {}),
-      ...(type ? { type: type as "ANNUAL" } : {}),
-    },
-    include: { employee: true },
-    orderBy: { startDate: "desc" },
-    take: 200,
+  const [rows, total] = await prisma.$transaction([
+    prisma.leaveRequest.findMany({
+      where,
+      include: { employee: true },
+      orderBy: { startDate: "desc" },
+      skip,
+      take,
+    }),
+    prisma.leaveRequest.count({ where }),
+  ]);
+
+  return NextResponse.json({
+    rows,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
   });
-
-  return NextResponse.json({ rows });
 }
 
 export async function POST(req: Request) {
@@ -60,16 +66,40 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid input", details: parsed.error.flatten() }, { status: 400 });
   }
 
-  const startDate = new Date(parsed.data.startDate);
-  const endDate = new Date(parsed.data.endDate);
-  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+  const startDate = parseLeaveDateInput(parsed.data.startDate);
+  const endDate = parseLeaveDateInput(parsed.data.endDate);
+  if (!startDate || !endDate) {
     return NextResponse.json({ error: "Invalid leave dates." }, { status: 400 });
   }
-  if (endDate < startDate) {
+  if (!isLeaveDateRangeValid(startDate, endDate)) {
     return NextResponse.json({ error: "End date must be after start date." }, { status: 400 });
   }
 
   try {
+    const employeeExists = await prisma.employee.findUnique({
+      where: { id: parsed.data.employeeId },
+      select: { id: true },
+    });
+    if (!employeeExists) {
+      return NextResponse.json({ error: "Employee not found." }, { status: 404 });
+    }
+
+    const overlappingLeave = await prisma.leaveRequest.findFirst({
+      where: {
+        employeeId: parsed.data.employeeId,
+        status: { in: ["REQUESTED", "APPROVED"] },
+        startDate: { lte: endDate },
+        endDate: { gte: startDate },
+      },
+      select: { id: true },
+    });
+    if (overlappingLeave) {
+      return NextResponse.json(
+        { error: "This leave overlaps another active leave request for the employee." },
+        { status: 409 },
+      );
+    }
+
     const leave = await prisma.leaveRequest.create({
       data: {
         employeeId: parsed.data.employeeId,
@@ -86,13 +116,24 @@ export async function POST(req: Request) {
         action: "HR_LEAVE_CREATE",
         entityType: "LEAVE_REQUEST",
         entityId: leave.id,
-        meta: {
-          employeeId: leave.employeeId,
-          type: leave.type,
-          status: leave.status,
-          startDate: leave.startDate.toISOString(),
-          endDate: leave.endDate.toISOString(),
-        },
+        meta: buildLeaveCreateAuditMeta({
+          actorId: user.id,
+          actorRole: user.role,
+          sourcePage: "admin/hr/leave",
+          section: "leave-requests",
+          operation: "create_leave_request",
+          resultSummary: "Leave request created successfully.",
+          after: {
+            employeeId: leave.employeeId,
+            type: leave.type,
+            status: leave.status,
+            startDate: leave.startDate,
+            endDate: leave.endDate,
+            reason: leave.reason,
+            approvedAt: leave.approvedAt,
+            cancelledAt: leave.cancelledAt,
+          },
+        }),
       });
     } catch {
       // best-effort

@@ -6,10 +6,24 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 import { Prisma } from "@prisma/client";
+import {
+  normalizeAuditText,
+  requiresApplicationDecisionNote,
+  selectEmployeeMatchForApplicant,
+  validateApplicationStageTransition,
+  validateHiringConflict,
+  type ApplicationStage,
+} from "@/lib/hr-hiring-utils";
+import { parseInterviewFromNotes } from "@/lib/hr-hiring-interview-meta";
 
 const updateSchema = z.object({
   stage: z.enum(["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "HIRED", "REJECTED", "WITHDRAWN"]).optional(),
   notes: z.string().optional().or(z.literal("")),
+  expectedUpdatedAt: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 const defaultOnboardingTasks = [
@@ -38,7 +52,7 @@ async function requireAdmin() {
 async function ensureEmployeeForHire(
   tx: Prisma.TransactionClient,
   application: { applicantId: string; jobPostingId: string },
-  actorId: string
+  actor: { id: string; role: string }
 ) {
   const [applicant, job] = await Promise.all([
     tx.applicant.findUnique({ where: { id: application.applicantId } }),
@@ -49,9 +63,31 @@ async function ensureEmployeeForHire(
   const lookup: Prisma.EmployeeWhereInput[] = [];
   if (applicant.email) lookup.push({ email: applicant.email });
   if (applicant.phone) lookup.push({ phone: applicant.phone });
-  const existing = lookup.length
-    ? await tx.employee.findFirst({ where: { OR: lookup } })
-    : null;
+  const existingMatches = lookup.length
+    ? await tx.employee.findMany({
+        where: { OR: lookup },
+        select: {
+          id: true,
+          email: true,
+          phone: true,
+          status: true,
+          department: true,
+          position: true,
+          hireDate: true,
+        },
+        orderBy: { createdAt: "asc" },
+        take: 5,
+      })
+    : [];
+  const matchDecision = selectEmployeeMatchForApplicant(
+    existingMatches,
+    applicant.email,
+    applicant.phone,
+  );
+  if (!matchDecision.ok) {
+    throw new Error(matchDecision.error);
+  }
+  const existing = matchDecision.match;
 
   if (existing) {
     const updateData: Prisma.EmployeeUpdateInput = {
@@ -67,14 +103,31 @@ async function ensureEmployeeForHire(
     });
     try {
       await recordAuditLog({
-        actorId,
+        actorId: actor.id,
         action: "HR_EMPLOYEE_UPDATE",
         entityType: "EMPLOYEE",
         entityId: updated.id,
         meta: {
-          status: updated.status,
-          department: updated.department,
-          position: updated.position,
+          actor: { id: actor.id, role: actor.role },
+          sourcePage: "admin/hr/hiring",
+          section: "applications",
+          operation: "hire_reactivate_employee",
+          before: {
+            status: existing.status,
+            department: existing.department,
+            position: existing.position,
+            hireDate: existing.hireDate?.toISOString?.() ?? null,
+            terminationDate: null,
+          },
+          after: {
+            status: updated.status,
+            department: updated.department,
+            position: updated.position,
+            hireDate: updated.hireDate?.toISOString?.() ?? null,
+            terminationDate: updated.terminationDate?.toISOString?.() ?? null,
+          },
+          status: "SUCCESS",
+          resultSummary: "Existing employee reactivated from hiring pipeline.",
         },
       });
     } catch {
@@ -104,14 +157,24 @@ async function ensureEmployeeForHire(
   });
   try {
     await recordAuditLog({
-      actorId,
+      actorId: actor.id,
       action: "HR_EMPLOYEE_CREATE",
       entityType: "EMPLOYEE",
       entityId: employee.id,
       meta: {
-        status: employee.status,
-        department: employee.department,
-        position: employee.position,
+        actor: { id: actor.id, role: actor.role },
+        sourcePage: "admin/hr/hiring",
+        section: "applications",
+        operation: "hire_create_employee",
+        before: null,
+        after: {
+          status: employee.status,
+          department: employee.department,
+          position: employee.position,
+          hireDate: employee.hireDate?.toISOString?.() ?? null,
+        },
+        status: "SUCCESS",
+        resultSummary: "Employee created from hiring pipeline.",
       },
     });
   } catch {
@@ -137,16 +200,40 @@ export async function PATCH(
   }
 
   const data: Record<string, unknown> = {};
-  if (parsed.data.stage) data.stage = parsed.data.stage;
-  if ("notes" in parsed.data) data.notes = normalizeOptional(parsed.data.notes);
+  const normalizedNotes = "notes" in parsed.data ? normalizeOptional(parsed.data.notes) : undefined;
+  if ("notes" in parsed.data) data.notes = normalizedNotes;
 
   try {
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.application.findUnique({
         where: { id: resolvedParams.id },
-        select: { id: true, stage: true, applicantId: true, jobPostingId: true },
+        select: {
+          id: true,
+          stage: true,
+          notes: true,
+          applicantId: true,
+          jobPostingId: true,
+          updatedAt: true,
+        },
       });
       if (!existing) return null;
+      const conflictCheck = validateHiringConflict(existing.updatedAt, parsed.data.expectedUpdatedAt);
+      if (!conflictCheck.ok) {
+        return { conflict: conflictCheck, existing } as const;
+      }
+
+      const nextStage = (parsed.data.stage ?? existing.stage) as ApplicationStage;
+      const transitionCheck = validateApplicationStageTransition(existing.stage as ApplicationStage, nextStage);
+      if (!transitionCheck.ok) {
+        return { transitionError: transitionCheck.error, existing } as const;
+      }
+      if (requiresApplicationDecisionNote(nextStage) && !normalizedNotes) {
+        return {
+          transitionError: "A short note is required when stage is Rejected or Withdrawn.",
+          existing,
+        } as const;
+      }
+      if (parsed.data.stage) data.stage = parsed.data.stage;
 
       const application = await tx.application.update({
         where: { id: resolvedParams.id },
@@ -155,23 +242,62 @@ export async function PATCH(
 
       let employeeAction: string | null = null;
       if (application.stage === "HIRED" && existing.stage !== "HIRED") {
-        employeeAction = await ensureEmployeeForHire(tx, application, user.id);
+        employeeAction = await ensureEmployeeForHire(tx, application, {
+          id: user.id,
+          role: user.role,
+        });
       }
 
-      return { application, employeeAction };
+      return { application, employeeAction, existing } as const;
     });
     if (!result) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+    if ("conflict" in result && result.conflict) {
+      return NextResponse.json(
+        { error: result.conflict.error },
+        { status: result.conflict.status },
+      );
+    }
+    if ("transitionError" in result) {
+      return NextResponse.json({ error: result.transitionError }, { status: 400 });
+    }
     const application = result.application;
     try {
+      const operation = normalizeAuditText(parsed.data.operation, "update_application_stage");
+      const beforeInterview = parseInterviewFromNotes(result.existing.notes);
+      const afterInterview = parseInterviewFromNotes(application.notes);
       await recordAuditLog({
         actorId: user.id,
         action: "HR_APPLICATION_UPDATE",
         entityType: "APPLICATION",
         entityId: application.id,
         meta: {
-          stage: application.stage,
+          actor: { id: user.id, role: user.role },
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/hiring"),
+          section: normalizeAuditText(parsed.data.section, "applications"),
+          operation,
+          before: {
+            stage: result.existing.stage,
+            notes: result.existing.notes,
+            interview: {
+              scheduledAt: beforeInterview.meta?.scheduledAt || null,
+              interviewer: beforeInterview.meta?.interviewer || null,
+              outcome: beforeInterview.meta?.outcome || null,
+            },
+          },
+          after: {
+            stage: application.stage,
+            notes: application.notes,
+            interview: {
+              scheduledAt: afterInterview.meta?.scheduledAt || null,
+              interviewer: afterInterview.meta?.interviewer || null,
+              outcome: afterInterview.meta?.outcome || null,
+            },
+          },
+          status: "SUCCESS",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Application stage updated successfully."),
+          employeeAction: result.employeeAction || null,
         },
       });
     } catch {
@@ -179,6 +305,9 @@ export async function PATCH(
     }
     return NextResponse.json({ ...application, employeeAction: result.employeeAction });
   } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Ambiguous applicant match")) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     console.error("Error updating application:", err);
     return NextResponse.json({ error: "Failed to update application" }, { status: 500 });
   }

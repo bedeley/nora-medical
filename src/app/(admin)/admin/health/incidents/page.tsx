@@ -104,7 +104,7 @@ export default async function AdminHealthIncidentsPage({
           <Link href="/admin/health" className="inline-flex items-center rounded-md border px-2 py-1 hover:bg-muted">
             Back to Health Check
           </Link>
-          <Link href="/admin/audit" className="inline-flex items-center rounded-md border px-2 py-1 hover:bg-muted">
+          <Link href="/admin/audit?sourcePage=admin/health/incidents" className="inline-flex items-center rounded-md border px-2 py-1 hover:bg-muted">
             Open Audit Log
           </Link>
         </div>

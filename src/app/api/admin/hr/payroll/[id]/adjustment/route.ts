@@ -18,6 +18,15 @@ async function requireAdmin() {
   return user;
 }
 
+function buildAuditActor(user: AuthenticatedUser) {
+  return {
+    id: user.id,
+    name: user.name || null,
+    email: user.email || null,
+    role: user.role,
+  };
+}
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -34,6 +43,13 @@ export async function POST(
   const parsed = adjustmentSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid input", details: parsed.error.flatten() }, { status: 400 });
+  }
+  const note = (parsed.data.note || "").trim();
+  if (note.length > 0 && note.length < 8) {
+    return NextResponse.json(
+      { error: "Adjustment note should be at least 8 characters when provided." },
+      { status: 400 },
+    );
   }
 
   const existing = await prisma.payrollRun.findUnique({
@@ -69,7 +85,7 @@ export async function POST(
       status: "DRAFT",
       runType: "ADJUSTMENT",
       adjustmentForId: existing.id,
-      adjustmentNote: parsed.data.note || null,
+      adjustmentNote: note || null,
       totalGross: 0,
       totalNet: 0,
     },
@@ -82,9 +98,29 @@ export async function POST(
       entityType: "PAYROLL_RUN",
       entityId: adjustment.id,
       meta: {
-        adjustmentForId: existing.id,
-        adjustmentForStatus: existing.status,
-        note: parsed.data.note || null,
+        actor: buildAuditActor(user),
+        sourcePage: "admin/hr/payroll/[id]",
+        section: "run-adjustments",
+        operation: "create_adjustment_run",
+        payrollRunId: existing.id,
+        before: {
+          payrollRunId: existing.id,
+          runType: existing.runType,
+          status: existing.status,
+          periodStart: existing.periodStart.toISOString(),
+          periodEnd: existing.periodEnd.toISOString(),
+        },
+        after: {
+          payrollRunId: adjustment.id,
+          runType: adjustment.runType,
+          status: adjustment.status,
+          periodStart: adjustment.periodStart.toISOString(),
+          periodEnd: adjustment.periodEnd.toISOString(),
+          adjustmentForId: existing.id,
+          note: adjustment.adjustmentNote || null,
+        },
+        status: "SUCCESS",
+        resultSummary: "Payroll adjustment run created successfully.",
       },
     });
   } catch {

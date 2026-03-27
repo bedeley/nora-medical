@@ -427,7 +427,7 @@ export default function AdminUsersPage() {
         </p>
         <div className="text-xs text-muted-foreground mt-1">
           <Link
-            href="/admin/audit?entityType=USER"
+            href="/admin/audit?entityType=USER&sourcePage=admin/users"
             className="underline"
           >
             View audit trail for role and access changes
@@ -683,7 +683,7 @@ export default function AdminUsersPage() {
                               </div>
                               <div>
                                 <Link
-                                  href={`/admin/audit?entityType=USER&entityId=${user.id}`}
+                                  href={`/admin/audit?entityType=USER&entityId=${user.id}&sourcePage=admin/users`}
                                   className="underline"
                                 >
                                   View history

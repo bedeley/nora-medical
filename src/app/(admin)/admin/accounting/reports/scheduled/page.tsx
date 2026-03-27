@@ -41,6 +41,11 @@ export default function ScheduledReportsPage() {
         {
           key: "accounting.scheduledReports",
           value: next,
+          audit: {
+            sourcePage: "admin/accounting/reports/scheduled",
+            section: "scheduled-reports",
+            operation: "save",
+          },
         },
         "Failed to save scheduled reports.",
       );

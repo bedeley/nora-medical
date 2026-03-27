@@ -119,6 +119,8 @@ function resolveAuditSourceLink(entityType: string, entityId: string) {
       return `/admin/expenses/${id}`;
     case "PAYROLL_RUN":
       return `/admin/hr/payroll/${id}`;
+    case "PAYROLLRUNREPORT":
+      return `/admin/hr/payroll/${id}`;
     case "PAYSLIP":
       return `/admin/hr/paystubs/${id}`;
     case "SUPPLIER_PAYMENT":
@@ -394,9 +396,12 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const entityType = searchParams.get("entityType") || undefined;
   const entityId = searchParams.get("entityId") || undefined;
+  const payrollRunId = searchParams.get("payrollRunId") || undefined;
+  const logId = searchParams.get("logId") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
   const customerQuery = (searchParams.get("customerQuery") || "").trim();
   const action = searchParams.get("action") || undefined;
+  const correlationId = (searchParams.get("correlationId") || "").trim();
   const actorId = searchParams.get("actorId") || undefined;
   const actorType = (searchParams.get("actorType") || "").toUpperCase();
   const scope = (searchParams.get("scope") || "").toLowerCase();
@@ -427,8 +432,28 @@ export async function GET(req: Request) {
       entityType: { equals: entityType, mode: "insensitive" },
     });
   }
+  if (payrollRunId) {
+    andWhere.push({
+      OR: [
+        {
+          entityType: { equals: "PAYROLL_RUN", mode: "insensitive" },
+          entityId: payrollRunId,
+        },
+        {
+          entityType: { equals: "PayrollRunReport", mode: "insensitive" },
+          entityId: payrollRunId,
+        },
+        { meta: { contains: `"payrollRunId":"${payrollRunId}"` } },
+        { meta: { contains: `"adjustmentForId":"${payrollRunId}"` } },
+      ],
+    });
+  }
+  if (logId) andWhere.push({ id: logId });
   if (entityId) andWhere.push({ entityId });
   if (action) andWhere.push({ action });
+  if (correlationId) {
+    andWhere.push({ meta: { contains: `"correlationId":"${correlationId}"` } });
+  }
   if (actorId === "system") {
     andWhere.push({ actorId: null });
   } else if (actorId) {

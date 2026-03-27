@@ -1469,7 +1469,7 @@ function AdminOrdersContent() {
                       <Link href={`/admin/orders/${order.id}`}>
                         <Button size="sm" variant="outline">View Details</Button>
                       </Link>
-                      <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}`}>
+                      <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>
                         <Button size="sm" variant="outline">Audit</Button>
                       </Link>
                       <Button
@@ -1634,7 +1634,7 @@ function AdminOrdersContent() {
                     <Link href={`/admin/orders/${order.id}`}>View Details</Link>
                   </Button>
                   <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
-                    <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}`}>Audit</Link>
+                    <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>Audit</Link>
                   </Button>
                   <Button
                     variant="outline"

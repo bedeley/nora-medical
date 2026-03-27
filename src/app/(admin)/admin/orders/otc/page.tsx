@@ -2122,7 +2122,7 @@ export default function OtcSalesPage() {
               <Link href={`/admin/orders/${completedOrderId}`}>
                 <Button type="button" variant="outline">Open Order</Button>
               </Link>
-              <Link href={`/admin/audit?entityType=ORDER&entityId=${completedOrderId}`}>
+              <Link href={`/admin/audit?entityType=ORDER&entityId=${completedOrderId}&sourcePage=admin/orders/otc`}>
                 <Button type="button" variant="outline">Open Audit Trail</Button>
               </Link>
               <Button type="button" variant="outline" onClick={resetSaleForm}>
