@@ -15,7 +15,7 @@ import {
 
 const bulkWorkflowSchema = z.object({
   reviewIds: z.array(z.string().min(1)).min(1).max(200),
-  operation: z.enum(["SUBMIT", "ACKNOWLEDGE", "ARCHIVE", "UNARCHIVE"]),
+  operation: z.enum(["SUBMIT", "ACKNOWLEDGE", "ARCHIVE", "UNARCHIVE", "SHOW_IN_PORTAL", "HIDE_FROM_PORTAL"]),
 });
 
 async function requireAdmin() {
@@ -44,6 +44,8 @@ export async function POST(req: Request) {
     afterStatus: string;
     beforeArchived: boolean;
     afterArchived: boolean;
+    beforeEmployeeVisible: boolean;
+    afterEmployeeVisible: boolean;
   }> = [];
   const failures: Array<{ reviewId: string; reason: string }> = [];
 
@@ -91,8 +93,12 @@ export async function POST(req: Request) {
       nextWorkflow.acknowledgedBy = user.id;
     } else if (operation === "ARCHIVE") {
       nextWorkflow.archived = true;
-    } else {
+    } else if (operation === "UNARCHIVE") {
       nextWorkflow.archived = false;
+    } else if (operation === "SHOW_IN_PORTAL") {
+      nextWorkflow.employeeVisible = true;
+    } else {
+      nextWorkflow.employeeVisible = false;
     }
 
     await prisma.siteSetting.upsert({
@@ -106,6 +112,8 @@ export async function POST(req: Request) {
       afterStatus: nextWorkflow.status,
       beforeArchived: beforeWorkflow.archived,
       afterArchived: nextWorkflow.archived,
+      beforeEmployeeVisible: beforeWorkflow.employeeVisible,
+      afterEmployeeVisible: nextWorkflow.employeeVisible,
     });
   }
 
@@ -125,11 +133,13 @@ export async function POST(req: Request) {
           reviewId: item.reviewId,
           workflowStatus: item.beforeStatus,
           archived: item.beforeArchived,
+          employeeVisible: item.beforeEmployeeVisible,
         })),
         after: successes.map((item) => ({
           reviewId: item.reviewId,
           workflowStatus: item.afterStatus,
           archived: item.afterArchived,
+          employeeVisible: item.afterEmployeeVisible,
         })),
         failureCount: failures.length,
         failures,

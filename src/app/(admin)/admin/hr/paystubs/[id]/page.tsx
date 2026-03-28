@@ -385,7 +385,7 @@ export default function PaystubPrintPage() {
 
   return (
     <section className="space-y-6 print:mx-auto print:max-w-3xl print:space-y-4">
-      <div className="rounded-3xl border bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-4 shadow-sm sm:p-6 print:hidden">
+      <div className="rounded-3xl border bg-gradient-to-br from-white via-slate-50 to-emerald-50 p-4 shadow-sm dark:border-slate-800 dark:from-slate-950 dark:via-slate-900 dark:to-emerald-950/70 sm:p-6 print:hidden">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
           <div className="space-y-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -393,8 +393,8 @@ export default function PaystubPrintPage() {
               <Badge variant="outline">{runTypeLabel} run</Badge>
             </div>
             <div className="space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Paystub</h1>
-              <p className="max-w-2xl text-sm text-slate-600">
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">Paystub</h1>
+              <p className="max-w-2xl text-sm text-slate-600 dark:text-slate-300">
                 Review the official paystub, email it to the employee, download the PDF, or
                 print a clean copy from one place.
               </p>
@@ -454,31 +454,31 @@ export default function PaystubPrintPage() {
         </div>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-slate-500">Employee</div>
-            <div className="mt-2 font-medium text-slate-900">{employeeName}</div>
-            <div className="mt-1 text-sm text-slate-600">
+          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85">
+            <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Employee</div>
+            <div className="mt-2 font-medium text-slate-900 dark:text-slate-50">{employeeName}</div>
+            <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
               {getPaystubRoleSummary(payslip.employee.position, payslip.employee.department)}
             </div>
           </div>
-          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-slate-500">Pay period</div>
-            <div className="mt-2 font-medium text-slate-900">{periodLabel}</div>
-            <div className="mt-1 text-sm text-slate-600">Paystub ID: {payslip.id}</div>
+          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85">
+            <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Pay period</div>
+            <div className="mt-2 font-medium text-slate-900 dark:text-slate-50">{periodLabel}</div>
+            <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">Paystub ID: {payslip.id}</div>
           </div>
-          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-slate-500">Gross pay</div>
-            <div className="mt-2 text-2xl font-semibold text-slate-900">
+          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85">
+            <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Gross pay</div>
+            <div className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-50">
               {formatCurrency(num(payslip.grossPay))}
             </div>
-            <div className="mt-1 text-sm text-slate-600">Current period earnings</div>
+            <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">Current period earnings</div>
           </div>
-          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm">
-            <div className="text-xs uppercase tracking-wide text-slate-500">Net pay</div>
+          <div className="rounded-2xl border bg-white/90 p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/85">
+            <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Net pay</div>
             <div className="mt-2 text-2xl font-semibold text-emerald-700">
               {formatCurrency(num(payslip.netPay))}
             </div>
-            <div className="mt-1 text-sm text-slate-600">
+            <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
               Created {formatDateGH(payslip.createdAt)}
             </div>
           </div>
@@ -486,13 +486,13 @@ export default function PaystubPrintPage() {
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(18rem,0.95fr)]">
-        <Card className="overflow-hidden bg-white print:rounded-none print:border-slate-300 print:shadow-none">
-          <CardHeader className="border-b bg-slate-50/70 print:border-slate-300 print:bg-white print:px-4 print:py-4">
+        <Card className="overflow-hidden print:rounded-none print:border-slate-300 print:shadow-none">
+          <CardHeader className="border-b border-border bg-muted/40 print:border-slate-300 print:bg-white print:px-4 print:py-4">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
                 <Image src="/logo.svg" alt="Noralls Medical Supplies" width={148} height={44} />
                 <div>
-                  <div className="hidden text-[10px] uppercase tracking-[0.2em] text-slate-500 print:block">
+                  <div className="hidden text-[10px] uppercase tracking-[0.2em] text-muted-foreground print:block">
                     Employee paystub
                   </div>
                   <CardTitle>Noralls Medical Supplies</CardTitle>
@@ -508,30 +508,30 @@ export default function PaystubPrintPage() {
           </CardHeader>
           <CardContent className="space-y-6 p-5 text-sm sm:p-6 print:space-y-4 print:p-4 print:text-black">
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border bg-white p-4 print:rounded-none print:border-slate-300 print:p-3">
+              <div className="rounded-2xl border border-border bg-card p-4 print:rounded-none print:border-slate-300 print:p-3">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Employee</div>
-                <div className="mt-2 text-base font-semibold text-slate-900">{employeeName}</div>
+                <div className="mt-2 text-base font-semibold text-foreground">{employeeName}</div>
                 <div className="mt-1 text-sm text-muted-foreground">
                   {getPaystubRoleSummary(payslip.employee.position, payslip.employee.department)}
                 </div>
-                <div className="mt-3 text-sm text-slate-700">
+                <div className="mt-3 text-sm text-foreground/85">
                   {payslip.employee.email || "No employee email on file"}
                 </div>
               </div>
-              <div className="rounded-2xl border bg-white p-4 print:rounded-none print:border-slate-300 print:p-3">
+              <div className="rounded-2xl border border-border bg-card p-4 print:rounded-none print:border-slate-300 print:p-3">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">
                   Payroll run
                 </div>
-                <div className="mt-2 text-base font-semibold text-slate-900">{periodLabel}</div>
+                <div className="mt-2 text-base font-semibold text-foreground">{periodLabel}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{runTypeLabel} run</div>
-                <div className="mt-3 text-sm text-slate-700">
+                <div className="mt-3 text-sm text-foreground/85">
                   Created on {formatDateTimeGH(payslip.createdAt)}
                 </div>
               </div>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-2xl border bg-slate-50/70 p-4 print:rounded-none print:border-slate-300 print:bg-white print:p-3">
+              <div className="rounded-2xl border border-border bg-muted/40 p-4 print:rounded-none print:border-slate-300 print:bg-white print:p-3">
                 <div className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
                   Current period
                 </div>
@@ -539,10 +539,10 @@ export default function PaystubPrintPage() {
                   {currentRows.map((row) => (
                     <div
                       key={row.label}
-                      className="flex items-center justify-between gap-4 border-b border-slate-200 pb-3 last:border-b-0 last:pb-0"
+                      className="flex items-center justify-between gap-4 border-b border-border pb-3 last:border-b-0 last:pb-0"
                     >
-                      <span className="text-slate-600">{row.label}</span>
-                      <span className="font-medium text-slate-900">
+                      <span className="text-muted-foreground">{row.label}</span>
+                      <span className="font-medium text-foreground">
                         {formatCurrency(row.value)}
                       </span>
                     </div>
@@ -550,7 +550,7 @@ export default function PaystubPrintPage() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border bg-slate-50/70 p-4 print:rounded-none print:border-slate-300 print:bg-white print:p-3">
+              <div className="rounded-2xl border border-border bg-muted/40 p-4 print:rounded-none print:border-slate-300 print:bg-white print:p-3">
                 <div className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
                   Year to date
                 </div>
@@ -558,10 +558,10 @@ export default function PaystubPrintPage() {
                   {ytdRows.map((row) => (
                     <div
                       key={row.label}
-                      className="flex items-center justify-between gap-4 border-b border-slate-200 pb-3 last:border-b-0 last:pb-0"
+                      className="flex items-center justify-between gap-4 border-b border-border pb-3 last:border-b-0 last:pb-0"
                     >
-                      <span className="text-slate-600">{row.label}</span>
-                      <span className="font-medium text-slate-900">
+                      <span className="text-muted-foreground">{row.label}</span>
+                      <span className="font-medium text-foreground">
                         {formatCurrency(row.value)}
                       </span>
                     </div>
@@ -570,7 +570,7 @@ export default function PaystubPrintPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl border bg-emerald-50/40 p-4 text-xs text-muted-foreground print:rounded-none print:border-slate-300 print:bg-white print:px-0 print:py-3">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 text-xs text-muted-foreground dark:border-emerald-900/70 dark:bg-emerald-950/30 print:rounded-none print:border-slate-300 print:bg-white print:px-0 print:py-3">
               This paystub is confidential and intended for the employee named above.
             </div>
           </CardContent>
@@ -595,12 +595,12 @@ export default function PaystubPrintPage() {
               auditRows.map((entry) => (
                 <div key={entry.id} className="rounded-2xl border p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="font-medium text-slate-900">{getPaystubAuditTitle(entry)}</div>
+                    <div className="font-medium text-foreground">{getPaystubAuditTitle(entry)}</div>
                     <Badge variant={getAuditBadgeVariant(entry.meta?.status)}>
                       {getAuditBadgeLabel(entry.meta?.status)}
                     </Badge>
                   </div>
-                  <p className="mt-2 text-sm text-slate-600">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     {entry.meta?.resultSummary || "Activity recorded for this paystub."}
                   </p>
                   {getAuditDetailChips(entry).length > 0 ? (
@@ -608,7 +608,7 @@ export default function PaystubPrintPage() {
                       {getAuditDetailChips(entry).map((detail) => (
                         <span
                           key={detail}
-                          className="rounded-full border bg-slate-50 px-2.5 py-1 text-xs text-slate-600"
+                          className="rounded-full border border-border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground"
                         >
                           {detail}
                         </span>

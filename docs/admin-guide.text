@@ -1609,9 +1609,360 @@ Related page
 ## HR Portal
 - Pages: /admin/hr, /admin/hr/staff, /admin/hr/staff/[id], /admin/hr/hiring,
   /admin/hr/issues, /admin/hr/leave, /admin/hr/compensation, /admin/hr/reviews, /admin/hr/payroll
-- What it is: Staff profiles, hiring, payroll, and HR compliance tracking.
-- How to use: Manage profiles, documents, leave, performance reviews, and payroll runs.
-- Related: HR docs are stored privately; payroll exports support accounting.
+- What it is: HR workspace for people operations, payroll, leave, reviews, hiring, employee-portal oversight, and reporting.
+- How to use: Start at `/admin/hr` to review workforce counts, current HR blockers, portal visibility oversight, and quick actions, then move into the specific HR detail pages.
+- Related: HR documents are stored privately by default; payroll exports support accounting; employee self-service now runs through `/account/employee`.
+
+### HR - Workspace
+- Page: /admin/hr
+- What it is: The HR command page for daily HR operations. It is no longer just a navigation grid.
+- Top-to-bottom walkthrough:
+  1. Use the hero to review the current HR snapshot:
+     total staff, active staff, on-leave staff, open roles, open issues, current workweek context, and the summary line with missing-profile context.
+  2. Use the jump links in the hero to move quickly to the main HR zones on the page.
+  3. Use `People operations` for the core HR admin destinations:
+     staff, compensation, leave, reviews, issues, and hiring.
+  4. Use `Payroll and performance` to move into payroll-run work and performance-review management.
+  5. Use `Attention needed` to handle the highest-priority HR work:
+     missing staff profiles, pending leave requests, and the latest payroll run that may still need action.
+  6. Use `Employee portal oversight` to monitor self-service readiness:
+     linked employees, unlinked employees, visible employee documents, visible review summaries, and reviews still awaiting portal visibility decision.
+  7. Use `Quick actions` for direct HR actions from the hub:
+     `Add employee`, `Create payroll run`, `Open missing profiles`, `Open pending leave`, `Open payroll runs`, and `Open HR settings`.
+  8. Use `Recent HR activity` as a light awareness strip only.
+     It shows the latest 2 HR activity items and links to the full HR audit view.
+  9. Use `Reporting and exports` for HR CSV/report entry points without leaving the workspace.
+- Validation and behavior notes:
+  - Hub counts use API totals and summaries, not first-page row counts.
+  - If a summary source fails, the page shows a visible warning with `Retry failed loads`.
+  - `Add employee` and `Create payroll run` open lightweight dialogs and submit directly from the hub.
+  - `Recent HR activity` is intentionally capped to 2 items so the page stays focused.
+- Step-by-step testing script with expected results:
+  1. Open `/admin/hr`.
+     Expected: the HR workspace loads with the hero, grouped sections, and summary metrics.
+  2. Review the hero metrics.
+     Expected: total staff, active staff, on-leave staff, open roles, and open issues all show real summary counts.
+  3. Review `Attention needed`.
+     Expected: missing profiles, pending leave, and the latest payroll-run state are shown with direct actions.
+  4. Review `Employee portal oversight`.
+     Expected: linked and unlinked employee counts plus portal visibility counts render correctly.
+  5. Use `Add employee`.
+     Expected: the dialog validates input, successful submit creates the employee, and invalid input is blocked with clear errors.
+  6. Use `Create payroll run`.
+     Expected: the dialog validates period input and creates the run successfully.
+  7. Review `Recent HR activity`.
+     Expected: only the latest 2 HR activity items are shown, with `Open HR audit` available for full history.
+  8. Simulate or inspect a failed summary load.
+     Expected: a visible warning card appears, and `Retry failed loads` retries the failed sections.
+  9. Test small screen and dark mode.
+     Expected: cards stack cleanly, nothing overflows, and the page remains readable in both themes.
+
+### HR - Hiring Pipeline
+- Page: /admin/hr/hiring
+- What it is: The hiring control page for applicants, job postings, applications, interviews, hiring decisions, and hiring audit review.
+- Top-to-bottom walkthrough:
+  1. Start at the hero.
+     This gives the hiring snapshot in one place: open roles, active pipeline, interview-stage count, offer-stage count, recent activity, and overdue interview follow-up.
+  2. Use the jump links in the hero to move directly to `Applicants`, `Job postings`, `Applications`, and `Audit`.
+  3. Use the quick buttons in the hero for common working views:
+     `New applicants`, `Interviews`, and `Offers`.
+     These update the Applications view and scroll directly to that section.
+  4. Use `Hiring actions` for the main setup work:
+     `Import Applicants`, `+ Job posting`, `+ Applicant`, and `+ Application`.
+  5. Use `Applicants` as the intake section.
+     Search candidates, show or hide hired applicants, export the list, create an application from a candidate row, or open `Edit applicant` from the more-actions menu.
+  6. Use `Job Postings` as the role-management section.
+     Search roles, filter by status, export the list, edit the full job details, or use the more-actions menu to mark a role open, paused, or closed.
+     Closing a role requires a reason.
+  7. Use `Applications` as the main working section.
+     Search by person, role, or contact detail; filter by stage and role; show or hide hired applications; save a local view; copy a shareable view link; and export the filtered results.
+  8. Use the quick view chips in `Applications` for the common pipeline states:
+     `All active`, `Applied`, `Interviews`, and `Offers`.
+  9. Use row actions carefully.
+     `Review` is the main action for an application.
+     The more-actions menu holds interview planning and allowed stage moves.
+  10. Use the `Review` drawer to see the full hiring context in one place:
+      applicant details, resume link, role details, interview timing, notes, stage-change actions, and a direct audit link for that application.
+  11. Use the bulk actions area only when you intend to change several applications at once.
+      You can select rows, choose the next stage, add a note when needed, apply the change, and use `Undo last bulk update` if the last bulk change needs to be reversed.
+      Bulk hire, reject, and withdraw actions ask for confirmation before they continue.
+  12. Use `Audit and safeguards` at the bottom when you need to review hiring history.
+      This section links to the full hiring audit log and explains what is tracked.
+- Important behavior notes:
+  - Saved views stay on the current browser only.
+  - `Copy view link` creates a shareable link to the exact current Applications view.
+  - Application filters stay in the page URL, so refresh and back/forward navigation keep the same filtered view.
+  - Job, applicant, interview, application, export, and bulk-update actions are audit-logged from this page.
+  - Cards replace wide tables on smaller screens so the page stays usable on mobile-sized layouts.
+- Step-by-step testing script with expected results:
+  1. Open `/admin/hr/hiring`.
+     Expected: the page loads with the `Hiring Pipeline` hero, KPI cards, jump links, and the `Hiring actions` bar.
+  2. Review the hero area.
+     Expected: the summary cards are visible, readable, and clearly grouped; jump links and quick buttons are visible.
+  3. Test the hero jump links.
+     Expected: each link scrolls to the matching section without pushing you back to the top of the page.
+  4. Test the hero quick buttons.
+     Expected: `New applicants`, `Interviews`, and `Offers` move you to the Applications section and apply the expected view.
+  5. Open the page in dark mode.
+     Expected: the hero, cards, dialogs, warnings, and text remain readable with no low-contrast sections.
+  6. In `Applicants`, search for a known candidate.
+     Expected: the list filters correctly and shows a clear empty state if no result matches.
+  7. Use `+ Applicant` to add a new applicant.
+     Expected: the dialog accepts first name, last name, contact details, source, and resume URL, then the new applicant appears in the list after save.
+  8. Edit an applicant from the more-actions menu.
+     Expected: the dialog opens with the current values and saves the updated details successfully.
+  9. In `Job Postings`, create a new job posting.
+     Expected: title, department, location, status, opening date, salary, description, and requirements save successfully and the role appears in the list.
+  10. Edit an existing role with `Edit role`.
+      Expected: the current role details load into the dialog and update correctly after save.
+  11. Close a role from the more-actions menu.
+      Expected: the page asks for a reason before closing and then shows the role as closed afterward.
+  12. In `Applications`, test search, stage filter, role filter, and `Show hired applications`.
+      Expected: the results change correctly and the page URL updates to match the current view.
+  13. Refresh the page after applying filters.
+      Expected: the same Applications view remains active after refresh.
+  14. Save a local view in `Applications`.
+      Expected: the saved view appears in the saved-views list on this browser.
+  15. Click `Copy view link`.
+      Expected: the page confirms that the shareable link was copied.
+  16. Open an application with `Review`.
+      Expected: the review drawer opens and shows applicant details, resume link, role details, interview details, notes, and action buttons.
+  17. Plan an interview from the drawer or more-actions menu.
+      Expected: the interview date, interviewer, outcome, and note save successfully and appear in the application details.
+  18. Move an application to the next valid stage.
+      Expected: the stage updates successfully and remains correct after refresh.
+  19. Try rejecting or withdrawing an application without a note.
+      Expected: the page blocks the action and asks for a short note.
+  20. Reject or withdraw an application with a note.
+      Expected: the stage changes successfully and the note requirement is satisfied.
+  21. Select multiple applications and run a bulk update.
+      Expected: the selected count is correct, the bulk action runs, and any skipped applications are shown in the skipped-details panel.
+  22. Run a bulk action to `Hired`, `Rejected`, or `Withdrawn`.
+      Expected: a confirmation dialog appears before the action is applied.
+  23. Use `Undo last bulk update`.
+      Expected: the most recent eligible bulk change is reversed and the page reports any skipped undo items.
+  24. Open the `Audit and safeguards` section.
+      Expected: the audit explanation cards and hiring audit links are visible.
+  25. Open the hiring audit log from this page.
+      Expected: `/admin/audit` opens already filtered to hiring-page activity.
+  26. Test the page on a smaller screen width.
+      Expected: Applicants, Job Postings, and Applications switch to stacked cards, buttons remain usable, and no section overflows horizontally.
+
+### HR - Staff Directory
+- Page: /admin/hr/staff
+- What it is: Staff-operations workspace for employee records, account-link readiness, payroll-profile quality, imports, exports, and staff-directory status changes.
+- Top-to-bottom walkthrough:
+  1. Use the hero to review the staff snapshot:
+     total staff, active staff, on leave, missing profile fields, linked accounts, and missing bank details.
+  2. Use the top actions for the main directory workflows:
+     `Add employee`, `Import CSV`, `Export CSV`, and `Open staff audit log`.
+  3. Use `Add employee` to create a single employee record with optional payroll/bank data and an optional staff note.
+  4. Use `Import CSV` for bulk intake.
+     Start with `Download template`, upload the CSV, review the readiness preview, then run `Preview import` before `Import employees`.
+     The preview shows portal-ready rows, missing contact and bank-detail gaps, plus the first few parsed rows with readiness notes.
+  5. Use `Attention needed` to jump straight into the most important staff work:
+     missing profile fields, no linked account, employees currently on leave, and payroll-readiness blockers.
+     These cards update the employee filters and scroll directly to the table.
+  6. Use `Directory tools` for quick filters, saved views, and reset behavior.
+     This is the only quick-filter shortcut area on the page.
+  7. Use `Recent staff activity` as a lightweight awareness strip for recent directory actions only.
+  8. Use the employee table or mobile cards as the working directory:
+     search, status, department, role, account-link state, profile completeness, sort, page size, and filter chips all update the same employee-table state.
+  9. Use row actions carefully:
+     `Open profile` stays primary, while the `More` menu holds payslips, leave, compensation, copy-link, audit, and linked-user actions.
+  10. Use `Create linked user` for unlinked employees to create the user account and link it directly to that employee in one step.
+  11. Use the row status selector or bulk update flow for status changes.
+      Individual status changes require confirmation.
+      `SUSPENDED` and `TERMINATED` require a note that is stored in audit metadata.
+- Validation and behavior notes:
+  - Quick filters in `Attention needed` and `Directory tools` scroll to the employee table and stay there.
+  - URL filter syncing uses no-scroll updates so the page does not jump back to the top.
+  - The page shows explicit load-failure states with `Retry`; a failed query should not look like an empty directory.
+  - Linked-account state is shown per employee as `Linked account` or `No linked account`.
+  - `Create linked user` sends the invite immediately and links the new user to the selected employee record.
+  - `Recent staff activity` is intentionally lightweight and should not replace the deeper audit page.
+  - Table rows keep one visible primary action plus a `More` menu to avoid very tall rows.
+- Step-by-step testing script with expected results:
+  1. Open `/admin/hr/staff`.
+     Expected: the page loads with hero metrics, `Attention needed`, `Directory tools`, `Recent staff activity`, and the employee table.
+  2. Review the hero metrics.
+     Expected: total staff, active staff, on leave, missing profile fields, linked accounts, and missing bank details all show real counts.
+  3. Use `Add employee`.
+     Expected: valid input creates the employee, invalid input is rejected, and the directory refreshes after success.
+  4. Use `Import CSV`.
+     Expected: the dialog shows template download, row/error counts, portal-readiness summary, and preview rows with readiness notes.
+  5. Click `Preview import`.
+     Expected: the preview succeeds without importing employees and the preview summary appears in the dialog.
+  6. Click `Import employees`.
+     Expected: import succeeds, dialog closes, and the employee list refreshes.
+  7. Click an `Attention needed` card or a `Directory tools` quick filter.
+     Expected: the employee table updates and the page scrolls to the table without bouncing back to the top.
+  8. Review `Recent staff activity`.
+     Expected: it shows only a small recent set of staff-directory actions with title, summary, actor, time, and entity type.
+  9. Review linked-account states in the table.
+     Expected: linked employees show `Linked account`; unlinked employees show `No linked account` plus linked-user actions.
+  10. Use `Create linked user` for an unlinked employee.
+      Expected: the dialog opens prefilled with employee name, email, and phone; a successful submit creates the user, sends the invite, links the account, and refreshes the directory.
+  11. Change an employee status.
+      Expected: a confirmation dialog appears first, and suspension/termination require a note.
+  12. Use bulk selection and `Bulk update`.
+      Expected: the confirmation dialog appears, the update succeeds, and the directory refreshes.
+  13. Test small screen and dark mode.
+      Expected: cards stack properly, rows/cards do not overflow, and the page remains readable in both themes.
+
+### HR - Staff Profile
+- Page: /admin/hr/staff/[id]
+- What it is: Employee workspace for live profile maintenance, payroll readiness, onboarding, leave actions, documents, and employee-scoped audit review.
+- Top-to-bottom walkthrough:
+  1. Use the hero to confirm the employee snapshot:
+     status, leave state, department, position, hire date, payroll bank readiness, current compensation, latest payslip, issue count, onboarding count, pending leave count.
+  2. Use hero actions to move to related employee areas:
+     compensation history, all payslips, payroll runs, leave history, performance reviews, employee audit, copy employee link, back to staff.
+  3. Use `Employment Details` for core HR updates:
+     first name, last name, department, position, status, manager, hire date, termination date, notes.
+     This card is read-only until `Edit` is clicked.
+     Status changes require confirmation before save.
+  4. Use `Profile Overview` for quick read-only reference.
+     Each item is shown in its own mini-card, including manager summary when assigned.
+  5. Use `Contact Details` for email and phone updates.
+     The card is locked until `Edit` is clicked.
+  6. Use `Payroll Details` for bank/payroll fields.
+     This controls payroll export readiness on payroll pages.
+  7. Use `Documents` to manage employee files.
+     `Add document` opens the upload dialog.
+     Existing documents support `View` and `Remove`.
+     Delete uses a confirmation dialog with document context before removal.
+  8. Use `Performance Reviews` as a recent summary card.
+     Latest review appears first, with `Open reviews` for full history.
+  9. Use `Leave Summary (YTD)` to review current leave state and handle pending requests.
+     Pending requests can be approved, rejected, or cancelled directly from the page.
+  10. Use `Onboarding Checklist` to add, edit, complete, reopen, and delete onboarding tasks.
+  11. Use the lower history cards for:
+      compensation history, recent payslips, staff issues, and recent profile activity.
+      Busy sections support `Show more` / `Show fewer`.
+- Audit behavior:
+  - Important actions from this page are audit-logged with staff-page context.
+  - This includes:
+    employment updates, contact updates, payroll/bank updates, onboarding create/update/delete, document upload/create/download/delete, and leave decisions.
+  - `Open employee audit` opens `/admin/audit` filtered to the specific employee, not all HR employee activity.
+  - Audit labels in `/admin/audit` are shown in plain English for section and operation display.
+- Validation and behavior notes:
+  - Editable cards are read-only until `Edit` is clicked.
+  - Save buttons only appear in edit mode.
+  - Conflict-safe updates use the current employee/task `updatedAt` value.
+  - Missing employee records show a clean not-found state.
+  - The page supports dark mode and small-screen layouts.
+- Step-by-step testing script with expected results:
+  1. Open `/admin/hr/staff/[id]`.
+     Expected: hero, summary tiles, and all main cards load without error.
+  2. Check read-only guards.
+     Expected: `Employment Details`, `Contact Details`, and `Payroll Details` are locked until `Edit` is clicked.
+  3. Edit employment details.
+     Expected: save works, status changes require confirmation, and the page refreshes with the new values.
+  4. Edit contact details.
+     Expected: save works and the updated values appear immediately after refresh.
+  5. Edit payroll/bank details.
+     Expected: validation blocks bad input, valid input saves, and bank-readiness text updates.
+  6. Add a document.
+     Expected: upload dialog works, valid file saves, and the document appears in the list.
+  7. Remove a document.
+     Expected: delete dialog shows document context and confirmed deletion removes it.
+  8. Add, edit, complete, reopen, and delete an onboarding task.
+     Expected: each action succeeds and the checklist updates correctly.
+  9. Approve or reject a leave request.
+     Expected: leave summary refreshes and the request status updates correctly.
+  10. Open a payslip and payroll run from `Recent Payslips`.
+      Expected: both links go to the correct records.
+  11. Open `Open employee audit`.
+      Expected: `/admin/audit` shows only activity tied to that employee.
+  12. Check audit wording.
+      Expected: section and operation labels are plain English, and changed fields are readable.
+  13. Test `Show more` / `Show fewer`.
+      Expected: documents, reviews, payslips, issues, and recent activity expand/collapse cleanly.
+  14. Test small screen.
+      Expected: cards stack properly and nothing overflows horizontally.
+  15. Test dark mode.
+      Expected: hero and page surfaces switch cleanly and remain readable.
+  16. Test invalid employee ID.
+      Expected: clear not-found state.
+
+### Employee Portal
+- Pages: /account/employee, /account/employee/paystubs, /account/employee/paystubs/[id], /account/employee/documents, /account/employee/leave, /account/employee/reviews
+- What it is: Read-only employee self-service portal for personal HR information, pay history, visible HR documents, leave requests, onboarding visibility, and published review summaries.
+- Access rules:
+  - The signed-in user must be linked to an employee record through `Employee.userId`.
+  - `/account` shows `Employee portal` only when that employee link exists.
+  - The portal is employee-scoped. It shows only the signed-in employee's records.
+- Top-to-bottom walkthrough:
+  1. Use the hero to confirm the employee snapshot:
+     name, department, position, employment status, contact details, compensation summary, latest payslip, leave state, onboarding progress, and available documents.
+  2. Use the section-nav strip to jump to:
+     Pay, Leave, Documents, Onboarding, and Reviews.
+  3. Use `Profile and employment` for employee-facing identity and work details.
+     This area is view-only.
+  4. Use the contact update request card when the employee needs HR to update email or phone.
+     The portal does not directly edit HR profile records.
+  5. Use `Pay and documents` for:
+     current compensation summary, recent paystub history, visible HR documents, document preview/download, and acknowledgement.
+  6. Open a paystub detail page from recent history or `/account/employee/paystubs`.
+     Paystub detail supports `Download PDF` and `Print paystub`.
+  7. Use `Leave and onboarding` for:
+     leave balances, usage bars, current-leave highlight, leave calendar, leave history, leave requests, pending-request cancellation, and onboarding checklist visibility.
+  8. Use `Reviews` for employee-visible review summaries only.
+     Reviews appear only when leadership has enabled portal review summaries and the specific review is marked visible to the employee.
+  9. Use the dedicated history pages when needed:
+     all paystubs, all documents, full leave history, and all visible reviews.
+- Visibility and behavior rules:
+  - HR documents are hidden from the portal by default until HR marks them visible from the staff page.
+  - Hidden documents cannot be previewed or downloaded from the portal.
+  - Review summaries are shown only when both of these are true:
+    global portal review visibility is enabled, and the individual review is marked employee-visible.
+  - Employees can submit leave requests and cancel only their own pending leave requests.
+  - Employees can request contact updates, but cannot directly edit HR profile records.
+  - Document preview is available only for previewable file types such as PDF and images.
+  - Employee acknowledgements are supported for visible HR documents and visible review summaries.
+- Audit behavior:
+  - Employee self-service actions are audit-logged with employee-portal page context.
+  - This includes:
+    paystub PDF download, paystub print, document preview/download/acknowledgement, leave request/cancel, review acknowledgement, and contact update request.
+  - Paystub download audit logs keep the actual source page, so home-page downloads and paystub-detail downloads can be distinguished.
+- Step-by-step testing script with expected results:
+  1. Sign in with a user account linked to an employee profile and open `/account/employee`.
+     Expected: the portal loads and shows the hero, section-nav strip, and grouped employee sections.
+  2. Open `/account/employee` with a signed-in account that is not linked to an employee.
+     Expected: the page shows an unavailable state rather than exposing HR data.
+  3. Review the hero summary.
+     Expected: employee name, department, position, status, and summary metrics render correctly.
+  4. Submit a contact update request.
+     Expected: the request succeeds, validation errors are shown for invalid input, and pending-request state is visible afterward.
+  5. Open a paystub from recent history.
+     Expected: `/account/employee/paystubs/[id]` opens and shows the employee paystub detail page.
+  6. Download and print a paystub.
+     Expected: PDF download works and print opens successfully.
+  7. Open `View all paystubs`.
+     Expected: `/account/employee/paystubs` loads the full paystub history page.
+  8. Review the documents section.
+     Expected: only HR documents marked visible for the employee appear.
+  9. Preview and download a visible document.
+     Expected: preview works for previewable files and download works for visible documents.
+  10. Acknowledge a visible document.
+      Expected: acknowledgement succeeds and the row shows acknowledged state.
+  11. Request leave.
+      Expected: a valid request succeeds, appears in leave history, and shows pending status.
+  12. Cancel a pending leave request created by the employee.
+      Expected: cancellation succeeds and the request status updates.
+  13. Open `View full leave history`.
+      Expected: `/account/employee/leave` loads the full leave history page.
+  14. Review onboarding checklist visibility.
+      Expected: tasks and status are visible, but no admin editing controls appear.
+  15. Review performance review summaries.
+      Expected: only visible review summaries appear, and hidden reviews stay hidden.
+  16. Acknowledge a visible review summary.
+      Expected: acknowledgement succeeds and the review shows acknowledged state.
+  17. Test dark mode.
+      Expected: the portal hero and page surfaces switch cleanly and remain readable.
+  18. Test small screen.
+      Expected: cards stack properly, no section overflows horizontally, and actions remain usable.
 
 ## Admin Settings & Content
 - Pages: /admin/settings/homepage, /admin/settings/features, /admin/settings/communications
@@ -2684,4 +3035,3 @@ Step-by-step testing script with expected results
     - Action: open `/admin/audit` after running the actions above.
     - Expected: paystub entries such as `PAYSLIP_EMAIL`, `PAYSLIP_PDF_DOWNLOAD`, and `PAYSLIP_PRINT` include concise metadata:
       source page, section, operation, compact before/after context, status, and result summary.
-

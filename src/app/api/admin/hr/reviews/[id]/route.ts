@@ -29,6 +29,7 @@ const updateSchema = z.object({
   workflowStatus: z.enum(["DRAFT", "SUBMITTED", "ACKNOWLEDGED"]).optional(),
   acknowledge: z.boolean().optional(),
   archived: z.boolean().optional(),
+  employeeVisible: z.boolean().optional(),
 });
 
 async function requireAdmin() {
@@ -154,6 +155,9 @@ export async function PATCH(
     if (typeof parsed.data.archived === "boolean") {
       nextWorkflow.archived = parsed.data.archived;
     }
+    if (typeof parsed.data.employeeVisible === "boolean") {
+      nextWorkflow.employeeVisible = parsed.data.employeeVisible;
+    }
 
     const review = await prisma.performanceReview.update({
       where: { id: resolvedParams.id },
@@ -181,6 +185,10 @@ export async function PATCH(
                 ? parsed.data.archived
                   ? "archive_review"
                   : "unarchive_review"
+                : typeof parsed.data.employeeVisible === "boolean"
+                  ? parsed.data.employeeVisible
+                    ? "show_review_in_employee_portal"
+                    : "hide_review_from_employee_portal"
                 : parsed.data.workflowStatus
                   ? "update_review_workflow"
                   : "update_review",
@@ -196,6 +204,7 @@ export async function PATCH(
             goalsLength: existing.goals?.length || 0,
             workflowStatus: beforeWorkflow.status,
             archived: beforeWorkflow.archived,
+            employeeVisible: beforeWorkflow.employeeVisible,
             acknowledgedAt: beforeWorkflow.acknowledgedAt,
             acknowledgedBy: beforeWorkflow.acknowledgedBy,
           },
@@ -211,11 +220,17 @@ export async function PATCH(
             goalsLength: review.goals?.length || 0,
             workflowStatus: nextWorkflow.status,
             archived: nextWorkflow.archived,
+            employeeVisible: nextWorkflow.employeeVisible,
             acknowledgedAt: nextWorkflow.acknowledgedAt,
             acknowledgedBy: nextWorkflow.acknowledgedBy,
           },
           status: "SUCCESS",
-          resultSummary: "Performance review updated successfully.",
+          resultSummary:
+            typeof parsed.data.employeeVisible === "boolean"
+              ? parsed.data.employeeVisible
+                ? "Performance review is now visible in the employee portal."
+                : "Performance review is now hidden from the employee portal."
+              : "Performance review updated successfully.",
         },
       });
     } catch {
@@ -225,6 +240,7 @@ export async function PATCH(
       ...review,
       workflowStatus: nextWorkflow.status,
       workflowArchived: nextWorkflow.archived,
+      workflowEmployeeVisible: nextWorkflow.employeeVisible,
       workflowAcknowledgedAt: nextWorkflow.acknowledgedAt,
       workflowAcknowledgedBy: nextWorkflow.acknowledgedBy,
     });

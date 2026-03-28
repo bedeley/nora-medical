@@ -37,9 +37,12 @@ export async function POST(req: Request) {
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
+    const employeeId = String(formData.get("employeeId") || "").trim();
     const sourcePage = String(formData.get("sourcePage") || "").trim() || "admin/hr/staff/[id]";
     const section = String(formData.get("section") || "").trim() || "documents";
     const operation = String(formData.get("operation") || "").trim() || "upload_document_file";
+    const resultSummary =
+      String(formData.get("resultSummary") || "").trim() || "Document file uploaded successfully.";
     if (!file) {
       return new Response(JSON.stringify({ error: "No file provided" }), { status: 400 });
     }
@@ -78,15 +81,20 @@ export async function POST(req: Request) {
             id: user.id,
             role: user.role,
           },
+          page: sourcePage,
           sourcePage,
           section,
           operation,
-          mime: file.type || null,
-          size: file.size,
-          ext,
-          filename: (file as File & { name?: string }).name || null,
+          before: null,
+          after: {
+            employeeId: employeeId || null,
+            mime: file.type || null,
+            size: file.size,
+            ext,
+            filename: (file as File & { name?: string }).name || null,
+          },
           status: "SUCCESS",
-          resultSummary: "Document file uploaded successfully.",
+          resultSummary,
         },
       });
     } catch {

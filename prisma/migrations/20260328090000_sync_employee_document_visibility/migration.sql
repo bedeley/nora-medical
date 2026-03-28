@@ -1,0 +1,2 @@
+ALTER TABLE "EmployeeDocument"
+ADD COLUMN IF NOT EXISTS "employeeVisible" BOOLEAN NOT NULL DEFAULT false;

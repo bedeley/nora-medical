@@ -4,6 +4,11 @@ type AdminAuditHrefInput = {
   sourcePage?: string;
 };
 
+type AdminAuditEmployeeHrefInput = {
+  employeeId: string;
+  sourcePage?: string;
+};
+
 type AuditMetaInput = {
   sourcePage?: string;
   section?: string;
@@ -21,6 +26,12 @@ export function buildAdminAuditHref(input: AdminAuditHrefInput): string {
   params.set("entityId", trimOrEmpty(input.entityId));
   const sourcePage = trimOrEmpty(input.sourcePage);
   if (sourcePage) params.set("sourcePage", sourcePage);
+  return `/admin/audit?${params.toString()}`;
+}
+
+export function buildAdminAuditEmployeeHref(input: AdminAuditEmployeeHrefInput): string {
+  const params = new URLSearchParams();
+  params.set("employeeId", trimOrEmpty(input.employeeId));
   return `/admin/audit?${params.toString()}`;
 }
 

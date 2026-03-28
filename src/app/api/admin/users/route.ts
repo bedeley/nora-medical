@@ -12,12 +12,18 @@ import { Role } from "@/lib/prisma-enums";
 import { sendEmail } from "@/lib/email";
 import { sendSms } from "@/lib/sms";
 import { sendWhatsApp } from "@/lib/whatsapp";
+import { ensureEmployeeProfileForUser } from "@/lib/hr-user-employee-profile";
 
 const createUserSchema = z.object({
   name: z.string().min(2).max(120),
   email: z.string().email(),
   phone: z.string().trim().min(7),
   role: z.enum(["ADMIN", "STAFF", "ACCOUNTANT", "DISPATCHER"]),
+  employeeId: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function titleCase(value: string) {
@@ -32,14 +38,6 @@ function generateTempPassword(length = 12) {
     out += alphabet[bytes[i] % alphabet.length];
   }
   return out;
-}
-
-function splitName(fullName: string) {
-  const cleaned = String(fullName || "").trim();
-  if (!cleaned) return { firstName: "Employee", lastName: "User" };
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return { firstName: parts[0], lastName: "Employee" };
-  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
 }
 
 export async function POST(req: Request) {
@@ -67,6 +65,11 @@ export async function POST(req: Request) {
 
     const normalizedEmail = parsed.data.email.toLowerCase().trim();
     const normalizedPhone = parsed.data.phone.trim();
+    const employeeId = String(parsed.data.employeeId || "").trim();
+    const sourcePage = String(parsed.data.sourcePage || "").trim();
+    const section = String(parsed.data.section || "").trim();
+    const operation = String(parsed.data.operation || "").trim();
+    const resultSummary = String(parsed.data.resultSummary || "").trim();
 
     const existingEmail = await prisma.user.findUnique({
       where: { email: normalizedEmail },
@@ -81,6 +84,40 @@ export async function POST(req: Request) {
     });
     if (existingPhone) {
       return NextResponse.json({ error: "Phone already in use" }, { status: 409 });
+    }
+
+    const targetEmployee = employeeId
+      ? await prisma.employee.findUnique({
+          where: { id: employeeId },
+          select: {
+            id: true,
+            userId: true,
+            email: true,
+            phone: true,
+          },
+        })
+      : null;
+
+    if (employeeId && !targetEmployee) {
+      return NextResponse.json({ error: "Employee not found" }, { status: 404 });
+    }
+
+    if (targetEmployee?.userId) {
+      return NextResponse.json({ error: "Employee already has a linked user account." }, { status: 409 });
+    }
+
+    if (targetEmployee?.email && targetEmployee.email.toLowerCase().trim() !== normalizedEmail) {
+      return NextResponse.json(
+        { error: "User email must match the employee email already stored on the profile." },
+        { status: 409 },
+      );
+    }
+
+    if (targetEmployee?.phone && targetEmployee.phone.trim() !== normalizedPhone) {
+      return NextResponse.json(
+        { error: "User phone must match the employee phone already stored on the profile." },
+        { status: 409 },
+      );
     }
 
     const tempPassword = generateTempPassword(18);
@@ -98,33 +135,22 @@ export async function POST(req: Request) {
         select: { id: true, email: true, role: true, name: true, phone: true },
       });
 
-      const existingEmployee = await tx.employee.findFirst({
-        where: {
-          OR: [
-            normalizedEmail ? { email: normalizedEmail } : undefined,
-            normalizedPhone ? { phone: normalizedPhone } : undefined,
-          ].filter(Boolean) as { email?: string; phone?: string }[],
-        },
-        select: { id: true, userId: true },
-      });
-
-      if (existingEmployee) {
-        if (!existingEmployee.userId) {
-          await tx.employee.update({
-            where: { id: existingEmployee.id },
-            data: { userId: userRecord.id },
-          });
-        }
-      } else {
-        const nameParts = splitName(userRecord.name || parsed.data.name);
-        await tx.employee.create({
+      if (targetEmployee) {
+        await tx.employee.update({
+          where: { id: targetEmployee.id },
           data: {
-            firstName: nameParts.firstName,
-            lastName: nameParts.lastName,
-            email: userRecord.email,
-            phone: userRecord.phone,
             userId: userRecord.id,
+            ...(targetEmployee.email ? {} : { email: userRecord.email }),
+            ...(targetEmployee.phone ? {} : { phone: userRecord.phone }),
           },
+        });
+      } else {
+        await ensureEmployeeProfileForUser(tx, {
+          userId: userRecord.id,
+          name: userRecord.name || parsed.data.name,
+          email: userRecord.email,
+          phone: userRecord.phone,
+          status: "ACTIVE",
         });
       }
 
@@ -188,7 +214,19 @@ export async function POST(req: Request) {
         action: "USER_CREATE",
         entityType: "User",
         entityId: created.id,
-        meta: { role: created.role, email: created.email },
+        meta: {
+          role: created.role,
+          email: created.email,
+          employeeId: targetEmployee?.id ?? null,
+          ...(sourcePage ? { page: sourcePage, sourcePage } : {}),
+          ...(section ? { section } : {}),
+          ...(operation ? { operation } : {}),
+          ...(resultSummary
+            ? { resultSummary }
+            : targetEmployee
+              ? { resultSummary: "Linked user account created successfully." }
+              : {}),
+        },
       });
     } catch {
       // best-effort
@@ -198,6 +236,7 @@ export async function POST(req: Request) {
       id: created.id,
       email: created.email,
       role: created.role,
+      employeeId: targetEmployee?.id ?? null,
       inviteUrl,
       channel,
     });

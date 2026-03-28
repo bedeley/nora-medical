@@ -20,6 +20,7 @@ test("staff views route exposes GET POST DELETE handlers and response shapes", (
   assert.match(source, /export async function GET/);
   assert.match(source, /export async function POST/);
   assert.match(source, /export async function DELETE/);
+  assert.match(source, /accountLink: z\.enum\(\["all", "linked", "unlinked"\]\)\.optional\(\)\.default\("all"\)/);
   assert.match(source, /return NextResponse\.json\(\{ items, updatedAt:/);
   assert.match(source, /return NextResponse\.json\(\{ item: nextItem, items: next \}\)/);
   assert.match(source, /return NextResponse\.json\(\{ ok: true, items: next \}\)/);

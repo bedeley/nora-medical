@@ -92,6 +92,15 @@ export async function PATCH(req: Request) {
     });
     updated.push({ id: row.id, from: item.from, to: row.stage });
   }
+  const skippedDetails = plan.skipped.map((item) => ({
+    id: item.id,
+    reason: item.reason,
+  }));
+  const updatedDetails = updated.map((item) => ({
+    id: item.id,
+    from: item.from,
+    to: item.to,
+  }));
 
   try {
     await recordAuditLog({
@@ -106,16 +115,23 @@ export async function PATCH(req: Request) {
         operation: normalizeAuditText(parsed.data.operation, "bulk_update_application_stage"),
         before: {
           requestedCount: parsed.data.ids.length,
+          requestedIds: parsed.data.ids,
+          expectedUpdatedAtIds: Object.keys(parsed.data.expectedUpdatedAtById || {}),
         },
         after: {
           updatedCount: updated.length,
           skippedCount: plan.skipped.length,
           stageTo: nextStage,
+          updatedIds: updated.map((item) => item.id),
+          skippedIds: plan.skipped.map((item) => item.id),
+          updatedDetails,
+          skippedDetails,
+          noteApplied: note,
         },
         status: "SUCCESS",
         resultSummary: normalizeAuditText(
           parsed.data.resultSummary,
-          `Bulk stage update completed. Updated ${updated.length}; skipped ${plan.skipped.length}.`,
+          `Bulk update moved ${updated.length} application(s) to ${nextStage.toLowerCase()}. ${plan.skipped.length} application(s) were skipped.`,
         ),
       },
     });

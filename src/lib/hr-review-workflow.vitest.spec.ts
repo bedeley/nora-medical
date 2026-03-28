@@ -15,14 +15,16 @@ describe("hr-review-workflow", () => {
     const state = defaultReviewWorkflowState();
     expect(state.status).toBe("DRAFT");
     expect(state.archived).toBe(false);
+    expect(state.employeeVisible).toBe(false);
     expect(state.acknowledgedAt).toBeNull();
     expect(state.acknowledgedBy).toBeNull();
   });
 
   it("parseReviewWorkflowState normalizes invalid input", () => {
-    const state = parseReviewWorkflowState({ status: "bad", archived: 1, acknowledgedAt: 123 });
+    const state = parseReviewWorkflowState({ status: "bad", archived: 1, employeeVisible: 1, acknowledgedAt: 123 });
     expect(state.status).toBe("DRAFT");
     expect(state.archived).toBe(true);
+    expect(state.employeeVisible).toBe(true);
     expect(state.acknowledgedAt).toBe("123");
   });
 

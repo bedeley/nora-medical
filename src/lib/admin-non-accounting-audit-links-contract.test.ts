@@ -49,3 +49,10 @@ test("operations and admin pages audit links include sourcePage", () => {
   assert.match(customerView, /&sourcePage=admin\/customers\/\[id\]\/view/);
   assert.match(healthIncidents, /\/admin\/audit\?sourcePage=admin\/health\/incidents/);
 });
+
+test("users page exposes HR profile repair actions", () => {
+  const users = read("src/app/(admin)/admin/users/page.tsx");
+  assert.match(users, /Create HR profile/);
+  assert.match(users, /Fix HR link/);
+  assert.match(users, /\/api\/admin\/users\/\$\{userId\}\/employee-profile/);
+});

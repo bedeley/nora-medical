@@ -779,6 +779,7 @@ model EmployeeDocument {
   title       String
   fileUrl     String
   fileType    String?
+  employeeVisible Boolean @default(false)
   uploadedAt  DateTime @default(now())
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

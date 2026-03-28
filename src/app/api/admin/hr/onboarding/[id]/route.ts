@@ -105,6 +105,7 @@ export async function PATCH(
           id: user.id,
           role: user.role,
         },
+        page: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
         sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
         section: parsed.data.section?.trim() || "onboarding-checklist",
         operation: parsed.data.operation?.trim() || "update_onboarding_task",

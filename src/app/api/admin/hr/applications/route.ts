@@ -187,25 +187,77 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
+  const q = searchParams.get("q")?.trim() || "";
   const jobPostingId = searchParams.get("jobPostingId")?.trim() || "";
   const stageRaw = searchParams.get("stage")?.trim() || "";
+  const showHired = searchParams.get("showHired") === "1";
   const allowedStages = new Set(["APPLIED", "SCREENING", "INTERVIEW", "OFFER", "HIRED", "REJECTED", "WITHDRAWN"]);
   const stage = allowedStages.has(stageRaw) ? stageRaw : "";
+  const where: Prisma.ApplicationWhereInput = {
+    ...(jobPostingId ? { jobPostingId } : {}),
+    ...(stage ? { stage: stage as "APPLIED" } : {}),
+    ...(!showHired && !stage ? { stage: { not: "HIRED" } } : {}),
+    ...(q
+      ? {
+          OR: [
+            { applicant: { firstName: { contains: q, mode: "insensitive" } } },
+            { applicant: { lastName: { contains: q, mode: "insensitive" } } },
+            { applicant: { email: { contains: q, mode: "insensitive" } } },
+            { applicant: { phone: { contains: q, mode: "insensitive" } } },
+            { jobPosting: { title: { contains: q, mode: "insensitive" } } },
+          ],
+        }
+      : {}),
+  };
 
-  const applications = await prisma.application.findMany({
-    where: {
-      ...(jobPostingId ? { jobPostingId } : {}),
-      ...(stage ? { stage: stage as "APPLIED" } : {}),
+  const [applications, total, groupedByStage, latestUpdated] = await Promise.all([
+    prisma.application.findMany({
+      where,
+      include: {
+        applicant: true,
+        jobPosting: true,
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      take: 200,
+    }),
+    prisma.application.count({ where }),
+    prisma.application.groupBy({
+      by: ["stage"],
+      where,
+      _count: { _all: true },
+    }),
+    prisma.application.findFirst({
+      where,
+      orderBy: { updatedAt: "desc" },
+      select: { updatedAt: true },
+    }),
+  ]);
+
+  const stageCounts = Object.fromEntries(
+    groupedByStage.map((row) => [row.stage, row._count._all]),
+  ) as Partial<Record<ApplicationStage, number>>;
+  const activeCount =
+    Number(stageCounts.APPLIED || 0) +
+    Number(stageCounts.SCREENING || 0) +
+    Number(stageCounts.INTERVIEW || 0) +
+    Number(stageCounts.OFFER || 0);
+
+  return NextResponse.json({
+    rows: applications,
+    total,
+    lastUpdatedAt: latestUpdated?.updatedAt?.toISOString?.() ?? null,
+    summary: {
+      total,
+      active: activeCount,
+      applied: Number(stageCounts.APPLIED || 0),
+      screening: Number(stageCounts.SCREENING || 0),
+      interview: Number(stageCounts.INTERVIEW || 0),
+      offer: Number(stageCounts.OFFER || 0),
+      hired: Number(stageCounts.HIRED || 0),
+      rejected: Number(stageCounts.REJECTED || 0),
+      withdrawn: Number(stageCounts.WITHDRAWN || 0),
     },
-    include: {
-      applicant: true,
-      jobPosting: true,
-    },
-    orderBy: { createdAt: "desc" },
-    take: 200,
   });
-
-  return NextResponse.json({ rows: applications });
 }
 
 export async function POST(req: Request) {

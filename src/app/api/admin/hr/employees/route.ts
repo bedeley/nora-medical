@@ -86,6 +86,23 @@ function buildSearchClause(q: string): Prisma.EmployeeWhereInput | undefined {
   };
 }
 
+function buildMissingBankWhere(): Prisma.EmployeeWhereInput {
+  return {
+    OR: [
+      { bankName: null },
+      { bankName: "" },
+      { bankAccountName: null },
+      { bankAccountName: "" },
+      { bankAccountNumber: null },
+      { bankAccountNumber: "" },
+      { bankCode: null },
+      { bankCode: "" },
+      { bankBranch: null },
+      { bankBranch: "" },
+    ],
+  };
+}
+
 export async function GET(req: Request) {
   const user = await requireAdmin();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -95,6 +112,7 @@ export async function GET(req: Request) {
   const statusRaw = searchParams.get("status")?.trim() || "";
   const departmentRaw = searchParams.get("department")?.trim() || "";
   const roleRaw = searchParams.get("role")?.trim().toUpperCase() || "";
+  const accountLinkRaw = searchParams.get("accountLink")?.trim().toLowerCase() || "";
   const completenessRaw = searchParams.get("completeness")?.trim().toLowerCase() || "";
   const sortRaw = searchParams.get("sort")?.trim().toLowerCase() || "recent";
   const pageRaw = Number(searchParams.get("page") || "1");
@@ -109,12 +127,15 @@ export async function GET(req: Request) {
   const allowedRoles = new Set(["ADMIN", "STAFF", "ACCOUNTANT"]);
   const status = allowedStatuses.has(statusRaw) ? statusRaw : "";
   const role = allowedRoles.has(roleRaw) ? roleRaw : "";
+  const accountLink = accountLinkRaw === "linked" || accountLinkRaw === "unlinked" ? accountLinkRaw : "";
   const completeness = completenessRaw === "complete" || completenessRaw === "missing" ? completenessRaw : "";
 
   const baseClauses: Prisma.EmployeeWhereInput[] = [];
   const departmentFilter = buildDepartmentClause(departmentRaw);
   const searchClause = buildSearchClause(q);
   if (departmentFilter) baseClauses.push(departmentFilter);
+  if (accountLink === "linked") baseClauses.push({ userId: { not: null } });
+  if (accountLink === "unlinked") baseClauses.push({ userId: null });
   if (role) {
     baseClauses.push({
       user: {
@@ -126,6 +147,7 @@ export async function GET(req: Request) {
   const baseWhere: Prisma.EmployeeWhereInput = baseClauses.length > 0 ? { AND: baseClauses } : {};
 
   const missingProfileWhere = buildMissingProfileWhere();
+  const missingBankWhere = buildMissingBankWhere();
   const whereClauses: Prisma.EmployeeWhereInput[] = [...baseClauses];
   if (status) {
     whereClauses.push({
@@ -143,13 +165,14 @@ export async function GET(req: Request) {
         ? [{ firstName: "desc" as const }, { lastName: "desc" as const }]
         : [{ createdAt: "desc" as const }];
 
-  const [employees, total, departmentRows, totalAll, activeCount, onLeaveCount, suspendedCount, terminatedCount, missingCount] =
+  const [employees, total, departmentRows, totalAll, activeCount, onLeaveCount, suspendedCount, terminatedCount, missingCount, linkedCount, missingBankCount] =
     await Promise.all([
       prisma.employee.findMany({
         where,
         include: {
           user: {
             select: {
+              id: true,
               role: true,
             },
           },
@@ -181,6 +204,12 @@ export async function GET(req: Request) {
       prisma.employee.count({
         where: { AND: [...baseClauses, missingProfileWhere] },
       }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, { userId: { not: null } }] },
+      }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, missingBankWhere] },
+      }),
     ]);
 
   return NextResponse.json({
@@ -199,6 +228,9 @@ export async function GET(req: Request) {
       suspended: suspendedCount,
       terminated: terminatedCount,
       missingProfile: missingCount,
+      missingBankDetails: missingBankCount,
+      linkedAccount: linkedCount,
+      unlinkedAccount: Math.max(0, totalAll - linkedCount),
     },
   });
 }

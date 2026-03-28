@@ -194,6 +194,17 @@ function normalizeSourcePage(value: string): string {
   return value.trim().replace(/^\/+/, "");
 }
 
+function humanizeAuditLabel(value: unknown): string {
+  const text = String(value || "").trim();
+  if (!text) return "Not provided";
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function replaceAuditBrowserUrl(params: URLSearchParams) {
   if (typeof window === "undefined") return;
   const next = new URLSearchParams(params.toString());
@@ -236,6 +247,7 @@ function AdminAuditContent() {
   const [logId, setLogId] = useState("");
   const [entityType, setEntityType] = useState("");
   const [entityId, setEntityId] = useState("");
+  const [employeeId, setEmployeeId] = useState("");
   const [payrollRunId, setPayrollRunId] = useState("");
   const [correlationId, setCorrelationId] = useState("");
   const [sourcePage, setSourcePage] = useState("");
@@ -320,6 +332,7 @@ function AdminAuditContent() {
     const lid = searchParams.get("logId") || "";
     const et = searchParams.get("entityType") || "";
     const ei = searchParams.get("entityId") || "";
+    const employee = searchParams.get("employeeId") || "";
     const payrollRun = searchParams.get("payrollRunId") || "";
     const cid = searchParams.get("correlationId") || "";
     const ci = searchParams.get("customerId") || "";
@@ -336,6 +349,7 @@ function AdminAuditContent() {
     setLogId(lid);
     setEntityType(et.toUpperCase());
     setEntityId(ei);
+    setEmployeeId(employee);
     setPayrollRunId(payrollRun);
     setCorrelationId(cid);
     setCustomerId(ci);
@@ -510,6 +524,7 @@ function AdminAuditContent() {
   if (logId) params.set("logId", logId);
   if (entityType) params.set("entityType", entityType);
   if (entityId) params.set("entityId", entityId);
+  if (employeeId) params.set("employeeId", employeeId);
   if (payrollRunId) params.set("payrollRunId", payrollRunId);
   if (correlationId) params.set("correlationId", correlationId);
   if (customerId) params.set("customerId", customerId);
@@ -536,6 +551,7 @@ function AdminAuditContent() {
     logId,
     entityType,
     entityId,
+    employeeId,
     payrollRunId,
     correlationId,
     customerId,
@@ -1759,7 +1775,7 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">Section / operation:</span>{" "}
-              {section || "Not provided"} / {operation || "Not provided"}
+              {humanizeAuditLabel(section)} / {humanizeAuditLabel(operation)}
             </>
           ),
         },
@@ -3827,8 +3843,8 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">Source page / section / operation:</span>{" "}
-              {String(meta.sourcePage || "Not provided")} / {String(meta.section || "Not provided")} /{" "}
-              {String(meta.operation || "Not provided")}
+              {String(meta.sourcePage || "Not provided")} / {humanizeAuditLabel(meta.section)} /{" "}
+              {humanizeAuditLabel(meta.operation)}
             </>
           ),
         },
@@ -5038,6 +5054,25 @@ function AdminAuditContent() {
           </div>
 
           <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-7">
+        {employeeId ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 sm:col-span-2 lg:col-span-7">
+            <div>
+              Showing activity related to employee <span className="font-medium">{formatIdReadable(employeeId)}</span>.
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100"
+              onClick={() => {
+                setEmployeeId("");
+                setPage(1);
+              }}
+            >
+              Clear employee filter
+            </Button>
+          </div>
+        ) : null}
         {payrollRunId ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 sm:col-span-2 lg:col-span-7">
             <div>

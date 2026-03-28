@@ -88,11 +88,26 @@ async function mockHiringApis(page, trackers) {
     });
   });
 
-  await page.route("**/api/admin/hr/applications", async (route) => {
+  await page.route("**/api/admin/hr/applications**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ rows: applications }),
+      body: JSON.stringify({
+        rows: applications,
+        total: applications.length,
+        lastUpdatedAt: "2026-03-12T11:00:00.000Z",
+        summary: {
+          total: applications.length,
+          active: 2,
+          applied: 1,
+          screening: 1,
+          interview: 0,
+          offer: 0,
+          hired: 0,
+          rejected: 0,
+          withdrawn: 0,
+        },
+      }),
     });
   });
 
@@ -124,13 +139,14 @@ test.describe("HR hiring page", () => {
     await page.goto("/admin/hr/hiring");
 
     await expect(page.getByRole("heading", { name: /hiring pipeline/i })).toBeVisible();
-    await expect(page.getByText(/open jobs/i).first()).toBeVisible();
+    await expect(page.getByText(/open roles/i).first()).toBeVisible();
     await expect(page.getByText(/active pipeline/i).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /import applicants/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /\+ job posting/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /\+ applicant/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /\+ application/i })).toBeVisible();
     await expect(page.getByText(/last updated:/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /copy view link/i })).toBeVisible();
   });
 
   test("sends conflict-safe bulk payload and renders skipped details", async ({ page }) => {
@@ -139,10 +155,11 @@ test.describe("HR hiring page", () => {
     await mockHiringApis(page, trackers);
     await page.goto("/admin/hr/hiring");
 
-    await expect(page.getByRole("cell", { name: /Ama Mensah/i }).first()).toBeVisible();
-    await expect(page.getByRole("cell", { name: /Kofi Owusu/i }).first()).toBeVisible();
+    const applicationsSection = page.locator("#applications");
+    await expect(applicationsSection.getByRole("cell", { name: /Ama Mensah/i }).first()).toBeVisible();
+    await expect(applicationsSection.getByRole("cell", { name: /Kofi Owusu/i }).first()).toBeVisible();
 
-    const appCheckboxes = page.locator("tbody tr input[type='checkbox']");
+    const appCheckboxes = applicationsSection.locator("table tbody tr input[type='checkbox']");
     await appCheckboxes.nth(0).check();
     await appCheckboxes.nth(1).check();
 

@@ -97,7 +97,7 @@ async function mockStaffApis(page, trackers) {
       body: JSON.stringify({ values: { "hr.workweekDays": 5 } }),
     });
   });
-  await page.route("**/api/admin/audit?**entityType=EMPLOYEE&entityId=emp-1**", async (route) => {
+  await page.route("**/api/admin/audit?**employeeId=emp-1**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -107,7 +107,11 @@ async function mockStaffApis(page, trackers) {
           action: "HR_EMPLOYEE_UPDATE",
           createdAt: "2026-03-26T11:00:00.000Z",
           actor: { name: "Nora Admin", email: "nora@example.com" },
-          meta: { resultSummary: "Employee profile updated successfully." },
+          meta: {
+            section: "contact-details",
+            operation: "update_contact_details",
+            resultSummary: "Employee profile updated successfully.",
+          },
         },
       ]),
     });
@@ -130,8 +134,12 @@ test.describe("HR staff profile page", () => {
     await mockStaffApis(page, trackers);
     await page.goto("/admin/hr/staff/emp-1");
 
+    const editContact = page.getByRole("button", { name: /^edit$/i }).nth(1);
     const saveContact = page.getByRole("button", { name: /save contact/i });
-    await expect(saveContact).toBeDisabled();
+    await expect(page.getByPlaceholder(/email address/i)).toBeDisabled();
+    await expect(saveContact).toHaveCount(0);
+    await editContact.click();
+    await expect(page.getByPlaceholder(/email address/i)).toBeEnabled();
     await page.getByPlaceholder(/email address/i).fill("nora.updated@example.com");
     await expect(saveContact).toBeEnabled();
     await saveContact.click();

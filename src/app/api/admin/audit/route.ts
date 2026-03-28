@@ -104,6 +104,20 @@ function truncateText(value: string, max = 190) {
   return `${normalized.slice(0, max - 1)}...`;
 }
 
+function buildSourcePageMetaFilter(sourcePage: string): Prisma.AuditLogWhereInput {
+  const normalized = sourcePage.trim().replace(/^\/+/, "");
+  if (!normalized) return {};
+  const withLeadingSlash = `/${normalized}`;
+  return {
+    OR: [
+      { meta: { contains: `"sourcePage":"${normalized}"` } },
+      { meta: { contains: `"sourcePage":"${withLeadingSlash}"` } },
+      { meta: { contains: `"page":"${normalized}"` } },
+      { meta: { contains: `"page":"${withLeadingSlash}"` } },
+    ],
+  };
+}
+
 function resolveAuditSourceLink(entityType: string, entityId: string) {
   const type = String(entityType || "").toUpperCase();
   const id = String(entityId || "").trim();
@@ -396,6 +410,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const entityType = searchParams.get("entityType") || undefined;
   const entityId = searchParams.get("entityId") || undefined;
+  const employeeId = searchParams.get("employeeId") || undefined;
   const payrollRunId = searchParams.get("payrollRunId") || undefined;
   const logId = searchParams.get("logId") || undefined;
   const customerId = searchParams.get("customerId") || undefined;
@@ -450,6 +465,17 @@ export async function GET(req: Request) {
   }
   if (logId) andWhere.push({ id: logId });
   if (entityId) andWhere.push({ entityId });
+  if (employeeId) {
+    andWhere.push({
+      OR: [
+        {
+          entityType: { equals: "EMPLOYEE", mode: "insensitive" },
+          entityId: employeeId,
+        },
+        { meta: { contains: `"employeeId":"${employeeId}"` } },
+      ],
+    });
+  }
   if (action) andWhere.push({ action });
   if (correlationId) {
     andWhere.push({ meta: { contains: `"correlationId":"${correlationId}"` } });
@@ -506,9 +532,7 @@ export async function GET(req: Request) {
   if (scope === "accounting_settings") {
     andWhere.push({ action: "app-setting.update" });
     if (sourcePage) {
-      andWhere.push({
-        meta: { contains: `"sourcePage":"${sourcePage}"` },
-      });
+      andWhere.push(buildSourcePageMetaFilter(sourcePage));
     } else {
       andWhere.push({
         OR: [
@@ -523,7 +547,7 @@ export async function GET(req: Request) {
     }
   }
   if (sourcePage && scope !== "accounting_settings") {
-    andWhere.push({ meta: { contains: `"sourcePage":"${sourcePage}"` } });
+    andWhere.push(buildSourcePageMetaFilter(sourcePage));
   }
   const where: Prisma.AuditLogWhereInput = andWhere.length > 0 ? { AND: andWhere } : {};
   const appendAnd = (clause: Prisma.AuditLogWhereInput) => {

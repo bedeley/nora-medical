@@ -22,6 +22,8 @@ type AccountMe = {
   lastLoginAt?: string | null;
   customerProfile?: "B2B" | "B2C";
   isB2B?: boolean;
+  employeeId?: string | null;
+  hasEmployeePortal?: boolean;
 };
 
 type OrderHistoryItem = {
@@ -304,6 +306,11 @@ function AccountContent() {
                 <Button variant="outline">Clinic procurement</Button>
               </Link>
             ) : null}
+            {me?.hasEmployeePortal ? (
+              <Link href="/account/employee" className="inline-flex">
+                <Button variant="outline">Employee portal</Button>
+              </Link>
+            ) : null}
           </div>
         )}
         {isEmailVerified && me && !me.isB2B ? (
@@ -353,6 +360,25 @@ function AccountContent() {
             </div>
           </div>
         )}
+
+        {me?.hasEmployeePortal ? (
+          <div className="mt-8">
+            <Card className="border shadow-sm">
+              <CardContent className="flex flex-col gap-4 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Employee self-service</p>
+                  <p className="mt-1 text-lg font-semibold">Payroll, leave, onboarding, and HR documents</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Open your employee portal to view paystubs, leave history, onboarding items, and employee-safe HR documents.
+                  </p>
+                </div>
+                <Button asChild>
+                  <Link href="/account/employee">Open employee portal</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
 
         <div className="mt-8 max-w-md">
           <h2 className="text-lg font-semibold mb-2">Contact Phone</h2>

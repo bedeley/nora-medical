@@ -12,6 +12,7 @@ const createSchema = z.object({
   title: z.string().min(1),
   fileUrl: z.string().min(1),
   fileType: z.string().optional().or(z.literal("")),
+  employeeVisible: z.boolean().optional(),
   sourcePage: z.string().optional().or(z.literal("")),
   section: z.string().optional().or(z.literal("")),
   operation: z.string().optional().or(z.literal("")),
@@ -68,6 +69,7 @@ export async function POST(req: Request) {
         title: parsed.data.title.trim(),
         fileUrl: parsed.data.fileUrl.trim(),
         fileType: parsed.data.fileType?.trim() || null,
+        employeeVisible: parsed.data.employeeVisible ?? false,
       },
     });
     try {
@@ -81,6 +83,7 @@ export async function POST(req: Request) {
             id: user.id,
             role: user.role,
           },
+          page: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
           sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
           section: parsed.data.section?.trim() || "documents",
           operation: parsed.data.operation?.trim() || "create_document",
@@ -89,6 +92,7 @@ export async function POST(req: Request) {
             employeeId: doc.employeeId,
             title: doc.title,
             fileType: doc.fileType,
+            employeeVisible: doc.employeeVisible,
             fileUrl: doc.fileUrl,
             uploadedAt: doc.uploadedAt?.toISOString?.() ?? null,
           },

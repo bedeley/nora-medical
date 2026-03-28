@@ -8,6 +8,7 @@ import { sendEmail } from "@/lib/email";
 import { sendWhatsApp } from "@/lib/whatsapp";
 import { sendSms } from "@/lib/sms";
 import { PHONE_VERIFICATION_ENABLED } from "@/lib/config";
+import { ensureEmployeeProfileForUser } from "@/lib/hr-user-employee-profile";
 
 export async function POST(req: Request) {
   try {
@@ -50,15 +51,29 @@ export async function POST(req: Request) {
     const providedSecret = (req.headers.get("x-admin-bootstrap") || "").trim();
     const makeAdmin = userCount === 0 && bootstrapSecret && providedSecret && bootstrapSecret === providedSecret;
 
-    const user = await prisma.user.create({
-      data: {
-        name: titleCase(name),
-        phone: normalizedPhone,
-        password: await bcrypt.hash(password, 10),
-        ...(normalizedEmail ? { email: normalizedEmail } : {}),
-        ...(normalizedUsername ? { username: normalizedUsername } : {}),
-        ...(makeAdmin ? { role: Role.ADMIN } : {}),
-      },
+    const user = await prisma.$transaction(async (tx) => {
+      const createdUser = await tx.user.create({
+        data: {
+          name: titleCase(name),
+          phone: normalizedPhone,
+          password: await bcrypt.hash(password, 10),
+          ...(normalizedEmail ? { email: normalizedEmail } : {}),
+          ...(normalizedUsername ? { username: normalizedUsername } : {}),
+          ...(makeAdmin ? { role: Role.ADMIN } : {}),
+        },
+      });
+
+      if (makeAdmin) {
+        await ensureEmployeeProfileForUser(tx, {
+          userId: createdUser.id,
+          name: createdUser.name,
+          email: createdUser.email,
+          phone: createdUser.phone,
+          status: "ACTIVE",
+        });
+      }
+
+      return createdUser;
     });
 
     // Send registration verification code.

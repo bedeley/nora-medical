@@ -15,14 +15,16 @@ test("defaultReviewWorkflowState returns expected defaults", () => {
   const state = defaultReviewWorkflowState();
   assert.equal(state.status, "DRAFT");
   assert.equal(state.archived, false);
+  assert.equal(state.employeeVisible, false);
   assert.equal(state.acknowledgedAt, null);
   assert.equal(state.acknowledgedBy, null);
 });
 
 test("parseReviewWorkflowState normalizes invalid input", () => {
-  const state = parseReviewWorkflowState({ status: "bad", archived: 1, acknowledgedAt: 123 });
+  const state = parseReviewWorkflowState({ status: "bad", archived: 1, employeeVisible: 1, acknowledgedAt: 123 });
   assert.equal(state.status, "DRAFT");
   assert.equal(state.archived, true);
+  assert.equal(state.employeeVisible, true);
   assert.equal(state.acknowledgedAt, "123");
 });
 

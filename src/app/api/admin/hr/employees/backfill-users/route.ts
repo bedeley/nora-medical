@@ -6,14 +6,7 @@ import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
-
-function splitName(fullName: string) {
-  const cleaned = String(fullName || "").trim();
-  if (!cleaned) return { firstName: "Employee", lastName: "User" };
-  const parts = cleaned.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return { firstName: parts[0], lastName: "Employee" };
-  return { firstName: parts[0], lastName: parts.slice(1).join(" ") };
-}
+import { ensureEmployeeProfileForUser } from "@/lib/hr-user-employee-profile";
 
 export async function POST(req: Request) {
   if (!assertSameOrigin(req)) {
@@ -52,40 +45,24 @@ export async function POST(req: Request) {
         skipped += 1;
         continue;
       }
-      const existingEmployee = await prisma.employee.findFirst({
-        where: {
-          OR: [
-            u.email ? { email: u.email } : undefined,
-            u.phone ? { phone: u.phone } : undefined,
-          ].filter(Boolean) as { email?: string; phone?: string }[],
-        },
-        select: { id: true, userId: true },
-      });
-      if (existingEmployee) {
-        if (!existingEmployee.userId) {
-          await prisma.employee.update({
-            where: { id: existingEmployee.id },
-            data: { userId: u.id },
-          });
+      try {
+        const result = await ensureEmployeeProfileForUser(prisma, {
+          userId: u.id,
+          name: u.name,
+          email: u.email,
+          phone: u.phone,
+          status: "ACTIVE",
+        });
+        if (result.outcome === "created") {
+          created += 1;
+        } else if (result.outcome === "linked") {
           linked += 1;
         } else {
           skipped += 1;
         }
-        continue;
+      } catch {
+        skipped += 1;
       }
-
-      const nameParts = splitName(u.name || "");
-      await prisma.employee.create({
-        data: {
-          firstName: nameParts.firstName,
-          lastName: nameParts.lastName,
-          email: u.email,
-          phone: u.phone,
-          userId: u.id,
-          status: "ACTIVE",
-        },
-      });
-      created += 1;
     }
 
     try {

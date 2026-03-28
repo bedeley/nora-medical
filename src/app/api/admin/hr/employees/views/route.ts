@@ -18,6 +18,7 @@ const viewSchema = z.object({
     status: z.string().optional().default("all"),
     department: z.string().optional().default("all"),
     role: z.string().optional().default("all"),
+    accountLink: z.enum(["all", "linked", "unlinked"]).optional().default("all"),
     completeness: z.string().optional().default("all"),
     sort: z.string().optional().default("recent"),
     pageSize: z.number().int().min(10).max(100).optional().default(25),

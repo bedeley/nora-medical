@@ -3,6 +3,7 @@ export type ReviewWorkflowStatus = "DRAFT" | "SUBMITTED" | "ACKNOWLEDGED";
 export type ReviewWorkflowState = {
   status: ReviewWorkflowStatus;
   archived: boolean;
+  employeeVisible: boolean;
   acknowledgedAt: string | null;
   acknowledgedBy: string | null;
 };
@@ -17,6 +18,7 @@ export function defaultReviewWorkflowState(): ReviewWorkflowState {
   return {
     status: "DRAFT",
     archived: false,
+    employeeVisible: false,
     acknowledgedAt: null,
     acknowledgedBy: null,
   };
@@ -30,6 +32,7 @@ export function parseReviewWorkflowState(raw: unknown): ReviewWorkflowState {
   return {
     status,
     archived: Boolean(source.archived),
+    employeeVisible: Boolean(source.employeeVisible),
     acknowledgedAt: source.acknowledgedAt ? String(source.acknowledgedAt) : null,
     acknowledgedBy: source.acknowledgedBy ? String(source.acknowledgedBy) : null,
   };

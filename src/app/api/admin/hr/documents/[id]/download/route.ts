@@ -64,6 +64,7 @@ export async function GET(
           id: user.id,
           role: user.role,
         },
+        page: auditMeta.sourcePage,
         sourcePage: auditMeta.sourcePage,
         section: auditMeta.section,
         operation: auditMeta.operation,

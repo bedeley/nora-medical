@@ -3,21 +3,26 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { MoreHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 type EmployeeStatus = "ACTIVE" | "ON_LEAVE" | "SUSPENDED" | "TERMINATED";
-type UserRole = "ADMIN" | "STAFF" | "ACCOUNTANT";
+type UserRole = "ADMIN" | "STAFF" | "ACCOUNTANT" | "DISPATCHER";
+type LinkedUserRole = "STAFF" | "ACCOUNTANT" | "ADMIN" | "DISPATCHER";
 type CompletenessFilter = "all" | "complete" | "missing";
+type AccountLinkFilter = "all" | "linked" | "unlinked";
 type SortOrder = "recent" | "name_asc" | "name_desc";
 type BulkScope = "selected" | "all_filtered";
 type MobileDensity = "comfortable" | "compact";
@@ -34,7 +39,7 @@ type Employee = {
   hireDate?: string | null;
   terminationDate?: string | null;
   updatedAt?: string | null;
-  user?: { role?: UserRole | null } | null;
+  user?: { id?: string | null; role?: UserRole | null } | null;
 };
 
 type SavedView = {
@@ -45,6 +50,7 @@ type SavedView = {
     status: string;
     department: string;
     role: string;
+    accountLink: AccountLinkFilter;
     completeness: CompletenessFilter;
     sort: SortOrder;
     pageSize: number;
@@ -65,7 +71,25 @@ type StaffListResponse = {
     suspended: number;
     terminated: number;
     missingProfile: number;
+    missingBankDetails: number;
+    linkedAccount: number;
+    unlinkedAccount: number;
   };
+};
+
+type StaffActivityItem = {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  createdAt: string;
+  actor: {
+    id: string;
+    name: string | null;
+    email: string | null;
+    role: string;
+  } | null;
+  meta: string | null;
 };
 
 const STAFF_SOURCE_PAGE = "admin/hr/staff";
@@ -77,11 +101,11 @@ const statusTone: Record<EmployeeStatus, "default" | "secondary" | "destructive"
   TERMINATED: "secondary",
 };
 
-const fetcher = async (url: string) => {
+const fetcher = async <T,>(url: string) => {
   const res = await fetch(url);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body?.error || "Request failed.");
-  return body as StaffListResponse;
+  return body as T;
 };
 
 function normalizePageSize(raw: string | null): number {
@@ -100,17 +124,83 @@ function getMissingProfileFields(row: Employee) {
   return missing;
 }
 
+function formatEmployeeStatusLabel(status: EmployeeStatus) {
+  return status.replace("_", " ");
+}
+
+function getAccountLinkLabel(row: Employee) {
+  return row.user?.id ? "Linked account" : "No linked account";
+}
+
+function getStatusChangePrompt(nextStatus: EmployeeStatus) {
+  if (nextStatus === "TERMINATED") {
+    return "This will mark the employee as terminated and set a termination date if one is not already provided.";
+  }
+  if (nextStatus === "SUSPENDED") {
+    return "This will mark the employee as suspended from active work. Add a short note so the reason is clear in audit history.";
+  }
+  if (nextStatus === "ON_LEAVE") {
+    return "This will move the employee into on-leave status from the staff directory.";
+  }
+  return "This will return the employee to active status from the staff directory.";
+}
+
+function getCompletenessFilterLabel(value: CompletenessFilter) {
+  if (value === "missing") return "Missing key fields";
+  if (value === "complete") return "Complete profiles";
+  return "All profiles";
+}
+
+function getSortLabel(value: SortOrder) {
+  if (value === "name_asc") return "Name A-Z";
+  if (value === "name_desc") return "Name Z-A";
+  return "Most recent hire";
+}
+
+function toPlainEnglishLabel(value: string) {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function parseAuditMeta(raw: string | null | undefined) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function formatActivityTitle(action: string) {
+  return toPlainEnglishLabel(action);
+}
+
+function formatActivitySummary(meta: Record<string, unknown> | null) {
+  if (!meta) return "No additional summary available.";
+  const resultSummary = typeof meta.resultSummary === "string" ? meta.resultSummary.trim() : "";
+  if (resultSummary) return resultSummary;
+  const operation = typeof meta.operation === "string" ? meta.operation.trim() : "";
+  if (operation) return toPlainEnglishLabel(operation);
+  return "No additional summary available.";
+}
+
 
 export default function AdminHrStaffPage() {
   const queryClient = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const employeesCardRef = useRef<HTMLDivElement | null>(null);
 
   const initialQ = searchParams.get("q") || "";
   const initialStatus = searchParams.get("status") || "all";
   const initialDepartment = searchParams.get("department") || "all";
   const initialRole = searchParams.get("role") || "all";
+  const initialAccountLink = (searchParams.get("accountLink") || "all") as AccountLinkFilter;
   const initialCompleteness = (searchParams.get("completeness") || "all") as CompletenessFilter;
   const initialSort = (searchParams.get("sort") || "recent") as SortOrder;
   const initialPage = Math.max(1, Number(searchParams.get("page") || "1") || 1);
@@ -121,6 +211,9 @@ export default function AdminHrStaffPage() {
   const [status, setStatus] = useState(initialStatus);
   const [department, setDepartment] = useState(initialDepartment);
   const [role, setRole] = useState(initialRole);
+  const [accountLink, setAccountLink] = useState<AccountLinkFilter>(
+    ["all", "linked", "unlinked"].includes(initialAccountLink) ? initialAccountLink : "all",
+  );
   const [completeness, setCompleteness] = useState<CompletenessFilter>(
     ["all", "complete", "missing"].includes(initialCompleteness) ? initialCompleteness : "all",
   );
@@ -145,6 +238,21 @@ export default function AdminHrStaffPage() {
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [bulkSaving, setBulkSaving] = useState(false);
   const [exportNotice, setExportNotice] = useState("");
+  const [pendingStatusChange, setPendingStatusChange] = useState<{
+    employee: Employee;
+    nextStatus: EmployeeStatus;
+  } | null>(null);
+  const [statusChangeReason, setStatusChangeReason] = useState("");
+  const [statusChangeSaving, setStatusChangeSaving] = useState(false);
+  const [linkedUserDialogOpen, setLinkedUserDialogOpen] = useState(false);
+  const [linkedUserEmployee, setLinkedUserEmployee] = useState<Employee | null>(null);
+  const [linkedUserSubmitting, setLinkedUserSubmitting] = useState(false);
+  const [linkedUserForm, setLinkedUserForm] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    role: "STAFF" as LinkedUserRole,
+  });
 
   const [form, setForm] = useState({
     firstName: "",
@@ -160,6 +268,7 @@ export default function AdminHrStaffPage() {
     bankAccountNumber: "",
     bankCode: "",
     bankBranch: "",
+    notes: "",
   });
 
   useEffect(() => {
@@ -173,14 +282,17 @@ export default function AdminHrStaffPage() {
     if (status !== "all") params.set("status", status);
     if (department !== "all") params.set("department", department);
     if (role !== "all") params.set("role", role);
+    if (accountLink !== "all") params.set("accountLink", accountLink);
     if (completeness !== "all") params.set("completeness", completeness);
     if (sort !== "recent") params.set("sort", sort);
     if (page !== 1) params.set("page", String(page));
     if (pageSize !== 25) params.set("pageSize", String(pageSize));
     const next = params.toString();
     const current = searchParams.toString();
-    if (next !== current) router.replace(next ? `${pathname}?${next}` : pathname);
-  }, [searchDebounced, status, department, role, completeness, sort, page, pageSize, pathname, router, searchParams]);
+    if (next !== current) {
+      router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
+    }
+  }, [searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize, pathname, router, searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -212,16 +324,25 @@ export default function AdminHrStaffPage() {
     if (status !== "all") params.set("status", status);
     if (department !== "all") params.set("department", department);
     if (role !== "all") params.set("role", role);
+    if (accountLink !== "all") params.set("accountLink", accountLink);
     if (completeness !== "all") params.set("completeness", completeness);
     if (sort !== "recent") params.set("sort", sort);
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
     return `/api/admin/hr/employees?${params.toString()}`;
-  }, [searchDebounced, status, department, role, completeness, sort, page, pageSize]);
+  }, [searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize]);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["admin", "hr", "employees", searchDebounced, status, department, role, completeness, sort, page, pageSize],
-    queryFn: () => fetcher(query),
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
+    queryKey: ["admin", "hr", "employees", searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize],
+    queryFn: () => fetcher<StaffListResponse>(query),
+  });
+
+  const recentActivityQuery = useQuery({
+    queryKey: ["admin", "hr", "staff", "activity"],
+    queryFn: () =>
+      fetcher<{ rows: StaffActivityItem[] }>(
+        `/api/admin/audit?sourcePage=${encodeURIComponent(STAFF_SOURCE_PAGE)}&limit=2`,
+      ),
   });
 
   const rows = useMemo(() => (Array.isArray(data?.rows) ? data.rows : []), [data?.rows]);
@@ -232,6 +353,7 @@ export default function AdminHrStaffPage() {
   const departmentOptions = data?.departmentOptions || [];
   const selectedCount = selectedIds.size;
   const allVisibleSelected = pagedRows.length > 0 && pagedRows.every((row) => selectedIds.has(row.id));
+  const recentStaffActivity = Array.isArray(recentActivityQuery.data?.rows) ? recentActivityQuery.data.rows : [];
 
   const stats = useMemo(() => {
     return (
@@ -242,15 +364,97 @@ export default function AdminHrStaffPage() {
         suspended: 0,
         terminated: 0,
         missingProfile: 0,
+        missingBankDetails: 0,
+        linkedAccount: 0,
+        unlinkedAccount: 0,
       }
     );
   }, [data?.summary]);
+
+  const statusChangeRequiresReason =
+    pendingStatusChange?.nextStatus === "SUSPENDED" || pendingStatusChange?.nextStatus === "TERMINATED";
+  const statusChangeErrorMessage =
+    error instanceof Error ? error.message : "Staff data could not be loaded.";
+
+  const importPreviewStats = useMemo(() => {
+    const total = importRows.length;
+    const previewRows = importRows.slice(0, 5).map((row, index) => {
+      const missingCore: string[] = [];
+      if (!row.email?.trim()) missingCore.push("Email");
+      if (!row.phone?.trim()) missingCore.push("Phone");
+      if (!row.department?.trim()) missingCore.push("Department");
+      if (!row.position?.trim()) missingCore.push("Position");
+      if (!row.hiredate?.trim()) missingCore.push("Hire date");
+      const missingBankFields = [
+        !row.bankname?.trim() ? "Bank name" : null,
+        !row.bankaccountname?.trim() ? "Account name" : null,
+        !row.bankaccountnumber?.trim() ? "Account number" : null,
+        !row.bankcode?.trim() ? "Bank code" : null,
+        !row.bankbranch?.trim() ? "Branch" : null,
+      ].filter((value): value is string => Boolean(value));
+      return {
+        rowNumber: index + 2,
+        row,
+        missingCore,
+        missingBankFields,
+      };
+    });
+
+    const totals = importRows.reduce(
+      (acc, row) => {
+        if (row.email?.trim() && row.phone?.trim()) acc.portalReady += 1;
+        if (!row.email?.trim()) acc.missingEmail += 1;
+        if (!row.phone?.trim()) acc.missingPhone += 1;
+        if (!row.department?.trim()) acc.missingDepartment += 1;
+        if (!row.position?.trim()) acc.missingPosition += 1;
+        if (!row.hiredate?.trim()) acc.missingHireDate += 1;
+        if (
+          !row.bankname?.trim() ||
+          !row.bankaccountname?.trim() ||
+          !row.bankaccountnumber?.trim() ||
+          !row.bankcode?.trim() ||
+          !row.bankbranch?.trim()
+        ) {
+          acc.missingBankDetails += 1;
+        }
+        return acc;
+      },
+      {
+        portalReady: 0,
+        missingEmail: 0,
+        missingPhone: 0,
+        missingDepartment: 0,
+        missingPosition: 0,
+        missingHireDate: 0,
+        missingBankDetails: 0,
+      },
+    );
+
+    return {
+      total,
+      previewRows,
+      ...totals,
+    };
+  }, [importRows]);
 
   useEffect(() => {
     if (page > totalPages) {
       setPage(totalPages);
     }
   }, [page, totalPages]);
+
+  const scrollToEmployeesTable = () => {
+    window.setTimeout(() => {
+      employeesCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 40);
+  };
+
+  const refreshDirectoryData = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] }),
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "staff", "activity"] }),
+    ]);
+  };
 
   const parseCsv = (text: string) => {
     const parsedRows: string[][] = [];
@@ -340,17 +544,18 @@ export default function AdminHrStaffPage() {
         toast.error(body.error || "Failed to import employees.");
         return;
       }
-      if (dryRun) {
-        setImportPreviewSummary(body.resultSummary || "Preview complete.");
-        toast.success(body.resultSummary || "Import preview completed.");
-        return;
-      }
-      toast.success(`Imported ${body.created} employee(s).`);
-      setImportOpen(false);
-      setImportRows([]);
-      setImportErrors([]);
-      setImportPreviewSummary("");
-      await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] });
+        if (dryRun) {
+          setImportPreviewSummary(body.resultSummary || "Preview complete.");
+          toast.success(body.resultSummary || "Import preview completed.");
+          await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "staff", "activity"] });
+          return;
+        }
+        toast.success(`Imported ${body.created} employee(s).`);
+        setImportOpen(false);
+        setImportRows([]);
+        setImportErrors([]);
+        setImportPreviewSummary("");
+        await refreshDirectoryData();
     } catch {
       toast.error("Failed to import employees.");
     } finally {
@@ -373,6 +578,19 @@ export default function AdminHrStaffPage() {
     window.URL.revokeObjectURL(url);
   };
 
+  const downloadImportErrors = () => {
+    if (importErrors.length === 0) return;
+    const blob = new Blob([importErrors.join("\n")], { type: "text/plain;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "employee-import-errors.txt";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
   const handleExport = async () => {
     try {
       setExportNotice("");
@@ -381,6 +599,7 @@ export default function AdminHrStaffPage() {
       if (status !== "all") params.set("status", status);
       if (department !== "all") params.set("department", department);
       if (role !== "all") params.set("role", role);
+      if (accountLink !== "all") params.set("accountLink", accountLink);
       if (completeness !== "all") params.set("completeness", completeness);
       const res = await fetch(`/api/admin/hr/employees/export?${params.toString()}`);
       if (!res.ok) {
@@ -428,7 +647,7 @@ export default function AdminHrStaffPage() {
       }
       toast.success("Employee added.");
       setDialogOpen(false);
-      setForm({
+        setForm({
         firstName: "",
         lastName: "",
         email: "",
@@ -441,23 +660,96 @@ export default function AdminHrStaffPage() {
         bankAccountName: "",
         bankAccountNumber: "",
         bankCode: "",
-        bankBranch: "",
-      });
-      await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] });
+          bankBranch: "",
+          notes: "",
+        });
+        await refreshDirectoryData();
     } catch {
       toast.error("Failed to create employee.");
     }
   };
 
-  const handleStatusUpdate = async (employee: Employee, nextStatus: EmployeeStatus) => {
+  const openLinkedUserDialog = (employee: Employee) => {
+    if (employee.user?.id) {
+      toast.error("This employee already has a linked user account.");
+      return;
+    }
+    setLinkedUserEmployee(employee);
+    setLinkedUserForm({
+      name: `${employee.firstName} ${employee.lastName}`.trim(),
+      email: employee.email || "",
+      phone: employee.phone || "",
+      role: "STAFF",
+    });
+    setLinkedUserDialogOpen(true);
+  };
+
+  const closeLinkedUserDialog = () => {
+    setLinkedUserDialogOpen(false);
+    setLinkedUserEmployee(null);
+    setLinkedUserForm({ name: "", email: "", phone: "", role: "STAFF" });
+  };
+
+  const handleCreateLinkedUser = async () => {
+    if (!linkedUserEmployee) return;
+    if (!linkedUserForm.email.trim() || !linkedUserForm.phone.trim()) {
+      toast.error("Email and phone are required to create a linked user account.");
+      return;
+    }
+    setLinkedUserSubmitting(true);
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: linkedUserForm.name.trim(),
+          email: linkedUserForm.email.trim(),
+          phone: linkedUserForm.phone.trim(),
+          role: linkedUserForm.role,
+          employeeId: linkedUserEmployee.id,
+          sourcePage: STAFF_SOURCE_PAGE,
+          section: "account-link",
+          operation: "create_linked_user",
+          resultSummary: "Linked user account created from the staff directory.",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to create a linked user account.");
+        return;
+      }
+        toast.success("Linked user created and invite sent.");
+        closeLinkedUserDialog();
+        await refreshDirectoryData();
+    } catch {
+      toast.error("Failed to create a linked user account.");
+    } finally {
+      setLinkedUserSubmitting(false);
+    }
+  };
+
+  const openStatusChangeDialog = (employee: Employee, nextStatus: EmployeeStatus) => {
+    if (employee.status === nextStatus) return;
+    setPendingStatusChange({ employee, nextStatus });
+    setStatusChangeReason("");
+  };
+
+  const closeStatusChangeDialog = () => {
+    if (statusChangeSaving) return;
+    setPendingStatusChange(null);
+    setStatusChangeReason("");
+  };
+
+  const handleStatusUpdate = async (employee: Employee, nextStatus: EmployeeStatus, reason?: string) => {
     try {
       const payload = {
         status: nextStatus,
+        statusReason: reason?.trim() || "",
         expectedUpdatedAt: employee.updatedAt || "",
         sourcePage: STAFF_SOURCE_PAGE,
         section: "staff-status",
         operation: "update_employee_status",
-        resultSummary: "Employee status updated from staff directory.",
+        resultSummary: `Employee status changed to ${formatEmployeeStatusLabel(nextStatus).toLowerCase()} from staff directory.`,
       };
       const res = await fetch(`/api/admin/hr/employees/${employee.id}`, {
         method: "PATCH",
@@ -469,10 +761,25 @@ export default function AdminHrStaffPage() {
         toast.error(body.error || "Failed to update status.");
         return;
       }
-      toast.success("Status updated.");
-      await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] });
+        toast.success("Status updated.");
+        closeStatusChangeDialog();
+        await refreshDirectoryData();
     } catch {
       toast.error("Failed to update status.");
+    }
+  };
+
+  const confirmStatusChange = async () => {
+    if (!pendingStatusChange) return;
+    if (statusChangeRequiresReason && !statusChangeReason.trim()) {
+      toast.error(`Add a short note before marking an employee ${formatEmployeeStatusLabel(pendingStatusChange.nextStatus).toLowerCase()}.`);
+      return;
+    }
+    setStatusChangeSaving(true);
+    try {
+      await handleStatusUpdate(pendingStatusChange.employee, pendingStatusChange.nextStatus, statusChangeReason);
+    } finally {
+      setStatusChangeSaving(false);
     }
   };
 
@@ -495,6 +802,7 @@ export default function AdminHrStaffPage() {
               status,
               department,
               role,
+              accountLink,
               completeness,
               sort,
               pageSize,
@@ -526,6 +834,7 @@ export default function AdminHrStaffPage() {
     setStatus(view.filters.status);
     setDepartment(view.filters.department);
     setRole(view.filters.role);
+    setAccountLink(view.filters.accountLink || "all");
     setCompleteness(view.filters.completeness);
     setSort(view.filters.sort);
     setPageSize(view.filters.pageSize);
@@ -564,8 +873,9 @@ export default function AdminHrStaffPage() {
       ? { key: "department", label: `Department: ${department === "__MISSING__" ? "No department" : department}` }
       : null,
     role !== "all" ? { key: "role", label: `Role: ${role}` } : null,
-    completeness !== "all" ? { key: "completeness", label: `Profile: ${completeness}` } : null,
-    sort !== "recent" ? { key: "sort", label: `Sort: ${sort}` } : null,
+    accountLink !== "all" ? { key: "accountLink", label: `Account: ${accountLink === "linked" ? "Linked" : "Unlinked"}` } : null,
+    completeness !== "all" ? { key: "completeness", label: `Profile: ${getCompletenessFilterLabel(completeness)}` } : null,
+    sort !== "recent" ? { key: "sort", label: `Sort: ${getSortLabel(sort)}` } : null,
   ].filter((chip): chip is { key: string; label: string } => Boolean(chip));
 
   const removeFilterChip = (key: string) => {
@@ -576,6 +886,7 @@ export default function AdminHrStaffPage() {
     if (key === "status") setStatus("all");
     if (key === "department") setDepartment("all");
     if (key === "role") setRole("all");
+    if (key === "accountLink") setAccountLink("all");
     if (key === "completeness") setCompleteness("all");
     if (key === "sort") setSort("recent");
     setPage(1);
@@ -618,6 +929,7 @@ export default function AdminHrStaffPage() {
           statusFilter: status,
           department,
           role,
+          accountLink,
           completeness,
           sourcePage: STAFF_SOURCE_PAGE,
           section: "bulk-status",
@@ -630,12 +942,12 @@ export default function AdminHrStaffPage() {
         toast.error(body.error || "Bulk update failed.");
         return;
       }
-      if (body.successCount > 0) toast.success(`Updated ${body.successCount} employee(s).`);
-      if (body.conflictCount > 0) toast.error(`${body.conflictCount} employee(s) changed by another admin and were skipped.`);
-      if (body.failedCount > 0) toast.error(`${body.failedCount} employee(s) failed to update.`);
-      setBulkDialogOpen(false);
-      setSelectedIds(new Set());
-      await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] });
+        if (body.successCount > 0) toast.success(`Updated ${body.successCount} employee(s).`);
+        if (body.conflictCount > 0) toast.error(`${body.conflictCount} employee(s) changed by another admin and were skipped.`);
+        if (body.failedCount > 0) toast.error(`${body.failedCount} employee(s) failed to update.`);
+        setBulkDialogOpen(false);
+        setSelectedIds(new Set());
+        await refreshDirectoryData();
     } catch {
       toast.error("Bulk update failed.");
     } finally {
@@ -645,79 +957,354 @@ export default function AdminHrStaffPage() {
 
   return (
     <section className="space-y-6 pb-20 md:pb-0">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Staff Directory</h1>
-          <p className="text-muted-foreground">Maintain employee profiles and status.</p>
-          <p className="mt-1 text-xs text-muted-foreground">Employee profiles can be auto-linked when accounts are created in Users & Roles.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href={{ pathname: "/admin/audit", query: { entityType: "EMPLOYEE", sourcePage: STAFF_SOURCE_PAGE } }}>
-              Open staff audit log
-            </Link>
-          </Button>
-          <Button variant="outline" onClick={handleExport}>Export CSV</Button>
-          <Dialog open={importOpen} onOpenChange={setImportOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline">Import CSV</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-xl">
-              <DialogHeader>
-                <DialogTitle>Import Employees</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3 text-sm">
-                <p className="text-muted-foreground">
-                  Upload a CSV with columns: firstName, lastName, email, phone, department, position, status, hireDate (YYYY-MM-DD), bankName, bankAccountName, bankAccountNumber, bankCode, bankBranch.
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="secondary" onClick={downloadTemplate}>Download template</Button>
-                  <Input type="file" accept=".csv,text/csv" onChange={(e) => handleImportFile(e.target.files?.[0])} />
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Rows ready: {importRows.length}. Errors: {importErrors.length}.
-                </div>
-                {importErrors.length > 0 ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                    {importErrors.slice(0, 5).map((err) => (
-                      <div key={err}>{err}</div>
-                    ))}
-                    {importErrors.length > 5 ? <div>...</div> : null}
-                  </div>
-                ) : null}
-                {importPreviewSummary ? (
-                  <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
-                    {importPreviewSummary}
-                  </div>
-                ) : null}
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">Staff workspace</Badge>
+                <span>People operations</span>
               </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => handleImportSubmit(true)} disabled={importing}>
-                  {importing ? "Checking..." : "Preview import"}
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">Staff Directory</h1>
+                <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+                  Manage employee records, account-link readiness, payroll profile quality, and staff-status changes from one directory.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {stats.unlinkedAccount > 0
+                    ? `${stats.unlinkedAccount} employee profile${stats.unlinkedAccount === 1 ? "" : "s"} still need a linked user account for the employee portal.`
+                    : "All visible employee profiles in this view are linked or ready for portal access."}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-md xl:justify-end">
+              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button>+ Add employee</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>Add Employee</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Input placeholder="First name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} />
+                    <Input placeholder="Last name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} />
+                    <Input placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
+                    <Input placeholder="Phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} />
+                    <Input placeholder="Department" value={form.department} onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))} />
+                    <Input placeholder="Position" value={form.position} onChange={(e) => setForm((p) => ({ ...p, position: e.target.value }))} />
+                    <Select value={form.status} onValueChange={(value) => setForm((p) => ({ ...p, status: value }))}>
+                      <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ACTIVE">Active</SelectItem>
+                        <SelectItem value="ON_LEAVE">On leave</SelectItem>
+                        <SelectItem value="SUSPENDED">Suspended</SelectItem>
+                        <SelectItem value="TERMINATED">Terminated</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input type="date" value={form.hireDate} onChange={(e) => setForm((p) => ({ ...p, hireDate: e.target.value }))} />
+                    <Input placeholder="Bank name" value={form.bankName} onChange={(e) => setForm((p) => ({ ...p, bankName: e.target.value }))} />
+                    <Input placeholder="Bank code" value={form.bankCode} onChange={(e) => setForm((p) => ({ ...p, bankCode: e.target.value }))} />
+                    <Input placeholder="Account name" value={form.bankAccountName} onChange={(e) => setForm((p) => ({ ...p, bankAccountName: e.target.value }))} />
+                    <Input placeholder="Account number" value={form.bankAccountNumber} onChange={(e) => setForm((p) => ({ ...p, bankAccountNumber: e.target.value }))} />
+                    <Input placeholder="Bank branch" value={form.bankBranch} onChange={(e) => setForm((p) => ({ ...p, bankBranch: e.target.value }))} />
+                    <div className="space-y-2 sm:col-span-2">
+                      <Textarea
+                        placeholder="Optional staff note"
+                        value={form.notes}
+                        onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Employee portal access can be linked later from Users & Roles if the user account is created afterward.
+                      </p>
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button onClick={handleCreate}>Save employee</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+              <Dialog open={importOpen} onOpenChange={setImportOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">Import CSV</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>Import Employees</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3 text-sm">
+                    <p className="text-muted-foreground">
+                      Upload a CSV with columns: firstName, lastName, email, phone, department, position, status, hireDate (YYYY-MM-DD), bankName, bankAccountName, bankAccountNumber, bankCode, bankBranch.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="secondary" onClick={downloadTemplate}>Download template</Button>
+                      <Input type="file" accept=".csv,text/csv" onChange={(e) => handleImportFile(e.target.files?.[0])} />
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Rows ready: {importRows.length}. Errors: {importErrors.length}.
+                    </div>
+                    {importErrors.length > 0 ? (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        {importErrors.slice(0, 5).map((err) => (
+                          <div key={err}>{err}</div>
+                        ))}
+                        {importErrors.length > 5 ? <div>...</div> : null}
+                        <div className="mt-2">
+                          <Button type="button" variant="outline" size="sm" onClick={downloadImportErrors}>
+                            Download error list
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                      {importPreviewSummary ? (
+                        <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-700">
+                          {importPreviewSummary}
+                        </div>
+                      ) : null}
+                      {importRows.length > 0 ? (
+                        <div className="space-y-3 rounded-md border border-border/70 p-3">
+                          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                            <div className="rounded-md bg-muted/50 px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Portal-ready rows</div>
+                              <div className="text-sm font-semibold text-foreground">{importPreviewStats.portalReady} / {importPreviewStats.total}</div>
+                            </div>
+                            <div className="rounded-md bg-muted/50 px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Missing contact</div>
+                              <div className="text-sm font-semibold text-foreground">{importPreviewStats.missingEmail + importPreviewStats.missingPhone} field gap(s)</div>
+                            </div>
+                            <div className="rounded-md bg-muted/50 px-3 py-2">
+                              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Missing bank detail rows</div>
+                              <div className="text-sm font-semibold text-foreground">{importPreviewStats.missingBankDetails}</div>
+                            </div>
+                          </div>
+                          <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                            <div>Missing email: {importPreviewStats.missingEmail}</div>
+                            <div>Missing phone: {importPreviewStats.missingPhone}</div>
+                            <div>Missing department: {importPreviewStats.missingDepartment}</div>
+                            <div>Missing position: {importPreviewStats.missingPosition}</div>
+                            <div>Missing hire date: {importPreviewStats.missingHireDate}</div>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium text-foreground">Preview first rows</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Showing the first {Math.min(importPreviewStats.previewRows.length, importRows.length)} row(s) of {importRows.length} so you can spot contact, payroll, and portal-readiness gaps before import.
+                            </p>
+                          </div>
+                          <div className="space-y-2 text-xs text-muted-foreground">
+                            {importPreviewStats.previewRows.map(({ row, rowNumber, missingCore, missingBankFields }, index) => (
+                              <div key={`${row.firstname || "row"}-${index}`} className="rounded-md bg-muted/50 px-2 py-2">
+                                <div className="font-medium text-foreground">
+                                  Row {rowNumber}: {(row.firstname || "-")} {(row.lastname || "-")}
+                                </div>
+                                <div className="mt-1">
+                                  Department: {row.department || "-"} | Position: {row.position || "-"} | Status: {row.status || "ACTIVE"}
+                                </div>
+                                <div>
+                                  Email: {row.email || "-"} | Phone: {row.phone || "-"}
+                                </div>
+                                <div>
+                                  Bank ready: {missingBankFields.length === 0 ? "Yes" : `No (${missingBankFields.join(", ")})`}
+                                </div>
+                                <div>
+                                  Core profile: {missingCore.length === 0 ? "Ready" : `Missing ${missingCore.join(", ")}`}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => handleImportSubmit(true)} disabled={importing}>
+                      {importing ? "Checking..." : "Preview import"}
+                    </Button>
+                    <Button onClick={() => handleImportSubmit(false)} disabled={importing}>
+                      {importing ? "Importing..." : "Import employees"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+              <Button variant="outline" onClick={handleExport}>Export CSV</Button>
+              <Button asChild variant="outline">
+                <Link href={{ pathname: "/admin/audit", query: { entityType: "EMPLOYEE", sourcePage: STAFF_SOURCE_PAGE } }}>
+                  Open staff audit log
+                </Link>
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Total staff</p><p className="text-2xl font-semibold">{stats.total}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Active now</p><p className="text-2xl font-semibold">{stats.active}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">On leave</p><p className="text-2xl font-semibold">{stats.onLeave}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Missing profile fields</p><p className="text-2xl font-semibold">{stats.missingProfile}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Linked accounts</p><p className="text-2xl font-semibold">{stats.linkedAccount}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Missing bank details</p><p className="text-2xl font-semibold">{stats.missingBankDetails}</p></CardContent></Card>
+          </div>
+        </CardContent>
+      </Card>
+
+      {isError ? (
+        <Card className="border-destructive/40">
+          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-medium">Staff directory data could not be loaded.</p>
+              <p className="text-sm text-muted-foreground">{statusChangeErrorMessage}</p>
+            </div>
+            <Button variant="outline" onClick={() => void refetch()} disabled={isFetching}>
+              {isFetching ? "Retrying..." : "Retry"}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+        <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+          <Card>
+          <CardHeader>
+            <CardTitle>Attention needed</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-2">
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
+              onClick={() => {
+                setCompleteness("missing");
+                setAccountLink("all");
+                setPage(1);
+                scrollToEmployeesTable();
+              }}
+            >
+              <div className="text-sm font-medium">Profiles missing key fields</div>
+              <div className="mt-1 text-2xl font-semibold">{stats.missingProfile}</div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Filter the directory to employees missing email, phone, department, position, or hire date.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
+              onClick={() => {
+                setAccountLink("unlinked");
+                setPage(1);
+                scrollToEmployeesTable();
+              }}
+            >
+              <div className="text-sm font-medium">No linked user account</div>
+              <div className="mt-1 text-2xl font-semibold">{stats.unlinkedAccount}</div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Use this to find employees who still cannot access the employee portal.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
+              onClick={() => {
+                setStatus("ON_LEAVE");
+                setPage(1);
+                scrollToEmployeesTable();
+              }}
+            >
+              <div className="text-sm font-medium">Employees currently on leave</div>
+              <div className="mt-1 text-2xl font-semibold">{stats.onLeave}</div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Narrow the directory to current on-leave staff for handover or coverage review.
+              </p>
+            </button>
+            <div className="rounded-lg border p-4">
+              <div className="text-sm font-medium">Payroll readiness blockers</div>
+              <div className="mt-1 text-2xl font-semibold">{stats.missingBankDetails}</div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Employees missing bank details will block bank export. Review payroll fields from each employee profile.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Directory tools</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-2">
+              <p className="text-sm font-medium">Quick filters</p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => { setCompleteness("missing"); setPage(1); scrollToEmployeesTable(); }}>
+                  Missing profile fields
                 </Button>
-                <Button onClick={() => handleImportSubmit(false)} disabled={importing}>
-                  {importing ? "Importing..." : "Import employees"}
+                <Button variant="outline" size="sm" onClick={() => { setAccountLink("unlinked"); setPage(1); scrollToEmployeesTable(); }}>
+                  No linked account
                 </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>+ Add employee</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-xl">
-              <DialogHeader>
-                <DialogTitle>Add Employee</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Input placeholder="First name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} />
-                <Input placeholder="Last name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} />
-                <Input placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
-                <Input placeholder="Phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} />
-                <Input placeholder="Department" value={form.department} onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))} />
-                <Input placeholder="Position" value={form.position} onChange={(e) => setForm((p) => ({ ...p, position: e.target.value }))} />
-                <Select value={form.status} onValueChange={(value) => setForm((p) => ({ ...p, status: value }))}>
-                  <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+                <Button variant="outline" size="sm" onClick={() => { setStatus("ON_LEAVE"); setPage(1); scrollToEmployeesTable(); }}>
+                  On leave today
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDepartment("all");
+                    setSearch("");
+                    setSearchDebounced("");
+                    setCompleteness("all");
+                    setRole("all");
+                    setAccountLink("all");
+                    setStatus("all");
+                    setSort("recent");
+                    setPage(1);
+                    scrollToEmployeesTable();
+                  }}
+                >
+                  Reset workspace
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Input placeholder="Save current view name" value={savingViewName} onChange={(e) => setSavingViewName(e.target.value)} className="w-full md:w-64" />
+                <Button variant="secondary" onClick={saveCurrentView} disabled={savingViewBusy}>
+                  {savingViewBusy ? "Saving..." : "Save view"}
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Select onValueChange={applySavedView} value="">
+                  <SelectTrigger className="w-full md:w-[220px]"><SelectValue placeholder="Apply saved view" /></SelectTrigger>
+                  <SelectContent>
+                    {savedViewsLoading ? (
+                      <SelectItem value="__loading" disabled>Loading views...</SelectItem>
+                    ) : savedViews.length === 0 ? (
+                      <SelectItem value="__none" disabled>No saved views</SelectItem>
+                    ) : (
+                      savedViews.map((view) => (
+                        <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                {savedViews.map((view) => (
+                  <Button key={view.id} variant="ghost" size="sm" onClick={() => removeSavedView(view.id)} disabled={savingViewBusy}>
+                    Delete {view.name}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setBulkDialogOpen(true)}
+                  disabled={(bulkScope === "selected" && selectedCount === 0) || (bulkScope === "all_filtered" && totalRows === 0)}
+                >
+                  Bulk update status ({bulkScope === "selected" ? selectedCount : "all filtered"})
+                </Button>
+                <Select value={bulkScope} onValueChange={(value) => setBulkScope(value as BulkScope)}>
+                  <SelectTrigger className="h-8 w-[200px]"><SelectValue placeholder="Bulk scope" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="selected">Selected rows</SelectItem>
+                    <SelectItem value="all_filtered">All filtered rows</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={bulkStatus} onValueChange={(value) => setBulkStatus(value as EmployeeStatus)}>
+                  <SelectTrigger className="h-8 w-[180px]"><SelectValue placeholder="Choose status" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="ACTIVE">Active</SelectItem>
                     <SelectItem value="ON_LEAVE">On leave</SelectItem>
@@ -725,31 +1312,65 @@ export default function AdminHrStaffPage() {
                     <SelectItem value="TERMINATED">Terminated</SelectItem>
                   </SelectContent>
                 </Select>
-                <Input type="date" value={form.hireDate} onChange={(e) => setForm((p) => ({ ...p, hireDate: e.target.value }))} />
-                <Input placeholder="Bank name" value={form.bankName} onChange={(e) => setForm((p) => ({ ...p, bankName: e.target.value }))} />
-                <Input placeholder="Bank code" value={form.bankCode} onChange={(e) => setForm((p) => ({ ...p, bankCode: e.target.value }))} />
-                <Input placeholder="Account name" value={form.bankAccountName} onChange={(e) => setForm((p) => ({ ...p, bankAccountName: e.target.value }))} />
-                <Input placeholder="Account number" value={form.bankAccountNumber} onChange={(e) => setForm((p) => ({ ...p, bankAccountNumber: e.target.value }))} />
-                <Input placeholder="Bank branch" value={form.bankBranch} onChange={(e) => setForm((p) => ({ ...p, bankBranch: e.target.value }))} />
               </div>
-              <DialogFooter>
-                <Button onClick={handleCreate}>Save employee</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+              <div className="flex items-center gap-2 md:hidden">
+                <span className="text-xs text-muted-foreground">Card density</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mobileDensity === "comfortable" ? "default" : "outline"}
+                  onClick={() => setMobileDensity("comfortable")}
+                >
+                  Comfortable
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={mobileDensity === "compact" ? "default" : "outline"}
+                  onClick={() => setMobileDensity("compact")}
+                >
+                  Compact
+                </Button>
+              </div>
+            </div>
+            </CardContent>
+          </Card>
         </div>
-      </header>
 
-      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Total</p><p className="text-2xl font-semibold">{stats.total}</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Active</p><p className="text-2xl font-semibold">{stats.active}</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">On leave</p><p className="text-2xl font-semibold">{stats.onLeave}</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Suspended</p><p className="text-2xl font-semibold">{stats.suspended}</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Terminated</p><p className="text-2xl font-semibold">{stats.terminated}</p></CardContent></Card>
-        <Card><CardContent className="py-4"><p className="text-xs text-muted-foreground">Needs profile update</p><p className="text-2xl font-semibold">{stats.missingProfile}</p></CardContent></Card>
-      </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent staff activity</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {recentStaffActivity.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {recentActivityQuery.isError ? "Recent staff activity is unavailable right now." : "No recent staff-directory activity found."}
+              </p>
+            ) : (
+              recentStaffActivity.map((item) => {
+                const meta = parseAuditMeta(item.meta);
+                return (
+                  <div key={item.id} className="rounded-xl border border-border/70 bg-background/80 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <p className="font-medium">{formatActivityTitle(item.action)}</p>
+                        <p className="text-sm text-muted-foreground">{formatActivitySummary(meta)}</p>
+                      </div>
+                      <span className="rounded-full border border-border/70 bg-muted/50 px-2 py-1 text-xs text-muted-foreground">
+                        {toPlainEnglishLabel(item.entityType)}
+                      </span>
+                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {item.actor?.name || item.actor?.email || "System"} • {new Date(item.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
 
-      <Card>
+        <Card ref={employeesCardRef}>
         <CardHeader className="flex flex-col gap-3">
           <CardTitle>Employees</CardTitle>
           <div className="flex flex-wrap gap-2">
@@ -783,6 +1404,14 @@ export default function AdminHrStaffPage() {
                 <SelectItem value="ACCOUNTANT">Accountant</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={accountLink} onValueChange={(value) => { setAccountLink(value as AccountLinkFilter); setPage(1); }}>
+              <SelectTrigger className="w-full md:w-[180px]"><SelectValue placeholder="Account link" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All account states</SelectItem>
+                <SelectItem value="linked">Linked account</SelectItem>
+                <SelectItem value="unlinked">No linked account</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={completeness} onValueChange={(value) => { setCompleteness(value as CompletenessFilter); setPage(1); }}>
               <SelectTrigger className="w-full md:w-[190px]"><SelectValue placeholder="Profile completeness" /></SelectTrigger>
               <SelectContent>
@@ -807,6 +1436,7 @@ export default function AdminHrStaffPage() {
                 setStatus("all");
                 setDepartment("all");
                 setRole("all");
+                setAccountLink("all");
                 setCompleteness("all");
                 setSort("recent");
                 setPageSize(25);
@@ -816,56 +1446,8 @@ export default function AdminHrStaffPage() {
               Clear
             </Button>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setCompleteness("missing");
-                setPage(1);
-              }}
-            >
-              Needs profile update
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setStatus("ON_LEAVE");
-                setPage(1);
-              }}
-            >
-              On leave
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setDepartment("__MISSING__");
-                setPage(1);
-              }}
-            >
-              No department
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setDepartment("all");
-                setSearch("");
-                setSearchDebounced("");
-                setCompleteness("all");
-                setRole("all");
-                setStatus("all");
-                setSort("recent");
-                setPage(1);
-              }}
-            >
-              Reset all presets
-            </Button>
-          </div>
-          {activeChips.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
+            {activeChips.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
               {activeChips.map((chip) => (
                 <Button key={chip.key} variant="secondary" size="sm" onClick={() => removeFilterChip(chip.key)}>
                   {chip.label} x
@@ -878,80 +1460,18 @@ export default function AdminHrStaffPage() {
               {exportNotice}
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-2">
-            <Input placeholder="Save current view name" value={savingViewName} onChange={(e) => setSavingViewName(e.target.value)} className="w-full md:w-64" />
-            <Button variant="secondary" onClick={saveCurrentView} disabled={savingViewBusy}>
-              {savingViewBusy ? "Saving..." : "Save view"}
-            </Button>
-            <Select onValueChange={applySavedView} value="">
-              <SelectTrigger className="w-full md:w-[220px]"><SelectValue placeholder="Apply saved view" /></SelectTrigger>
-              <SelectContent>
-                {savedViewsLoading ? (
-                  <SelectItem value="__loading" disabled>Loading views...</SelectItem>
-                ) : savedViews.length === 0 ? (
-                  <SelectItem value="__none" disabled>No saved views</SelectItem>
-                ) : (
-                  savedViews.map((view) => (
-                    <SelectItem key={view.id} value={view.id}>{view.name}</SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
-            {savedViews.map((view) => (
-              <Button key={view.id} variant="ghost" size="sm" onClick={() => removeSavedView(view.id)} disabled={savingViewBusy}>
-                Delete {view.name}
-              </Button>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setBulkDialogOpen(true)}
-              disabled={(bulkScope === "selected" && selectedCount === 0) || (bulkScope === "all_filtered" && totalRows === 0)}
-            >
-              Bulk update status ({bulkScope === "selected" ? selectedCount : "all filtered"})
-            </Button>
-            <Select value={bulkScope} onValueChange={(value) => setBulkScope(value as BulkScope)}>
-              <SelectTrigger className="h-8 w-[200px]"><SelectValue placeholder="Bulk scope" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="selected">Selected rows</SelectItem>
-                <SelectItem value="all_filtered">All filtered rows</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={bulkStatus} onValueChange={(value) => setBulkStatus(value as EmployeeStatus)}>
-              <SelectTrigger className="h-8 w-[180px]"><SelectValue placeholder="Choose status" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ACTIVE">Active</SelectItem>
-                <SelectItem value="ON_LEAVE">On leave</SelectItem>
-                <SelectItem value="SUSPENDED">Suspended</SelectItem>
-                <SelectItem value="TERMINATED">Terminated</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-2 md:hidden">
-            <span className="text-xs text-muted-foreground">Card density</span>
-            <Button
-              type="button"
-              size="sm"
-              variant={mobileDensity === "comfortable" ? "default" : "outline"}
-              onClick={() => setMobileDensity("comfortable")}
-            >
-              Comfortable
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant={mobileDensity === "compact" ? "default" : "outline"}
-              onClick={() => setMobileDensity("compact")}
-            >
-              Compact
-            </Button>
-          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
             <p className="text-sm text-muted-foreground">Loading staff...</p>
+          ) : isError ? (
+            <div className="rounded-md border border-destructive/40 p-4 text-sm">
+              <p className="font-medium">The staff list is unavailable right now.</p>
+              <p className="mt-1 text-muted-foreground">{statusChangeErrorMessage}</p>
+              <Button className="mt-3" variant="outline" onClick={() => void refetch()} disabled={isFetching}>
+                {isFetching ? "Retrying..." : "Retry"}
+              </Button>
+            </div>
           ) : (
             <>
               <div className="space-y-3 md:hidden">
@@ -1002,8 +1522,8 @@ export default function AdminHrStaffPage() {
                             <div><span className="text-muted-foreground">Updated:</span> {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "-"}</div>
                           </div>
                           <div className={mobileDensity === "compact" ? "space-y-1.5" : "space-y-2"}>
-                            <Badge variant={statusTone[row.status]}>{row.status.replace("_", " ")}</Badge>
-                            <Select value={row.status} onValueChange={(value) => handleStatusUpdate(row, value as EmployeeStatus)}>
+                            <Badge variant={statusTone[row.status]}>{formatEmployeeStatusLabel(row.status)}</Badge>
+                            <Select value={row.status} onValueChange={(value) => openStatusChangeDialog(row, value as EmployeeStatus)}>
                               <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Update status" /></SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="ACTIVE">Active</SelectItem>
@@ -1013,6 +1533,23 @@ export default function AdminHrStaffPage() {
                               </SelectContent>
                             </Select>
                           </div>
+                            <div className="space-y-1">
+                              <Badge variant={row.user?.id ? "secondary" : "outline"}>{getAccountLinkLabel(row)}</Badge>
+                              <div className="text-xs text-muted-foreground">
+                                {row.user?.id ? `Portal ready${row.user?.role ? ` - ${row.user.role}` : ""}` : "Employee portal unavailable until linked in Users & Roles."}
+                              </div>
+                              {!row.user?.id ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-auto px-0 text-xs text-primary hover:bg-transparent"
+                                  onClick={() => openLinkedUserDialog(row)}
+                                >
+                                  Create linked user
+                                </Button>
+                              ) : null}
+                            </div>
                           <div>
                             {missing.length === 0 ? (
                               <Badge variant="secondary">Complete profile</Badge>
@@ -1023,34 +1560,61 @@ export default function AdminHrStaffPage() {
                               </div>
                             )}
                           </div>
-                          <div className={mobileDensity === "compact" ? "flex flex-wrap gap-1.5" : "flex flex-wrap gap-2"}>
+                          <div className={mobileDensity === "compact" ? "flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center gap-2"}>
                             <Button asChild size="sm" variant="outline">
                               <Link href={`/admin/hr/staff/${row.id}`}>Open profile</Link>
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={async () => {
-                                await navigator.clipboard.writeText(`${window.location.origin}/admin/hr/staff/${row.id}`);
-                                toast.success("Profile link copied.");
-                              }}
-                            >
-                              Copy link
-                            </Button>
-                            <Button asChild size="sm" variant="outline">
-                              <Link
-                                href={{
-                                  pathname: "/admin/audit",
-                                  query: {
-                                    entityType: "EMPLOYEE",
-                                    entityId: row.id,
-                                    sourcePage: STAFF_SOURCE_PAGE,
-                                  },
-                                }}
-                              >
-                                Audit
-                              </Link>
-                            </Button>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button size="sm" variant="outline" className="gap-1">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                  More
+                                </Button>
+                              </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem asChild>
+                                    <Link href={`/admin/hr/staff/${row.id}/paystubs`}>Open payslips</Link>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem asChild>
+                                    <Link href={`/admin/hr/leave?employeeId=${row.id}`}>Open leave</Link>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem asChild>
+                                    <Link href={`/admin/hr/compensation?employeeId=${row.id}`}>Open compensation</Link>
+                                  </DropdownMenuItem>
+                                  {!row.user?.id ? (
+                                    <DropdownMenuItem onClick={() => openLinkedUserDialog(row)}>
+                                      Create linked user
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  {!row.user?.id ? (
+                                    <DropdownMenuItem asChild>
+                                      <Link href="/admin/users">Open Users &amp; Roles</Link>
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  <DropdownMenuItem
+                                    onClick={async () => {
+                                      await navigator.clipboard.writeText(`${window.location.origin}/admin/hr/staff/${row.id}`);
+                                    toast.success("Profile link copied.");
+                                  }}
+                                >
+                                  Copy link
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild>
+                                  <Link
+                                    href={{
+                                      pathname: "/admin/audit",
+                                      query: {
+                                        entityType: "EMPLOYEE",
+                                        entityId: row.id,
+                                        sourcePage: STAFF_SOURCE_PAGE,
+                                      },
+                                    }}
+                                  >
+                                    Open audit
+                                  </Link>
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
                         </CardContent>
                       </Card>
@@ -1075,6 +1639,7 @@ export default function AdminHrStaffPage() {
                       <TableHead>Department</TableHead>
                       <TableHead>Position</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Account</TableHead>
                       <TableHead>Contact</TableHead>
                       <TableHead>Profile</TableHead>
                       <TableHead>Last updated</TableHead>
@@ -1084,7 +1649,7 @@ export default function AdminHrStaffPage() {
                   <TableBody>
                     {pagedRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={9} className="text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={10} className="text-center text-sm text-muted-foreground">
                           No staff found.
                         </TableCell>
                       </TableRow>
@@ -1118,8 +1683,8 @@ export default function AdminHrStaffPage() {
                             <TableCell>{row.position || "-"}</TableCell>
                             <TableCell>
                               <div className="flex min-w-[170px] flex-col gap-1">
-                                <Badge variant={statusTone[row.status]}>{row.status.replace("_", " ")}</Badge>
-                                <Select value={row.status} onValueChange={(value) => handleStatusUpdate(row, value as EmployeeStatus)}>
+                                <Badge variant={statusTone[row.status]}>{formatEmployeeStatusLabel(row.status)}</Badge>
+                                <Select value={row.status} onValueChange={(value) => openStatusChangeDialog(row, value as EmployeeStatus)}>
                                   <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Update status" /></SelectTrigger>
                                   <SelectContent>
                                     <SelectItem value="ACTIVE">Active</SelectItem>
@@ -1130,6 +1695,25 @@ export default function AdminHrStaffPage() {
                                 </Select>
                               </div>
                             </TableCell>
+                            <TableCell>
+                                <div className="space-y-1">
+                                  <Badge variant={row.user?.id ? "secondary" : "outline"}>{getAccountLinkLabel(row)}</Badge>
+                                  <div className="text-xs text-muted-foreground">
+                                    {row.user?.id ? `Portal ready${row.user?.role ? ` - ${row.user.role}` : ""}` : "Link in Users & Roles"}
+                                  </div>
+                                  {!row.user?.id ? (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-auto px-0 text-xs text-primary hover:bg-transparent"
+                                      onClick={() => openLinkedUserDialog(row)}
+                                    >
+                                      Create linked user
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </TableCell>
                             <TableCell>
                               <div className="text-sm">{row.email || "-"}</div>
                               <div className="text-xs text-muted-foreground">{row.phone || "-"}</div>
@@ -1149,34 +1733,60 @@ export default function AdminHrStaffPage() {
                               {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "-"}
                             </TableCell>
                             <TableCell>
-                              <div className="flex flex-wrap gap-2">
+                              <div className="flex items-center gap-2">
                                 <Button asChild size="sm" variant="outline">
                                   <Link href={`/admin/hr/staff/${row.id}`}>Open profile</Link>
                                 </Button>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={async () => {
-                                    await navigator.clipboard.writeText(`${window.location.origin}/admin/hr/staff/${row.id}`);
-                                    toast.success("Profile link copied.");
-                                  }}
-                                >
-                                  Copy link
-                                </Button>
-                                <Button asChild size="sm" variant="outline">
-                                  <Link
-                                    href={{
-                                      pathname: "/admin/audit",
-                                      query: {
-                                        entityType: "EMPLOYEE",
-                                        entityId: row.id,
-                                        sourcePage: STAFF_SOURCE_PAGE,
-                                      },
-                                    }}
-                                  >
-                                    Audit
-                                  </Link>
-                                </Button>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="icon" variant="outline" aria-label={`More actions for ${row.firstName} ${row.lastName}`}>
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem asChild>
+                                      <Link href={`/admin/hr/staff/${row.id}/paystubs`}>Open payslips</Link>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem asChild>
+                                      <Link href={`/admin/hr/leave?employeeId=${row.id}`}>Open leave</Link>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem asChild>
+                                      <Link href={`/admin/hr/compensation?employeeId=${row.id}`}>Open compensation</Link>
+                                    </DropdownMenuItem>
+                                    {!row.user?.id ? (
+                                      <DropdownMenuItem onClick={() => openLinkedUserDialog(row)}>
+                                        Create linked user
+                                      </DropdownMenuItem>
+                                    ) : null}
+                                    {!row.user?.id ? (
+                                      <DropdownMenuItem asChild>
+                                        <Link href="/admin/users">Open Users &amp; Roles</Link>
+                                      </DropdownMenuItem>
+                                    ) : null}
+                                    <DropdownMenuItem
+                                      onClick={async () => {
+                                        await navigator.clipboard.writeText(`${window.location.origin}/admin/hr/staff/${row.id}`);
+                                        toast.success("Profile link copied.");
+                                      }}
+                                    >
+                                      Copy link
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem asChild>
+                                      <Link
+                                        href={{
+                                          pathname: "/admin/audit",
+                                          query: {
+                                            entityType: "EMPLOYEE",
+                                            entityId: row.id,
+                                            sourcePage: STAFF_SOURCE_PAGE,
+                                          },
+                                        }}
+                                      >
+                                        Open audit
+                                      </Link>
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </div>
                             </TableCell>
                           </TableRow>
@@ -1238,10 +1848,76 @@ export default function AdminHrStaffPage() {
             </div>
           </div>
         </div>
-      ) : null}
+        ) : null}
 
-      <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
-        <DialogContent>
+        <Dialog open={linkedUserDialogOpen} onOpenChange={(open) => { if (!open) closeLinkedUserDialog(); }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Create linked user</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">
+                Create a user account for {linkedUserEmployee ? `${linkedUserEmployee.firstName} ${linkedUserEmployee.lastName}` : "this employee"} and link it directly to the employee portal.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <label className="text-xs text-muted-foreground">Full name</label>
+                  <Input
+                    value={linkedUserForm.name}
+                    onChange={(e) => setLinkedUserForm((prev) => ({ ...prev, name: e.target.value }))}
+                    placeholder="Employee full name"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Email</label>
+                  <Input
+                    type="email"
+                    value={linkedUserForm.email}
+                    onChange={(e) => setLinkedUserForm((prev) => ({ ...prev, email: e.target.value }))}
+                    placeholder="employee@example.com"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Phone</label>
+                  <Input
+                    value={linkedUserForm.phone}
+                    onChange={(e) => setLinkedUserForm((prev) => ({ ...prev, phone: e.target.value }))}
+                    placeholder="0240000000"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="text-xs text-muted-foreground">User role</label>
+                  <Select
+                    value={linkedUserForm.role}
+                    onValueChange={(value) => setLinkedUserForm((prev) => ({ ...prev, role: value as LinkedUserRole }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="STAFF">Staff</SelectItem>
+                      <SelectItem value="ACCOUNTANT">Accountant</SelectItem>
+                      <SelectItem value="DISPATCHER">Dispatcher</SelectItem>
+                      <SelectItem value="ADMIN">Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The invite is sent immediately. If the employee already has email or phone on file, those values must match here so the account links back to the correct profile.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={closeLinkedUserDialog} disabled={linkedUserSubmitting}>Cancel</Button>
+              <Button onClick={handleCreateLinkedUser} disabled={linkedUserSubmitting}>
+                {linkedUserSubmitting ? "Creating..." : "Create linked user"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
+          <DialogContent>
           <DialogHeader>
             <DialogTitle>Confirm bulk status update</DialogTitle>
           </DialogHeader>
@@ -1253,6 +1929,44 @@ export default function AdminHrStaffPage() {
             <Button variant="outline" onClick={() => setBulkDialogOpen(false)} disabled={bulkSaving}>Cancel</Button>
             <Button onClick={handleBulkUpdate} disabled={bulkSaving}>
               {bulkSaving ? "Updating..." : "Confirm update"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(pendingStatusChange)} onOpenChange={(open) => { if (!open) closeStatusChangeDialog(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm status change</DialogTitle>
+          </DialogHeader>
+          {pendingStatusChange ? (
+            <div className="space-y-3 text-sm">
+              <div>
+                Update <span className="font-medium text-foreground">{pendingStatusChange.employee.firstName} {pendingStatusChange.employee.lastName}</span> from{" "}
+                <span className="font-medium text-foreground">{formatEmployeeStatusLabel(pendingStatusChange.employee.status)}</span> to{" "}
+                <span className="font-medium text-foreground">{formatEmployeeStatusLabel(pendingStatusChange.nextStatus)}</span>.
+              </div>
+              <p className="text-muted-foreground">{getStatusChangePrompt(pendingStatusChange.nextStatus)}</p>
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="status-change-reason">
+                  {statusChangeRequiresReason ? "Reason for this change" : "Reason for this change (optional)"}
+                </label>
+                <Input
+                  id="status-change-reason"
+                  placeholder={statusChangeRequiresReason ? "Add a short reason" : "Add a short note for audit history"}
+                  value={statusChangeReason}
+                  onChange={(e) => setStatusChangeReason(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  This note is stored in the audit log with the staff-directory status change.
+                </p>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeStatusChangeDialog} disabled={statusChangeSaving}>Cancel</Button>
+            <Button onClick={confirmStatusChange} disabled={statusChangeSaving}>
+              {statusChangeSaving ? "Updating..." : "Confirm status change"}
             </Button>
           </DialogFooter>
         </DialogContent>

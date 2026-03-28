@@ -46,6 +46,7 @@ type Review = {
   employee?: Employee;
   workflowStatus?: "DRAFT" | "SUBMITTED" | "ACKNOWLEDGED";
   workflowArchived?: boolean;
+  workflowEmployeeVisible?: boolean;
   workflowAcknowledgedAt?: string | null;
   workflowAcknowledgedBy?: string | null;
 };
@@ -391,7 +392,12 @@ export default function ReviewsClient() {
 
   const handleWorkflowUpdate = async (
     review: Review,
-    update: { workflowStatus?: "DRAFT" | "SUBMITTED" | "ACKNOWLEDGED"; acknowledge?: boolean; archived?: boolean },
+    update: {
+      workflowStatus?: "DRAFT" | "SUBMITTED" | "ACKNOWLEDGED";
+      acknowledge?: boolean;
+      archived?: boolean;
+      employeeVisible?: boolean;
+    },
   ) => {
     try {
       const res = await fetch(`/api/admin/hr/reviews/${review.id}`, {
@@ -412,7 +418,7 @@ export default function ReviewsClient() {
   };
 
   const handleBulkWorkflowUpdate = async (
-    operation: "SUBMIT" | "ACKNOWLEDGE" | "ARCHIVE" | "UNARCHIVE",
+    operation: "SUBMIT" | "ACKNOWLEDGE" | "ARCHIVE" | "UNARCHIVE" | "SHOW_IN_PORTAL" | "HIDE_FROM_PORTAL",
   ) => {
     if (selectedReviewIds.length === 0) {
       toast.error("Select at least one review.");
@@ -1328,6 +1334,20 @@ export default function ReviewsClient() {
             >
               Unarchive selected
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleBulkWorkflowUpdate("SHOW_IN_PORTAL")}
+            >
+              Show in employee portal
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleBulkWorkflowUpdate("HIDE_FROM_PORTAL")}
+            >
+              Hide from employee portal
+            </Button>
             <span className="text-muted-foreground">
               {selectedReviewIds.length} selected
             </span>
@@ -1381,6 +1401,9 @@ export default function ReviewsClient() {
                             {row.workflowArchived ? (
                               <div className="text-amber-700">Archived</div>
                             ) : null}
+                            <div className={row.workflowEmployeeVisible ? "text-emerald-700" : "text-muted-foreground"}>
+                              {row.workflowEmployeeVisible ? "Visible in employee portal" : "Hidden from employee portal"}
+                            </div>
                             {row.workflowAcknowledgedAt ? (
                               <div className="text-muted-foreground">
                                 Ack: {new Date(row.workflowAcknowledgedAt).toLocaleDateString()}
@@ -1434,6 +1457,17 @@ export default function ReviewsClient() {
                               }
                             >
                               {row.workflowArchived ? "Unarchive" : "Archive"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() =>
+                                handleWorkflowUpdate(row, {
+                                  employeeVisible: !Boolean(row.workflowEmployeeVisible),
+                                })
+                              }
+                            >
+                              {row.workflowEmployeeVisible ? "Hide from portal" : "Show in portal"}
                             </Button>
                           </div>
                         </TableCell>

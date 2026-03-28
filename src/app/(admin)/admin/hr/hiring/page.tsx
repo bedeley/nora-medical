@@ -2,14 +2,26 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  ArrowRight,
+  BriefcaseBusiness,
+  ClipboardList,
+  FileSearch,
+  MoreHorizontal,
+  Sparkles,
+  UsersRound,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -17,6 +29,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -45,7 +63,12 @@ type JobPosting = {
   id: string;
   title: string;
   department?: string | null;
+  location?: string | null;
   status: "OPEN" | "PAUSED" | "CLOSED";
+  description?: string | null;
+  requirements?: string | null;
+  salaryMin?: number | null;
+  salaryMax?: number | null;
   openedAt: string;
   closedAt?: string | null;
   updatedAt?: string;
@@ -57,6 +80,8 @@ type Applicant = {
   lastName: string;
   email?: string | null;
   phone?: string | null;
+  source?: string | null;
+  resumeUrl?: string | null;
   updatedAt?: string;
 };
 
@@ -68,6 +93,23 @@ type Application = {
   jobPosting: JobPosting;
   createdAt: string;
   updatedAt?: string;
+};
+
+type ApplicationsResponse = {
+  rows: Application[];
+  total: number;
+  lastUpdatedAt?: string | null;
+  summary?: {
+    total: number;
+    active: number;
+    applied: number;
+    screening: number;
+    interview: number;
+    offer: number;
+    hired: number;
+    rejected: number;
+    withdrawn: number;
+  };
 };
 
 type SavedApplicationFilter = {
@@ -89,13 +131,21 @@ type BulkSkipReason = {
   reason: string;
 };
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async <T,>(url: string) => {
+  const response = await fetch(url);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(typeof body?.error === "string" ? body.error : "Request failed.");
+  }
+  return body as T;
+};
 
 const statusTone: Record<JobPosting["status"], "default" | "secondary"> = {
   OPEN: "default",
   PAUSED: "secondary",
   CLOSED: "secondary",
 };
+const applicationSectionId = "applications";
 const applicationStageOptions: Array<{ value: Application["stage"]; label: string }> = [
   { value: "APPLIED", label: "Applied" },
   { value: "SCREENING", label: "Screening" },
@@ -107,15 +157,83 @@ const applicationStageOptions: Array<{ value: Application["stage"]; label: strin
 ];
 const BULK_UNDO_WINDOW_MS = 2 * 60 * 1000;
 
+function formatStageLabel(stage: Application["stage"]) {
+  return stage.charAt(0) + stage.slice(1).toLowerCase();
+}
+
+function formatDateLabel(value?: string | null, withTime = false) {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not available";
+  return withTime ? date.toLocaleString() : date.toLocaleDateString();
+}
+
+function getStageBadgeVariant(stage: Application["stage"]): "default" | "secondary" | "destructive" | "outline" {
+  if (stage === "HIRED") return "default";
+  if (stage === "REJECTED" || stage === "WITHDRAWN") return "destructive";
+  if (stage === "INTERVIEW" || stage === "OFFER") return "secondary";
+  return "outline";
+}
+
+function SectionCardsSkeleton() {
+  return (
+    <div className="space-y-3">
+      {[0, 1, 2].map((item) => (
+        <div key={item} className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-4 w-56" />
+              <Skeleton className="h-4 w-32" />
+            </div>
+            <Skeleton className="h-6 w-20 rounded-full" />
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-9" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SectionTableSkeleton() {
+  return (
+    <div className="hidden lg:block">
+      <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+        <div className="grid gap-3">
+          {[0, 1, 2, 3].map((item) => (
+            <div key={item} className="grid grid-cols-4 gap-3">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-full" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminHrHiringPage() {
   const queryClient = useQueryClient();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const applicationsSectionRef = useRef<HTMLDivElement | null>(null);
+  const initialApplicationsSearch = searchParams.get("appQ") || "";
+  const initialApplicationsStage = searchParams.get("appStage") || "all";
+  const initialApplicationsJob = searchParams.get("appJob") || "all";
+  const initialShowHiredApplications = searchParams.get("appShowHired") === "1";
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [applicantDialogOpen, setApplicantDialogOpen] = useState(false);
   const [applicationDialogOpen, setApplicationDialogOpen] = useState(false);
   const [showHiredApplicants, setShowHiredApplicants] = useState(false);
-  const [showHiredApplications, setShowHiredApplications] = useState(false);
+  const [showHiredApplications, setShowHiredApplications] = useState(initialShowHiredApplications);
   const [importOpen, setImportOpen] = useState(false);
   const [importRows, setImportRows] = useState<Record<string, string>[]>([]);
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -124,14 +242,19 @@ export default function AdminHrHiringPage() {
   const [bulkStage, setBulkStage] = useState("SCREENING");
   const [bulkNote, setBulkNote] = useState("");
   const [bulkApplying, setBulkApplying] = useState(false);
+  const [bulkConfirmDialogOpen, setBulkConfirmDialogOpen] = useState(false);
   const [compactTables, setCompactTables] = useState(false);
   const [applicantsSearch, setApplicantsSearch] = useState("");
-  const [applicationsSearch, setApplicationsSearch] = useState("");
-  const [applicationsStageFilter, setApplicationsStageFilter] = useState("all");
-  const [applicationsJobFilter, setApplicationsJobFilter] = useState("all");
+  const [applicationsSearch, setApplicationsSearch] = useState(initialApplicationsSearch);
+  const deferredApplicationsSearch = useDeferredValue(applicationsSearch);
+  const [applicationsStageFilter, setApplicationsStageFilter] = useState(initialApplicationsStage);
+  const [applicationsJobFilter, setApplicationsJobFilter] = useState(initialApplicationsJob);
   const [savedApplicationFilters, setSavedApplicationFilters] = useState<SavedApplicationFilter[]>([]);
   const [selectedSavedFilterId, setSelectedSavedFilterId] = useState("none");
   const [savedFilterName, setSavedFilterName] = useState("");
+  const [applicationsViewHint, setApplicationsViewHint] = useState(
+    "Saved presets stay on this browser. Copy the view link when you need to share this exact filtered pipeline.",
+  );
   const [lastBulkUndo, setLastBulkUndo] = useState<BulkUndoState | null>(null);
   const [undoNowTick, setUndoNowTick] = useState(Date.now());
   const [bulkSkippedDetails, setBulkSkippedDetails] = useState<BulkSkipReason[]>([]);
@@ -143,20 +266,38 @@ export default function AdminHrHiringPage() {
   const [jobForm, setJobForm] = useState({
     title: "",
     department: "",
+    location: "",
     status: "OPEN",
     description: "",
+    requirements: "",
+    salaryMin: "",
+    salaryMax: "",
+    openedAt: "",
   });
+  const [editingJob, setEditingJob] = useState<JobPosting | null>(null);
+  const [jobEditDialogOpen, setJobEditDialogOpen] = useState(false);
   const [applicantForm, setApplicantForm] = useState({
     firstName: "",
     lastName: "",
     email: "",
     phone: "",
+    source: "",
+    resumeUrl: "",
   });
+  const [editingApplicant, setEditingApplicant] = useState<Applicant | null>(null);
+  const [applicantEditDialogOpen, setApplicantEditDialogOpen] = useState(false);
   const [applicationForm, setApplicationForm] = useState({
     applicantId: "",
     jobPostingId: "",
     stage: "APPLIED",
     notes: "",
+  });
+  const [applicationDetailDialog, setApplicationDetailDialog] = useState<{
+    open: boolean;
+    applicationId: string;
+  }>({
+    open: false,
+    applicationId: "",
   });
   const [decisionDialog, setDecisionDialog] = useState<{
     open: boolean;
@@ -227,6 +368,51 @@ export default function AdminHrHiringPage() {
       // Ignore storage write issues.
     }
   }, [savedApplicationFilters]);
+
+  useEffect(() => {
+    const nextSearch = searchParams.get("appQ") || "";
+    const nextStage = searchParams.get("appStage") || "all";
+    const nextJob = searchParams.get("appJob") || "all";
+    const nextShowHired = searchParams.get("appShowHired") === "1";
+    setApplicationsSearch((current) => (current === nextSearch ? current : nextSearch));
+    setApplicationsStageFilter((current) => (current === nextStage ? current : nextStage));
+    setApplicationsJobFilter((current) => (current === nextJob ? current : nextJob));
+    setShowHiredApplications((current) => (current === nextShowHired ? current : nextShowHired));
+  }, [searchParams]);
+
+  useEffect(() => {
+    const currentSearch = searchParams.get("appQ") || "";
+    const currentStage = searchParams.get("appStage") || "all";
+    const currentJob = searchParams.get("appJob") || "all";
+    const currentShowHired = searchParams.get("appShowHired") === "1";
+    if (
+      currentSearch === deferredApplicationsSearch &&
+      currentStage === applicationsStageFilter &&
+      currentJob === applicationsJobFilter &&
+      currentShowHired === showHiredApplications
+    ) {
+      return;
+    }
+    const params = new URLSearchParams(searchParams.toString());
+    if (deferredApplicationsSearch.trim()) params.set("appQ", deferredApplicationsSearch.trim());
+    else params.delete("appQ");
+    if (applicationsStageFilter !== "all") params.set("appStage", applicationsStageFilter);
+    else params.delete("appStage");
+    if (applicationsJobFilter !== "all") params.set("appJob", applicationsJobFilter);
+    else params.delete("appJob");
+    if (showHiredApplications) params.set("appShowHired", "1");
+    else params.delete("appShowHired");
+    const href = params.size ? `${pathname}?${params.toString()}` : pathname;
+    router.replace(href, { scroll: false });
+  }, [
+    applicationsJobFilter,
+    applicationsStageFilter,
+    deferredApplicationsSearch,
+    pathname,
+    router,
+    searchParams,
+    showHiredApplications,
+  ]);
 
   useEffect(() => {
     if (!lastBulkUndo) return;
@@ -431,18 +617,52 @@ export default function AdminHrHiringPage() {
     return `/api/admin/hr/jobs?${params.toString()}`;
   }, [search, status]);
 
-  const { data: jobsData } = useQuery({
+  const {
+    data: jobsData,
+    isLoading: jobsLoading,
+    isFetching: jobsFetching,
+  } = useQuery({
     queryKey: ["admin", "hr", "jobs", search, status],
-    queryFn: () => fetcher(jobsQuery),
+    queryFn: () => fetcher<{ rows: JobPosting[] }>(jobsQuery),
   });
-  const { data: applicantsData } = useQuery({
-    queryKey: ["admin", "hr", "applicants", showHiredApplicants],
+  const {
+    data: applicantsData,
+    isLoading: applicantsLoading,
+    isFetching: applicantsFetching,
+  } = useQuery({
+    queryKey: ["admin", "hr", "applicants", applicantsSearch, showHiredApplicants],
     queryFn: () =>
-      fetcher(`/api/admin/hr/applicants?includeHired=${showHiredApplicants ? "1" : "0"}`),
+      fetcher<{ rows: Applicant[] }>(
+        `/api/admin/hr/applicants?${new URLSearchParams({
+          includeHired: showHiredApplicants ? "1" : "0",
+          ...(applicantsSearch.trim() ? { q: applicantsSearch.trim() } : {}),
+        }).toString()}`,
+      ),
   });
-  const { data: applicationsData } = useQuery({
-    queryKey: ["admin", "hr", "applications"],
-    queryFn: () => fetcher("/api/admin/hr/applications"),
+  const applicationsQueryKey = [
+    "admin",
+    "hr",
+    "applications",
+    deferredApplicationsSearch,
+    applicationsStageFilter,
+    applicationsJobFilter,
+    showHiredApplications,
+  ] as const;
+  const {
+    data: applicationsData,
+    isLoading: applicationsLoading,
+    isFetching: applicationsFetching,
+  } = useQuery({
+    queryKey: applicationsQueryKey,
+    queryFn: () =>
+      fetcher<ApplicationsResponse>(
+        `/api/admin/hr/applications?${new URLSearchParams({
+          ...(deferredApplicationsSearch.trim() ? { q: deferredApplicationsSearch.trim() } : {}),
+          ...(applicationsStageFilter !== "all" ? { stage: applicationsStageFilter } : {}),
+          ...(applicationsJobFilter !== "all" ? { jobPostingId: applicationsJobFilter } : {}),
+          ...(showHiredApplications ? { showHired: "1" } : {}),
+        }).toString()}`,
+      ),
   });
 
   const jobs = useMemo(
@@ -457,57 +677,48 @@ export default function AdminHrHiringPage() {
     () => (Array.isArray(applicationsData?.rows) ? (applicationsData.rows as Application[]) : []),
     [applicationsData],
   );
+  const applicationsSummary = applicationsData?.summary;
+  const applicationsTotal = Number(applicationsData?.total || 0);
+  const visibleApplicants = applicants;
+  const visibleApplications = applications;
   const hiringKpis = useMemo(() => {
     const openJobs = jobs.filter((row) => row.status === "OPEN").length;
-    const pipelineActive = applications.filter(
-      (row) => !["HIRED", "REJECTED", "WITHDRAWN"].includes(row.stage),
-    ).length;
-    const interviews = applications.filter((row) => row.stage === "INTERVIEW").length;
-    const offers = applications.filter((row) => row.stage === "OFFER").length;
-    return { openJobs, pipelineActive, interviews, offers };
-  }, [applications, jobs]);
-  const visibleApplicants = useMemo(() => {
-    const query = applicantsSearch.trim().toLowerCase();
-    return applicants.filter((row) => {
-      if (!query) return true;
-      const name = `${row.firstName} ${row.lastName}`.toLowerCase();
-      const email = String(row.email || "").toLowerCase();
-      const phone = String(row.phone || "").toLowerCase();
-      return name.includes(query) || email.includes(query) || phone.includes(query);
+    return {
+      openJobs,
+      pipelineActive: Number(applicationsSummary?.active || 0),
+      interviews: Number(applicationsSummary?.interview || 0),
+      offers: Number(applicationsSummary?.offer || 0),
+    };
+  }, [applicationsSummary, jobs]);
+  const pipelineInsights = useMemo(() => {
+    const now = Date.now();
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    let stalledInterviews = 0;
+    let recentActivity = 0;
+
+    applications.forEach((row) => {
+      const lastChangedAt = new Date(row.updatedAt || row.createdAt).getTime();
+      if (Number.isFinite(lastChangedAt) && now - lastChangedAt <= sevenDaysMs) {
+        recentActivity += 1;
+      }
+
+      if (row.stage !== "INTERVIEW") return;
+      const parsed = parseInterviewFromNotes(row.notes);
+      const scheduledAt = parsed.meta?.scheduledAt ? new Date(String(parsed.meta.scheduledAt)).getTime() : NaN;
+      if (Number.isFinite(scheduledAt) && scheduledAt < now) {
+        stalledInterviews += 1;
+      }
     });
-  }, [applicants, applicantsSearch]);
+
+    return {
+      stalledInterviews,
+      recentActivity,
+    };
+  }, [applications]);
   const applicationJobs = useMemo(
-    () =>
-      Array.from(
-        new Map(applications.map((row) => [row.jobPosting.id, row.jobPosting.title])).entries(),
-      ),
-    [applications],
+    () => Array.from(new Map(jobs.map((row) => [row.id, row.title])).entries()),
+    [jobs],
   );
-  const visibleApplications = useMemo(() => {
-    const query = applicationsSearch.trim().toLowerCase();
-    return applications.filter((application) => {
-      if (!showHiredApplications && application.stage === "HIRED") return false;
-      if (applicationsStageFilter !== "all" && application.stage !== applicationsStageFilter) return false;
-      if (applicationsJobFilter !== "all" && application.jobPosting.id !== applicationsJobFilter) return false;
-      if (!query) return true;
-      const applicantName = `${application.applicant.firstName} ${application.applicant.lastName}`.toLowerCase();
-      const applicantEmail = String(application.applicant.email || "").toLowerCase();
-      const applicantPhone = String(application.applicant.phone || "").toLowerCase();
-      const role = application.jobPosting.title.toLowerCase();
-      return (
-        applicantName.includes(query) ||
-        applicantEmail.includes(query) ||
-        applicantPhone.includes(query) ||
-        role.includes(query)
-      );
-    });
-  }, [
-    applications,
-    applicationsJobFilter,
-    applicationsSearch,
-    applicationsStageFilter,
-    showHiredApplications,
-  ]);
   const applicationNameById = useMemo(
     () =>
       new Map(
@@ -518,18 +729,10 @@ export default function AdminHrHiringPage() {
       ),
     [applications],
   );
-  const applicationsLastUpdatedText = useMemo(() => {
-    if (applications.length === 0) return "Not available";
-    const latest = applications
-      .map((row) => {
-        const raw = row.updatedAt || row.createdAt;
-        const date = new Date(raw);
-        return Number.isNaN(date.getTime()) ? 0 : date.getTime();
-      })
-      .reduce((max, value) => (value > max ? value : max), 0);
-    if (!latest) return "Not available";
-    return new Date(latest).toLocaleString();
-  }, [applications]);
+  const applicationsLastUpdatedText = useMemo(
+    () => formatDateLabel(applicationsData?.lastUpdatedAt, true),
+    [applicationsData?.lastUpdatedAt],
+  );
   const undoRemainingSeconds = lastBulkUndo
     ? Math.max(0, Math.ceil((BULK_UNDO_WINDOW_MS - (undoNowTick - lastBulkUndo.createdAt)) / 1000))
     : 0;
@@ -551,7 +754,8 @@ export default function AdminHrHiringPage() {
     setSavedApplicationFilters((prev) => [record, ...prev].slice(0, 10));
     setSelectedSavedFilterId(record.id);
     setSavedFilterName("");
-    toast.success("Filter preset saved.");
+    setApplicationsViewHint(`Saved "${record.name}" on this browser.`);
+    toast.success("Saved this view on this browser.");
   };
 
   const handleApplySavedApplicationsFilter = (id: string) => {
@@ -562,18 +766,56 @@ export default function AdminHrHiringPage() {
       toast.error("Saved filter not found.");
       return;
     }
-    setApplicationsSearch(selected.search);
-    setApplicationsStageFilter(selected.stage);
-    setApplicationsJobFilter(selected.job);
-    setShowHiredApplications(selected.showHired);
-    toast.success("Saved filter applied.");
+    applyApplicationView({
+      search: selected.search,
+      stage: selected.stage,
+      job: selected.job,
+      showHired: selected.showHired,
+      scroll: true,
+    });
+    setApplicationsViewHint(`Applied "${selected.name}".`);
+    toast.success("Saved view applied.");
   };
 
   const handleDeleteSavedApplicationsFilter = () => {
     if (selectedSavedFilterId === "none") return;
+    const removed = savedApplicationFilters.find((row) => row.id === selectedSavedFilterId);
     setSavedApplicationFilters((prev) => prev.filter((row) => row.id !== selectedSavedFilterId));
     setSelectedSavedFilterId("none");
-    toast.success("Saved filter deleted.");
+    setApplicationsViewHint(
+      removed ? `Removed "${removed.name}" from this browser.` : "Removed the saved view from this browser.",
+    );
+    toast.success("Saved view removed.");
+  };
+
+  const scrollToApplicationsSection = () => {
+    window.requestAnimationFrame(() => {
+      applicationsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const applyApplicationView = (next: {
+    search?: string;
+    stage?: string;
+    job?: string;
+    showHired?: boolean;
+    scroll?: boolean;
+  }) => {
+    if (typeof next.search === "string") setApplicationsSearch(next.search);
+    if (typeof next.stage === "string") setApplicationsStageFilter(next.stage);
+    if (typeof next.job === "string") setApplicationsJobFilter(next.job);
+    if (typeof next.showHired === "boolean") setShowHiredApplications(next.showHired);
+    if (next.scroll) scrollToApplicationsSection();
+  };
+
+  const resetApplicationFilters = () => {
+    applyApplicationView({
+      search: "",
+      stage: "all",
+      job: "all",
+      showHired: false,
+    });
+    setSelectedSavedFilterId("none");
   };
 
   const toggleApplicationSelection = (id: string, checked: boolean) => {
@@ -586,6 +828,11 @@ export default function AdminHrHiringPage() {
     });
   };
 
+  useEffect(() => {
+    const visibleIds = new Set(visibleApplications.map((row) => row.id));
+    setSelectedApplicationIds((prev) => prev.filter((id) => visibleIds.has(id)));
+  }, [visibleApplications]);
+
   const toggleSelectAllVisible = (checked: boolean) => {
     if (checked) {
       setSelectedApplicationIds(visibleApplications.map((row) => row.id));
@@ -594,9 +841,83 @@ export default function AdminHrHiringPage() {
     setSelectedApplicationIds([]);
   };
 
+  const emptyJobForm = {
+    title: "",
+    department: "",
+    location: "",
+    status: "OPEN",
+    description: "",
+    requirements: "",
+    salaryMin: "",
+    salaryMax: "",
+    openedAt: "",
+  };
+
+  const emptyApplicantForm = {
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    source: "",
+    resumeUrl: "",
+  };
+
+  const handleOpenJobEdit = (job: JobPosting) => {
+    setEditingJob(job);
+    setJobForm({
+      title: job.title || "",
+      department: job.department || "",
+      location: job.location || "",
+      status: job.status,
+      description: job.description || "",
+      requirements: job.requirements || "",
+      salaryMin: typeof job.salaryMin === "number" ? String(job.salaryMin) : "",
+      salaryMax: typeof job.salaryMax === "number" ? String(job.salaryMax) : "",
+      openedAt: formatUtcIsoToLocalInput(job.openedAt),
+    });
+    setJobEditDialogOpen(true);
+  };
+
+  const handleOpenApplicantEdit = (applicant: Applicant) => {
+    setEditingApplicant(applicant);
+    setApplicantForm({
+      firstName: applicant.firstName || "",
+      lastName: applicant.lastName || "",
+      email: applicant.email || "",
+      phone: applicant.phone || "",
+      source: applicant.source || "",
+      resumeUrl: applicant.resumeUrl || "",
+    });
+    setApplicantEditDialogOpen(true);
+  };
+
+  const handleOpenApplicationDetail = (applicationId: string) => {
+    setApplicationDetailDialog({
+      open: true,
+      applicationId,
+    });
+  };
+
+  const handleOpenDecisionDialog = (
+    applicationId: string,
+    stage: Extract<Application["stage"], "REJECTED" | "WITHDRAWN">,
+  ) => {
+    setDecisionDialog({
+      open: true,
+      applicationId,
+      stage,
+      note: "",
+    });
+  };
+
   const handleCreateJob = async () => {
     if (!jobForm.title.trim()) {
       toast.error("Job title is required.");
+      return;
+    }
+    const openedAtParse = jobForm.openedAt ? parseLocalDateTimeToUtcIso(jobForm.openedAt) : { ok: true, iso: "" } as const;
+    if (!openedAtParse.ok) {
+      toast.error(openedAtParse.error);
       return;
     }
     try {
@@ -605,10 +926,13 @@ export default function AdminHrHiringPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...jobForm,
+          salaryMin: jobForm.salaryMin ? Number(jobForm.salaryMin) : undefined,
+          salaryMax: jobForm.salaryMax ? Number(jobForm.salaryMax) : undefined,
+          openedAt: openedAtParse.iso,
           sourcePage,
           section: "job-postings",
           operation: "create_job_posting",
-          resultSummary: "Job posting created from hiring page.",
+          resultSummary: "Created a job posting from the hiring page.",
         }),
       });
       if (!res.ok) {
@@ -618,7 +942,7 @@ export default function AdminHrHiringPage() {
       }
       toast.success("Job posting created.");
       setJobDialogOpen(false);
-      setJobForm({ title: "", department: "", status: "OPEN", description: "" });
+      setJobForm(emptyJobForm);
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "jobs"] });
     } catch (err) {
       console.error(err);
@@ -640,7 +964,7 @@ export default function AdminHrHiringPage() {
           sourcePage,
           section: "applicants",
           operation: "create_applicant",
-          resultSummary: "Applicant added from hiring page.",
+          resultSummary: "Added an applicant from the hiring page.",
         }),
       });
       if (!res.ok) {
@@ -650,11 +974,102 @@ export default function AdminHrHiringPage() {
       }
       toast.success("Applicant added.");
       setApplicantDialogOpen(false);
-      setApplicantForm({ firstName: "", lastName: "", email: "", phone: "" });
+      setApplicantForm(emptyApplicantForm);
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applicants"] });
     } catch (err) {
       console.error(err);
       toast.error("Failed to add applicant.");
+    }
+  };
+
+  const handleSaveJobEdit = async () => {
+    if (!editingJob) return;
+    if (!jobForm.title.trim()) {
+      toast.error("Job title is required.");
+      return;
+    }
+    const openedAtParse = jobForm.openedAt ? parseLocalDateTimeToUtcIso(jobForm.openedAt) : { ok: true, iso: "" } as const;
+    if (!openedAtParse.ok) {
+      toast.error(openedAtParse.error);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/admin/hr/jobs/${editingJob.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: jobForm.title,
+          department: jobForm.department,
+          location: jobForm.location,
+          status: jobForm.status,
+          description: jobForm.description,
+          requirements: jobForm.requirements,
+          salaryMin: jobForm.salaryMin ? Number(jobForm.salaryMin) : undefined,
+          salaryMax: jobForm.salaryMax ? Number(jobForm.salaryMax) : undefined,
+          openedAt: openedAtParse.iso,
+          expectedUpdatedAt: editingJob.updatedAt || "",
+          sourcePage,
+          section: "job-postings",
+          operation: "update_job_posting",
+          resultSummary: "Updated job posting details from the hiring page.",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to update job posting.");
+        return;
+      }
+      toast.success("Job posting updated.");
+      setJobEditDialogOpen(false);
+      setEditingJob(null);
+      setJobForm(emptyJobForm);
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "jobs"] });
+    } catch {
+      toast.error("Failed to update job posting.");
+    }
+  };
+
+  const handleSaveApplicantEdit = async () => {
+    if (!editingApplicant) return;
+    if (!applicantForm.firstName.trim() || !applicantForm.lastName.trim()) {
+      toast.error("First name and last name are required.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/admin/hr/applicants/${editingApplicant.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...applicantForm,
+          expectedUpdatedAt: editingApplicant.updatedAt || "",
+          sourcePage,
+          section: "applicants",
+          operation: "update_applicant",
+          resultSummary: "Updated applicant details from the hiring page.",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed to update applicant.");
+        return;
+      }
+      toast.success("Applicant updated.");
+      setApplicantEditDialogOpen(false);
+      setEditingApplicant(null);
+      setApplicantForm(emptyApplicantForm);
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applicants"] });
+    } catch {
+      toast.error("Failed to update applicant.");
+    }
+  };
+
+  const handleCopyCurrentApplicationView = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setApplicationsViewHint("Shareable view link copied.");
+      toast.success("Shareable view link copied.");
+    } catch {
+      toast.error("Could not copy the current view link.");
     }
   };
 
@@ -679,7 +1094,7 @@ export default function AdminHrHiringPage() {
           sourcePage,
           section: "applications",
           operation: "create_application",
-          resultSummary: "Application created from hiring page.",
+          resultSummary: "Created an application from the hiring page.",
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -719,8 +1134,8 @@ export default function AdminHrHiringPage() {
           operation: "update_job_status",
           resultSummary:
             closeReason.trim().length > 0
-              ? `Job posting status updated. Reason: ${closeReason.trim()}`
-              : "Job posting status updated from hiring page.",
+              ? `Updated the job posting status. Reason: ${closeReason.trim()}`
+              : "Updated the job posting status from the hiring page.",
         }),
       });
       if (!res.ok) {
@@ -755,8 +1170,8 @@ export default function AdminHrHiringPage() {
           operation: "update_application_stage",
           resultSummary:
             decisionNote.trim().length > 0
-              ? `Application stage changed with note: ${decisionNote.trim()}`
-              : "Application stage updated from hiring page.",
+              ? `Updated the application stage. Note: ${decisionNote.trim()}`
+              : "Updated the application stage from the hiring page.",
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -777,7 +1192,7 @@ export default function AdminHrHiringPage() {
     }
   };
 
-  const handleBulkStageApply = async () => {
+  const runBulkStageApply = async () => {
     if (selectedApplicationIds.length === 0) {
       toast.error("Select at least one application.");
       return;
@@ -789,11 +1204,7 @@ export default function AdminHrHiringPage() {
     setBulkSkippedDetails([]);
     setBulkApplying(true);
     const optimisticChangedAt = new Date().toISOString();
-    const applicationsSnapshot = queryClient.getQueryData<{ rows?: Application[] }>([
-      "admin",
-      "hr",
-      "applications",
-    ]);
+    const applicationsSnapshot = queryClient.getQueryData<ApplicationsResponse>(applicationsQueryKey);
     const snapshotRows = Array.isArray(applicationsSnapshot?.rows) ? applicationsSnapshot.rows : [];
     const expectedUpdatedAtById = Object.fromEntries(
       snapshotRows
@@ -802,7 +1213,7 @@ export default function AdminHrHiringPage() {
     );
     const selectedIds = [...selectedApplicationIds];
     const targetStage = bulkStage as Application["stage"];
-    queryClient.setQueryData<{ rows?: Application[] }>(["admin", "hr", "applications"], (prev) => {
+    queryClient.setQueryData<ApplicationsResponse>(applicationsQueryKey, (prev) => {
       if (!prev || !Array.isArray(prev.rows)) return prev;
       return {
         ...prev,
@@ -823,12 +1234,12 @@ export default function AdminHrHiringPage() {
           sourcePage,
           section: "applications",
           operation: "bulk_update_application_stage",
-          resultSummary: "Bulk application stage update from hiring page.",
+          resultSummary: "Ran a bulk application stage update from the hiring page.",
         }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        queryClient.setQueryData(["admin", "hr", "applications"], applicationsSnapshot);
+        queryClient.setQueryData(applicationsQueryKey, applicationsSnapshot);
         toast.error(body.error || "Bulk update failed.");
         return;
       }
@@ -856,7 +1267,7 @@ export default function AdminHrHiringPage() {
             })
             .filter((row): row is { id: string; previousStage: Application["stage"] } => row !== null)
         : [];
-      queryClient.setQueryData<{ rows?: Application[] }>(["admin", "hr", "applications"], (prev) => {
+      queryClient.setQueryData<ApplicationsResponse>(applicationsQueryKey, (prev) => {
         if (!prev || !Array.isArray(prev.rows)) return prev;
         const snapshotById = new Map(snapshotRows.map((row) => [row.id, row]));
         return {
@@ -882,11 +1293,27 @@ export default function AdminHrHiringPage() {
       setBulkNote("");
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applications"] });
     } catch {
-      queryClient.setQueryData(["admin", "hr", "applications"], applicationsSnapshot);
+      queryClient.setQueryData(applicationsQueryKey, applicationsSnapshot);
       toast.error("Bulk update failed.");
     } finally {
       setBulkApplying(false);
     }
+  };
+
+  const handleBulkStageApply = () => {
+    if (selectedApplicationIds.length === 0) {
+      toast.error("Select at least one application.");
+      return;
+    }
+    if ((bulkStage === "REJECTED" || bulkStage === "WITHDRAWN") && bulkNote.trim().length < 3) {
+      toast.error("Add a short note for rejected or withdrawn bulk updates.");
+      return;
+    }
+    if (bulkStage === "HIRED" || bulkStage === "REJECTED" || bulkStage === "WITHDRAWN") {
+      setBulkConfirmDialogOpen(true);
+      return;
+    }
+    void runBulkStageApply();
   };
 
   const handleUndoLastBulkUpdate = async () => {
@@ -924,7 +1351,7 @@ export default function AdminHrHiringPage() {
             sourcePage,
             section: "applications",
             operation: "undo_bulk_update_application_stage",
-            resultSummary: "Previous bulk stage update was undone from hiring page.",
+            resultSummary: "Undid the previous bulk application update from the hiring page.",
           }),
         });
         const body = await res.json().catch(() => ({}));
@@ -991,7 +1418,7 @@ export default function AdminHrHiringPage() {
           sourcePage,
           section: "applications",
           operation: "update_interview_plan",
-          resultSummary: "Interview plan updated from hiring page.",
+          resultSummary: "Updated the interview plan from the hiring page.",
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -1012,6 +1439,32 @@ export default function AdminHrHiringPage() {
     } catch {
       toast.error("Failed to update interview plan.");
     }
+  };
+
+  const selectedApplicationDetail = useMemo(
+    () => applications.find((row) => row.id === applicationDetailDialog.applicationId) || null,
+    [applicationDetailDialog.applicationId, applications],
+  );
+  const selectedApplicationInterview = useMemo(
+    () => parseInterviewFromNotes(selectedApplicationDetail?.notes),
+    [selectedApplicationDetail?.notes],
+  );
+
+  const getApplicationActionOptions = (application: Application) =>
+    applicationStageOptions.filter((stage) => {
+      if (stage.value === application.stage) return false;
+      return validateApplicationStageTransition(application.stage, stage.value).ok;
+    });
+
+  const handleApplicationAction = (
+    application: Application,
+    nextStage: Application["stage"],
+  ) => {
+    if (nextStage === "REJECTED" || nextStage === "WITHDRAWN") {
+      handleOpenDecisionDialog(application.id, nextStage);
+      return;
+    }
+    void handleApplicationStageUpdate(application.id, nextStage, application.updatedAt || "");
   };
 
   useEffect(() => {
@@ -1046,12 +1499,192 @@ export default function AdminHrHiringPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const hasActiveApplicationFilters =
+    deferredApplicationsSearch.trim().length > 0 ||
+    applicationsStageFilter !== "all" ||
+    applicationsJobFilter !== "all" ||
+    showHiredApplications;
+  const matchingApplicationsLabel =
+    applicationsTotal === 1 ? "1 application matches this view." : `${applicationsTotal} applications match this view.`;
+
   return (
-    <section className="space-y-6">
+    <section className="space-y-6 pb-16">
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">Talent operations</Badge>
+                <span>HR hiring workspace</span>
+              </div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Hiring Pipeline</h1>
+                <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
+                  Run candidate intake, job openings, interviews, and offer-stage decisions from one hiring control page.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {matchingApplicationsLabel}{" "}
+                  {applicationsFetching
+                    ? "Refreshing application activity..."
+                    : `Last application activity ${applicationsLastUpdatedText.toLowerCase()}.`}
+                </p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>{pipelineInsights.stalledInterviews} interview follow-up{pipelineInsights.stalledInterviews === 1 ? "" : "s"} overdue in this view.</span>
+                  <span>{pipelineInsights.recentActivity} application update{pipelineInsights.recentActivity === 1 ? "" : "s"} in the last 7 days.</span>
+                  <span>Saved presets stay local. View links are shareable.</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="#applicants"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Applicants
+                </a>
+                <a
+                  href="#jobs"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Job postings
+                </a>
+                <a
+                  href={`#${applicationSectionId}`}
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Applications
+                </a>
+                <a
+                  href="#audit"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Audit
+                </a>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-xl xl:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  applyApplicationView({
+                    stage: "APPLIED",
+                    search: "",
+                    job: "all",
+                    showHired: false,
+                    scroll: true,
+                  })
+                }
+              >
+                <FileSearch className="mr-2 h-4 w-4" />
+                New applicants
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  applyApplicationView({
+                    stage: "INTERVIEW",
+                    search: "",
+                    job: "all",
+                    showHired: false,
+                    scroll: true,
+                  })
+                }
+              >
+                <ClipboardList className="mr-2 h-4 w-4" />
+                Interviews
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  applyApplicationView({
+                    stage: "OFFER",
+                    search: "",
+                    job: "all",
+                    showHired: true,
+                    scroll: true,
+                  })
+                }
+              >
+                <Sparkles className="mr-2 h-4 w-4" />
+                Offers
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="rounded-xl border border-border/70 bg-muted/60 p-2">
+                  <BriefcaseBusiness className="h-4 w-4 text-primary" />
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Open roles</div>
+                  <div className="text-2xl font-semibold">{hiringKpis.openJobs}</div>
+                </div>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="rounded-xl border border-border/70 bg-muted/60 p-2">
+                  <UsersRound className="h-4 w-4 text-primary" />
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Active pipeline</div>
+                  <div className="text-2xl font-semibold">{hiringKpis.pipelineActive}</div>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                applyApplicationView({
+                  stage: "INTERVIEW",
+                  search: "",
+                  job: "all",
+                  showHired: false,
+                  scroll: true,
+                })
+              }
+              className="rounded-2xl border border-border/70 bg-background/85 p-4 text-left shadow-sm transition hover:border-primary/40 hover:bg-background"
+            >
+              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Interview stage</div>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <div className="text-2xl font-semibold">{hiringKpis.interviews}</div>
+                <ArrowRight className="h-4 w-4 text-muted-foreground" />
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                applyApplicationView({
+                  stage: "OFFER",
+                  search: "",
+                  job: "all",
+                  showHired: true,
+                  scroll: true,
+                })
+              }
+              className="rounded-2xl border border-border/70 bg-background/85 p-4 text-left shadow-sm transition hover:border-primary/40 hover:bg-background"
+            >
+              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Offer stage</div>
+              <div className="mt-1 flex items-center justify-between gap-3">
+                <div className="text-2xl font-semibold">{hiringKpis.offers}</div>
+                <ArrowRight className="h-4 w-4 text-muted-foreground" />
+              </div>
+            </button>
+          </div>
+        </CardContent>
+      </Card>
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Hiring Pipeline</h1>
-          <p className="text-muted-foreground">Manage job postings and applicants.</p>
+        <div className="space-y-1">
+          <p className="text-sm font-medium">Hiring actions</p>
+          <p className="text-sm text-muted-foreground">
+            Intake, role creation, and pipeline creation controls stay grouped here.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild variant="outline">
@@ -1083,11 +1716,11 @@ export default function AdminHrHiringPage() {
                   Rows ready: {importRows.length}. Errors: {importErrors.length}.
                 </div>
                 {importErrors.length > 0 ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  <div className="rounded-md border border-amber-300/70 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                     {importErrors.slice(0, 5).map((err) => (
                       <div key={err}>{err}</div>
                     ))}
-                    {importErrors.length > 5 ? <div>…</div> : null}
+                    {importErrors.length > 5 ? <div>...</div> : null}
                   </div>
                 ) : null}
                 {importErrors.length > 0 ? (
@@ -1113,7 +1746,7 @@ export default function AdminHrHiringPage() {
               <DialogHeader>
                 <DialogTitle>Create Job Posting</DialogTitle>
               </DialogHeader>
-              <div className="grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <Input
                   placeholder="Job title"
                   value={jobForm.title}
@@ -1138,10 +1771,41 @@ export default function AdminHrHiringPage() {
                   </SelectContent>
                 </Select>
                 <Input
-                  placeholder="Description"
-                  value={jobForm.description}
-                  onChange={(e) => setJobForm((prev) => ({ ...prev, description: e.target.value }))}
+                  placeholder="Location"
+                  value={jobForm.location}
+                  onChange={(e) => setJobForm((prev) => ({ ...prev, location: e.target.value }))}
                 />
+                <Input
+                  type="datetime-local"
+                  value={jobForm.openedAt}
+                  onChange={(e) => setJobForm((prev) => ({ ...prev, openedAt: e.target.value }))}
+                />
+                <Input
+                  placeholder="Salary minimum"
+                  inputMode="numeric"
+                  value={jobForm.salaryMin}
+                  onChange={(e) => setJobForm((prev) => ({ ...prev, salaryMin: e.target.value }))}
+                />
+                <Input
+                  placeholder="Salary maximum"
+                  inputMode="numeric"
+                  value={jobForm.salaryMax}
+                  onChange={(e) => setJobForm((prev) => ({ ...prev, salaryMax: e.target.value }))}
+                />
+                <div className="sm:col-span-2">
+                  <Textarea
+                    placeholder="Description"
+                    value={jobForm.description}
+                    onChange={(e) => setJobForm((prev) => ({ ...prev, description: e.target.value }))}
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <Textarea
+                    placeholder="Requirements"
+                    value={jobForm.requirements}
+                    onChange={(e) => setJobForm((prev) => ({ ...prev, requirements: e.target.value }))}
+                  />
+                </div>
               </div>
               <div className="flex justify-end">
                 <Button onClick={handleCreateJob}>Save job</Button>
@@ -1176,6 +1840,16 @@ export default function AdminHrHiringPage() {
                   placeholder="Phone"
                   value={applicantForm.phone}
                   onChange={(e) => setApplicantForm((prev) => ({ ...prev, phone: e.target.value }))}
+                />
+                <Input
+                  placeholder="Source"
+                  value={applicantForm.source}
+                  onChange={(e) => setApplicantForm((prev) => ({ ...prev, source: e.target.value }))}
+                />
+                <Input
+                  placeholder="Resume URL"
+                  value={applicantForm.resumeUrl}
+                  onChange={(e) => setApplicantForm((prev) => ({ ...prev, resumeUrl: e.target.value }))}
                 />
               </div>
               <div className="flex justify-end">
@@ -1263,33 +1937,17 @@ export default function AdminHrHiringPage() {
         </div>
       </header>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Hiring Snapshot</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Open jobs</div>
-            <div className="font-medium">{hiringKpis.openJobs}</div>
+      <Card id="applicants" className="border-border/70">
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <CardTitle>Applicants</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Intake view for new candidates and fast application creation.
+            </p>
+            {applicantsFetching ? (
+              <p className="text-xs text-muted-foreground">Refreshing applicant results...</p>
+            ) : null}
           </div>
-          <div className="rounded border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Active pipeline</div>
-            <div className="font-medium">{hiringKpis.pipelineActive}</div>
-          </div>
-          <div className="rounded border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Interview stage</div>
-            <div className="font-medium">{hiringKpis.interviews}</div>
-          </div>
-          <div className="rounded border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Offer stage</div>
-            <div className="font-medium">{hiringKpis.offers}</div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>Applicants</CardTitle>
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
@@ -1303,7 +1961,15 @@ export default function AdminHrHiringPage() {
             >
               Export applicants CSV
             </Button>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <label className="flex items-center gap-2 rounded-full border border-border/70 bg-background px-3 py-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={showHiredApplicants}
+                onChange={(e) => setShowHiredApplicants(e.target.checked)}
+              />
+              Show hired
+            </label>
+            <label className="flex items-center gap-2 rounded-full border border-border/70 bg-background px-3 py-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 checked={compactTables}
@@ -1315,60 +1981,139 @@ export default function AdminHrHiringPage() {
               placeholder="Search applicants"
               value={applicantsSearch}
               onChange={(e) => setApplicantsSearch(e.target.value)}
-              className="w-full sm:w-64"
+              className="w-full sm:w-72"
             />
           </div>
         </CardHeader>
         <CardContent className={tableDensityClass}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Phone</TableHead>
-                <TableHead>Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visibleApplicants.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">
-                    No applicants found.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                visibleApplicants.map((applicant) => (
-                  <TableRow key={applicant.id}>
-                    <TableCell>{applicant.firstName} {applicant.lastName}</TableCell>
-                    <TableCell>{applicant.email || "Not provided"}</TableCell>
-                    <TableCell>{applicant.phone || "Not provided"}</TableCell>
-                    <TableCell>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setApplicationForm((prev) => ({
-                            ...prev,
-                            applicantId: applicant.id,
-                          }));
-                          setApplicationDialogOpen(true);
-                        }}
-                      >
-                        Create application
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+          {applicantsLoading ? (
+            <>
+              <SectionCardsSkeleton />
+              <SectionTableSkeleton />
+            </>
+          ) : visibleApplicants.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-6 py-10 text-center">
+              <p className="text-sm font-medium">No applicants match the current intake filters.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Try a different search term or add a candidate manually.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="space-y-3 lg:hidden">
+                {visibleApplicants.map((applicant) => (
+                  <div key={applicant.id} className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium">
+                          {applicant.firstName} {applicant.lastName}
+                        </div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {applicant.email || "Email not provided"}
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          {applicant.phone || "Phone not provided"}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setApplicationForm((prev) => ({
+                              ...prev,
+                              applicantId: applicant.id,
+                            }));
+                            setApplicationDialogOpen(true);
+                          }}
+                        >
+                          Create application
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => handleOpenApplicantEdit(applicant)}>
+                              Edit applicant
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="hidden lg:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Phone</TableHead>
+                      <TableHead className="text-right">Primary action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visibleApplicants.map((applicant) => (
+                      <TableRow key={applicant.id}>
+                        <TableCell className="font-medium">
+                          {applicant.firstName} {applicant.lastName}
+                        </TableCell>
+                        <TableCell>{applicant.email || "Not provided"}</TableCell>
+                        <TableCell>{applicant.phone || "Not provided"}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setApplicationForm((prev) => ({
+                                  ...prev,
+                                  applicantId: applicant.id,
+                                }));
+                                setApplicationDialogOpen(true);
+                              }}
+                            >
+                              Create application
+                            </Button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleOpenApplicantEdit(applicant)}>
+                                  Edit applicant
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>Job Postings</CardTitle>
+      <Card id="jobs" className="border-border/70">
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <CardTitle>Job Postings</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Track role readiness and keep job status changes explicit and auditable.
+            </p>
+            {jobsFetching ? <p className="text-xs text-muted-foreground">Refreshing job postings...</p> : null}
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button
               type="button"
@@ -1386,10 +2131,10 @@ export default function AdminHrHiringPage() {
               placeholder="Search jobs"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full sm:w-64"
+              className="w-full sm:w-72"
             />
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-full sm:w-[160px]">
+              <SelectTrigger className="w-full sm:w-[170px]">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -1402,169 +2147,371 @@ export default function AdminHrHiringPage() {
           </div>
         </CardHeader>
         <CardContent className={tableDensityClass}>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Role</TableHead>
-                <TableHead>Department</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {jobs.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-sm text-muted-foreground">
-                    No job postings found.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                jobs.map((job) => (
-                  <TableRow key={job.id}>
-                    <TableCell>
-                      <div className="font-medium">{job.title}</div>
-                      <div className="text-xs text-muted-foreground">
-                        Opened {new Date(job.openedAt).toLocaleDateString()}
-                      </div>
-                      {job.status === "CLOSED" && job.closedAt ? (
-                        <div className="text-xs text-muted-foreground">
-                          Closed {new Date(job.closedAt).toLocaleDateString()}
+          {jobsLoading ? (
+            <>
+              <SectionCardsSkeleton />
+              <SectionTableSkeleton />
+            </>
+          ) : jobs.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-border/70 bg-muted/20 px-6 py-10 text-center">
+              <p className="text-sm font-medium">No job postings match the current role filters.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Clear the search or create a new role from the hiring actions bar.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 lg:hidden">
+                {jobs.map((job) => {
+                  const salaryLabel =
+                    typeof job.salaryMin === "number" || typeof job.salaryMax === "number"
+                      ? `${job.salaryMin ? job.salaryMin.toLocaleString() : "0"} - ${job.salaryMax ? job.salaryMax.toLocaleString() : "0"}`
+                      : "Salary not set";
+
+                  return (
+                    <div key={job.id} className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="font-medium">{job.title}</div>
+                          <div className="text-sm text-muted-foreground">
+                            {[job.department || "No department", job.location || "Location not set"].join(" | ")}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Opened {formatDateLabel(job.openedAt)}
+                            {job.status === "CLOSED" && job.closedAt ? ` | Closed ${formatDateLabel(job.closedAt)}` : ""}
+                          </div>
                         </div>
-                      ) : null}
-                    </TableCell>
-                    <TableCell>{job.department || "—"}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
                         <Badge variant={statusTone[job.status]}>{job.status.toLowerCase()}</Badge>
-                        <Select
-                          value={job.status}
-                          onValueChange={(value) => {
-                            const nextStatus = value as JobPosting["status"];
-                            if (nextStatus === "CLOSED" && job.status !== "CLOSED") {
-                              setJobCloseDialog({ open: true, jobId: job.id, reason: "" });
-                              return;
-                            }
-                            handleJobStatusUpdate(job, nextStatus);
-                          }}
-                        >
-                          <SelectTrigger className="h-7 w-full sm:w-[140px] text-xs">
-                            <SelectValue placeholder="Update" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="OPEN">Open</SelectItem>
-                            <SelectItem value="PAUSED">Paused</SelectItem>
-                            <SelectItem value="CLOSED">Closed</SelectItem>
-                          </SelectContent>
-                        </Select>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                      <div className="mt-3 rounded-2xl border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        <div>{salaryLabel}</div>
+                        <div className="mt-1 line-clamp-2">{job.description || "No role description added yet."}</div>
+                      </div>
+                      <div className="mt-4 flex items-center gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={() => handleOpenJobEdit(job)}>
+                          Edit role
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              disabled={job.status === "OPEN"}
+                              onClick={() => handleJobStatusUpdate(job, "OPEN")}
+                            >
+                              Mark open
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={job.status === "PAUSED"}
+                              onClick={() => handleJobStatusUpdate(job, "PAUSED")}
+                            >
+                              Mark paused
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={job.status === "CLOSED"}
+                              onClick={() => setJobCloseDialog({ open: true, jobId: job.id, reason: "" })}
+                            >
+                              Close role
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden lg:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Department</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Hiring window</TableHead>
+                      <TableHead className="text-right">Primary action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {jobs.map((job) => (
+                      <TableRow key={job.id}>
+                        <TableCell>
+                          <div className="font-medium">{job.title}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {job.location || "Location not set"}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                            {job.description || "No role description added yet."}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div>{job.department || "-"}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {typeof job.salaryMin === "number" || typeof job.salaryMax === "number"
+                              ? `${job.salaryMin ? job.salaryMin.toLocaleString() : "0"} - ${job.salaryMax ? job.salaryMax.toLocaleString() : "0"}`
+                              : "Salary not set"}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={statusTone[job.status]}>{job.status.toLowerCase()}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="text-sm">Opened {formatDateLabel(job.openedAt)}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {job.status === "CLOSED" && job.closedAt ? `Closed ${formatDateLabel(job.closedAt)}` : "Still active"}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button type="button" size="sm" variant="outline" onClick={() => handleOpenJobEdit(job)}>
+                              Edit role
+                            </Button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  disabled={job.status === "OPEN"}
+                                  onClick={() => handleJobStatusUpdate(job, "OPEN")}
+                                >
+                                  Mark open
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={job.status === "PAUSED"}
+                                  onClick={() => handleJobStatusUpdate(job, "PAUSED")}
+                                >
+                                  Mark paused
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={job.status === "CLOSED"}
+                                  onClick={() => setJobCloseDialog({ open: true, jobId: job.id, reason: "" })}
+                                >
+                                  Close role
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>Applications</CardTitle>
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              placeholder="Search applicant, role, email, phone"
-              value={applicationsSearch}
-              onChange={(e) => setApplicationsSearch(e.target.value)}
-              className="w-full sm:w-72"
-            />
-            <Select value={applicationsStageFilter} onValueChange={setApplicationsStageFilter}>
-              <SelectTrigger className="w-full sm:w-[160px]">
-                <SelectValue placeholder="Stage" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All stages</SelectItem>
-                {applicationStageOptions.map((stage) => (
-                  <SelectItem key={stage.value} value={stage.value}>
-                    {stage.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={applicationsJobFilter} onValueChange={setApplicationsJobFilter}>
-              <SelectTrigger className="w-full sm:w-[200px]">
-                <SelectValue placeholder="Role" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All roles</SelectItem>
-                {applicationJobs.map(([id, title]) => (
-                  <SelectItem key={id} value={id}>
-                    {title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={selectedSavedFilterId} onValueChange={handleApplySavedApplicationsFilter}>
-              <SelectTrigger className="w-full sm:w-[220px]">
-                <SelectValue placeholder="Saved filter preset" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Saved filters</SelectItem>
-                {savedApplicationFilters.map((filter) => (
-                  <SelectItem key={filter.id} value={filter.id}>
-                    {filter.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input
-              placeholder="Preset name"
-              value={savedFilterName}
-              onChange={(e) => setSavedFilterName(e.target.value)}
-              className="w-full sm:w-40"
-            />
-            <Button
-              ref={savePresetButtonRef}
-              type="button"
-              variant="outline"
-              onClick={handleSaveApplicationsFilter}
-            >
-              Save preset
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={handleDeleteSavedApplicationsFilter}
-              disabled={selectedSavedFilterId === "none"}
-            >
-              Delete preset
-            </Button>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={showHiredApplications}
-                onChange={(e) => setShowHiredApplications(e.target.checked)}
+      <Card id={applicationSectionId} ref={applicationsSectionRef} className="border-border/70">
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-1">
+              <CardTitle>Applications</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Server-filtered pipeline view with shareable URL state and mobile-friendly review cards.
+              </p>
+              {applicationsFetching ? (
+                <p className="text-xs text-muted-foreground">Refreshing application pipeline...</p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                placeholder="Search applicant, role, email, phone"
+                value={applicationsSearch}
+                onChange={(e) => setApplicationsSearch(e.target.value)}
+                className="w-full sm:w-72"
               />
-              Show hired applications
-            </label>
+              <Select
+                value={applicationsStageFilter}
+                onValueChange={(value) => applyApplicationView({ stage: value, scroll: true })}
+              >
+                <SelectTrigger className="w-full sm:w-[160px]">
+                  <SelectValue placeholder="Stage" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All stages</SelectItem>
+                  {applicationStageOptions.map((stage) => (
+                    <SelectItem key={stage.value} value={stage.value}>
+                      {stage.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={applicationsJobFilter}
+                onValueChange={(value) => applyApplicationView({ job: value, scroll: true })}
+              >
+                <SelectTrigger className="w-full sm:w-[200px]">
+                  <SelectValue placeholder="Role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All roles</SelectItem>
+                  {applicationJobs.map(([id, title]) => (
+                    <SelectItem key={id} value={id}>
+                      {title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={selectedSavedFilterId} onValueChange={handleApplySavedApplicationsFilter}>
+                <SelectTrigger className="w-full sm:w-[220px]">
+                  <SelectValue placeholder="Saved filter preset" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Saved filters</SelectItem>
+                  {savedApplicationFilters.map((filter) => (
+                    <SelectItem key={filter.id} value={filter.id}>
+                      {filter.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Preset name"
+                value={savedFilterName}
+                onChange={(e) => setSavedFilterName(e.target.value)}
+                className="w-full sm:w-40"
+              />
+              <Button
+                ref={savePresetButtonRef}
+                type="button"
+                variant="outline"
+                onClick={handleSaveApplicationsFilter}
+              >
+                Save preset
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleDeleteSavedApplicationsFilter}
+                disabled={selectedSavedFilterId === "none"}
+              >
+                Delete preset
+              </Button>
+              <Button type="button" variant="outline" onClick={handleCopyCurrentApplicationView}>
+                Copy view link
+              </Button>
+              <label className="flex items-center gap-2 rounded-full border border-border/70 bg-background px-3 py-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={showHiredApplications}
+                  onChange={(e) => applyApplicationView({ showHired: e.target.checked, scroll: true })}
+                />
+                Show hired applications
+              </label>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  downloadServerCsv("/api/admin/hr/hiring/export/applications", {
+                    q: applicationsSearch.trim(),
+                    stage: applicationsStageFilter,
+                    job: applicationsJobFilter,
+                    showHired: showHiredApplications ? "1" : "0",
+                  })
+                }
+              >
+                Export applications CSV
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {applicationsFetching ? "Updating view..." : `Last updated: ${applicationsLastUpdatedText}`}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
             <Button
               type="button"
-              variant="outline"
+              variant={applicationsStageFilter === "all" && !showHiredApplications ? "default" : "outline"}
+              size="sm"
               onClick={() =>
-                downloadServerCsv("/api/admin/hr/hiring/export/applications", {
-                  q: applicationsSearch.trim(),
-                  stage: applicationsStageFilter,
-                  job: applicationsJobFilter,
-                  showHired: showHiredApplications ? "1" : "0",
+                applyApplicationView({
+                  stage: "all",
+                  search: "",
+                  job: "all",
+                  showHired: false,
+                  scroll: true,
                 })
               }
             >
-              Export applications CSV
+              All active
             </Button>
-            <span className="text-xs text-muted-foreground">
-              Last updated: {applicationsLastUpdatedText}
-            </span>
+            <Button
+              type="button"
+              variant={applicationsStageFilter === "APPLIED" ? "default" : "outline"}
+              size="sm"
+              onClick={() =>
+                applyApplicationView({
+                  stage: "APPLIED",
+                  search: "",
+                  job: "all",
+                  showHired: false,
+                  scroll: true,
+                })
+              }
+            >
+              Applied
+            </Button>
+            <Button
+              type="button"
+              variant={applicationsStageFilter === "INTERVIEW" ? "default" : "outline"}
+              size="sm"
+              onClick={() =>
+                applyApplicationView({
+                  stage: "INTERVIEW",
+                  search: "",
+                  job: "all",
+                  showHired: false,
+                  scroll: true,
+                })
+              }
+            >
+              Interviews
+            </Button>
+            <Button
+              type="button"
+              variant={applicationsStageFilter === "OFFER" ? "default" : "outline"}
+              size="sm"
+              onClick={() =>
+                applyApplicationView({
+                  stage: "OFFER",
+                  search: "",
+                  job: "all",
+                  showHired: true,
+                  scroll: true,
+                })
+              }
+            >
+              Offers
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={resetApplicationFilters}
+              disabled={!hasActiveApplicationFilters}
+            >
+              Reset filters
+            </Button>
+            <span className="self-center text-xs text-muted-foreground">{matchingApplicationsLabel}</span>
+          </div>
+          <div className="rounded-2xl border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+            {applicationsViewHint}
           </div>
         </CardHeader>
         <CardContent className={tableDensityClass}>
-          <div className="mb-3 grid gap-2 rounded border px-3 py-3 text-sm sm:grid-cols-[1fr_1fr_1fr_auto]">
+          {applicationsLoading ? (
+            <>
+              <SectionCardsSkeleton />
+              <SectionTableSkeleton />
+            </>
+          ) : (
+            <>
+          <div className="mb-3 grid gap-2 rounded-2xl border border-border/70 bg-background/85 px-4 py-4 text-sm sm:grid-cols-[1fr_1fr_1fr_auto]">
             <Select value={bulkStage} onValueChange={setBulkStage}>
               <SelectTrigger>
                 <SelectValue placeholder="Bulk stage" />
@@ -1611,8 +2558,13 @@ export default function AdminHrHiringPage() {
                 : "Undo last bulk update"}
             </Button>
           </div>
+          {bulkStage === "HIRED" || bulkStage === "REJECTED" || bulkStage === "WITHDRAWN" ? (
+            <div className="mb-3 rounded-2xl border border-border/70 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+              This bulk action requires confirmation and writes the affected application IDs plus any skipped reasons to the audit log.
+            </div>
+          ) : null}
           {bulkSkippedDetails.length > 0 ? (
-            <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <div className="mb-3 rounded-2xl border border-amber-300/70 bg-amber-50/80 px-4 py-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
               <div className="font-medium">Skipped applications</div>
               {bulkSkippedDetails.slice(0, 8).map((item) => (
                 <div key={`${item.id}-${item.reason}`}>
@@ -1624,118 +2576,590 @@ export default function AdminHrHiringPage() {
               ) : null}
             </div>
           ) : null}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10">
-                  <input
-                    type="checkbox"
-                    checked={
-                      visibleApplications.length > 0 &&
-                      visibleApplications.every((row) => selectedApplicationIds.includes(row.id))
-                    }
-                    onChange={(e) => toggleSelectAllVisible(e.target.checked)}
-                  />
-                </TableHead>
-                <TableHead>Applicant</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Stage</TableHead>
-                <TableHead>Interview</TableHead>
-                <TableHead>Applied</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {visibleApplications.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">
-                    No applications yet.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                visibleApplications.map((application) => (
-                  <TableRow key={application.id}>
-                    <TableCell>
+          {visibleApplications.length === 0 ? (
+            <div className="mb-3 rounded-2xl border border-dashed border-border/70 bg-muted/20 px-6 py-10 text-center">
+              <p className="text-sm font-medium">No applications match the current hiring filters.</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Adjust the search or filters, or create a new application from the applicant list.
+              </p>
+              {hasActiveApplicationFilters ? (
+                <div className="mt-4">
+                  <Button type="button" variant="outline" onClick={resetApplicationFilters}>
+                    Reset application filters
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {visibleApplications.length > 0 ? (
+            <div className="space-y-3 lg:hidden">
+              {visibleApplications.map((application) => (
+                <div key={application.id} className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
                       <input
                         type="checkbox"
                         checked={selectedApplicationIds.includes(application.id)}
-                        onChange={(e) =>
-                          toggleApplicationSelection(application.id, e.target.checked)
-                        }
+                        onChange={(e) => toggleApplicationSelection(application.id, e.target.checked)}
+                        className="mt-1"
                       />
+                      <div>
+                        <div className="font-medium">
+                          {application.applicant.firstName} {application.applicant.lastName}
+                        </div>
+                        <div className="text-sm text-muted-foreground">{application.jobPosting.title}</div>
+                      </div>
+                    </div>
+                    <Badge variant={getStageBadgeVariant(application.stage)}>
+                      {formatStageLabel(application.stage)}
+                    </Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                    <div>Applied {formatDateLabel(application.createdAt)}</div>
+                    <div>
+                      {(() => {
+                        const parsed = parseInterviewFromNotes(application.notes);
+                        return parsed.meta?.scheduledAt
+                          ? `Interview scheduled ${formatDateLabel(String(parsed.meta.scheduledAt), true)}`
+                          : "Interview not scheduled";
+                      })()}
+                    </div>
+                  </div>
+                  <div className="mt-4 flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleOpenApplicationDetail(application.id)}
+                    >
+                      Review
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openInterviewPlanner(application)}>
+                          Plan interview
+                        </DropdownMenuItem>
+                        {getApplicationActionOptions(application).map((stage) => (
+                          <DropdownMenuItem
+                            key={stage.value}
+                            onClick={() => handleApplicationAction(application, stage.value)}
+                          >
+                            {stage.value === "REJECTED"
+                              ? "Reject application"
+                              : stage.value === "WITHDRAWN"
+                                ? "Withdraw application"
+                                : `Move to ${stage.label}`}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="hidden lg:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={
+                        visibleApplications.length > 0 &&
+                        visibleApplications.every((row) => selectedApplicationIds.includes(row.id))
+                      }
+                      onChange={(e) => toggleSelectAllVisible(e.target.checked)}
+                    />
+                  </TableHead>
+                  <TableHead>Applicant</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Stage</TableHead>
+                  <TableHead>Interview</TableHead>
+                  <TableHead>Applied</TableHead>
+                  <TableHead className="text-right">Primary action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleApplications.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-sm text-muted-foreground">
+                      No applications yet.
                     </TableCell>
-                    <TableCell>
-                      {application.applicant.firstName} {application.applicant.lastName}
-                    </TableCell>
-                    <TableCell>{application.jobPosting.title}</TableCell>
-                    <TableCell>
-                      <Select
-                        value={application.stage}
-                        onValueChange={(value) => {
-                          const nextStage = value as Application["stage"];
-                          if (nextStage === "REJECTED" || nextStage === "WITHDRAWN") {
-                            setDecisionDialog({
-                              open: true,
-                              applicationId: application.id,
-                              stage: nextStage,
-                              note: "",
-                            });
-                            return;
-                          }
-                          handleApplicationStageUpdate(
-                            application.id,
-                            nextStage,
-                            application.updatedAt || "",
-                          );
-                        }}
-                      >
-                        <SelectTrigger className="h-7 w-full sm:w-[160px] text-xs">
-                          <SelectValue placeholder="Stage" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {applicationStageOptions.map((stage) => {
-                            const isCurrent = stage.value === application.stage;
-                            const transition = validateApplicationStageTransition(
-                              application.stage,
-                              stage.value,
-                            );
-                            const isAllowed = isCurrent || transition.ok;
-                            return (
-                              <SelectItem key={stage.value} value={stage.value} disabled={!isAllowed}>
-                                {stage.label}
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs text-muted-foreground">
+                  </TableRow>
+                ) : (
+                  visibleApplications.map((application) => (
+                    <TableRow key={application.id}>
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={selectedApplicationIds.includes(application.id)}
+                          onChange={(e) => toggleApplicationSelection(application.id, e.target.checked)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium">
+                          {application.applicant.firstName} {application.applicant.lastName}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {application.applicant.email || application.applicant.phone || "No direct contact on file"}
+                        </div>
+                      </TableCell>
+                      <TableCell>{application.jobPosting.title}</TableCell>
+                      <TableCell>
+                        <Badge variant={getStageBadgeVariant(application.stage)}>
+                          {formatStageLabel(application.stage)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-xs text-muted-foreground">
                           {(() => {
                             const parsed = parseInterviewFromNotes(application.notes);
                             return parsed.meta?.scheduledAt
-                              ? `Scheduled ${new Date(String(parsed.meta.scheduledAt)).toLocaleString()}`
+                              ? `Scheduled ${formatDateLabel(String(parsed.meta.scheduledAt), true)}`
                               : "Not scheduled";
                           })()}
-                        </span>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openInterviewPlanner(application)}
-                        >
-                          Plan interview
-                        </Button>
-                      </div>
-                    </TableCell>
-                    <TableCell>{new Date(application.createdAt).toLocaleDateString()}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                        </div>
+                      </TableCell>
+                      <TableCell>{formatDateLabel(application.createdAt)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleOpenApplicationDetail(application.id)}
+                          >
+                            Review
+                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button type="button" size="icon" variant="outline" className="h-8 w-8">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => openInterviewPlanner(application)}>
+                                Plan interview
+                              </DropdownMenuItem>
+                              {getApplicationActionOptions(application).map((stage) => (
+                                <DropdownMenuItem
+                                  key={stage.value}
+                                  onClick={() => handleApplicationAction(application, stage.value)}
+                                >
+                                  {stage.value === "REJECTED"
+                                    ? "Reject application"
+                                    : stage.value === "WITHDRAWN"
+                                      ? "Withdraw application"
+                                      : `Move to ${stage.label}`}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+            </>
+          )}
         </CardContent>
       </Card>
+      <Card id="audit" className="border-border/70">
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <CardTitle>Audit and safeguards</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Hiring actions are logged in plain English with source page, section, operation, and result summaries.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline">
+              <Link href="/admin/audit?sourcePage=admin/hr/hiring">Open hiring audit log</Link>
+            </Button>
+            {selectedApplicationDetail ? (
+              <Button asChild variant="outline">
+                <Link
+                  href={`/admin/audit?sourcePage=admin/hr/hiring&entityType=APPLICATION&entityId=${encodeURIComponent(selectedApplicationDetail.id)}`}
+                >
+                  Open selected application audit
+                </Link>
+              </Button>
+            ) : null}
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-3 lg:grid-cols-3">
+          <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+            <div className="text-sm font-medium">Tracked actions</div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              Applicant edits, role updates, interview plans, application decisions, and exports all retain page context.
+            </div>
+          </div>
+          <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+            <div className="text-sm font-medium">Bulk safeguards</div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              Bulk hire, reject, and withdraw actions now require confirmation and log the exact application IDs plus skip reasons.
+            </div>
+          </div>
+          <div className="rounded-2xl border border-border/70 bg-background/85 p-4 shadow-sm">
+            <div className="text-sm font-medium">Shareable views</div>
+            <div className="mt-2 text-sm text-muted-foreground">
+              Filter presets stay local for personal shortcuts, while copied view links preserve the exact application state for review handoffs.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      <Dialog
+        open={jobEditDialogOpen}
+        onOpenChange={(open) => {
+          setJobEditDialogOpen(open);
+          if (!open) {
+            setEditingJob(null);
+            setJobForm(emptyJobForm);
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit job posting</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              placeholder="Job title"
+              value={jobForm.title}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, title: e.target.value }))}
+            />
+            <Input
+              placeholder="Department"
+              value={jobForm.department}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, department: e.target.value }))}
+            />
+            <Select
+              value={jobForm.status}
+              onValueChange={(value) => setJobForm((prev) => ({ ...prev, status: value }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="OPEN">Open</SelectItem>
+                <SelectItem value="PAUSED">Paused</SelectItem>
+                <SelectItem value="CLOSED">Closed</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              placeholder="Location"
+              value={jobForm.location}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, location: e.target.value }))}
+            />
+            <Input
+              type="datetime-local"
+              value={jobForm.openedAt}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, openedAt: e.target.value }))}
+            />
+            <Input
+              placeholder="Salary minimum"
+              inputMode="numeric"
+              value={jobForm.salaryMin}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, salaryMin: e.target.value }))}
+            />
+            <Input
+              placeholder="Salary maximum"
+              inputMode="numeric"
+              value={jobForm.salaryMax}
+              onChange={(e) => setJobForm((prev) => ({ ...prev, salaryMax: e.target.value }))}
+            />
+            <div className="sm:col-span-2">
+              <Textarea
+                placeholder="Description"
+                value={jobForm.description}
+                onChange={(e) => setJobForm((prev) => ({ ...prev, description: e.target.value }))}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Textarea
+                placeholder="Requirements"
+                value={jobForm.requirements}
+                onChange={(e) => setJobForm((prev) => ({ ...prev, requirements: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setJobEditDialogOpen(false);
+                setEditingJob(null);
+                setJobForm(emptyJobForm);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSaveJobEdit}>
+              Save changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={applicantEditDialogOpen}
+        onOpenChange={(open) => {
+          setApplicantEditDialogOpen(open);
+          if (!open) {
+            setEditingApplicant(null);
+            setApplicantForm(emptyApplicantForm);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Edit applicant</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              placeholder="First name"
+              value={applicantForm.firstName}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, firstName: e.target.value }))}
+            />
+            <Input
+              placeholder="Last name"
+              value={applicantForm.lastName}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, lastName: e.target.value }))}
+            />
+            <Input
+              placeholder="Email"
+              value={applicantForm.email}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, email: e.target.value }))}
+            />
+            <Input
+              placeholder="Phone"
+              value={applicantForm.phone}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, phone: e.target.value }))}
+            />
+            <Input
+              placeholder="Source"
+              value={applicantForm.source}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, source: e.target.value }))}
+            />
+            <Input
+              placeholder="Resume URL"
+              value={applicantForm.resumeUrl}
+              onChange={(e) => setApplicantForm((prev) => ({ ...prev, resumeUrl: e.target.value }))}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setApplicantEditDialogOpen(false);
+                setEditingApplicant(null);
+                setApplicantForm(emptyApplicantForm);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSaveApplicantEdit}>
+              Save changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={applicationDetailDialog.open}
+        onOpenChange={(open) =>
+          setApplicationDetailDialog({
+            open,
+            applicationId: open ? applicationDetailDialog.applicationId : "",
+          })
+        }
+      >
+        <DialogContent className="max-w-4xl overflow-hidden p-0 sm:ml-auto sm:h-[calc(100vh-4rem)] sm:max-w-3xl">
+          {selectedApplicationDetail ? (
+            <div className="grid h-full gap-0 lg:grid-cols-[1.35fr_0.85fr]">
+              <div className="space-y-6 overflow-y-auto p-6">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={getStageBadgeVariant(selectedApplicationDetail.stage)}>
+                      {formatStageLabel(selectedApplicationDetail.stage)}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      Applied {formatDateLabel(selectedApplicationDetail.createdAt)}
+                    </span>
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-semibold">
+                      {selectedApplicationDetail.applicant.firstName} {selectedApplicationDetail.applicant.lastName}
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      {selectedApplicationDetail.jobPosting.title}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
+                    <div className="text-sm font-medium">Applicant</div>
+                    <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                      <div>{selectedApplicationDetail.applicant.email || "No email on file"}</div>
+                      <div>{selectedApplicationDetail.applicant.phone || "No phone on file"}</div>
+                      <div>Source: {selectedApplicationDetail.applicant.source || "Not recorded"}</div>
+                      <div>
+                        Resume:{" "}
+                        {selectedApplicationDetail.applicant.resumeUrl ? (
+                          <Link
+                            href={selectedApplicationDetail.applicant.resumeUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium text-foreground underline-offset-4 hover:underline"
+                          >
+                            Open resume
+                          </Link>
+                        ) : (
+                          "Not provided"
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
+                    <div className="text-sm font-medium">Role context</div>
+                    <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+                      <div>{selectedApplicationDetail.jobPosting.department || "No department assigned"}</div>
+                      <div>{selectedApplicationDetail.jobPosting.location || "Location not set"}</div>
+                      <div>
+                        Status:{" "}
+                        <span className="font-medium text-foreground">
+                          {selectedApplicationDetail.jobPosting.status.toLowerCase()}
+                        </span>
+                      </div>
+                      <div>
+                        Salary:{" "}
+                        {typeof selectedApplicationDetail.jobPosting.salaryMin === "number" ||
+                        typeof selectedApplicationDetail.jobPosting.salaryMax === "number"
+                          ? `${selectedApplicationDetail.jobPosting.salaryMin ? selectedApplicationDetail.jobPosting.salaryMin.toLocaleString() : "0"} - ${selectedApplicationDetail.jobPosting.salaryMax ? selectedApplicationDetail.jobPosting.salaryMax.toLocaleString() : "0"}`
+                          : "Not set"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
+                  <div className="text-sm font-medium">Interview context</div>
+                  <div className="mt-3 grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Scheduled</div>
+                      <div className="mt-1 text-foreground">
+                        {selectedApplicationInterview.meta?.scheduledAt
+                          ? formatDateLabel(String(selectedApplicationInterview.meta.scheduledAt), true)
+                          : "Not scheduled"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Interviewer</div>
+                      <div className="mt-1 text-foreground">
+                        {selectedApplicationInterview.meta?.interviewer || "Not assigned"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Outcome</div>
+                      <div className="mt-1 text-foreground">
+                        {selectedApplicationInterview.meta?.outcome || "Not recorded"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
+                  <div className="text-sm font-medium">Notes</div>
+                  <div className="mt-3 rounded-xl border border-border/60 bg-muted/20 p-3 text-sm text-muted-foreground">
+                    {selectedApplicationInterview.plain || "No notes recorded yet."}
+                  </div>
+                </div>
+              </div>
+              <div className="border-t border-border/70 bg-muted/20 p-6 lg:border-l lg:border-t-0">
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-sm font-medium">Review actions</div>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Move the candidate forward, plan interviews, or jump directly into the audit log.
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    <Button type="button" variant="outline" onClick={() => openInterviewPlanner(selectedApplicationDetail)}>
+                      Plan interview
+                    </Button>
+                    <Button asChild variant="outline">
+                      <Link
+                        href={`/admin/audit?sourcePage=admin/hr/hiring&entityType=APPLICATION&entityId=${encodeURIComponent(selectedApplicationDetail.id)}`}
+                      >
+                        Open related audit
+                      </Link>
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-sm font-medium">Stage updates</div>
+                    <div className="grid gap-2">
+                      {getApplicationActionOptions(selectedApplicationDetail).map((stage) => (
+                        <Button
+                          key={stage.value}
+                          type="button"
+                          variant="outline"
+                          onClick={() => handleApplicationAction(selectedApplicationDetail, stage.value)}
+                        >
+                          {stage.value === "REJECTED"
+                            ? "Reject application"
+                            : stage.value === "WITHDRAWN"
+                              ? "Withdraw application"
+                              : `Move to ${stage.label}`}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border/70 bg-background/85 p-4 text-sm text-muted-foreground shadow-sm">
+                    Last saved {formatDateLabel(selectedApplicationDetail.updatedAt || selectedApplicationDetail.createdAt, true)}.
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 text-sm text-muted-foreground">Application details are no longer available.</div>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={bulkConfirmDialogOpen} onOpenChange={setBulkConfirmDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm bulk stage update</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              You are about to move {selectedApplicationIds.length} application
+              {selectedApplicationIds.length === 1 ? "" : "s"} to {formatStageLabel(bulkStage as Application["stage"])}.
+            </p>
+            <p>This action will be audit-logged with the affected record IDs and any skipped reasons.</p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setBulkConfirmDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setBulkConfirmDialogOpen(false);
+                void runBulkStageApply();
+              }}
+            >
+              Confirm bulk update
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={jobCloseDialog.open}
         onOpenChange={(open) =>

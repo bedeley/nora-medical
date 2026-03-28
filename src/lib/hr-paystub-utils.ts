@@ -135,9 +135,10 @@ export function buildPaystubActionAuditMeta(input: {
   after?: Record<string, unknown>;
   section?: string;
   status?: "SUCCESS" | "FAILED";
+  sourcePage?: string;
 }) {
   return {
-    sourcePage: PAYSTUB_SOURCE_PAGE,
+    sourcePage: input.sourcePage || PAYSTUB_SOURCE_PAGE,
     section: input.section || "paystub-actions",
     operation: input.operation,
     before: {

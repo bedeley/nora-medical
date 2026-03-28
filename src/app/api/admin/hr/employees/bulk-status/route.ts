@@ -25,6 +25,7 @@ const payloadSchema = z.object({
   statusFilter: z.string().optional().or(z.literal("")),
   department: z.string().optional().or(z.literal("")),
   role: z.string().optional().or(z.literal("")),
+  accountLink: z.string().optional().or(z.literal("")),
   completeness: z.string().optional().or(z.literal("")),
   sourcePage: z.string().optional().or(z.literal("")),
   section: z.string().optional().or(z.literal("")),
@@ -61,6 +62,7 @@ function buildFilteredWhere(input: {
   statusFilter: string;
   department: string;
   role: string;
+  accountLink: string;
   completeness: string;
 }): Prisma.EmployeeWhereInput {
   const statusRaw = input.statusFilter.trim().toUpperCase();
@@ -69,6 +71,8 @@ function buildFilteredWhere(input: {
   const allowedRoles = new Set(["ADMIN", "STAFF", "ACCOUNTANT"]);
   const status = allowedStatuses.has(statusRaw) ? statusRaw : "";
   const role = allowedRoles.has(roleRaw) ? roleRaw : "";
+  const accountLinkRaw = input.accountLink.trim().toLowerCase();
+  const accountLink = accountLinkRaw === "linked" || accountLinkRaw === "unlinked" ? accountLinkRaw : "";
   const q = input.q.trim();
   const department = input.department.trim();
   const completeness = input.completeness.trim().toLowerCase();
@@ -93,6 +97,12 @@ function buildFilteredWhere(input: {
         role: role as "ADMIN" | "STAFF" | "ACCOUNTANT",
       },
     });
+  }
+  if (accountLink === "linked") {
+    clauses.push({ userId: { not: null } });
+  }
+  if (accountLink === "unlinked") {
+    clauses.push({ userId: null });
   }
   if (q) {
     clauses.push({
@@ -149,6 +159,7 @@ export async function POST(req: Request) {
       statusFilter: parsed.data.statusFilter || "",
       department: parsed.data.department || "",
       role: parsed.data.role || "",
+      accountLink: parsed.data.accountLink || "",
       completeness: parsed.data.completeness || "",
     });
     targetRows = await prisma.employee.findMany({

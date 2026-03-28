@@ -220,7 +220,7 @@ function getAuditStatusTone(status: string | null | undefined) {
   if (normalized === "SUCCESS") {
     return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
-  return "border-slate-200 bg-slate-50 text-slate-700";
+  return "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300";
 }
 
 function getRunStatusBadgeVariant(status: string | null | undefined) {
@@ -1048,14 +1048,14 @@ export default function PayrollRunDetailPage() {
         <p className="text-sm text-muted-foreground">Payroll run not found.</p>
       ) : (
         <>
-          <Card className="overflow-hidden border-slate-200 bg-gradient-to-br from-white via-sky-50 to-emerald-50 shadow-sm">
+          <Card className="overflow-hidden border-slate-200 bg-gradient-to-br from-white via-sky-50 to-emerald-50 shadow-sm dark:border-slate-800 dark:from-slate-950 dark:via-slate-900 dark:to-emerald-950/70">
             <CardContent className="grid gap-5 px-5 py-5 lg:grid-cols-[minmax(0,1.6fr)_18rem]">
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={getRunStatusBadgeVariant(run.status)}>{runStatusLabel}</Badge>
                   <Badge
                     variant="outline"
-                    className="border-slate-300 bg-white/80 text-slate-700"
+                    className="border-slate-300 bg-white/80 text-slate-700 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200"
                   >
                     {runTypeLabel}
                   </Badge>
@@ -1071,25 +1071,25 @@ export default function PayrollRunDetailPage() {
                   </Badge>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500 dark:text-slate-400">
                     Payroll control
                   </p>
                   <div className="space-y-1">
-                    <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+                    <h1 className="text-3xl font-semibold tracking-tight dark:text-slate-50 sm:text-4xl">
                       {periodLabel}
                     </h1>
-                    <p className="max-w-2xl text-sm text-slate-600">
+                    <p className="max-w-2xl text-sm text-slate-600 dark:text-slate-300">
                       Review the run, resolve blockers, and complete payroll actions from one
                       workspace.
                     </p>
-                    <p className="text-sm text-slate-500">{runHeadlineSummary}</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">{runHeadlineSummary}</p>
                   </div>
                   {run.runType === "ADJUSTMENT" && run.adjustmentFor ? (
-                    <div className="rounded-lg border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700">
+                    <div className="rounded-lg border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
                       This adjustment run belongs to{" "}
                       <Link
                         href={`/admin/hr/payroll/${run.adjustmentFor.id}`}
-                        className="font-medium text-slate-900 underline underline-offset-4"
+                        className="font-medium text-slate-900 underline underline-offset-4 dark:text-slate-100"
                       >
                         {new Date(run.adjustmentFor.periodStart).toLocaleDateString()} -{" "}
                         {new Date(run.adjustmentFor.periodEnd).toLocaleDateString()}
@@ -1098,33 +1098,33 @@ export default function PayrollRunDetailPage() {
                     </div>
                   ) : null}
                   {run.adjustmentNote ? (
-                    <div className="rounded-lg border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700">
+                    <div className="rounded-lg border border-slate-200 bg-white/70 px-4 py-3 text-sm text-slate-700 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
                       Adjustment note: {run.adjustmentNote}
                     </div>
                   ) : null}
                 </div>
                 <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm">
-                    <div className="text-xs text-slate-500">Current gross</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Current gross</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-50">
                       {formatCurrency(Number(run.totalGross || 0))}
                     </div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm">
-                    <div className="text-xs text-slate-500">Current net</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Current net</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-50">
                       {formatCurrency(Number(run.totalNet || 0))}
                     </div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm">
-                    <div className="text-xs text-slate-500">Payslips</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Payslips</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-50">
                       {allPayslips.length}
                     </div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm">
-                    <div className="text-xs text-slate-500">Integrity</div>
-                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                  <div className="rounded-xl border border-slate-200 bg-white/75 px-4 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900/80">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Integrity</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-50">
                       {hasIntegrityMismatch ? "Review needed" : "Ready"}
                     </div>
                   </div>
@@ -1135,7 +1135,7 @@ export default function PayrollRunDetailPage() {
                   variant="outline"
                   onClick={handleExportCsv}
                   disabled={hasBusyAction}
-                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-50"
                 >
                   {activeAction === "export_csv" ? "Exporting..." : "Export CSV"}
                 </Button>
@@ -1143,14 +1143,14 @@ export default function PayrollRunDetailPage() {
                   variant="outline"
                   onClick={handleBankExport}
                   disabled={hasBusyAction || !canBankExport}
-                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-50"
                 >
                   {activeAction === "export_bank_csv" ? "Exporting..." : "Export Bank CSV"}
                 </Button>
                 <Button
                   asChild
                   variant="outline"
-                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-50"
                 >
                   <Link href="/admin/hr/payroll">Back to payroll</Link>
                 </Button>
@@ -1158,14 +1158,14 @@ export default function PayrollRunDetailPage() {
                   variant="outline"
                   onClick={handleCopyRunLink}
                   disabled={hasBusyAction}
-                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-50"
                 >
                   {activeAction === "copy_run_link" ? "Copying..." : "Copy Run Link"}
                 </Button>
                 <Button
                   asChild
                   variant="outline"
-                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900"
+                  className="justify-start border-slate-200 bg-white/80 text-slate-700 shadow-sm hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-50"
                 >
                   <Link href={getPayrollRunAuditHref(runId)}>View Full Audit Log</Link>
                 </Button>
@@ -1191,7 +1191,7 @@ export default function PayrollRunDetailPage() {
                 </div>
               ) : null}
               <div className="grid gap-4 lg:grid-cols-2">
-                <div className="rounded-xl border bg-slate-50 p-4">
+                <div className="rounded-xl border border-border bg-muted/40 p-4">
                   <div className="space-y-1">
                     <div className="font-medium">1. Prepare payslips</div>
                     <p className="text-xs text-muted-foreground">
@@ -1219,7 +1219,7 @@ export default function PayrollRunDetailPage() {
                         </DialogDescription>
                       </DialogHeader>
                       <div className="grid gap-3">
-                        <div className="rounded-lg border bg-slate-50 p-4 text-xs text-muted-foreground">
+                        <div className="rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
                           <div className="font-medium text-foreground">Payroll policy</div>
                           <div className="mt-1">
                             This run follows the current Ghana payroll settings from HR Settings.
@@ -1366,7 +1366,7 @@ export default function PayrollRunDetailPage() {
                           </div>
                         </div>
                         {generatePreview ? (
-                          <div className="rounded-lg border bg-slate-50 p-4 text-xs text-muted-foreground">
+                          <div className="rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
                             <div className="font-medium text-foreground">Preview result</div>
                             <div className="mt-2 grid gap-2 sm:grid-cols-2">
                               <div>Employees in preview: {previewRows.length}</div>
@@ -1386,7 +1386,7 @@ export default function PayrollRunDetailPage() {
                                 {previewRows.slice(0, 6).map((row) => (
                                   <div
                                     key={row.employeeId}
-                                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-white px-2 py-1"
+                                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-2 py-1"
                                   >
                                     <div>{employeeNameById.get(row.employeeId) || row.employeeId}</div>
                                     <div className="text-right">
@@ -1730,12 +1730,12 @@ export default function PayrollRunDetailPage() {
                   Current period with YTD totals per employee.
                 </CardDescription>
               </div>
-              <div className="self-start rounded-full border bg-slate-50 px-3 py-1 text-xs text-muted-foreground">
+              <div className="self-start rounded-full border border-border bg-muted/40 px-3 py-1 text-xs text-muted-foreground">
                 {filteredAndSortedPayslips.length} matching payslip(s)
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="sticky top-3 z-10 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/85">
+              <div className="sticky top-3 z-10 rounded-xl border border-border bg-background/95 p-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/85">
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
                     className="h-8 w-full sm:w-56"

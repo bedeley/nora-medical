@@ -48,24 +48,29 @@ export async function GET(req: Request) {
   const allowedStatuses = new Set(["OPEN", "PAUSED", "CLOSED"]);
   const status = allowedStatuses.has(statusRaw) ? statusRaw : "";
 
-  const jobs = await prisma.jobPosting.findMany({
-    where: {
-      ...(status ? { status: status as "OPEN" } : {}),
-      ...(q
-        ? {
-            OR: [
-              { title: { contains: q, mode: "insensitive" } },
-              { department: { contains: q, mode: "insensitive" } },
-              { location: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
+  const where = {
+    ...(status ? { status: status as "OPEN" } : {}),
+    ...(q
+      ? {
+          OR: [
+            { title: { contains: q, mode: "insensitive" as const } },
+            { department: { contains: q, mode: "insensitive" as const } },
+            { location: { contains: q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
 
-  return NextResponse.json({ rows: jobs });
+  const [jobs, total] = await Promise.all([
+    prisma.jobPosting.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    }),
+    prisma.jobPosting.count({ where }),
+  ]);
+
+  return NextResponse.json({ rows: jobs, total });
 }
 
 export async function POST(req: Request) {

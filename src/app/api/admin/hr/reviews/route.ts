@@ -121,6 +121,7 @@ export async function GET(req: Request) {
       ...row,
       workflowStatus: workflow.status,
       workflowArchived: workflow.archived,
+      workflowEmployeeVisible: workflow.employeeVisible,
       workflowAcknowledgedAt: workflow.acknowledgedAt,
       workflowAcknowledgedBy: workflow.acknowledgedBy,
     };
@@ -255,6 +256,7 @@ export async function POST(req: Request) {
       ...review,
       workflowStatus: workflow.status as ReviewWorkflowStatus,
       workflowArchived: workflow.archived,
+      workflowEmployeeVisible: workflow.employeeVisible,
       workflowAcknowledgedAt: workflow.acknowledgedAt,
       workflowAcknowledgedBy: workflow.acknowledgedBy,
     });

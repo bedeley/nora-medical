@@ -87,6 +87,7 @@ export default function AdminUsersPage() {
   const [createdInviteUrl, setCreatedInviteUrl] = useState("");
   const [deliveryNote, setDeliveryNote] = useState("");
   const [backfillSubmitting, setBackfillSubmitting] = useState(false);
+  const [ensuringProfileUserId, setEnsuringProfileUserId] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const { data, error, isFetching } = useClientQuery<{
@@ -193,6 +194,33 @@ export default function AdminUsersPage() {
       toast.error(err instanceof Error ? err.message : "Failed to backfill employees.");
     } finally {
       setBackfillSubmitting(false);
+    }
+  };
+
+  const ensureEmployeeProfile = async (userId: string) => {
+    if (ensuringProfileUserId) return;
+    setEnsuringProfileUserId(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/employee-profile`, {
+        method: "PATCH",
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload?.error || "Failed to create the HR profile.");
+      }
+      const summary =
+        payload?.outcome === "created"
+          ? "HR profile created."
+          : payload?.outcome === "linked"
+            ? "Existing HR profile linked."
+            : "HR profile was already linked.";
+      toast.success(summary);
+      await queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "hr", "employees"] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create the HR profile.");
+    } finally {
+      setEnsuringProfileUserId("");
     }
   };
 
@@ -520,6 +548,11 @@ export default function AdminUsersPage() {
             HR is the source of truth for employee profiles. Creating a user here will also
             auto-create (or link) the employee profile in HR.
           </p>
+          <p className="text-xs text-muted-foreground">
+            If an older bootstrapped admin or staff account is missing an HR profile, use
+            <span className="font-medium"> Create HR profile</span> from the directory or run the
+            bulk backfill below.
+          </p>
           <div className="pt-2">
             <Button
               variant="outline"
@@ -604,6 +637,7 @@ export default function AdminUsersPage() {
                     <TableHead>Last role change</TableHead>
                     <TableHead>Last login</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>HR profile</TableHead>
                     <TableHead>Actions</TableHead>
                     <TableHead>Access</TableHead>
                   </TableRow>
@@ -703,18 +737,46 @@ export default function AdminUsersPage() {
                           {user.archived ? "Archived" : "Active"}
                         </TableCell>
                         <TableCell>
+                          {user.employeeId ? (
+                            <div className="space-y-1 text-xs">
+                              <div className="font-medium text-emerald-700 dark:text-emerald-400">
+                                Ready
+                              </div>
+                              <div className="text-muted-foreground break-all">
+                                {user.employeeId}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="space-y-1 text-xs">
+                              <div className="font-medium text-amber-700 dark:text-amber-400">
+                                Missing HR profile
+                              </div>
+                              <div className="text-muted-foreground">
+                                Employee portal and staff profile are unavailable until linked.
+                              </div>
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>
                           <div className="flex flex-wrap gap-2">
-                            <Button asChild variant="outline" size="sm">
-                              <Link
-                                href={
-                                  user.employeeId
-                                    ? `/admin/hr/staff/${user.employeeId}`
-                                    : "/admin/hr/staff"
-                                }
+                            {user.employeeId ? (
+                              <Button asChild variant="outline" size="sm">
+                                <Link href={`/admin/hr/staff/${user.employeeId}`}>
+                                  Open staff profile
+                                </Link>
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={ensuringProfileUserId === user.id}
+                                onClick={() => ensureEmployeeProfile(user.id)}
                               >
-                                View
-                              </Link>
-                            </Button>
+                                {ensuringProfileUserId === user.id
+                                  ? "Creating HR profile..."
+                                  : "Create HR profile"}
+                              </Button>
+                            )}
                             {inviteByUserId.has(user.id) ? (
                               <Button
                                 variant="ghost"
@@ -728,6 +790,16 @@ export default function AdminUsersPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
+                            {!user.employeeId ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={ensuringProfileUserId === user.id}
+                                onClick={() => ensureEmployeeProfile(user.id)}
+                              >
+                                Fix HR link
+                              </Button>
+                            ) : null}
                             <Button
                               variant="outline"
                               size="sm"

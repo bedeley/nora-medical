@@ -19,6 +19,11 @@ export async function GET() {
       phoneVerifiedAt: true,
       createdAt: true,
       lastLoginAt: true,
+      employeeProfile: {
+        select: {
+          id: true,
+        },
+      },
     },
   });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -27,5 +32,7 @@ export async function GET() {
     ...user,
     customerProfile,
     isB2B: customerProfile === "B2B",
+    employeeId: user.employeeProfile?.id ?? null,
+    hasEmployeePortal: Boolean(user.employeeProfile?.id),
   });
 }

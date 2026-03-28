@@ -29,6 +29,7 @@ const updateSchema = z.object({
   section: z.string().optional().or(z.literal("")),
   operation: z.string().optional().or(z.literal("")),
   resultSummary: z.string().optional().or(z.literal("")),
+  statusReason: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -160,6 +161,7 @@ export async function PATCH(
             id: user.id,
             role: user.role,
           },
+          page: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
           sourcePage: parsed.data.sourcePage?.trim() || "admin/hr/staff/[id]",
           section: parsed.data.section?.trim() || "staff-profile",
           operation: parsed.data.operation?.trim() || "update_employee_profile",
@@ -199,6 +201,7 @@ export async function PATCH(
             bankCode: employee.bankCode,
             bankBranch: employee.bankBranch,
           },
+          reason: parsed.data.statusReason?.trim() || null,
           status: "SUCCESS",
           resultSummary: parsed.data.resultSummary?.trim() || "Employee profile updated successfully.",
         },

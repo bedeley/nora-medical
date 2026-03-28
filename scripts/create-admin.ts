@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcrypt";
+import { ensureEmployeeProfileForUser } from "@/lib/hr-user-employee-profile";
 
 function getArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -43,11 +44,20 @@ async function main() {
       role: "ADMIN",
     },
   });
+  const employeeProfile = await ensureEmployeeProfileForUser(prisma, {
+    userId: user.id,
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    status: "ACTIVE",
+  });
 
   console.log("Admin user ready:", {
     id: user.id,
     email: user.email,
     role: user.role,
+    employeeId: employeeProfile.employeeId,
+    profileOutcome: employeeProfile.outcome,
   });
 }
 
@@ -59,4 +69,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-
