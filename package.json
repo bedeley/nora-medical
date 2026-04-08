@@ -6,11 +6,12 @@
     "scripts": {
         "fix:orders": "tsx prisma/scripts/normalize-orders.ts",
         "dev": "node scripts/dev-next.cjs",
+        "migrations:check": "node scripts/check-prisma-migration-history.mjs",
         "test": "tsx --test \"src/**/*.test.ts\"",
         "test:vitest": "vitest run",
         "test:vitest:watch": "vitest",
         "test:vitest:coverage": "vitest run --coverage",
-        "test:ci": "pnpm exec tsc --noEmit && pnpm lint && pnpm test && pnpm test:vitest:coverage",
+        "test:ci": "pnpm migrations:check && pnpm exec tsc --noEmit && pnpm lint && pnpm test && pnpm test:vitest:coverage",
         "e2e": "playwright test",
         "e2e:headed": "playwright test --headed",
         "prebuild": "prisma generate",

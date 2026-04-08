@@ -12,6 +12,12 @@
 
 # testing
 /coverage
+/test-results
+/e2e/.auth
+/.a11y-dev.log
+/.a11y-dev.err.log
+/.manual-qa-start.log
+/.manual-qa-start.err.log
 
 # next.js
 /.next/
