@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { ensureEmployeeProfileForUser } from "@/lib/hr-user-employee-profile";
 
 function getArg(flag: string): string | undefined {

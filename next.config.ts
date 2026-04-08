@@ -43,6 +43,22 @@ const nextConfig: NextConfig = {
     ],
   },
   async headers() {
+    const cspDirectives = [
+      "default-src 'self'",
+      "img-src 'self' data: https:",
+      scriptSrc,
+      "style-src 'self' 'unsafe-inline'",
+      "font-src 'self' data:",
+      "connect-src 'self' https: wss:",
+      "object-src 'none'",
+      "frame-src 'none'",
+      "frame-ancestors 'self'",
+      "base-uri 'self'",
+      "form-action 'self'",
+    ];
+    if (isProd) {
+      cspDirectives.push("upgrade-insecure-requests");
+    }
     return [
       {
         source: "/:path*",
@@ -53,20 +69,7 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "geolocation=(), camera=(), microphone=()" },
           {
             key: "Content-Security-Policy",
-            value: [
-              "default-src 'self'",
-              "img-src 'self' data: https:",
-              scriptSrc,
-              "style-src 'self' 'unsafe-inline'",
-              "font-src 'self' data:",
-              "connect-src 'self' https: wss:",
-              "object-src 'none'",
-              "frame-src 'none'",
-              "frame-ancestors 'self'",
-              "base-uri 'self'",
-              "form-action 'self'",
-              "upgrade-insecure-requests",
-            ].join("; "),
+            value: cspDirectives.join("; "),
           },
         ],
       },

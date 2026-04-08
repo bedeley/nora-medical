@@ -1,15 +1,15 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "next-auth/react";
 import { chipToneClass } from "@/lib/status-chips";
 import type { ReactNode } from "react";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { ADMIN_NAV_ITEMS, ADMIN_NAV_ESSENTIAL_HREFS } from "@/lib/admin-nav";
+import { ADMIN_NAV_ITEMS, ADMIN_NAV_ESSENTIAL_HREFS, ADMIN_NAV_GROUPS } from "@/lib/admin-nav";
+import { CommandPalette, CommandPaletteTrigger } from "@/components/admin/CommandPalette";
+import { AdminBreadcrumb } from "@/components/admin/AdminBreadcrumb";
 type AdminRole = "ADMIN" | "STAFF" | "ACCOUNTANT";
 
 export default function AdminGroupLayout({
@@ -27,6 +27,8 @@ export default function AdminGroupLayout({
   const isAdmin = role === "ADMIN";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileNavQuery, setMobileNavQuery] = useState("");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const navRef = useRef<HTMLDivElement>(null);
   const [healthSummary, setHealthSummary] = useState<{
     paymentMismatches: number;
     orderBalanceMismatches: number;
@@ -325,14 +327,26 @@ export default function AdminGroupLayout({
 
   useEffect(() => {
     setMobileMenuOpen(false);
+    setOpenGroup(null);
   }, [pathname]);
+
+  useEffect(() => {
+    if (!openGroup) return;
+    const handler = (e: MouseEvent) => {
+      if (navRef.current && !navRef.current.contains(e.target as Node)) {
+        setOpenGroup(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [openGroup]);
 
   if (isReceipt) {
     return <>{children}</>;
   }
 
   return (
-    <div data-slot="admin-page">
+    <div data-slot="admin-page" className="overflow-x-hidden">
       <header
         data-admin-nav="1"
         className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 print:hidden"
@@ -418,25 +432,96 @@ export default function AdminGroupLayout({
             </div>
           ) : null}
 
-          <nav className="hidden md:flex flex-wrap items-center gap-2 text-sm px-2">
-            {visibleNav.length === 0 ? (
-              <div className="text-xs text-muted-foreground">
+          <nav ref={navRef} className="hidden md:flex items-center gap-0.5 text-sm px-2 h-10">
+            <span className="text-xs font-semibold text-muted-foreground pr-3 mr-1 border-r shrink-0">
+              Admin
+            </span>
+            {!role ? (
+              <span className="text-xs text-muted-foreground">
                 {isAdmin ? "Loading navigation..." : "You do not have access to the admin portal."}
-              </div>
+              </span>
             ) : (
-              visibleNav.map((item) => {
-                const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-                const classes = `px-2 py-1 rounded whitespace-nowrap ${
-                  isActive ? "bg-muted" : item.isRight ? "border" : ""
-                } ${item.isRight ? "ml-auto" : ""}`;
+              ADMIN_NAV_GROUPS.map((group) => {
+                const groupItems = group.hrefs
+                  .map((href) => ADMIN_NAV_ITEMS.find((i) => i.href === href))
+                  .filter(
+                    (item): item is (typeof ADMIN_NAV_ITEMS)[number] =>
+                      Boolean(item) && item!.roles.includes(role),
+                  );
+                if (groupItems.length === 0) return null;
+                const isGroupActive = groupItems.some(
+                  (item) => pathname === item.href || pathname.startsWith(`${item.href}/`),
+                );
+                if (groupItems.length === 1) {
+                  return (
+                    <Link
+                      key={group.label}
+                      href={groupItems[0].href}
+                      className={`px-3 py-1.5 rounded text-sm whitespace-nowrap transition-colors ${
+                        isGroupActive
+                          ? "bg-muted font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                      }`}
+                    >
+                      {group.label}
+                    </Link>
+                  );
+                }
                 return (
-                  <Link key={item.href} href={item.href} className={classes}>
-                    {item.label}
-                  </Link>
+                  <div key={group.label} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setOpenGroup(openGroup === group.label ? null : group.label)}
+                      className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm whitespace-nowrap transition-colors ${
+                        isGroupActive
+                          ? "bg-muted font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                      }`}
+                    >
+                      {group.label}
+                      <svg
+                        className={`h-3 w-3 shrink-0 transition-transform duration-150 ${openGroup === group.label ? "rotate-180" : ""}`}
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="M2 4l4 4 4-4" />
+                      </svg>
+                    </button>
+                    {openGroup === group.label && (
+                      <div className="absolute top-full left-0 mt-1 min-w-[200px] rounded-md border bg-background shadow-md z-50 py-1">
+                        {groupItems.map((item) => {
+                          const isActive =
+                            pathname === item.href || pathname.startsWith(`${item.href}/`);
+                          return (
+                            <Link
+                              key={item.href}
+                              href={item.href}
+                              className={`block px-4 py-2 text-sm whitespace-nowrap transition-colors ${
+                                isActive
+                                  ? "bg-muted font-medium text-foreground"
+                                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                              }`}
+                              onClick={() => setOpenGroup(null)}
+                            >
+                              {item.label}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 );
               })
             )}
+            <div className="ml-auto pl-2 shrink-0">
+              <CommandPaletteTrigger />
+            </div>
           </nav>
+          <AdminBreadcrumb />
         </div>
       </header>
       {healthSummary &&
@@ -505,6 +590,7 @@ export default function AdminGroupLayout({
           </div>
         </div>
       ) : null}
+      <CommandPalette role={role} />
       {children}
       <style jsx global>{`
         .drag-scroll-enabled {

@@ -106,23 +106,11 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     },
   ];
 
+  // Revenue is the whole; COGS + OpEx + Profit are the parts — Revenue is not a separate slice.
   const pieData: Array<{ name: string; value: number }> = [
-    {
-      name: "Revenue",
-      value: Math.max(0, totalRevenue),
-    },
-    {
-      name: "COGS",
-      value: Math.max(0, totalCOGS),
-    },
-    {
-      name: "Operating Expenses",
-      value: Math.max(0, totalExpense),
-    },
-    {
-      name: "Net Profit",
-      value: Math.max(0, profit),
-    },
+    { name: "COGS", value: Math.max(0, totalCOGS) },
+    { name: "Operating Expenses", value: Math.max(0, totalExpense) },
+    { name: "Net Profit", value: Math.max(0, profit) },
   ];
   const pieTotal = pieData.reduce((sum, slice) => sum + slice.value, 0);
 
@@ -175,14 +163,9 @@ export default function ProfitSummary({ summary }: SummaryProps) {
     // Match label color to the slice / legend color so the percents
     // visually align with the keys under the chart.
     let fillColor = "#e5e7eb";
-    if (name === "Revenue") {
-      // Lighter blue than the slice for better contrast in dark mode
-      fillColor = "#60a5fa";
-    } else if (name === "COGS") {
-      // Lighter orange
+    if (name === "COGS") {
       fillColor = "#fdba74";
     } else if (name === "Operating Expenses") {
-      // Lighter red
       fillColor = "#fca5a5";
     } else if (name === "Net Profit") {
       fillColor = profit >= 0 ? "#4ade80" : "#cbd5f5";
@@ -320,7 +303,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
               </p>
             ) : (
               <>
-                <div className="relative h-64 sm:h-72 lg:h-80 xl:h-96 min-w-0">
+                <div className="relative h-64 sm:h-72 lg:h-80 xl:h-96 min-w-0 overflow-x-hidden">
                   {isCompact && (
                     <div className="absolute right-2 top-2 z-10">
                       <Tooltip
@@ -328,15 +311,13 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                           <div className="space-y-1 text-xs">
                             {pieData.map((slice) => {
                               const color =
-                                slice.name === "Revenue"
-                                  ? "#3b82f6"
-                                  : slice.name === "COGS"
-                                    ? "#f97316"
-                                    : slice.name === "Operating Expenses"
-                                      ? "#ef4444"
-                                      : profit >= 0
-                                        ? "#22c55e"
-                                        : "#94a3b8";
+                                slice.name === "COGS"
+                                  ? "#f97316"
+                                  : slice.name === "Operating Expenses"
+                                    ? "#ef4444"
+                                    : profit >= 0
+                                      ? "#22c55e"
+                                      : "#94a3b8";
                               return (
                                 <div key={slice.name} className="flex items-center gap-2">
                                   <span
@@ -391,7 +372,6 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                         label={isCompact ? false : renderSliceLabel}
                         labelLine={false}
                       >
-                        <Cell key="revenue" fill="#3b82f6" />
                         <Cell key="cogs" fill="#f97316" />
                         <Cell key="expense" fill="#ef4444" />
                         <Cell
@@ -424,15 +404,13 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                     {pieData.map((slice) => {
                       const pct = pieTotal > 0 ? (slice.value / pieTotal) * 100 : 0;
                       const color =
-                        slice.name === "Revenue"
-                          ? "#3b82f6"
-                          : slice.name === "COGS"
-                            ? "#f97316"
-                            : slice.name === "Operating Expenses"
-                              ? "#ef4444"
-                              : profit >= 0
-                                ? "#22c55e"
-                                : "#94a3b8";
+                        slice.name === "COGS"
+                          ? "#f97316"
+                          : slice.name === "Operating Expenses"
+                            ? "#ef4444"
+                            : profit >= 0
+                              ? "#22c55e"
+                              : "#94a3b8";
                       return (
                         <div key={slice.name} className="flex items-center justify-between gap-2">
                           <span className="flex min-w-0 items-center gap-2">
@@ -452,7 +430,7 @@ export default function ProfitSummary({ summary }: SummaryProps) {
                   </div>
                 )}
                 <p className="mt-2 text-[11px] text-muted-foreground">
-                  Revenue shown for reference; COGS + Operating Expenses + Net Profit should equal total revenue for the selected period.
+                  COGS + Operating Expenses + Net Profit = total revenue for the selected period.
                 </p>
               </>
             )}

@@ -1847,7 +1847,7 @@ export default function SupplierPaymentsPage() {
   };
 
   return (
-    <main className="p-4 sm:p-6 space-y-6">
+    <div className="p-4 sm:p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Supplier Payments</h1>
@@ -3400,7 +3400,7 @@ export default function SupplierPaymentsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </main>
+    </div>
   );
 }
 

@@ -2,16 +2,24 @@
 
 export const dynamic = "force-dynamic";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -40,6 +48,10 @@ type AuditRow = {
   entityType: string;
   entityId: string;
   meta: Record<string, unknown> | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  requestId?: string | null;
+  outcome?: string | null;
   createdAt: string;
 };
 
@@ -81,11 +93,13 @@ type AuditSavedFilter = {
     logId?: string;
     entityType: string;
     entityId: string;
+    employeeId?: string;
     payrollRunId?: string;
     correlationId?: string;
     customerId: string;
     customerSearch: string;
     action: string;
+    outcome?: string;
     actorId: string;
     actorType: string;
     start: string;
@@ -113,7 +127,10 @@ type AuditQueueMode =
   | "critical_unreviewed"
   | "archive_soon_unreviewed"
   | "needs_assignment"
-  | "overdue_tasks";
+  | "overdue_tasks"
+  | "overdue_reviews_critical"
+  | "overdue_reviews_high"
+  | "overdue_reviews_medium";
 type ReviewTaskDraft = {
   status: ReviewTaskStatus;
   assigneeId: string;
@@ -171,23 +188,38 @@ const HR_SOURCE_PAGE_OPTIONS = [
   { value: "admin/accounting/reports/balance-sheet", label: "Accounting Balance Sheet" },
   { value: "admin/accounting/reports/scheduled", label: "Accounting Scheduled Reports" },
   { value: "admin/orders", label: "Orders" },
-  { value: "admin/orders/[id]", label: "Order Details" },
   { value: "admin/orders/otc", label: "OTC Orders" },
   { value: "admin/otc/shift-close", label: "OTC Shift Close" },
   { value: "admin/users", label: "Users & Roles" },
-  { value: "admin/customers/[id]/view", label: "Customer View" },
   { value: "admin/health/incidents", label: "Health Incidents" },
   { value: "admin/hr/hiring", label: "HR Hiring" },
   { value: "admin/hr/reviews", label: "HR Reviews" },
   { value: "admin/hr/compensation", label: "HR Compensation" },
   { value: "admin/hr/payroll", label: "HR Payroll" },
-  { value: "admin/hr/payroll/[id]", label: "HR Payroll Run Detail" },
   { value: "admin/hr/payroll/cron", label: "HR Payroll Cron" },
   { value: "admin/hr/leave", label: "HR Leave" },
   { value: "admin/hr/staff", label: "HR Staff Directory" },
-  { value: "admin/hr/staff/[id]", label: "HR Staff Profile" },
   { value: "admin/hr/issues", label: "HR Issues" },
   { value: "admin/hr/settings", label: "HR Settings" },
+] as const;
+
+const FILTERABLE_SOURCE_PAGE_OPTIONS = HR_SOURCE_PAGE_OPTIONS.map((item) => item).filter(
+  (item) => !item.value.includes("[") && !item.value.includes("]"),
+);
+
+const KNOWN_SECURITY_AUDIT_ACTIONS = [
+  "USER_LOGIN",
+  "USER_LOGIN_FAILED",
+  "USER_PASSWORD_CHANGED",
+  "USER_PASSWORD_CHANGE_FAILED",
+  "USER_PASSWORD_RESET",
+  "USER_PASSWORD_RESET_FAILED",
+  "USER_2FA_ENABLED",
+  "USER_2FA_ENABLE_FAILED",
+  "USER_2FA_DISABLED",
+  "USER_2FA_DISABLE_FAILED",
+  "USER_FORCE_LOGOUT",
+  "USER_SESSION_INVALIDATED",
 ] as const;
 
 function normalizeSourcePage(value: string): string {
@@ -203,6 +235,76 @@ function humanizeAuditLabel(value: unknown): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function humanizeSourcePageLabel(value: string): string {
+  const normalized = normalizeSourcePage(value);
+  if (!normalized) return "All pages";
+  const matched = HR_SOURCE_PAGE_OPTIONS.find((item) => item.value === normalized);
+  if (matched) return matched.label;
+  return humanizeAuditLabel(normalized.replace(/\//g, " "));
+}
+
+function humanizeQueueModeLabel(value: AuditQueueMode | string): string {
+  switch (value) {
+    case "critical_unreviewed":
+      return "Critical unreviewed";
+    case "archive_soon_unreviewed":
+      return "Archive soon unreviewed";
+    case "needs_assignment":
+      return "Needs assignment";
+    case "overdue_tasks":
+      return "Overdue tasks";
+    case "overdue_reviews_critical":
+      return "Overdue critical reviews";
+    case "overdue_reviews_high":
+      return "Overdue high reviews";
+    case "overdue_reviews_medium":
+      return "Overdue medium reviews";
+    default:
+      return "All queues";
+  }
+}
+
+function formatPlainEnglishDate(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const exactDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (exactDate) {
+    const date = new Date(Date.UTC(Number(exactDate[1]), Number(exactDate[2]) - 1, Number(exactDate[3])));
+    return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+  }
+  const isoDate = /^\d{4}-\d{2}-\d{2}T/.test(text) ? new Date(text) : null;
+  if (isoDate && Number.isFinite(isoDate.getTime())) {
+    return isoDate.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  }
+  return text;
+}
+
+function humanizeScopeSnapshot(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, (match) => formatPlainEnglishDate(match))
+    .replace(/\s*\|\s*/g, "; ");
+}
+
+function humanizeExportFileName(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const match = /^([^.]+)(\.[A-Za-z0-9]+)?$/.exec(raw);
+  if (!match) return raw;
+  const stem = match[1] || "";
+  const ext = match[2] || "";
+  const stemMatch = /^(.*?)-(\d{4}-\d{2}-\d{2})$/.exec(stem);
+  if (stemMatch) {
+    return `${humanizeAuditLabel(stemMatch[1])} (${formatPlainEnglishDate(stemMatch[2])})${ext.toLowerCase()}`;
+  }
+  const normalizedStem = stem.replace(/\b\d{4}-\d{2}-\d{2}\b/g, (date) => formatPlainEnglishDate(date));
+  if (/[() ]/.test(normalizedStem)) {
+    return `${normalizedStem}${ext.toLowerCase()}`;
+  }
+  return `${humanizeAuditLabel(normalizedStem)}${ext.toLowerCase()}`;
 }
 
 function replaceAuditBrowserUrl(params: URLSearchParams) {
@@ -232,11 +334,406 @@ const fetcher = async (u: string) => {
   return j as AuditPageResponse;
 };
 
+type AdvancedAuditFiltersDialogProps = {
+  advancedFilterCount: number;
+  action: string;
+  setAction: (value: string) => void;
+  setEntityType: (value: string) => void;
+  setEmployeeId: (value: string) => void;
+  setPayrollRunId: (value: string) => void;
+  customerId: string;
+  setCustomerId: (value: string) => void;
+  setCustomerSearch: (value: string) => void;
+  setCustomerOptions: (value: CustomerSuggestItem[]) => void;
+  setRiskMode: (value: AuditRiskMode) => void;
+  setQueueMode: (value: AuditQueueMode) => void;
+  logId: string;
+  setLogId: (value: string) => void;
+  entityId: string;
+  setEntityId: (value: string) => void;
+  correlationId: string;
+  setCorrelationId: (value: string) => void;
+  metaStatus: string;
+  setMetaStatus: (value: string) => void;
+  outcome: string;
+  setOutcome: (value: string) => void;
+  actorId: string;
+  setActorId: (value: string) => void;
+  filterActors: AuditFilters["actors"];
+  actorType: string;
+  setActorType: (value: string) => void;
+  sourcePage: string;
+  sourcePageOptions: Array<{ value: string; label: string }>;
+  setSourcePage: (value: string) => void;
+  employeeStatus: string;
+  applyEmployeeStatus: (value: string) => void;
+  jobStatus: string;
+  applyJobStatus: (value: string) => void;
+  issueStatus: string;
+  applyIssueStatus: (value: string) => void;
+  savedFilterName: string;
+  setSavedFilterName: (value: string) => void;
+  savedFilterError: string;
+  setSavedFilterError: (value: string) => void;
+  shareSavedFilter: boolean;
+  setShareSavedFilter: (value: boolean) => void;
+  savedFiltersSource: "loading" | "server" | "local";
+  dateRangeError: string;
+  saveCurrentFilter: () => void | Promise<void>;
+  clearAll: () => void;
+};
+
+const AdvancedAuditFiltersDialog = memo(function AdvancedAuditFiltersDialog({
+  advancedFilterCount,
+  action,
+  setAction,
+  setEntityType,
+  setEmployeeId,
+  setPayrollRunId,
+  customerId,
+  setCustomerId,
+  setCustomerSearch,
+  setCustomerOptions,
+  setRiskMode,
+  setQueueMode,
+  logId,
+  setLogId,
+  entityId,
+  setEntityId,
+  correlationId,
+  setCorrelationId,
+  metaStatus,
+  setMetaStatus,
+  outcome,
+  setOutcome,
+  actorId,
+  setActorId,
+  filterActors,
+  actorType,
+  setActorType,
+  sourcePage,
+  sourcePageOptions,
+  setSourcePage,
+  employeeStatus,
+  applyEmployeeStatus,
+  jobStatus,
+  applyJobStatus,
+  issueStatus,
+  applyIssueStatus,
+  savedFilterName,
+  setSavedFilterName,
+  savedFilterError,
+  setSavedFilterError,
+  shareSavedFilter,
+  setShareSavedFilter,
+  savedFiltersSource,
+  dateRangeError,
+  saveCurrentFilter,
+  clearAll,
+}: AdvancedAuditFiltersDialogProps) {
+  const [open, setOpen] = useState(false);
+  const applySecurityPreset = (nextAction: string, nextOutcome = "") => {
+    setEntityType("");
+    setEmployeeId("");
+    setPayrollRunId("");
+    setLogId("");
+    setEntityId("");
+    setCorrelationId("");
+    if (customerId) setCustomerId("");
+    setCustomerSearch("");
+    setCustomerOptions([]);
+    setMetaStatus("");
+    setActorId("");
+    setActorType("");
+    setSourcePage("");
+    setRiskMode("all");
+    setQueueMode("all");
+    setAction(nextAction);
+    setOutcome(nextOutcome);
+  };
+
+  return (
+    <>
+      <Button
+        variant={open ? "default" : "outline"}
+        size="sm"
+        className="w-full sm:w-auto"
+        onClick={() => setOpen(true)}
+      >
+        {advancedFilterCount > 0 ? `Advanced filters (${advancedFilterCount})` : "Advanced filters"}
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="inset-y-0 left-auto right-0 top-0 h-[100dvh] max-h-[100dvh] w-full max-w-[min(100vw,42rem)] translate-x-0 translate-y-0 overflow-hidden rounded-none border-b-0 border-l border-r-0 border-t-0 p-0 sm:max-w-[42rem]">
+          <div className="flex h-full min-h-0 flex-col">
+            <DialogHeader className="border-b px-6 py-4">
+              <DialogTitle>Advanced filters</DialogTitle>
+              <DialogDescription>
+                Use targeted lookup filters, HR scopes, and saved filters without pushing the audit table down the page.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4 pb-6">
+              <section className="space-y-3">
+                <div>
+                  <div className="text-sm font-medium">Lookup filters</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    IDs, actor filters, source page, status, and outcome for deep investigations.
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Log ID</span>
+                    <Input placeholder="Exact audit log ID" value={logId} onChange={(e) => setLogId(e.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Entity ID</span>
+                    <Input placeholder="Order, payment, user, or document ID" value={entityId} onChange={(e) => setEntityId(e.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Correlation ID</span>
+                    <Input placeholder="Export or workflow correlation ID" value={correlationId} onChange={(e) => setCorrelationId(e.target.value)} />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Meta status</span>
+                    <Input placeholder="APPROVED, FAILED, PAID..." value={metaStatus} onChange={(e) => setMetaStatus(e.target.value.toUpperCase())} />
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Outcome</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={outcome} onChange={(e) => setOutcome(e.target.value.toUpperCase())}>
+                      <option value="">All outcomes</option>
+                      <option value="SUCCESS">Success</option>
+                      <option value="FAILED">Failed</option>
+                      <option value="PARTIAL">Partial</option>
+                    </select>
+                    <span className="block text-[11px] text-muted-foreground">
+                      Best for auth and security rows when you need success vs failure.
+                    </span>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Actor ID</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={actorId} onChange={(e) => setActorId(e.target.value)}>
+                      <option value="">All actors</option>
+                      <option value="system">System</option>
+                      {filterActors.map((actor) => (
+                        <option key={actor.id} value={actor.id}>
+                          {actor.name || actor.email || actor.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Actor type</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={actorType} onChange={(e) => setActorType(e.target.value.toUpperCase())}>
+                      <option value="">All actor types</option>
+                      <option value="CUSTOMER">Customer</option>
+                      <option value="ADMIN">Admin</option>
+                      <option value="STAFF">Staff</option>
+                      <option value="ACCOUNTANT">Accountant</option>
+                      <option value="SYSTEM">System</option>
+                    </select>
+                  </label>
+                  <div className="space-y-1 text-sm md:col-span-2">
+                    <label className="text-xs text-muted-foreground">Source page</label>
+                    <select
+                      aria-label="Source page"
+                      className="h-9 w-full rounded border bg-background px-3 text-sm"
+                      value={sourcePage}
+                      onChange={(e) => setSourcePage(normalizeSourcePage(e.target.value))}
+                    >
+                      {sourcePageOptions.map((item) => (
+                        <option key={item.value || "all"} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Login, password, 2FA, and session logs are already available from the main Action filter.
+                </p>
+              </section>
+
+              <section className="space-y-3 border-t pt-4">
+                <div>
+                  <div className="text-sm font-medium">Security presets</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    One-click slices for the auth and session audit rows added in this release. Date range and other visible filters stay in place.
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant={action === "USER_LOGIN" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_LOGIN", "SUCCESS")}
+                  >
+                    Successful logins
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_LOGIN_FAILED" && outcome === "FAILED" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_LOGIN_FAILED", "FAILED")}
+                  >
+                    Failed logins
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_PASSWORD_CHANGED" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_PASSWORD_CHANGED", "SUCCESS")}
+                  >
+                    Password changes
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_PASSWORD_RESET" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_PASSWORD_RESET", "SUCCESS")}
+                  >
+                    Password resets
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_2FA_ENABLED" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_2FA_ENABLED", "SUCCESS")}
+                  >
+                    2FA enabled
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_2FA_DISABLED" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_2FA_DISABLED", "SUCCESS")}
+                  >
+                    2FA disabled
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_SESSION_INVALIDATED" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_SESSION_INVALIDATED", "SUCCESS")}
+                  >
+                    Session invalidations
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={action === "USER_FORCE_LOGOUT" && outcome === "SUCCESS" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySecurityPreset("USER_FORCE_LOGOUT", "SUCCESS")}
+                  >
+                    Force logout actions
+                  </Button>
+                </div>
+              </section>
+
+              <section className="space-y-3 border-t pt-4">
+                <div>
+                  <div className="text-sm font-medium">HR-specific filters</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Narrow the table to employee, hiring, and issue-management audit flows.
+                  </div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Employee status</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={employeeStatus} onChange={(e) => applyEmployeeStatus(e.target.value)}>
+                      <option value="">All</option>
+                      <option value="ACTIVE">Active</option>
+                      <option value="ON_LEAVE">On leave</option>
+                      <option value="SUSPENDED">Suspended</option>
+                      <option value="TERMINATED">Terminated</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Job opening status</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={jobStatus} onChange={(e) => applyJobStatus(e.target.value)}>
+                      <option value="">All</option>
+                      <option value="OPEN">Open</option>
+                      <option value="PAUSED">Paused</option>
+                      <option value="CLOSED">Closed</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-sm">
+                    <span className="text-muted-foreground">Issue status</span>
+                    <select className="h-9 w-full rounded border bg-background px-3 text-sm" value={issueStatus} onChange={(e) => applyIssueStatus(e.target.value)}>
+                      <option value="">All</option>
+                      <option value="OPEN">Open</option>
+                      <option value="IN_PROGRESS">In progress</option>
+                      <option value="RESOLVED">Resolved</option>
+                      <option value="CLOSED">Closed</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <section className="space-y-3 border-t pt-4">
+                <div>
+                  <div className="text-sm font-medium">Save current filter</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Save the current audit filter state so you can restore or share it later.
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">Save current filter as</label>
+                    <Input
+                      placeholder="Ex: Refund checks - last 30 days"
+                      value={savedFilterName}
+                      onChange={(event) => {
+                        setSavedFilterName(event.target.value);
+                        if (savedFilterError) setSavedFilterError("");
+                      }}
+                    />
+                    {savedFilterError ? (
+                      <p className="text-xs text-red-600">{savedFilterError}</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Use names your team can recognize quickly.</p>
+                    )}
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5"
+                      checked={shareSavedFilter}
+                      onChange={(event) => setShareSavedFilter(event.target.checked)}
+                    />
+                    Share this filter with admin/accounting team
+                  </label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Save mode: {savedFiltersSource === "server" ? "Server (shared across devices)" : savedFiltersSource === "local" ? "Local browser fallback" : "Loading..."}
+                  </p>
+                  <Button type="button" variant="outline" size="sm" disabled={!!dateRangeError} onClick={saveCurrentFilter}>
+                    Save filter
+                  </Button>
+                </div>
+              </section>
+            </div>
+            <DialogFooter className="shrink-0 border-t px-6 py-4">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  clearAll();
+                  setOpen(false);
+                }}
+              >
+                Clear filters
+              </Button>
+              <Button size="sm" onClick={() => setOpen(false)}>Close</Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+});
+
 function AdminAuditContent() {
+  const queryClient = useQueryClient();
   const { data: session } = useSession();
   const currentRole = String((session?.user as { role?: string } | undefined)?.role || "");
   const isAdmin = currentRole === "ADMIN";
-  const isStaff = currentRole === "STAFF";
   const canManageTasks = isAdmin || currentRole === "ACCOUNTANT";
   const searchParams = useSearchParams();
   const scopedView = (() => {
@@ -244,6 +741,7 @@ function AdminAuditContent() {
     return raw === "accounting_periods" || raw === "accounting_settings" ? raw : "";
   })();
   const initialized = useRef(false);
+  const [filtersReady, setFiltersReady] = useState(false);
   const [logId, setLogId] = useState("");
   const [entityType, setEntityType] = useState("");
   const [entityId, setEntityId] = useState("");
@@ -257,6 +755,7 @@ function AdminAuditContent() {
   const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
   const [showCustomerOptions, setShowCustomerOptions] = useState(false);
   const [action, setAction] = useState("");
+  const [outcome, setOutcome] = useState("");
   const [actorId, setActorId] = useState("");
   const [actorType, setActorType] = useState("");
   const [metaStatus, setMetaStatus] = useState("");
@@ -338,6 +837,7 @@ function AdminAuditContent() {
     const ci = searchParams.get("customerId") || "";
     const cq = searchParams.get("customerQuery") || "";
     const act = searchParams.get("action") || "";
+    const out = (searchParams.get("outcome") || "").toUpperCase();
     const actor = searchParams.get("actorId") || "";
     const at = searchParams.get("actorType") || "";
     const s = searchParams.get("start") || "";
@@ -355,6 +855,7 @@ function AdminAuditContent() {
     setCustomerId(ci);
     setCustomerSearch(cq || ci);
     setAction(act);
+    setOutcome(["SUCCESS", "FAILED", "PARTIAL"].includes(out) ? out : "");
     setActorId(actor);
     setActorType(at.toUpperCase());
     setStart(s);
@@ -363,11 +864,21 @@ function AdminAuditContent() {
     setSourcePage(normalizeSourcePage(sp));
     setRiskMode(["all", "exceptions", "critical", "needs_review"].includes(rm) ? rm : "all");
     setQueueMode(
-      ["all", "critical_unreviewed", "archive_soon_unreviewed", "needs_assignment", "overdue_tasks"].includes(qm)
+      [
+        "all",
+        "critical_unreviewed",
+        "archive_soon_unreviewed",
+        "needs_assignment",
+        "overdue_tasks",
+        "overdue_reviews_critical",
+        "overdue_reviews_high",
+        "overdue_reviews_medium",
+      ].includes(qm)
         ? qm
         : "all",
     );
     initialized.current = true;
+    setFiltersReady(true);
   }, [searchParams]);
 
   useEffect(() => {
@@ -532,6 +1043,7 @@ function AdminAuditContent() {
     params.set("customerQuery", customerSearch.trim());
   }
   if (action) params.set("action", action);
+  if (outcome) params.set("outcome", outcome);
   if (actorId) params.set("actorId", actorId);
   if (actorType) params.set("actorType", actorType);
   if (safeStart) params.set("start", safeStart);
@@ -557,6 +1069,7 @@ function AdminAuditContent() {
     customerId,
     customerSearch,
     action,
+    outcome,
     actorId,
     actorType,
     safeStart,
@@ -583,13 +1096,20 @@ function AdminAuditContent() {
     refetchOnReconnect: false,
   });
 
-  const filterActions = useMemo(() => filterData?.actions ?? [], [filterData]);
+  const filterActions = useMemo(
+    () =>
+      Array.from(new Set([...(filterData?.actions ?? []), ...KNOWN_SECURITY_AUDIT_ACTIONS])).sort((left, right) =>
+        humanizeAuditLabel(left).localeCompare(humanizeAuditLabel(right)),
+      ),
+    [filterData],
+  );
   const filterEntityTypes = useMemo(() => filterData?.entityTypes ?? [], [filterData]);
   const filterActors = useMemo(() => filterData?.actors ?? [], [filterData]);
 
-  const { data, error, isFetching } = useClientQuery({
+  const { data, error, isPending } = useClientQuery({
     queryKey,
     queryFn: () => fetcher(`/api/admin/audit?${params.toString()}`),
+    enabled: filtersReady,
     refetchInterval: 15000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -719,18 +1239,19 @@ function AdminAuditContent() {
   }, [rows]);
 
   useEffect(() => {
-    if (page !== 1) setPage(1);
+    setPage((prev) => (prev === 1 ? prev : 1));
     // Reset to first page when filters change.
   }, [
-    page,
     logId,
     entityType,
     entityId,
+    employeeId,
     payrollRunId,
     correlationId,
     customerId,
     customerSearch,
     action,
+    outcome,
     actorId,
     actorType,
     safeStart,
@@ -739,6 +1260,7 @@ function AdminAuditContent() {
     sourcePage,
     riskMode,
     queueMode,
+    scopedView,
   ]);
 
   useEffect(() => {
@@ -786,6 +1308,7 @@ function AdminAuditContent() {
     setLogId("");
     setEntityType("");
     setEntityId("");
+    setEmployeeId("");
     setPayrollRunId("");
     setCorrelationId("");
     setCustomerId("");
@@ -793,6 +1316,7 @@ function AdminAuditContent() {
     setCustomerOptions([]);
     setShowCustomerOptions(false);
     setAction("");
+    setOutcome("");
     setActorId("");
     setActorType("");
     setMetaStatus("");
@@ -809,6 +1333,10 @@ function AdminAuditContent() {
     replaceAuditBrowserUrl(nextParams);
   };
 
+  const refreshAuditQueries = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["admin", "audit"] });
+  };
+
   const clearAll = () => {
     clearFilters();
     setStart("");
@@ -820,11 +1348,13 @@ function AdminAuditContent() {
     logId,
     entityType,
     entityId,
+    employeeId,
     payrollRunId,
     correlationId,
     customerId,
     customerSearch,
     action,
+    outcome,
     actorId,
     actorType,
     start,
@@ -843,6 +1373,7 @@ function AdminAuditContent() {
       if (!response.ok) throw new Error(payload?.error || "Failed to load reviewer performance.");
       return payload as { days: number; items: AuditPerformanceItem[] };
     },
+    enabled: !sourcePage.trim(),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     refetchInterval: 60_000,
@@ -934,11 +1465,13 @@ function AdminAuditContent() {
     setLogId(s.logId || "");
     setEntityType(s.entityType);
     setEntityId(s.entityId);
+    setEmployeeId(s.employeeId || "");
     setPayrollRunId(s.payrollRunId || "");
     setCorrelationId(s.correlationId || "");
     setCustomerId(s.customerId);
     setCustomerSearch(s.customerSearch || s.customerId);
     setAction(s.action);
+    setOutcome(s.outcome || "");
     setActorId(s.actorId);
     setActorType((s.actorType || "").toUpperCase());
     setStart(s.start);
@@ -953,7 +1486,16 @@ function AdminAuditContent() {
         : "all",
     );
     setQueueMode(
-      ["all", "critical_unreviewed", "archive_soon_unreviewed", "needs_assignment", "overdue_tasks"].includes(nextQueueMode)
+      [
+        "all",
+        "critical_unreviewed",
+        "archive_soon_unreviewed",
+        "needs_assignment",
+        "overdue_tasks",
+        "overdue_reviews_critical",
+        "overdue_reviews_high",
+        "overdue_reviews_medium",
+      ].includes(nextQueueMode)
         ? nextQueueMode
         : "all",
     );
@@ -1029,6 +1571,7 @@ function AdminAuditContent() {
   }) => {
     const today = new Date();
     const startDate = preset.days ? new Date(today.getTime() - preset.days * 24 * 60 * 60 * 1000) : null;
+    clearAll();
     setEntityType(preset.entityType ?? "");
     setAction(preset.action ?? "");
     setActorType((preset.actorType || "").toUpperCase());
@@ -1168,13 +1711,34 @@ function AdminAuditContent() {
       </div>
     );
   };
+  const resolveAuditActionLabel = (row: Pick<AuditRow, "action" | "meta">) => {
+    const meta = (row.meta || {}) as Record<string, unknown>;
+    const exportLabel = String(meta.exportLabel || "").trim();
+    if (exportLabel) return exportLabel;
+    return humanizeAuditLabel(row.action);
+  };
+  const resolveAuditEntityLabel = (row: Pick<AuditRow, "entityType" | "entityId" | "meta">) => {
+    const type = String(row.entityType || "").toUpperCase();
+    const meta = (row.meta || {}) as Record<string, unknown>;
+    const preferred =
+      String(meta.reportLabel || meta.entityLabel || meta.report || "").trim();
+    if (
+      type === "ACCOUNTINGREPORT" ||
+      type === "ACCOUNTINGREPORTEXPORTJOB" ||
+      type === "REPORT" ||
+      type === "PAYROLLRUNREPORT"
+    ) {
+      return preferred ? humanizeAuditLabel(preferred) : humanizeAuditLabel(row.entityId);
+    }
+    return formatIdReadable(row.entityId);
+  };
   const renderEntitySummary = (row: AuditRow) => {
     const href = resolveAuditEntityHref(row);
     return (
       <div className="min-w-0 space-y-0.5">
         <span className="block font-mono text-[11px] truncate">{row.entityType}</span>
         <div className="text-[11px] text-muted-foreground truncate">
-          {formatIdReadable(row.entityId)}
+          {resolveAuditEntityLabel(row)}
         </div>
         {href ? (
           <Link
@@ -1309,7 +1873,7 @@ function AdminAuditContent() {
       setSelectedRowIds(new Set());
       if (payload?.pendingApproval) {
         toast.success("Critical clear request submitted for admin approval.");
-        window.location.reload();
+        await refreshAuditQueries();
         return;
       }
       toast.success(
@@ -1317,7 +1881,7 @@ function AdminAuditContent() {
           ? `Marked ${pendingReviewDialog.ids.length} row(s) reviewed.`
           : `Cleared review for ${pendingReviewDialog.ids.length} row(s).`,
       );
-      window.location.reload();
+      await refreshAuditQueries();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update review status.");
     } finally {
@@ -1466,7 +2030,7 @@ function AdminAuditContent() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error || "Failed to process approval.");
       toast.success(approved ? "Clear request approved." : "Clear request rejected.");
-      window.location.reload();
+      await refreshAuditQueries();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to process approval.");
     }
@@ -1529,7 +2093,7 @@ function AdminAuditContent() {
       setTaskDialogOpen(false);
       setPendingTaskRow(null);
       setPendingTaskIds([]);
-      window.location.reload();
+      await refreshAuditQueries();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to update review task.");
     } finally {
@@ -1632,10 +2196,51 @@ function AdminAuditContent() {
         </>
       ),
     };
+    const auditContextLines: Array<{ key: string; content: React.ReactNode }> = [
+      ...(row.outcome
+        ? [
+            {
+              key: "outcome",
+              content: (
+                <>
+                  <span className="font-medium">Outcome:</span> {humanizeAuditLabel(row.outcome)}
+                </>
+              ),
+            },
+          ]
+        : []),
+      ...(row.requestId
+        ? [
+            {
+              key: "requestId",
+              content: (
+                <>
+                  <span className="font-medium">Request ID:</span> {row.requestId}
+                </>
+              ),
+            },
+          ]
+        : []),
+      ...(row.ipAddress
+        ? [
+            {
+              key: "ipAddress",
+              content: (
+                <>
+                  <span className="font-medium">IP:</span> {row.ipAddress}
+                </>
+              ),
+            },
+          ]
+        : []),
+    ];
     if (!row.meta) {
       return (
         <div className="min-w-0 max-w-full break-words text-[11px] text-muted-foreground space-y-1">
           <div>{initiatorLine.content}</div>
+          {auditContextLines.map((line) => (
+            <div key={line.key}>{line.content}</div>
+          ))}
         </div>
       );
     }
@@ -1658,7 +2263,7 @@ function AdminAuditContent() {
     const renderCollapsibleLines = (lines: Array<{ key: string; content: React.ReactNode }>) => {
       const linesWithInitiator = lines.some((line) => line.key === "initiator")
         ? lines
-        : [initiatorLine, ...lines];
+        : [initiatorLine, ...auditContextLines, ...lines];
       const hasMore = linesWithInitiator.length > 5;
       const visible = metaExpanded ? linesWithInitiator : linesWithInitiator.slice(0, 5);
       return (
@@ -4178,6 +4783,7 @@ function AdminAuditContent() {
       const normalizedColumnCount = Number(meta.columnCount || afterMeta?.columnCount || 0) || 0;
       const normalizedByteSize = Number(meta.byteSize || afterMeta?.byteSize || 0) || 0;
       const derivedFileName =
+        String(meta.displayFileName || "").trim() ||
         String(meta.fileName || "").trim() ||
         String(afterMeta?.fileName || "").trim() ||
         (() => {
@@ -4195,15 +4801,19 @@ function AdminAuditContent() {
           return "";
         })();
       const normalizedScope =
-        String(meta.scopeSnapshot || "").trim() ||
+        humanizeScopeSnapshot(String(meta.scopeSnapshot || "").trim()) ||
         (() => {
           const before = (meta.before && typeof meta.before === "object") ? (meta.before as Record<string, unknown>) : null;
           const after = (meta.after && typeof meta.after === "object") ? (meta.after as Record<string, unknown>) : null;
           const asOf = String(after?.asOf || before?.asOf || meta.asOf || "").trim();
           const start = String(after?.start || before?.start || meta.start || "").trim();
           const end = String(after?.end || before?.end || meta.end || "").trim();
-          if (start || end) return `${start || "-"} to ${end || "-"}`;
-          if (asOf) return `As of ${asOf}`;
+          if (start || end) {
+            const startLabel = start ? formatPlainEnglishDate(start) : "the beginning";
+            const endLabel = end ? formatPlainEnglishDate(end) : "the selected end date";
+            return `${startLabel} to ${endLabel}`;
+          }
+          if (asOf) return `As of ${formatPlainEnglishDate(asOf)}`;
           return "";
         })();
       const normalizedResult =
@@ -4217,7 +4827,7 @@ function AdminAuditContent() {
           key: "export",
           content: (
             <>
-              <span className="font-medium">Export action:</span> {String(meta.exportLabel || row.action)}
+              <span className="font-medium">Export action:</span> {resolveAuditActionLabel(row)}
             </>
           ),
         },
@@ -4226,7 +4836,7 @@ function AdminAuditContent() {
           content: (
             <>
               <span className="font-medium">File / Format:</span>{" "}
-              {String(derivedFileName || "Not provided")} / {String(inferredFormat || "Not provided")}
+              {String(humanizeExportFileName(derivedFileName) || "Not provided")} / {String(inferredFormat || "Not provided")}
             </>
           ),
         },
@@ -4317,6 +4927,29 @@ function AdminAuditContent() {
         .replace(/([a-z])([A-Z])/g, "$1 $2")
         .replace(/_/g, " ")
         .replace(/\b\w/g, (ch) => ch.toUpperCase());
+    const formatAuditReasonText = (value: string) => {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) return "Not provided";
+      if (normalized === "user_not_found") {
+        return "No account matched the supplied email address or username.";
+      }
+      if (normalized === "bad_password") {
+        return "The password did not match the account.";
+      }
+      if (normalized === "user_archived") {
+        return "Login was blocked because the user account is archived.";
+      }
+      if (normalized === "locked_out") {
+        return "Login was blocked because too many failed attempts triggered a temporary lockout.";
+      }
+      if (normalized === "rate_limited") {
+        return "Login was blocked by rate limiting because there were too many attempts.";
+      }
+      if (normalized === "invalid_payload") {
+        return "Login request failed validation.";
+      }
+      return humanizeAuditLabel(value);
+    };
     const formatUnknownMetaValue = (value: unknown, depth = 0): string => {
       if (value === null || value === undefined) return "Not provided";
       if (typeof value === "boolean") return value ? "Yes" : "No";
@@ -4378,6 +5011,8 @@ function AdminAuditContent() {
       }
       if (typeof value === "string" && /id$/i.test(key)) {
         display = formatIdReadable(value);
+      } else if (key === "reason" && typeof value === "string") {
+        display = formatAuditReasonText(value);
       } else if (
         typeof value === "string" &&
         /status$/i.test(key)
@@ -4871,6 +5506,101 @@ function AdminAuditContent() {
     );
   };
 
+  const sourcePageOptions = useMemo(() => {
+    const normalized = normalizeSourcePage(sourcePage);
+    if (!normalized || (!normalized.includes("[") && !normalized.includes("]"))) {
+      return FILTERABLE_SOURCE_PAGE_OPTIONS;
+    }
+    return [
+      {
+        value: normalized,
+        label: `${humanizeSourcePageLabel(normalized)} (template route)`,
+      },
+      ...FILTERABLE_SOURCE_PAGE_OPTIONS,
+    ];
+  }, [sourcePage]);
+  const actorLabel =
+    actorId === "system"
+      ? "System"
+      : filterActors.find((entry) => entry.id === actorId)?.name ||
+        filterActors.find((entry) => entry.id === actorId)?.email ||
+        actorId;
+  const advancedFilterKeys = new Set([
+    "logId",
+    "entityId",
+    "correlationId",
+    "outcome",
+    "actorId",
+    "actorType",
+    "metaStatus",
+    "sourcePage",
+    "employeeStatus",
+    "jobStatus",
+    "issueStatus",
+  ]);
+  const activeFilterChips: Array<{ key: string; label: string; clear: () => void }> = [
+    ...(logId ? [{ key: "logId", label: `Log ${formatIdReadable(logId)}`, clear: () => setLogId("") }] : []),
+    ...(entityType
+      ? [{ key: "entityType", label: `Entity ${humanizeAuditLabel(entityType)}`, clear: () => setEntityType("") }]
+      : []),
+    ...(entityId ? [{ key: "entityId", label: `Entity ID ${formatIdReadable(entityId)}`, clear: () => setEntityId("") }] : []),
+    ...(employeeId
+      ? [{ key: "employeeId", label: `Employee ${formatIdReadable(employeeId)}`, clear: () => setEmployeeId("") }]
+      : []),
+    ...(payrollRunId
+      ? [{ key: "payrollRunId", label: `Payroll ${formatIdReadable(payrollRunId)}`, clear: () => setPayrollRunId("") }]
+      : []),
+    ...(correlationId
+      ? [{ key: "correlationId", label: `Correlation ${correlationId}`, clear: () => setCorrelationId("") }]
+      : []),
+    ...(customerId || customerSearch.trim()
+      ? [
+          {
+            key: "customer",
+            label: `Customer ${customerSearch.trim() || formatIdReadable(customerId)}`,
+            clear: () => {
+              setCustomerId("");
+              setCustomerSearch("");
+              setCustomerOptions([]);
+            },
+          },
+        ]
+      : []),
+    ...(action ? [{ key: "action", label: `Action ${humanizeAuditLabel(action)}`, clear: () => setAction("") }] : []),
+    ...(outcome ? [{ key: "outcome", label: `Outcome ${humanizeAuditLabel(outcome)}`, clear: () => setOutcome("") }] : []),
+    ...(actorId ? [{ key: "actorId", label: `Actor ${actorLabel}`, clear: () => setActorId("") }] : []),
+    ...(actorType
+      ? [{ key: "actorType", label: `Actor type ${humanizeAuditLabel(actorType)}`, clear: () => setActorType("") }]
+      : []),
+    ...(start ? [{ key: "start", label: `From ${formatPlainEnglishDate(start)}`, clear: () => setStart("") }] : []),
+    ...(end ? [{ key: "end", label: `To ${formatPlainEnglishDate(end)}`, clear: () => setEnd("") }] : []),
+    ...(metaStatus
+      ? [{ key: "metaStatus", label: `Status ${humanizeAuditLabel(metaStatus)}`, clear: () => setMetaStatus("") }]
+      : []),
+    ...(sourcePage
+      ? [{ key: "sourcePage", label: `Page ${humanizeSourcePageLabel(sourcePage)}`, clear: () => setSourcePage("") }]
+      : []),
+    ...(riskMode !== "all"
+      ? [{ key: "riskMode", label: `Risk ${humanizeAuditLabel(riskMode)}`, clear: () => setRiskMode("all") }]
+      : []),
+    ...(queueMode !== "all"
+      ? [{ key: "queueMode", label: `Queue ${humanizeQueueModeLabel(queueMode)}`, clear: () => setQueueMode("all") }]
+      : []),
+    ...(employeeStatus
+      ? [{ key: "employeeStatus", label: `Employee status ${humanizeAuditLabel(employeeStatus)}`, clear: () => applyEmployeeStatus("") }]
+      : []),
+    ...(jobStatus ? [{ key: "jobStatus", label: `Job status ${humanizeAuditLabel(jobStatus)}`, clear: () => applyJobStatus("") }] : []),
+    ...(issueStatus
+      ? [{ key: "issueStatus", label: `Issue status ${humanizeAuditLabel(issueStatus)}`, clear: () => applyIssueStatus("") }]
+      : []),
+  ];
+  const advancedFilterCount = activeFilterChips.filter((chip) => advancedFilterKeys.has(chip.key)).length;
+  const applyRiskAndQueue = (nextRiskMode: AuditRiskMode, nextQueueMode: AuditQueueMode = "all") => {
+    setRiskMode(nextRiskMode);
+    setQueueMode(nextQueueMode);
+    setPage(1);
+  };
+
   return (
     <section className="container mx-auto py-6 max-w-5xl space-y-6">
       <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -4881,7 +5611,7 @@ function AdminAuditContent() {
           </p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={clearFilters}>
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={clearAll}>
             Clear filters
           </Button>
           <Button
@@ -4999,6 +5729,54 @@ function AdminAuditContent() {
                 ) : null}
               </DropdownMenuContent>
             </DropdownMenu>
+            <AdvancedAuditFiltersDialog
+              advancedFilterCount={advancedFilterCount}
+              action={action}
+              setAction={setAction}
+              setEntityType={setEntityType}
+              setEmployeeId={setEmployeeId}
+              setPayrollRunId={setPayrollRunId}
+              customerId={customerId}
+              setCustomerId={setCustomerId}
+              setCustomerSearch={setCustomerSearch}
+              setCustomerOptions={setCustomerOptions}
+              setRiskMode={setRiskMode}
+              setQueueMode={setQueueMode}
+              logId={logId}
+              setLogId={setLogId}
+              entityId={entityId}
+              setEntityId={setEntityId}
+              correlationId={correlationId}
+              setCorrelationId={setCorrelationId}
+              metaStatus={metaStatus}
+              setMetaStatus={setMetaStatus}
+              outcome={outcome}
+              setOutcome={setOutcome}
+              actorId={actorId}
+              setActorId={setActorId}
+              filterActors={filterActors}
+              actorType={actorType}
+              setActorType={setActorType}
+              sourcePage={sourcePage}
+              sourcePageOptions={sourcePageOptions}
+              setSourcePage={setSourcePage}
+              employeeStatus={employeeStatus}
+              applyEmployeeStatus={applyEmployeeStatus}
+              jobStatus={jobStatus}
+              applyJobStatus={applyJobStatus}
+              issueStatus={issueStatus}
+              applyIssueStatus={applyIssueStatus}
+              savedFilterName={savedFilterName}
+              setSavedFilterName={setSavedFilterName}
+              savedFilterError={savedFilterError}
+              setSavedFilterError={setSavedFilterError}
+              shareSavedFilter={shareSavedFilter}
+              setShareSavedFilter={setShareSavedFilter}
+              savedFiltersSource={savedFiltersSource}
+              dateRangeError={dateRangeError}
+              saveCurrentFilter={saveCurrentFilter}
+              clearAll={clearAll}
+            />
             <Button
               variant="ghost"
               size="sm"
@@ -5010,268 +5788,194 @@ function AdminAuditContent() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Save current filter as</label>
-              <Input
-                placeholder="Ex: Refund checks - last 30 days"
-                value={savedFilterName}
-                onChange={(event) => {
-                  setSavedFilterName(event.target.value);
-                  if (savedFilterError) setSavedFilterError("");
-                }}
-              />
-              {savedFilterError ? (
-                <p className="text-xs text-red-600">{savedFilterError}</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Use names your team can recognize quickly.
-                </p>
-              )}
-              <label className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5"
-                  checked={shareSavedFilter}
-                  onChange={(event) => setShareSavedFilter(event.target.checked)}
-                />
-                Share this filter with admin/accounting team
-              </label>
-              <p className="text-[11px] text-muted-foreground">
-                Save mode: {savedFiltersSource === "server" ? "Server (shared across devices)" : savedFiltersSource === "local" ? "Local browser fallback" : "Loading…"}
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="w-full sm:w-auto"
-              disabled={!!dateRangeError}
-              onClick={saveCurrentFilter}
-            >
-              Save filter
-            </Button>
-          </div>
-
-          <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-7">
-        {employeeId ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 sm:col-span-2 lg:col-span-7">
-            <div>
-              Showing activity related to employee <span className="font-medium">{formatIdReadable(employeeId)}</span>.
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100"
-              onClick={() => {
-                setEmployeeId("");
-                setPage(1);
-              }}
-            >
-              Clear employee filter
-            </Button>
-          </div>
-        ) : null}
-        {payrollRunId ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 sm:col-span-2 lg:col-span-7">
-            <div>
-              Showing activity related to payroll run <span className="font-medium">{formatIdReadable(payrollRunId)}</span>.
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 border-blue-300 bg-white text-blue-800 hover:bg-blue-100"
-              onClick={() => {
-                setPayrollRunId("");
-                setPage(1);
-              }}
-            >
-              Clear payroll filter
-            </Button>
-          </div>
-        ) : null}
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Entity type</label>
-          <select
-            className="h-9 w-full min-w-0 rounded border bg-background px-2 text-sm"
-            value={entityType}
-            onChange={(e) => setEntityType(e.target.value.toUpperCase())}
-          >
-            <option value="">All</option>
-            {filterEntityTypes.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Entity ID</label>
-          <Input
-            placeholder="Order or payment ID"
-            value={entityId}
-            onChange={(e) => setEntityId(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Correlation ID</label>
-          <Input
-            placeholder="Export correlation ID"
-            value={correlationId}
-            onChange={(e) => setCorrelationId(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Customer</label>
-          <div className="relative">
-            <Input
-              placeholder="Search customer (name/email/phone)"
-              value={customerSearch}
-              onFocus={() => setShowCustomerOptions(true)}
-              onBlur={() => {
-                window.setTimeout(() => setShowCustomerOptions(false), 120);
-              }}
-              onChange={(e) => {
-                const value = e.target.value;
-                setCustomerSearch(value);
-                setCustomerId("");
-                setShowCustomerOptions(true);
-              }}
-            />
-            {showCustomerOptions && (customerLookupLoading || customerOptions.length > 0) ? (
-              <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border bg-background p-1 shadow-lg">
-                {customerLookupLoading ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground">Searching...</div>
-                ) : (
-                  customerOptions.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className="w-full rounded px-2 py-1 text-left text-xs hover:bg-muted"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        setCustomerId(item.id);
-                        setCustomerSearch(customerOptionLabel(item));
-                        setShowCustomerOptions(false);
-                      }}
-                    >
-                      {customerOptionLabel(item)}
-                    </button>
-                  ))
-                )}
+          {activeFilterChips.length > 0 ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">Active filters</p>
+                <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={clearAll}>
+                  Clear all filters
+                </Button>
               </div>
-            ) : null}
-          </div>
-          {customerId ? (
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-muted-foreground break-all">{formatIdReadable(customerId)}</span>
+              <div className="flex flex-wrap gap-2">
+                {activeFilterChips.map((chip) => (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                    onClick={() => {
+                      chip.clear();
+                      setPage(1);
+                    }}
+                  >
+                    {chip.label} x
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">No active filters. Apply a filter or quick preset to narrow the log.</p>
+          )}
+
+          {employeeId ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+              <div>
+                Showing activity related to employee <span className="font-medium">{formatIdReadable(employeeId)}</span>.
+              </div>
               <Button
                 type="button"
+                variant="outline"
                 size="sm"
-                variant="ghost"
+                className="h-7 border-emerald-300 bg-white text-emerald-800 hover:bg-emerald-100"
                 onClick={() => {
-                  setCustomerId("");
-                  setCustomerSearch("");
-                  setCustomerOptions([]);
+                  setEmployeeId("");
+                  setPage(1);
                 }}
               >
-                Clear
+                Clear employee filter
               </Button>
             </div>
           ) : null}
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Action</label>
-          <select
-            className="h-9 w-full min-w-0 rounded border bg-background px-2 text-sm"
-            value={action}
-            onChange={(e) => setAction(e.target.value)}
-          >
-            <option value="">All</option>
-            {filterActions.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Actor ID</label>
-          <select
-            className="h-9 w-full rounded border bg-background px-2 text-sm"
-            value={actorId}
-            onChange={(e) => setActorId(e.target.value)}
-          >
-            <option value="">All</option>
-            <option value="system">System</option>
-            {filterActors.map((actor) => (
-              <option key={actor.id} value={actor.id}>
-                {actor.name || actor.email || actor.id}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Actor type</label>
-          <select
-            className="h-9 w-full rounded border bg-background px-2 text-sm"
-            value={actorType}
-            onChange={(e) => setActorType(e.target.value.toUpperCase())}
-          >
-            <option value="">All</option>
-            <option value="CUSTOMER">Customer</option>
-            <option value="ADMIN">Admin</option>
-            <option value="STAFF">Staff</option>
-            <option value="ACCOUNTANT">Accountant</option>
-            <option value="SYSTEM">System</option>
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Risk mode</label>
-          <select
-            className="h-9 w-full rounded border bg-background px-2 text-sm"
-            value={riskMode}
-            onChange={(e) => setRiskMode((e.target.value || "all") as AuditRiskMode)}
-          >
-            <option value="all">All activity</option>
-            <option value="exceptions">Exceptions only</option>
-            <option value="critical">Critical only</option>
-            <option value="needs_review">Needs review</option>
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Queue preset</label>
-          <select
-            className="h-9 w-full rounded border bg-background px-2 text-sm"
-            value={queueMode}
-            onChange={(e) => setQueueMode((e.target.value || "all") as AuditQueueMode)}
-          >
-            <option value="all">All queues</option>
-            <option value="critical_unreviewed">Critical unreviewed</option>
-            <option value="archive_soon_unreviewed">Archive soon unreviewed</option>
-            <option value="needs_assignment">Needs assignment</option>
-            <option value="overdue_tasks">Overdue tasks</option>
-          </select>
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Source page</label>
-          <select
-            className="h-9 w-full rounded border bg-background px-2 text-sm"
-            value={sourcePage}
-            onChange={(e) => setSourcePage(normalizeSourcePage(e.target.value))}
-          >
-            {HR_SOURCE_PAGE_OPTIONS.map((item) => (
-              <option key={item.value || "all"} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </div>
-          </div>
 
-          <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
+          {payrollRunId ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <div>
+                Showing activity related to payroll run <span className="font-medium">{formatIdReadable(payrollRunId)}</span>.
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 border-blue-300 bg-white text-blue-800 hover:bg-blue-100"
+                onClick={() => {
+                  setPayrollRunId("");
+                  setPage(1);
+                }}
+              >
+                Clear payroll filter
+              </Button>
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-8">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Entity type</label>
+              <select
+                className="h-9 w-full min-w-0 rounded border bg-background px-2 text-sm"
+                value={entityType}
+                onChange={(e) => setEntityType(e.target.value.toUpperCase())}
+              >
+                <option value="">All</option>
+                {filterEntityTypes.map((item) => (
+                  <option key={item} value={item}>
+                    {humanizeAuditLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Action</label>
+              <select
+                className="h-9 w-full min-w-0 rounded border bg-background px-2 text-sm"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+              >
+                <option value="">All</option>
+                {filterActions.map((item) => (
+                  <option key={item} value={item}>
+                    {humanizeAuditLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1 sm:col-span-2 xl:col-span-2">
+              <label className="text-xs text-muted-foreground">Customer</label>
+              <div className="relative">
+                <Input
+                  placeholder="Search customer (name/email/phone)"
+                  value={customerSearch}
+                  onFocus={() => setShowCustomerOptions(true)}
+                  onBlur={() => {
+                    window.setTimeout(() => setShowCustomerOptions(false), 120);
+                  }}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setCustomerSearch(value);
+                    setCustomerId("");
+                    setShowCustomerOptions(true);
+                  }}
+                />
+                {showCustomerOptions && (customerLookupLoading || customerOptions.length > 0) ? (
+                  <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border bg-background p-1 shadow-lg">
+                    {customerLookupLoading ? (
+                      <div className="px-2 py-1 text-xs text-muted-foreground">Searching...</div>
+                    ) : (
+                      customerOptions.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className="w-full rounded px-2 py-1 text-left text-xs hover:bg-muted"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            setCustomerId(item.id);
+                            setCustomerSearch(customerOptionLabel(item));
+                            setShowCustomerOptions(false);
+                          }}
+                        >
+                          {customerOptionLabel(item)}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              {customerId ? (
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted-foreground break-all">{formatIdReadable(customerId)}</span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setCustomerId("");
+                      setCustomerSearch("");
+                      setCustomerOptions([]);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Risk mode</label>
+              <select
+                className="h-9 w-full rounded border bg-background px-2 text-sm"
+                value={riskMode}
+                onChange={(e) => setRiskMode((e.target.value || "all") as AuditRiskMode)}
+              >
+                <option value="all">All activity</option>
+                <option value="exceptions">Exceptions only</option>
+                <option value="critical">Critical only</option>
+                <option value="needs_review">Needs review</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Queue preset</label>
+              <select
+                className="h-9 w-full rounded border bg-background px-2 text-sm"
+                value={queueMode}
+                onChange={(e) => setQueueMode((e.target.value || "all") as AuditQueueMode)}
+              >
+                <option value="all">All queues</option>
+                <option value="critical_unreviewed">Critical unreviewed</option>
+                <option value="archive_soon_unreviewed">Archive soon unreviewed</option>
+                <option value="needs_assignment">Needs assignment</option>
+                <option value="overdue_tasks">Overdue tasks</option>
+                <option value="overdue_reviews_critical">Overdue critical reviews</option>
+                <option value="overdue_reviews_high">Overdue high reviews</option>
+                <option value="overdue_reviews_medium">Overdue medium reviews</option>
+              </select>
+            </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">From (date)</label>
               <Input
@@ -5290,352 +5994,22 @@ function AdminAuditContent() {
                 onChange={(e) => setEnd(e.target.value)}
               />
             </div>
-            <div className="space-y-1 sm:col-span-2 lg:col-span-2">
-              <label className="text-xs text-muted-foreground">Date range status</label>
-              <div
-                className={`min-h-9 rounded border px-3 py-2 text-xs ${
-                  dateRangeError
-                    ? "border-red-300 bg-red-50 text-red-700"
-                    : "border-emerald-300 bg-emerald-50 text-emerald-700"
-                }`}
-              >
-                {dateRangeError || "Date range looks valid."}
-              </div>
-            </div>
-            <div className="space-y-1 sm:col-span-2 lg:col-span-2">
-              <label className="text-xs text-muted-foreground">Quick entity filter</label>
-              <div className="flex flex-wrap gap-2 text-[11px]">
-                <Button
-                  type="button"
-                  variant={entityType === "ORDER" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setEntityType("ORDER")}
-                >
-                  Orders
-                </Button>
-                <Button
-                  type="button"
-                  variant={entityType === "PAYMENT" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setEntityType("PAYMENT")}
-                >
-                  Payments
-                </Button>
-                <Button
-                  type="button"
-                  variant={entityType === "PURCHASE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setEntityType("PURCHASE")}
-                >
-                  Purchases
-                </Button>
-                <Button
-                  type="button"
-                  variant={entityType === "EXPENSE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setEntityType("EXPENSE")}
-                >
-                  Expenses
-                </Button>
-                {!isStaff ? (
-                  <Button
-                    type="button"
-                    variant={entityType === "COMPENSATION" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setEntityType("COMPENSATION")}
-                  >
-                    Compensation
-                  </Button>
-                ) : null}
-                {!isStaff ? (
-                  <Button
-                    type="button"
-                    variant={entityType === "PAYROLL_RUN" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setEntityType("PAYROLL_RUN")}
-                  >
-                    Payroll Runs
-                  </Button>
-                ) : null}
-                {!isStaff ? (
-                  <Button
-                    type="button"
-                    variant={entityType === "PAYSLIP" ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setEntityType("PAYSLIP")}
-                  >
-                    Paystubs
-                  </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  variant={entityType === "" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => setEntityType("")}
-                >
-                  All
-                </Button>
-              </div>
-            </div>
           </div>
 
-          <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Employee status</label>
-              <select
-                className="h-9 w-full rounded border bg-background px-2 text-sm"
-                value={employeeStatus}
-                onChange={(e) => applyEmployeeStatus(e.target.value)}
-              >
-                <option value="">All</option>
-                <option value="ACTIVE">Active</option>
-                <option value="ON_LEAVE">On leave</option>
-                <option value="SUSPENDED">Suspended</option>
-                <option value="TERMINATED">Terminated</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Job opening status</label>
-              <select
-                className="h-9 w-full rounded border bg-background px-2 text-sm"
-                value={jobStatus}
-                onChange={(e) => applyJobStatus(e.target.value)}
-              >
-                <option value="">All</option>
-                <option value="OPEN">Open</option>
-                <option value="PAUSED">Paused</option>
-                <option value="CLOSED">Closed</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">Issue status</label>
-              <select
-                className="h-9 w-full rounded border bg-background px-2 text-sm"
-                value={issueStatus}
-                onChange={(e) => applyIssueStatus(e.target.value)}
-              >
-                <option value="">All</option>
-                <option value="OPEN">Open</option>
-                <option value="IN_PROGRESS">In progress</option>
-                <option value="RESOLVED">Resolved</option>
-                <option value="CLOSED">Closed</option>
-              </select>
-            </div>
-          </div>
+          {dateRangeError ? (
+            <p className="text-xs text-red-600">{dateRangeError}</p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">Dates apply as an inclusive range.</p>
+          )}
 
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Quick action filter</label>
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">Quick presets</p>
             <div className="flex flex-wrap gap-2 text-[11px]">
-              <Button
-                type="button"
-                variant={entityType === "EXPENSE" && action === "" ? "default" : "outline"}
-                size="sm"
-                onClick={() => { setEntityType("EXPENSE"); setAction(""); }}
-              >
-                Expenses
-              </Button>
-              <Button
-                type="button"
-                variant={action === "ORDER_ITEM_DELIVERY_UPDATE" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("ORDER_ITEM_DELIVERY_UPDATE")}
-              >
-                Delivery
-              </Button>
-              <Button
-                type="button"
-                variant={action === "PAYMENT_REFUND" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("PAYMENT_REFUND")}
-              >
-                Refunds
-              </Button>
-              <Button
-                type="button"
-                variant={action === "PRODUCT_STOCK_UPDATE" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("PRODUCT_STOCK_UPDATE")}
-              >
-                Stock Updates
-              </Button>
-              <Button
-                type="button"
-                variant={action === "ORDER_CANCEL" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("ORDER_CANCEL")}
-              >
-                Cancellations
-              </Button>
-              <Button
-                type="button"
-                variant={action === "journal.post" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("journal.post")}
-              >
-                Journal Posts
-              </Button>
-              <Button
-                type="button"
-                variant={action === "fiscal-period.close" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("fiscal-period.close")}
-              >
-                Period Close
-              </Button>
-              <Button
-                type="button"
-                variant={action === "reconciliation.close" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("reconciliation.close")}
-              >
-                Reconciliation Close
-              </Button>
-              <Button
-                type="button"
-                variant={action === "reconciliation.match" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("reconciliation.match")}
-              >
-                Reconciliation Matches
-              </Button>
-              <Button
-                type="button"
-                variant={action === "EXPENSE_CREATE" ? "default" : "outline"}
-                size="sm"
-                onClick={() => { setEntityType("EXPENSE"); setAction("EXPENSE_CREATE"); }}
-              >
-                Expense Create
-              </Button>
-              <Button
-                type="button"
-                variant={action === "EXPENSE_UPDATE" ? "default" : "outline"}
-                size="sm"
-                onClick={() => { setEntityType("EXPENSE"); setAction("EXPENSE_UPDATE"); }}
-              >
-                Expense Update
-              </Button>
-              <Button
-                type="button"
-                variant={action === "EXPENSE_DELETE" ? "default" : "outline"}
-                size="sm"
-                onClick={() => { setEntityType("EXPENSE"); setAction("EXPENSE_DELETE"); }}
-              >
-                Expense Delete
-              </Button>
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "COMPENSATION_CREATE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("COMPENSATION"); setAction("COMPENSATION_CREATE"); }}
-                >
-                  Compensation Create
-                </Button>
-              ) : null}
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "COMPENSATION_UPDATE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("COMPENSATION"); setAction("COMPENSATION_UPDATE"); }}
-                >
-                  Compensation Update
-                </Button>
-              ) : null}
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "PAYSLIP_CREATE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("PAYSLIP"); setAction("PAYSLIP_CREATE"); }}
-                >
-                  Paystub Create
-                </Button>
-              ) : null}
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "PAYROLL_GENERATE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("PAYROLL_RUN"); setAction("PAYROLL_GENERATE"); }}
-                >
-                  Payroll Generate
-                </Button>
-              ) : null}
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "PAYROLL_GENERATE_MONTHLY" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("PAYROLL_RUN"); setAction("PAYROLL_GENERATE_MONTHLY"); }}
-                >
-                  Monthly Generate
-                </Button>
-              ) : null}
-              {!isStaff ? (
-                <Button
-                  type="button"
-                  variant={action === "PAYROLL_STATUS_UPDATE" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => { setEntityType("PAYROLL_RUN"); setAction("PAYROLL_STATUS_UPDATE"); }}
-                >
-                  Payroll Status
-                </Button>
-              ) : null}
-              <Button
-                type="button"
-                variant={action === "CASH_RECONCILIATION_RECORDED" ? "default" : "outline"}
-                size="sm"
-                onClick={() => { setEntityType(""); setAction("CASH_RECONCILIATION_RECORDED"); }}
-              >
-                Cash Reconciliation
-              </Button>
-              <Button
-                type="button"
-                variant={action === "" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setAction("")}
-              >
-                All
-              </Button>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs text-muted-foreground">Saved filters</label>
-            <div className="flex flex-wrap gap-2 text-[11px]">
-              <Button
-                type="button"
-                variant={riskMode === "exceptions" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRiskMode("exceptions")}
-              >
-                Exceptions
-              </Button>
-              <Button
-                type="button"
-                variant={riskMode === "needs_review" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRiskMode("needs_review")}
-              >
-                Needs review
-              </Button>
-              <Button
-                type="button"
-                variant={riskMode === "critical" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRiskMode("critical")}
-              >
-                Critical only
-              </Button>
-              <Button
-                type="button"
-                variant={riskMode === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRiskMode("all")}
-              >
-                All risk levels
-              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => applyPreset({ days: 7 })}>All activity (7 days)</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => applyPreset({ entityType: "EXPENSE", days: 7 })}>Expenses (7 days)</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => applyPreset({ action: "PAYMENT_REFUND", days: 30 })}>Refunds (30 days)</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => applyPreset({ action: "PRODUCT_STOCK_UPDATE", days: 7 })}>Stock updates (7 days)</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => applyPreset({ entityType: "PAYMENT", actorType: "CUSTOMER", days: 30 })}>Customer payments (30 days)</Button>
               <Button
                 type="button"
                 variant={queueMode === "critical_unreviewed" ? "default" : "outline"}
@@ -5649,28 +6023,6 @@ function AdminAuditContent() {
               </Button>
               <Button
                 type="button"
-                variant={queueMode === "archive_soon_unreviewed" ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  setQueueMode("archive_soon_unreviewed");
-                  setRiskMode("needs_review");
-                }}
-              >
-                Archive soon unreviewed
-              </Button>
-              <Button
-                type="button"
-                variant={queueMode === "needs_assignment" ? "default" : "outline"}
-                size="sm"
-                onClick={() => {
-                  setQueueMode("needs_assignment");
-                  setRiskMode("needs_review");
-                }}
-              >
-                Needs assignment
-              </Button>
-              <Button
-                type="button"
                 variant={queueMode === "overdue_tasks" ? "default" : "outline"}
                 size="sm"
                 onClick={() => {
@@ -5680,56 +6032,9 @@ function AdminAuditContent() {
               >
                 Overdue tasks
               </Button>
-              <Button
-                type="button"
-                variant={queueMode === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setQueueMode("all")}
-              >
-                Clear queue preset
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset({ days: 7 })}
-              >
-                All activity (7 days)
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset({ entityType: "EXPENSE", days: 7 })}
-              >
-                Expenses (7 days)
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset({ action: "PAYMENT_REFUND", days: 30 })}
-              >
-                Refunds (30 days)
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset({ action: "PRODUCT_STOCK_UPDATE", days: 7 })}
-              >
-                Stock updates (7 days)
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset({ entityType: "PAYMENT", actorType: "CUSTOMER", days: 30 })}
-              >
-                Customer payments (30 days)
-              </Button>
             </div>
           </div>
+
         </CardContent>
       </Card>
 
@@ -5744,26 +6049,60 @@ function AdminAuditContent() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-2">
               <div className="flex flex-wrap gap-2 text-xs">
-                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "all")}
+                >
                   Needs review (all filtered): {queueSummary.needsReview}
-                </Badge>
+                </Button>
                 <Badge variant="outline" className="border-zinc-300 bg-zinc-50 text-zinc-700">
-                  Queue preset: {queueMode.replace(/_/g, " ")}
+                  Queue preset: {humanizeQueueModeLabel(queueMode)}
                 </Badge>
                 <Badge variant="outline" className="border-slate-300 bg-slate-50 text-slate-700">
                   Settings mode: {data?.settingsMode || "editable"}
                 </Badge>
-                <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-red-300 bg-red-50 px-2 py-1 text-xs text-red-700"
+                  onClick={() => applyRiskAndQueue("critical", "all")}
+                >
                   Critical (all filtered): {queueSummary.critical}
-                </Badge>
+                </Button>
                 <Badge variant="outline" className="border-sky-300 bg-sky-50 text-sky-700">
                   Reviewed today (all filtered): {queueSummary.reviewedToday}
                 </Badge>
-              </div>
-              <div className="flex flex-wrap gap-2 text-xs">
-                <Badge variant="outline" className="border-rose-300 bg-rose-50 text-rose-700">
-                  Overdue reviews C/H/M: {queueSummary.overdueCritical || 0}/{queueSummary.overdueHigh || 0}/{queueSummary.overdueMedium || 0}
-                </Badge>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-red-300 bg-red-100 px-2 py-1 text-xs text-red-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "overdue_reviews_critical")}
+                >
+                  Overdue critical reviews: {queueSummary.overdueCritical || 0}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-orange-300 bg-orange-50 px-2 py-1 text-xs text-orange-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "overdue_reviews_high")}
+                >
+                  Overdue high reviews: {queueSummary.overdueHigh || 0}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "overdue_reviews_medium")}
+                >
+                  Overdue medium reviews: {queueSummary.overdueMedium || 0}
+                </Button>
                 <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-800">
                   Archive soon (14d): {queueSummary.archiveReminder || 0}
                 </Badge>
@@ -5779,12 +6118,24 @@ function AdminAuditContent() {
                 <Badge variant="outline" className="border-indigo-300 bg-indigo-100 text-indigo-800">
                   In-progress tasks: {queueSummary.inProgressTasks || 0}
                 </Badge>
-                <Badge variant="outline" className="border-rose-300 bg-rose-100 text-rose-800">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-rose-300 bg-rose-100 px-2 py-1 text-xs text-rose-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "overdue_tasks")}
+                >
                   Overdue tasks: {queueSummary.overdueTasks || 0}
-                </Badge>
-                <Badge variant="outline" className="border-fuchsia-300 bg-fuchsia-50 text-fuchsia-800">
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-auto border-fuchsia-300 bg-fuchsia-50 px-2 py-1 text-xs text-fuchsia-800"
+                  onClick={() => applyRiskAndQueue("needs_review", "needs_assignment")}
+                >
                   Needs assignment (escalation window): {queueSummary.archiveNeedsAssignment || 0}
-                </Badge>
+                </Button>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -5852,42 +6203,38 @@ function AdminAuditContent() {
         </CardContent>
       </Card>
 
-      {!sourcePage.trim() ? (
+      {!sourcePage.trim() && Boolean(performanceData?.items?.length) ? (
         <Card className="shadow-md !border-none">
           <CardHeader>
             <CardTitle className="text-base">Reviewer Performance (30 days)</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-xs">
-            {!performanceData?.items?.length ? (
-              <p className="text-muted-foreground">No reviewer performance data yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-[720px] w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="py-1 pr-3">Reviewer</th>
-                      <th className="py-1 pr-3">Reviewed</th>
-                      <th className="py-1 pr-3">Avg hours to review</th>
-                      <th className="py-1 pr-3">Assigned open</th>
-                      <th className="py-1 pr-3">Assigned in progress</th>
-                      <th className="py-1 pr-3">Assigned overdue</th>
+            <div className="overflow-x-auto">
+              <table className="min-w-[720px] w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b">
+                    <th className="py-1 pr-3">Reviewer</th>
+                    <th className="py-1 pr-3">Reviewed</th>
+                    <th className="py-1 pr-3">Avg hours to review</th>
+                    <th className="py-1 pr-3">Assigned open</th>
+                    <th className="py-1 pr-3">Assigned in progress</th>
+                    <th className="py-1 pr-3">Assigned overdue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performanceData?.items?.slice(0, 8).map((item) => (
+                    <tr key={item.reviewerId} className="border-b last:border-b-0">
+                      <td className="py-1 pr-3">{item.reviewerName}</td>
+                      <td className="py-1 pr-3">{item.reviewedCount}</td>
+                      <td className="py-1 pr-3">{item.avgHoursToReview}</td>
+                      <td className="py-1 pr-3">{item.assignedOpen}</td>
+                      <td className="py-1 pr-3">{item.assignedInProgress}</td>
+                      <td className="py-1 pr-3">{item.assignedOverdue}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {performanceData.items.slice(0, 8).map((item) => (
-                      <tr key={item.reviewerId} className="border-b last:border-b-0">
-                        <td className="py-1 pr-3">{item.reviewerName}</td>
-                        <td className="py-1 pr-3">{item.reviewedCount}</td>
-                        <td className="py-1 pr-3">{item.avgHoursToReview}</td>
-                        <td className="py-1 pr-3">{item.assignedOpen}</td>
-                        <td className="py-1 pr-3">{item.assignedInProgress}</td>
-                        <td className="py-1 pr-3">{item.assignedOverdue}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardContent>
         </Card>
       ) : null}
@@ -5907,7 +6254,7 @@ function AdminAuditContent() {
           <div className="space-y-3 p-3 md:hidden">
             {rows.length === 0 ? (
               <div className="rounded border p-4 text-center text-sm text-muted-foreground">
-                {isFetching ? (
+                {isPending ? (
                   "Loading activity…"
                 ) : (
                   <div className="flex flex-col items-center gap-3">
@@ -5954,7 +6301,7 @@ function AdminAuditContent() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">{renderActorSummary(row)}</div>
                     <span className="shrink-0 rounded border px-2 py-0.5 font-mono text-[10px]">
-                      {row.action}
+                      {resolveAuditActionLabel(row)}
                     </span>
                   </div>
                   <div className="text-[11px] text-muted-foreground">{renderAgingSummary(row)}</div>
@@ -6115,7 +6462,7 @@ function AdminAuditContent() {
                 {rows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="text-center py-4 text-muted-foreground">
-                      {isFetching ? (
+                      {isPending ? (
                         "Loading activity…"
                       ) : (
                         <div className="flex flex-col items-center gap-3">
@@ -6166,7 +6513,7 @@ function AdminAuditContent() {
                         {renderActorSummary(row)}
                       </TableCell>
                       <TableCell style={{ width: getColWidth("action") }}>
-                        <span className="block font-mono text-[11px] truncate">{row.action}</span>
+                        <span className="block font-mono text-[11px] truncate">{resolveAuditActionLabel(row)}</span>
                       </TableCell>
                       <TableCell style={{ width: getColWidth("entity") }}>
                         {renderEntitySummary(row)}
@@ -6307,8 +6654,10 @@ function AdminAuditContent() {
           <Button
             variant="outline"
             size="sm"
-            disabled={isFetching}
-            onClick={() => window.location.reload()}
+            disabled={isPending}
+            onClick={() => {
+              void refreshAuditQueries();
+            }}
           >
             Refresh
           </Button>

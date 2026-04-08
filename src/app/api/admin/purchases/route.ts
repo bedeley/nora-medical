@@ -11,6 +11,7 @@ import { notifyBackInStock } from "@/lib/stock-alerts";
 import { postPurchaseEntry, postSupplierPaymentEntry } from "@/lib/accounting-posting";
 import { ensureInventoryLot, normalizeLotCode } from "@/lib/inventory-lots";
 import { hasPermission } from "@/lib/permissions";
+import { roundCurrency } from "@/lib/currency";
 
 const APPROVAL_QTY_THRESHOLD = Number(process.env.PURCHASE_APPROVAL_QTY_THRESHOLD || 100);
 const SUPPLIER_PAYMENT_APPROVAL_THRESHOLD = Number(
@@ -279,7 +280,9 @@ export async function POST(req: Request) {
       const receiveQty = status === "RECEIVED" ? quantity : 0;
       const newStock = oldStock + receiveQty;
       const denom = effectiveOldStock + receiveQty;
-      const newCost = denom > 0 ? ((oldCost * effectiveOldStock + unitCost * receiveQty) / denom) : oldCost;
+      const newCost = roundCurrency(
+        denom > 0 ? (oldCost * effectiveOldStock + unitCost * receiveQty) / denom : oldCost
+      );
       if (receiveQty > 0) {
         if (requiresLotTracking && !(lotCode && lotCode.trim())) {
           throw new Error("Lot/Batch code is required for this product.");

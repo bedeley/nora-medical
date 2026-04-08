@@ -255,8 +255,11 @@ function LoginContent() {
       <h1 className="text-2xl font-semibold mb-6">Sign in</h1>
       <form onSubmit={onSubmit} className="grid gap-3">
         <Input
+          id="login-email"
           type="text"
           placeholder="Email or username"
+          aria-label="Email or username"
+          aria-describedby={loginErrors.email ? "login-email-error" : undefined}
           value={email}
           onChange={(e) => {
             setEmail(e.target.value);
@@ -267,10 +270,15 @@ function LoginContent() {
           aria-invalid={!!loginErrors.email}
           className={loginErrors.email ? "border-red-500" : undefined}
         />
-        {loginErrors.email && <p className="text-xs text-red-600">{loginErrors.email}</p>}
+        {loginErrors.email && (
+          <p id="login-email-error" role="alert" className="text-xs text-red-600">{loginErrors.email}</p>
+        )}
         <Input
+          id="login-password"
           type="password"
           placeholder="Password"
+          aria-label="Password"
+          aria-describedby={loginErrors.password ? "login-password-error" : undefined}
           value={password}
           onChange={(e) => {
             setPassword(e.target.value);
@@ -281,7 +289,9 @@ function LoginContent() {
           aria-invalid={!!loginErrors.password}
           className={loginErrors.password ? "border-red-500" : undefined}
         />
-        {loginErrors.password && <p className="text-xs text-red-600">{loginErrors.password}</p>}
+        {loginErrors.password && (
+          <p id="login-password-error" role="alert" className="text-xs text-red-600">{loginErrors.password}</p>
+        )}
         {(err || initialReasonMessage) && (
           <p className="text-sm text-red-600">
             {err || initialReasonMessage}

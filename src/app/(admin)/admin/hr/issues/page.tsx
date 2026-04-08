@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -162,6 +163,29 @@ export default function AdminHrIssuesPage() {
     }
     return { active, olderThan7, olderThan14 };
   }, [issues]);
+  const issueStatusSummary = useMemo(() => {
+    const summary = {
+      open: 0,
+      inProgress: 0,
+      resolved: 0,
+      closed: 0,
+    };
+    for (const issue of issues) {
+      if (issue.status === "OPEN") summary.open += 1;
+      if (issue.status === "IN_PROGRESS") summary.inProgress += 1;
+      if (issue.status === "RESOLVED") summary.resolved += 1;
+      if (issue.status === "CLOSED") summary.closed += 1;
+    }
+    return summary;
+  }, [issues]);
+  const criticalActiveIssues = useMemo(
+    () =>
+      issues.filter(
+        (issue) =>
+          issue.severity === "CRITICAL" && issue.status !== "RESOLVED" && issue.status !== "CLOSED",
+      ).length,
+    [issues],
+  );
 
   const handleCreateIssue = async () => {
     try {
@@ -437,116 +461,179 @@ export default function AdminHrIssuesPage() {
   }, []);
 
   return (
-    <section className="space-y-6">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Staff Issues</h1>
-          <p className="text-muted-foreground">Track and resolve HR cases.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" asChild>
-            <Link href="/admin/audit?entityType=STAFF_ISSUE&sourcePage=admin/hr/issues">Issues Audit Log</Link>
-          </Button>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>+ Log Issue</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-xl">
-            <DialogHeader>
-              <DialogTitle>New Staff Issue</DialogTitle>
-            </DialogHeader>
-            <div className="grid gap-3">
-              <Select
-                value={form.employeeId}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select employee" />
-                </SelectTrigger>
-                <SelectContent>
-                  {employees.map((employee) => (
-                    <SelectItem key={employee.id} value={employee.id}>
-                      {employee.firstName} {employee.lastName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                placeholder="Issue type (e.g. Salary dispute)"
-                value={form.type}
-                onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
-              />
-              <Select
-                value={form.severity}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, severity: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Severity" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="LOW">Low</SelectItem>
-                  <SelectItem value="MEDIUM">Medium</SelectItem>
-                  <SelectItem value="HIGH">High</SelectItem>
-                  <SelectItem value="CRITICAL">Critical</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={form.status}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="OPEN">Open</SelectItem>
-                  <SelectItem value="IN_PROGRESS">In progress</SelectItem>
-                  <SelectItem value="RESOLVED">Resolved</SelectItem>
-                  <SelectItem value="CLOSED">Closed</SelectItem>
-                </SelectContent>
-              </Select>
-              <Textarea
-                placeholder="Description"
-                value={form.description}
-                onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-                rows={4}
-              />
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={handleCreateIssue}>Save issue</Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-        <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-          <DialogContent className="max-w-xl">
-            <DialogHeader>
-              <DialogTitle>Issue Details</DialogTitle>
-            </DialogHeader>
-            {detailIssue ? (
-              <div className="grid gap-3 text-sm">
-                <div><span className="text-muted-foreground">Type:</span> {detailIssue.type}</div>
-                <div><span className="text-muted-foreground">Severity:</span> {detailIssue.severity}</div>
-                <div><span className="text-muted-foreground">Status:</span> {detailIssue.status}</div>
-                <div><span className="text-muted-foreground">Description:</span> {detailIssue.description || "Not available"}</div>
-                <div><span className="text-muted-foreground">Resolution:</span> {detailIssue.resolution || "Not available"}</div>
-                <div>
-                  <span className="text-muted-foreground">Opened:</span>{" "}
-                  {detailIssue.openedAt ? new Date(detailIssue.openedAt).toLocaleDateString() : "Not available"}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Logged:</span>{" "}
-                  {new Date(detailIssue.createdAt).toLocaleDateString()}
-                </div>
-                <div>
-                  <span className="text-muted-foreground">Closed:</span>{" "}
-                  {detailIssue.closedAt ? new Date(detailIssue.closedAt).toLocaleDateString() : "Not available"}
-                </div>
+    <section className="space-y-6 pb-20 md:pb-0">
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">Staff workspace</Badge>
+                <span>Case tracking</span>
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">No issue selected.</p>
-            )}
-          </DialogContent>
-        </Dialog>
-        <Dialog open={editOpen} onOpenChange={setEditOpen}>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">Staff Issues</h1>
+                <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+                  Track employee cases, triage workflow bottlenecks, and keep overdue HR follow-up visible from one queue.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {criticalActiveIssues > 0
+                    ? `${criticalActiveIssues} critical issue${criticalActiveIssues === 1 ? "" : "s"} on this page still need active follow-up.`
+                    : agingSummary.olderThan14 > 0
+                      ? `${agingSummary.olderThan14} active issue${agingSummary.olderThan14 === 1 ? " has" : "s have"} been open for more than 14 days.`
+                      : total > 0
+                        ? `${agingSummary.active} active issue${agingSummary.active === 1 ? " is" : "s are"} visible in the current view.`
+                        : "No staff issues are currently visible in this view."}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-md xl:justify-end">
+              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button>+ Log issue</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>New Staff Issue</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3">
+                    <Select
+                      value={form.employeeId}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {employees.map((employee) => (
+                          <SelectItem key={employee.id} value={employee.id}>
+                            {employee.firstName} {employee.lastName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      placeholder="Issue type (e.g. Salary dispute)"
+                      value={form.type}
+                      onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
+                    />
+                    <Select
+                      value={form.severity}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, severity: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Severity" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="LOW">Low</SelectItem>
+                        <SelectItem value="MEDIUM">Medium</SelectItem>
+                        <SelectItem value="HIGH">High</SelectItem>
+                        <SelectItem value="CRITICAL">Critical</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={form.status}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="OPEN">Open</SelectItem>
+                        <SelectItem value="IN_PROGRESS">In progress</SelectItem>
+                        <SelectItem value="RESOLVED">Resolved</SelectItem>
+                        <SelectItem value="CLOSED">Closed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Textarea
+                      placeholder="Description"
+                      value={form.description}
+                      onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                      rows={4}
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={handleCreateIssue}>Save issue</Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+              <Button variant="outline" asChild>
+                <Link href="/admin/audit?entityType=STAFF_ISSUE&sourcePage=admin/hr/issues">Issues Audit Log</Link>
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Matching filters</p>
+                <p className="text-2xl font-semibold">{total}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Open</p>
+                <p className="text-2xl font-semibold">{issueStatusSummary.open}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">In progress</p>
+                <p className="text-2xl font-semibold">{issueStatusSummary.inProgress}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Critical active</p>
+                <p className="text-2xl font-semibold">{criticalActiveIssues}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Older than 7 days</p>
+                <p className="text-2xl font-semibold">{agingSummary.olderThan7}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Older than 14 days</p>
+                <p className="text-2xl font-semibold">{agingSummary.olderThan14}</p>
+              </CardContent>
+            </Card>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Issue Details</DialogTitle>
+          </DialogHeader>
+          {detailIssue ? (
+            <div className="grid gap-3 text-sm">
+              <div><span className="text-muted-foreground">Type:</span> {detailIssue.type}</div>
+              <div><span className="text-muted-foreground">Severity:</span> {detailIssue.severity}</div>
+              <div><span className="text-muted-foreground">Status:</span> {detailIssue.status}</div>
+              <div><span className="text-muted-foreground">Description:</span> {detailIssue.description || "Not available"}</div>
+              <div><span className="text-muted-foreground">Resolution:</span> {detailIssue.resolution || "Not available"}</div>
+              <div>
+                <span className="text-muted-foreground">Opened:</span>{" "}
+                {detailIssue.openedAt ? new Date(detailIssue.openedAt).toLocaleDateString() : "Not available"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Logged:</span>{" "}
+                {new Date(detailIssue.createdAt).toLocaleDateString()}
+              </div>
+              <div>
+                <span className="text-muted-foreground">Closed:</span>{" "}
+                {detailIssue.closedAt ? new Date(detailIssue.closedAt).toLocaleDateString() : "Not available"}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No issue selected.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
           <DialogContent className="max-w-xl">
             <DialogHeader>
               <DialogTitle>Edit Issue</DialogTitle>
@@ -664,28 +751,6 @@ export default function AdminHrIssuesPage() {
             </div>
           </DialogContent>
         </Dialog>
-        </div>
-      </header>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Issue Aging Snapshot (Current Page)</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-3 text-sm">
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Active Issues</div>
-            <div className="font-semibold">{agingSummary.active}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Older than 7 days</div>
-            <div className="font-semibold text-amber-700">{agingSummary.olderThan7}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Older than 14 days</div>
-            <div className="font-semibold text-red-600">{agingSummary.olderThan14}</div>
-          </div>
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

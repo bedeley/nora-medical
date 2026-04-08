@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
+import { isJournalEntryBalanced } from "@/lib/journal-entry-balance";
 import { loadMonthlyCloseRows, toMonthKey } from "@/lib/accounting-periods";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -14,7 +15,7 @@ const approveSchema = z.object({
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
-  return hasPermission(role, "journal.approve");
+  return hasPermission(role, "journal.post");
 }
 
 export async function POST(req: Request) {
@@ -38,7 +39,17 @@ export async function POST(req: Request) {
 
     const entries = await prisma.journalEntry.findMany({
       where: { id: { in: parsed.data.entryIds }, status: "DRAFT", archivedAt: null },
-      select: { id: true, entryDate: true, sourceType: true },
+      select: {
+        id: true,
+        entryDate: true,
+        sourceType: true,
+        lines: {
+          select: {
+            debit: true,
+            credit: true,
+          },
+        },
+      },
     });
     if (entries.length === 0) {
       return NextResponse.json({ approved: 0, requested: parsed.data.entryIds.length, matchedDrafts: 0 });
@@ -72,6 +83,17 @@ export async function POST(req: Request) {
           error: "Some selected entries are in closed periods and cannot be posted.",
           closed: blockedEntries.map((entry) => entry.id),
           blockedCount: blockedEntries.length,
+        },
+        { status: 400 },
+      );
+    }
+    const unbalancedEntries = entries.filter((entry) => !isJournalEntryBalanced(entry.lines));
+    if (unbalancedEntries.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Some selected entries are out of balance and cannot be posted.",
+          unbalanced: unbalancedEntries.map((entry) => entry.id),
+          blockedCount: unbalancedEntries.length,
         },
         { status: 400 },
       );

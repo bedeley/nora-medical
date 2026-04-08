@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -27,10 +28,7 @@ async function getDefaultReorderPoint() {
 }
 
 function isCronAuthorized(req: Request) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const auth = req.headers.get("authorization") || "";
-  return auth === `Bearer ${secret}`;
+  return verifyCronSecret(req);
 }
 
 export async function POST(req: Request) {

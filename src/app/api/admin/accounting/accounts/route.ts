@@ -15,6 +15,8 @@ const SYSTEM_ACCOUNT_CODES = new Set([
   "2100", // VAT payable
   "2200", // Store credit
   "3000", // Owner equity
+  "3100", // Retained earnings
+  "3900", // Opening balance equity
   "4000", // Sales revenue
   "5000", // COGS
   "6000", // Operating expenses

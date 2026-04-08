@@ -1,5 +1,21 @@
 import { z } from "zod";
 
+/**
+ * Shared password validation schema.
+ * Enforces minimum 10 characters with complexity requirements:
+ * at least 1 uppercase, 1 lowercase, 1 digit, and 1 special character.
+ */
+export const passwordSchema = z
+  .string()
+  .min(10, "Password must be at least 10 characters")
+  .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+  .regex(/[a-z]/, "Password must contain at least one lowercase letter")
+  .regex(/[0-9]/, "Password must contain at least one digit")
+  .regex(
+    /[^A-Za-z0-9]/,
+    "Password must contain at least one special character"
+  );
+
 const optionalEmail = z
   .string()
   .trim()
@@ -17,7 +33,7 @@ export const registerSchema = z
     name: z.string().trim().min(2),
     email: optionalEmail,
     username: optionalUsername,
-    password: z.string().min(10),
+    password: passwordSchema,
     phone: z
       .string()
       .trim()

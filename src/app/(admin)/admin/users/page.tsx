@@ -5,10 +5,12 @@ import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Lock } from "lucide-react";
 import {
   Table,
@@ -35,6 +37,7 @@ type UserRow = {
     phone: string | null;
     role: string;
     archived: boolean;
+    isProtected?: boolean;
     lastLoginAt: string | null;
     createdAt: string;
     employeeId?: string | null;
@@ -47,7 +50,25 @@ type UserRow = {
   };
 };
 
+type InviteRow = {
+  id: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: string;
+  user: {
+    id: string;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    role: string;
+  };
+};
+
 const ROLE_OPTIONS = ["STAFF", "DISPATCHER", "ACCOUNTANT", "ADMIN"] as const;
+const DORMANT_ACCESS_ROLES = new Set(["ADMIN", "ACCOUNTANT"]);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+type QuickFilter = "ALL" | "MISSING_HR" | "PENDING_INVITE" | "PROTECTED_ADMIN" | "DORMANT_ELEVATED";
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -59,6 +80,67 @@ const fetcher = async (url: string) => {
   return data;
 };
 
+function formatRelativeTime(value: string | null) {
+  if (!value) return "Never";
+  const diff = Date.now() - new Date(value).getTime();
+  if (diff < 60 * 1000) return "Just now";
+  if (diff < 60 * 60 * 1000) return `${Math.max(1, Math.floor(diff / (60 * 1000)))}m ago`;
+  if (diff < DAY_MS) return `${Math.max(1, Math.floor(diff / (60 * 60 * 1000)))}h ago`;
+  if (diff < 30 * DAY_MS) return `${Math.max(1, Math.floor(diff / DAY_MS))}d ago`;
+  if (diff < 365 * DAY_MS) return `${Math.max(1, Math.floor(diff / (30 * DAY_MS)))}mo ago`;
+  return `${Math.max(1, Math.floor(diff / (365 * DAY_MS)))}y ago`;
+}
+
+function getInviteUrgency(expiresAt: string) {
+  const msRemaining = new Date(expiresAt).getTime() - Date.now();
+  if (msRemaining <= 0) {
+    return {
+      label: "Expired",
+      detail: "Invite is no longer valid",
+      className: "border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200",
+    };
+  }
+  if (msRemaining <= DAY_MS) {
+    const hours = Math.max(1, Math.ceil(msRemaining / (60 * 60 * 1000)));
+    return {
+      label: "Expires soon",
+      detail: `${hours}h left`,
+      className: "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200",
+    };
+  }
+  const days = Math.max(1, Math.ceil(msRemaining / DAY_MS));
+  return {
+    label: "Active",
+    detail: `${days}d left`,
+    className: "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200",
+  };
+}
+
+function isDormantElevatedUser(user: UserRow["user"]) {
+  if (user.archived) return false;
+  if (!DORMANT_ACCESS_ROLES.has(user.role)) return false;
+  if (!user.lastLoginAt) return true;
+  return Date.now() - new Date(user.lastLoginAt).getTime() > 30 * DAY_MS;
+}
+
+function SummaryTile({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string | number;
+  note: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-border/70 bg-background/80 p-4">
+      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</p>
+      <p className="mt-2 text-2xl font-semibold">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{note}</p>
+    </div>
+  );
+}
+
 export default function AdminUsersPage() {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
@@ -66,14 +148,7 @@ export default function AdminUsersPage() {
   const isAdmin = role === "ADMIN";
   const roleManagementEnabled =
     process.env.NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED === "1";
-  const protectedAdmins = useMemo(
-    () =>
-      String(process.env.NEXT_PUBLIC_PROTECTED_ADMIN_EMAILS || "")
-        .split(",")
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean),
-    [],
-  );
+  // Protected admin status is now provided by the server via isProtected flag
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -89,6 +164,7 @@ export default function AdminUsersPage() {
   const [backfillSubmitting, setBackfillSubmitting] = useState(false);
   const [ensuringProfileUserId, setEnsuringProfileUserId] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("ALL");
 
   const { data, error, isFetching } = useClientQuery<{
     rows: UserRow[];
@@ -101,32 +177,35 @@ export default function AdminUsersPage() {
     enabled: isAdmin,
   });
   const { data: inviteData } = useClientQuery<{
-    rows: Array<{
-      id: string;
-      userId: string;
-      createdAt: string;
-      expiresAt: string;
-      user: {
-        id: string;
-        name: string | null;
-        email: string | null;
-        phone: string | null;
-        role: string;
-      };
-    }>;
+    rows: InviteRow[];
   }>({
     queryKey: ["admin", "employee-invites"],
     queryFn: () => fetcher("/api/admin/users/invite"),
     enabled: isAdmin,
   });
 
-  const rows = useMemo(() => {
+  const allUsers = useMemo(() => {
     const raw = (data?.rows || []) as UserRow[];
+    return raw.filter((row) => row.user.role !== "CUSTOMER");
+  }, [data?.rows]);
+
+  const inviteRows = useMemo(
+    () => (inviteData?.rows || []) as InviteRow[],
+    [inviteData?.rows],
+  );
+
+  const inviteByUserId = useMemo(() => {
+    const map = new Map<string, { id: string; userId: string }>();
+    for (const invite of inviteRows) {
+      map.set(invite.userId, { id: invite.id, userId: invite.userId });
+    }
+    return map;
+  }, [inviteRows]);
+
+  const rows = useMemo(() => {
+    const raw = allUsers;
     return raw.filter((row) => {
       const user = row.user;
-      if (user.role === "CUSTOMER") {
-        return false;
-      }
       const haystack = [
         user.name,
         user.email,
@@ -142,9 +221,21 @@ export default function AdminUsersPage() {
       if (roleFilter !== "ALL" && user.role !== roleFilter) {
         return false;
       }
+      if (quickFilter === "MISSING_HR" && user.employeeId) {
+        return false;
+      }
+      if (quickFilter === "PENDING_INVITE" && !inviteByUserId.has(user.id)) {
+        return false;
+      }
+      if (quickFilter === "PROTECTED_ADMIN" && !user.isProtected) {
+        return false;
+      }
+      if (quickFilter === "DORMANT_ELEVATED" && !isDormantElevatedUser(user)) {
+        return false;
+      }
       return true;
     });
-  }, [data?.rows, roleFilter, search]);
+  }, [allUsers, inviteByUserId, quickFilter, roleFilter, search]);
 
   const updateRole = async (userId: string, nextRole: string) => {
     try {
@@ -240,7 +331,7 @@ export default function AdminUsersPage() {
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(payload?.error || "Failed to create employee.");
+        throw new Error(payload?.error || "Failed to create user invite.");
       }
       setCreatedInviteUrl(String(payload?.inviteUrl || ""));
       const channel = payload?.channel ? String(payload.channel) : "";
@@ -249,11 +340,11 @@ export default function AdminUsersPage() {
           ? `Invite sent via ${channel}.`
           : "Invite created. Please share the link manually.",
       );
-      toast.success("Employee invite sent.");
+      toast.success("User invite sent.");
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
       queryClient.invalidateQueries({ queryKey: ["admin", "employee-invites"] });
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed to create employee.");
+      setCreateError(err instanceof Error ? err.message : "Failed to create user invite.");
     } finally {
       setCreateSubmitting(false);
     }
@@ -317,9 +408,7 @@ export default function AdminUsersPage() {
       const row = rows.find((r) => r.user.id === id);
       if (!row) continue;
       const isProtectedAdmin =
-        row.user.role === "ADMIN" &&
-        !!row.user.email &&
-        protectedAdmins.includes(row.user.email.toLowerCase());
+        !!row.user.isProtected;
       if (isProtectedAdmin) {
         skipped += 1;
         continue;
@@ -353,9 +442,7 @@ export default function AdminUsersPage() {
       const row = rows.find((r) => r.user.id === id);
       if (!row) continue;
       const isProtectedAdmin =
-        row.user.role === "ADMIN" &&
-        !!row.user.email &&
-        protectedAdmins.includes(row.user.email.toLowerCase());
+        !!row.user.isProtected;
       if (isProtectedAdmin) {
         skipped += 1;
         continue;
@@ -402,30 +489,36 @@ export default function AdminUsersPage() {
     }
   };
 
-  const inviteRows = useMemo(
-    () => (inviteData?.rows || []) as Array<{
-      id: string;
-      userId: string;
-      createdAt: string;
-      expiresAt: string;
-      user: {
-        id: string;
-        name: string | null;
-        email: string | null;
-        phone: string | null;
-        role: string;
-      };
-    }>,
-    [inviteData?.rows],
+  const quickFilterCounts = useMemo(
+    () => ({
+      ALL: allUsers.length,
+      MISSING_HR: allUsers.filter((row) => !row.user.employeeId).length,
+      PENDING_INVITE: allUsers.filter((row) => inviteByUserId.has(row.user.id)).length,
+      PROTECTED_ADMIN: allUsers.filter((row) => row.user.isProtected).length,
+      DORMANT_ELEVATED: allUsers.filter((row) => isDormantElevatedUser(row.user)).length,
+    }),
+    [allUsers, inviteByUserId],
   );
 
-  const inviteByUserId = useMemo(() => {
-    const map = new Map<string, { id: string; userId: string }>();
-    for (const invite of inviteRows) {
-      map.set(invite.userId, { id: invite.id, userId: invite.userId });
-    }
-    return map;
-  }, [inviteRows]);
+  const totalUsers = allUsers.length;
+  const activeUsers = allUsers.filter((row) => !row.user.archived).length;
+  const archivedUsers = allUsers.filter((row) => row.user.archived).length;
+  const missingHrProfiles = allUsers.filter((row) => !row.user.employeeId).length;
+  const linkedHrProfiles = totalUsers - missingHrProfiles;
+  const pendingInvites = inviteRows.length;
+  const protectedAdmins = allUsers.filter((row) => row.user.isProtected).length;
+  const dormantElevatedUsers = quickFilterCounts.DORMANT_ELEVATED;
+  const recentSignIns = allUsers.filter((row) => {
+    if (!row.user.lastLoginAt) return false;
+    return new Date(row.user.lastLoginAt).getTime() >= Date.now() - 30 * 24 * 60 * 60 * 1000;
+  }).length;
+  const quickFilterButtons: Array<{ key: QuickFilter; label: string; count: number }> = [
+    { key: "ALL", label: "All accounts", count: quickFilterCounts.ALL },
+    { key: "MISSING_HR", label: "Missing HR profile", count: quickFilterCounts.MISSING_HR },
+    { key: "PENDING_INVITE", label: "Pending invite", count: quickFilterCounts.PENDING_INVITE },
+    { key: "PROTECTED_ADMIN", label: "Protected admin", count: quickFilterCounts.PROTECTED_ADMIN },
+    { key: "DORMANT_ELEVATED", label: "Dormant elevated access", count: quickFilterCounts.DORMANT_ELEVATED },
+  ];
 
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const buildInviteUrl = (userId: string) =>
@@ -447,37 +540,122 @@ export default function AdminUsersPage() {
   }
 
   return (
-    <section className="container mx-auto py-8 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Users & Roles</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage staff access without using the Customers list.
-        </p>
-        <div className="text-xs text-muted-foreground mt-1">
-          <Link
-            href="/admin/audit?entityType=USER&sourcePage=admin/users"
-            className="underline"
-          >
-            View audit trail for role and access changes
-          </Link>
-        </div>
-      </div>
+    <section className="space-y-6 pb-20 md:pb-0">
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">People access</Badge>
+                <span>HR-linked identities</span>
+              </div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Users & Roles</h1>
+                <p className="max-w-2xl text-sm text-muted-foreground sm:text-base">
+                  Manage staff access, role assignment, invite delivery, and HR profile readiness
+                  from one workspace aligned with the HR control pages.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {missingHrProfiles > 0
+                    ? `${missingHrProfiles} account${missingHrProfiles === 1 ? "" : "s"} still need an HR profile link.`
+                    : "All visible staff accounts are linked to an HR profile."}{" "}
+                  {pendingInvites > 0
+                    ? `${pendingInvites} invite${pendingInvites === 1 ? "" : "s"} still need to be accepted.`
+                    : "No pending invites are waiting for acceptance."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="#directory-controls"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Controls
+                </a>
+                <a
+                  href="#directory"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Directory
+                </a>
+                <a
+                  href="#pending-invites"
+                  className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-sm font-medium text-foreground transition hover:border-primary/40 hover:bg-muted/70"
+                >
+                  Pending invites
+                </a>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-md xl:justify-end">
+              <Button
+                onClick={() => {
+                  resetCreateForm();
+                  setCreateOpen(true);
+                }}
+              >
+                Invite user account
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/admin/hr/onboarding?source=users">Start HR onboarding</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/admin/hr/staff">Open staff directory</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link
+                  href="/admin/audit?entityType=USER&sourcePage=admin/users"
+                >
+                  View audit trail
+                </Link>
+              </Button>
+            </div>
+          </div>
 
-      <Card>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <SummaryTile
+              label="Total accounts"
+              value={totalUsers}
+              note={`${rows.length} in the current filter view`}
+            />
+            <SummaryTile
+              label="Active access"
+              value={activeUsers}
+              note={`${archivedUsers} archived account${archivedUsers === 1 ? "" : "s"}`}
+            />
+            <SummaryTile
+              label="Pending invites"
+              value={pendingInvites}
+              note="Invite delivery and first-login onboarding still open"
+            />
+            <SummaryTile
+              label="Missing HR links"
+              value={missingHrProfiles}
+              note={`${linkedHrProfiles} linked employee profile${linkedHrProfiles === 1 ? "" : "s"} ready`}
+            />
+          </div>
+
+          <div className="rounded-2xl border border-border/70 bg-background/70 p-4">
+            <p className="text-sm font-medium">Current access snapshot</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {totalUsers === 0
+                ? "No staff user accounts have been created yet."
+                : `${recentSignIns} account${recentSignIns === 1 ? "" : "s"} signed in during the last 30 days, ${protectedAdmins} protected admin account${protectedAdmins === 1 ? "" : "s"} remain locked, ${dormantElevatedUsers} elevated-access account${dormantElevatedUsers === 1 ? "" : "s"} look dormant, and role management is ${roleManagementEnabled ? "enabled" : "currently disabled"}.`}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card id="directory-controls">
         <CardHeader className="pb-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="text-base">Filters</CardTitle>
-            <Button
-              className="w-full sm:w-auto"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                resetCreateForm();
-                setCreateOpen(true);
-              }}
-            >
-              Create employee
-            </Button>
+            <div className="space-y-1">
+              <CardTitle className="text-base">Directory controls</CardTitle>
+              <CardDescription>
+                Narrow the staff identity list before updating roles, sessions, or HR links.
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="rounded-full px-3 py-1">
+              Showing {rows.length}
+            </Badge>
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -501,7 +679,7 @@ export default function AdminUsersPage() {
                 ))}
               </SelectContent>
             </Select>
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 rounded-md border border-border/70 px-3 text-sm">
               <input
                 type="checkbox"
                 checked={includeArchived}
@@ -519,25 +697,42 @@ export default function AdminUsersPage() {
           ) : null}
           {roleManagementEnabled ? (
             <div className="text-xs text-muted-foreground">
-              Protected admins are locked via{" "}
-              <span className="font-mono">NEXT_PUBLIC_PROTECTED_ADMIN_EMAILS</span>.
+              Protected admins are locked via server configuration.
             </div>
           ) : null}
+        </CardContent>
+        <CardContent className="pt-0">
+          <div className="flex flex-wrap gap-2">
+            {quickFilterButtons.map((item) => (
+              <Button
+                key={item.key}
+                type="button"
+                variant={quickFilter === item.key ? "default" : "outline"}
+                size="sm"
+                aria-pressed={quickFilter === item.key}
+                onClick={() => setQuickFilter(item.key)}
+              >
+                {item.label} ({item.count})
+              </Button>
+            ))}
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">How invites work</CardTitle>
+          <CardTitle className="text-base">Access and HR sync</CardTitle>
+          <CardDescription>
+            Use this page for account access and invite delivery. Keep HR profiles linked before payroll or portal work.
+          </CardDescription>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground space-y-2">
           <ul className="list-disc pl-4 space-y-1">
             <li>
-              Admins create employees here. Invites are sent by email first, then SMS and WhatsApp
-              if needed.
+              Use this page for user access only. Start employee setup from HR onboarding, then send the invite here.
             </li>
             <li>
-              New employees must verify email and phone on first login and reset their password.
+              Invites are sent by email first, then SMS and WhatsApp if needed. New users verify their contact details and reset their password on first login.
             </li>
             <li>
               Role changes and access are Admin‑only for now. You can expand roles later as the team
@@ -545,8 +740,7 @@ export default function AdminUsersPage() {
             </li>
           </ul>
           <p className="text-xs text-muted-foreground">
-            HR is the source of truth for employee profiles. Creating a user here will also
-            auto-create (or link) the employee profile in HR.
+            HR is the source of truth for employee profiles. This page can still auto-link or backfill a minimal HR profile for continuity, but that should be treated as a repair path, not the main hiring flow.
           </p>
           <p className="text-xs text-muted-foreground">
             If an older bootstrapped admin or staff account is missing an HR profile, use
@@ -560,15 +754,18 @@ export default function AdminUsersPage() {
               onClick={backfillEmployeeProfiles}
               disabled={backfillSubmitting}
             >
-              {backfillSubmitting ? "Backfilling…" : "Backfill HR profiles"}
+              {backfillSubmitting ? "Backfilling..." : "Backfill HR profiles"}
             </Button>
           </div>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="directory">
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Directory</CardTitle>
+          <CardDescription>
+            Review access, role history, HR profile readiness, and session controls in one table.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {error ? (
@@ -576,15 +773,18 @@ export default function AdminUsersPage() {
               {error instanceof Error ? error.message : "Failed to load users."}
             </p>
           ) : isFetching ? (
-            <p className="text-sm text-muted-foreground">Loading users…</p>
+            <p className="text-sm text-muted-foreground">Loading users...</p>
           ) : rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">No users found.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
-                <span className="text-muted-foreground">
+            <div className="space-y-4">
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
+                <Badge variant="outline" className="rounded-full px-3 py-1">
                   Selected: {selectedIds.size}
-                </span>
+                </Badge>
+                <Badge variant="outline" className="rounded-full px-3 py-1">
+                  Quick view: {quickFilterButtons.find((item) => item.key === quickFilter)?.label || "All accounts"}
+                </Badge>
                 <Button
                   className="w-full sm:w-auto"
                   variant="outline"
@@ -613,6 +813,161 @@ export default function AdminUsersPage() {
                   Force logout selected
                 </Button>
               </div>
+              <div className="space-y-3 md:hidden">
+                {rows.map((row) => {
+                  const user = row.user;
+                  const isProtectedAdmin = !!user.isProtected;
+                  const isSelected = selectedIds.has(user.id);
+                  const hasPendingInvite = inviteByUserId.has(user.id);
+                  const dormantElevated = isDormantElevatedUser(user);
+                  return (
+                    <div key={user.id} className="rounded-2xl border border-border/70 bg-background/80 p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${user.name || user.email || "user"}`}
+                              checked={isSelected}
+                              onChange={(e) => {
+                                setSelectedIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) {
+                                    next.add(user.id);
+                                  } else {
+                                    next.delete(user.id);
+                                  }
+                                  return next;
+                                });
+                              }}
+                            />
+                            <div className="font-medium">{user.name || "-"}</div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline" className="rounded-full">
+                              {user.role}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "rounded-full",
+                                user.archived
+                                  ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+                                  : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200",
+                              )}
+                            >
+                              {user.archived ? "Archived" : "Active"}
+                            </Badge>
+                            {isProtectedAdmin ? (
+                              <Badge variant="outline" className="rounded-full border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
+                                Protected admin
+                              </Badge>
+                            ) : null}
+                            {hasPendingInvite ? (
+                              <Badge variant="outline" className="rounded-full border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
+                                Pending invite
+                              </Badge>
+                            ) : null}
+                            {dormantElevated ? (
+                              <Badge variant="outline" className="rounded-full border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                                Dormant elevated access
+                              </Badge>
+                            ) : null}
+                          </div>
+                        </div>
+                        {roleManagementEnabled ? (
+                          <Select
+                            value={user.role}
+                            disabled={isProtectedAdmin}
+                            onValueChange={(value) => updateRole(user.id, value)}
+                          >
+                            <SelectTrigger className="h-8 w-32">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ROLE_OPTIONS.map((opt) => (
+                                <SelectItem key={opt} value={opt}>
+                                  {opt}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : null}
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                        <div>Email: {user.email || "-"}</div>
+                        <div>Phone: {user.phone || "-"}</div>
+                        <div>
+                          Last seen: {formatRelativeTime(user.lastLoginAt)}
+                          {user.lastLoginAt ? ` (${new Date(user.lastLoginAt).toLocaleString()})` : ""}
+                        </div>
+                        <div>HR profile: {user.employeeId ? `Ready (${user.employeeId})` : "Missing HR profile"}</div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {user.employeeId ? (
+                          <Button asChild variant="outline" size="sm">
+                            <Link href={`/admin/hr/staff/${user.employeeId}`}>
+                              Open staff profile
+                            </Link>
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={ensuringProfileUserId === user.id}
+                            onClick={() => ensureEmployeeProfile(user.id)}
+                          >
+                            {ensuringProfileUserId === user.id ? "Creating HR profile..." : "Create HR profile"}
+                          </Button>
+                        )}
+                        {hasPendingInvite ? (
+                          <Button variant="ghost" size="sm" onClick={() => resendInvite(user.id)}>
+                            Reset invite
+                          </Button>
+                        ) : null}
+                        {!user.employeeId ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={ensuringProfileUserId === user.id}
+                            onClick={() => ensureEmployeeProfile(user.id)}
+                          >
+                            Fix HR link
+                          </Button>
+                        ) : null}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isProtectedAdmin}
+                          onClick={() => {
+                            const label = user.archived ? "reactivate" : "deactivate";
+                            if (!confirm(`Are you sure you want to ${label} this user?`)) {
+                              return;
+                            }
+                            void toggleArchive(user.id, !user.archived);
+                          }}
+                        >
+                          {user.archived ? "Reactivate" : "Deactivate"}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={isProtectedAdmin}
+                          onClick={() => forceLogout(user.id)}
+                        >
+                          Force logout
+                        </Button>
+                        <Button asChild variant="ghost" size="sm">
+                          <Link href={`/admin/audit?entityType=USER&entityId=${user.id}&sourcePage=admin/users`}>
+                            View history
+                          </Link>
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -646,9 +1001,7 @@ export default function AdminUsersPage() {
                   {rows.map((row) => {
                     const user = row.user;
                     const isProtectedAdmin =
-                      user.role === "ADMIN" &&
-                      !!user.email &&
-                      protectedAdmins.includes(user.email.toLowerCase());
+                      !!user.isProtected;
                     const isSelected = selectedIds.has(user.id);
                     const lastRole = user.lastRoleChange;
                     return (
@@ -671,9 +1024,30 @@ export default function AdminUsersPage() {
                             }}
                           />
                         </TableCell>
-                        <TableCell>{user.name || "—"}</TableCell>
-                        <TableCell>{user.email || "—"}</TableCell>
-                        <TableCell>{user.phone || "—"}</TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <div className="font-medium">{user.name || "-"}</div>
+                            <div className="flex flex-wrap gap-2">
+                              {user.isProtected ? (
+                                <Badge variant="outline" className="rounded-full border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
+                                  Protected admin
+                                </Badge>
+                              ) : null}
+                              {inviteByUserId.has(user.id) ? (
+                                <Badge variant="outline" className="rounded-full border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
+                                  Pending invite
+                                </Badge>
+                              ) : null}
+                              {isDormantElevatedUser(user) ? (
+                                <Badge variant="outline" className="rounded-full border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                                  Dormant elevated access
+                                </Badge>
+                              ) : null}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>{user.email || "-"}</TableCell>
+                        <TableCell>{user.phone || "-"}</TableCell>
                         <TableCell>
                           {roleManagementEnabled ? (
                             <div className="flex items-center gap-2">
@@ -713,7 +1087,7 @@ export default function AdminUsersPage() {
                               <div>
                                 {lastRole.by?.name ||
                                   lastRole.by?.email ||
-                                  "—"}
+                                  "-"}
                               </div>
                               <div>
                                 <Link
@@ -725,16 +1099,27 @@ export default function AdminUsersPage() {
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
+                            <span className="text-xs text-muted-foreground">-</span>
                           )}
                         </TableCell>
                         <TableCell>
-                          {user.lastLoginAt
-                            ? new Date(user.lastLoginAt).toLocaleString()
-                            : "—"}
+                          <div className="text-xs text-muted-foreground">
+                            <div className="font-medium text-foreground">{formatRelativeTime(user.lastLoginAt)}</div>
+                            <div>{user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : "No completed login yet"}</div>
+                          </div>
                         </TableCell>
                         <TableCell>
-                          {user.archived ? "Archived" : "Active"}
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "rounded-full",
+                              user.archived
+                                ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+                                : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200",
+                            )}
+                          >
+                            {user.archived ? "Archived" : "Active"}
+                          </Badge>
                         </TableCell>
                         <TableCell>
                           {user.employeeId ? (
@@ -839,20 +1224,74 @@ export default function AdminUsersPage() {
                   })}
                 </TableBody>
               </Table>
+              </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="pending-invites">
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Pending invites</CardTitle>
+          <CardDescription>
+            Track accounts that were created but still have not completed invite acceptance and first login.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {inviteRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">No active invites.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="space-y-4">
+              <div className="space-y-3 md:hidden">
+                {inviteRows.map((invite) => {
+                  const url = buildInviteUrl(invite.userId);
+                  const urgency = getInviteUrgency(invite.expiresAt);
+                  return (
+                    <div key={invite.id} className="rounded-2xl border border-border/70 bg-background/80 p-4 shadow-sm">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="font-medium">{invite.user.name || "-"}</div>
+                          <div className="text-sm text-muted-foreground">{invite.user.email || "-"}</div>
+                        </div>
+                        <Badge variant="outline" className={cn("rounded-full", urgency.className)}>
+                          {urgency.label}
+                        </Badge>
+                      </div>
+                      <div className="mt-3 grid gap-2 text-sm text-muted-foreground">
+                        <div>Role: {invite.user.role}</div>
+                        <div>Created: {new Date(invite.createdAt).toLocaleString()}</div>
+                        <div>Expires: {new Date(invite.expiresAt).toLocaleString()}</div>
+                        <div>{urgency.detail}</div>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => resendInvite(invite.userId)}
+                        >
+                          Resend
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={async () => {
+                            if (!url) return;
+                            try {
+                              await navigator.clipboard.writeText(url);
+                              toast.success("Invite link copied.");
+                            } catch {
+                              toast.error("Copy failed.");
+                            }
+                          }}
+                        >
+                          Copy link
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -867,13 +1306,28 @@ export default function AdminUsersPage() {
                 <TableBody>
                   {inviteRows.map((invite) => {
                     const url = buildInviteUrl(invite.userId);
+                    const urgency = getInviteUrgency(invite.expiresAt);
                     return (
                       <TableRow key={invite.id}>
-                        <TableCell>{invite.user.name || "—"}</TableCell>
-                        <TableCell>{invite.user.email || "—"}</TableCell>
-                        <TableCell>{invite.user.role}</TableCell>
+                        <TableCell>{invite.user.name || "-"}</TableCell>
+                        <TableCell>{invite.user.email || "-"}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline" className="rounded-full">
+                              {invite.user.role}
+                            </Badge>
+                            <Badge variant="outline" className={cn("rounded-full", urgency.className)}>
+                              {urgency.label}
+                            </Badge>
+                          </div>
+                        </TableCell>
                         <TableCell>{new Date(invite.createdAt).toLocaleString()}</TableCell>
-                        <TableCell>{new Date(invite.expiresAt).toLocaleString()}</TableCell>
+                        <TableCell>
+                          <div className="text-xs text-muted-foreground">
+                            <div className="font-medium text-foreground">{urgency.detail}</div>
+                            <div>{new Date(invite.expiresAt).toLocaleString()}</div>
+                          </div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex flex-wrap gap-2">
                             <Button
@@ -905,6 +1359,7 @@ export default function AdminUsersPage() {
                   })}
                 </TableBody>
               </Table>
+              </div>
             </div>
           )}
         </CardContent>
@@ -913,12 +1368,11 @@ export default function AdminUsersPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Invite employee</DialogTitle>
+            <DialogTitle>Invite user account</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p className="text-xs text-muted-foreground">
-              An invite link and verification code will be sent via email and SMS
-              (WhatsApp fallback).
+              Use HR onboarding for the employee record first. This dialog is for portal or admin access and will send an invite link plus verification code by email and SMS (WhatsApp fallback).
             </p>
             <div>
               <label className="text-xs text-muted-foreground">Full name</label>

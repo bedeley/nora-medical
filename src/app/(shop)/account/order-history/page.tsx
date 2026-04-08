@@ -18,6 +18,10 @@ type HistoryItem = {
   }>;
 };
 
+type OrdersResponse = {
+  items: HistoryItem[];
+};
+
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export default function OrderHistoryPage() {
@@ -26,11 +30,12 @@ export default function OrderHistoryPage() {
     queryFn: () => fetcher("/api/balance?self=1"),
     refetchInterval: 2000,
   });
-  const { data: orders } = useQuery<HistoryItem[]>({
+  const { data: orders } = useQuery<OrdersResponse>({
     queryKey: ["orders"],
     queryFn: () => fetcher("/api/orders"),
     refetchInterval: 2000,
   });
+  const orderItems = orders?.items ?? [];
 
   return (
     <section className="space-y-6">
@@ -58,7 +63,7 @@ export default function OrderHistoryPage() {
       )}
 
       <div className="grid gap-4">
-        {orders?.map((order) => (
+        {orderItems.map((order) => (
           <Card
             key={order.id}
             className="border-none shadow-md py-3"

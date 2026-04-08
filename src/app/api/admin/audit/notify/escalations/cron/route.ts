@@ -4,6 +4,7 @@ import { evaluateAuditRisk } from "@/lib/audit-risk";
 import { sendEmail } from "@/lib/email";
 import { recordAuditLog } from "@/lib/audit-log";
 import { getEffectiveAuditRiskSettings } from "@/lib/audit-risk-settings.server";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function parsePositiveInt(value: string | undefined, fallback: number) {
   const n = Number(value || 0);
@@ -14,16 +15,7 @@ function parsePositiveInt(value: string | undefined, fallback: number) {
 const RETENTION_DAYS = parsePositiveInt(process.env.AUDIT_LOG_RETENTION_DAYS, 365);
 
 function isAuthorizedCron(req: Request) {
-  const configuredSecret = String(
-    process.env.AUDIT_REVIEW_CRON_SECRET || process.env.CRON_SECRET || "",
-  ).trim();
-  if (!configuredSecret) return false;
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  return bearer === configuredSecret || headerSecret === configuredSecret;
+  return verifyCronSecret(req, "AUDIT_REVIEW_CRON_SECRET");
 }
 
 function parseMeta(raw: string | null) {

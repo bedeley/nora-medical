@@ -16,15 +16,8 @@ function toBaseSourceId(value: string | null | undefined) {
 }
 
 export async function GET(req: Request) {
-  const configuredSecret = String(process.env.CRON_SECRET || "").trim();
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const hasCronAccess =
-    Boolean(configuredSecret) &&
-    (bearer === configuredSecret || headerSecret === configuredSecret);
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  const hasCronAccess = verifyCronSecret(req);
 
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -83,11 +76,11 @@ export async function GET(req: Request) {
     }),
     prisma.expense.findMany({ select: { id: true }, where: { deletedAt: null } }),
     prisma.purchase.findMany({
-      select: { id: true },
+      select: { id: true, unitCost: true, quantity: true },
       where: { deletedAt: null, status: "RECEIVED" },
     }),
     prisma.supplierPayment.findMany({
-      select: { id: true, method: true, status: true, reference: true },
+      select: { id: true, method: true, status: true, reference: true, amount: true, purchaseId: true },
       where: { deletedAt: null, status: "NORMAL" },
     }),
     prisma.payment.findMany({
@@ -118,8 +111,11 @@ export async function GET(req: Request) {
   ]);
 
   const movementMap = new Map(movements.map((m) => [m.productId, num(m._sum.delta)]));
-  // As-of stock is derived from movements; ignore live product.stock to avoid timing drift.
-  const stockMismatches = 0;
+  // Use movement sums as source of truth; compare against the denormalised stock field.
+  const stockMismatches = products.filter((p) => {
+    if (p.stock == null) return false;
+    return num(p.stock) !== (movementMap.get(p.id) ?? 0);
+  }).length;
   const negativeStock = products.filter((p) => (movementMap.get(p.id) ?? 0) < 0).length;
 
   const orderPayments = await prisma.payment.groupBy({
@@ -138,8 +134,15 @@ export async function GET(req: Request) {
       (orderPaymentsMap.get(row.orderId) ?? 0) + signed
     );
   }
-  const paymentMismatches = 0;
-  const orderBalanceMismatches = 0;
+  const paymentMismatches = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    return Math.abs(num(order.amountPaid) - projectedPaid) > 0.01;
+  }).length;
+  const orderBalanceMismatches = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    const projectedBalance = Math.max(0, num(order.total) - projectedPaid);
+    return Math.abs(num(order.balance) - projectedBalance) > 0.01;
+  }).length;
 
   const totalsByCode = new Map(totals.map((row) => [row.code, row]));
   const arRow = totalsByCode.get("1100");
@@ -174,12 +177,33 @@ export async function GET(req: Request) {
     0,
   );
   const customerBalances = Math.max(0, orderArTotal - paymentsTotalAsOf);
-  // Align valuation with ledger to eliminate costing drift.
-  const inventoryValuation = inventoryLedger;
+  // Real inventory valuation: movement-based quantity × recorded cost per product.
+  const inventoryValuation = products.reduce(
+    (sum, p) => sum + (movementMap.get(p.id) ?? 0) * num(p.cost),
+    0,
+  );
   const arDifference = arLedger - customerBalances;
   const inventoryDifference = inventoryLedger - inventoryValuation;
   const arMismatch = Math.abs(arDifference) > 0.01;
   const inventoryMismatch = Math.abs(inventoryDifference) > 0.01;
+
+  // Trial balance: sum of all debits minus credits across posted lines — must be 0.
+  const trialBalance = totals.reduce((sum, row) => sum + row.debit - row.credit, 0);
+  const trialBalanceOk = Math.abs(trialBalance) < 0.01;
+
+  // AP reconciliation
+  const apRow = totalsByCode.get("2000");
+  const apLedger = apRow ? toNet(apRow) : 0;
+  const eligibleSpForAp = supplierPayments.filter((row) => {
+    if (String(row.method || "").toLowerCase() === "credit_memo") return false;
+    if (String(row.reference || "").toUpperCase() === "SUPPLIER_RETURN") return false;
+    return true;
+  });
+  const apOperational =
+    purchases.reduce((sum, p) => sum + Number(p.unitCost || 0) * Number(p.quantity || 0), 0) -
+    eligibleSpForAp.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const apDifference = apLedger - apOperational;
+  const apMismatch = Math.abs(apDifference) > 0.01;
 
   const [orderPosts, paymentPosts, expensePosts, purchasePosts] = await Promise.all([
     prisma.journalEntry.findMany({
@@ -262,7 +286,9 @@ export async function GET(req: Request) {
     legacyAutoApply,
     arDifference,
     inventoryDifference,
-    ledgerMismatches: Number(arMismatch) + Number(inventoryMismatch),
+    apDifference,
+    trialBalance,
+    ledgerMismatches: Number(arMismatch) + Number(inventoryMismatch) + Number(apMismatch) + Number(!trialBalanceOk),
     missingPostings: {
       orders: missingOrders,
       payments: missingPayments,

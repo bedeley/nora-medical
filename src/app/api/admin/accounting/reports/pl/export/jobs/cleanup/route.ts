@@ -5,17 +5,14 @@ import { assertSameOrigin } from "@/lib/origin";
 import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
 import { collectExpiredJobKeys, collectOverflowJobKeys } from "@/lib/accounting-report-export-jobs";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function isAdmin(user?: AuthenticatedUser | null) {
   return user?.role === "ADMIN";
 }
 
 function hasCronAccess(req: Request) {
-  const configuredSecret = (process.env.ACCOUNTING_REPORT_EXPORT_JOBS_CRON_SECRET || process.env.CRON_SECRET || "").trim();
-  const authHeader = req.headers.get("authorization") || "";
-  const headerSecret = req.headers.get("x-cron-secret") || "";
-  const providedSecret = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : headerSecret.trim();
-  return Boolean(configuredSecret && providedSecret && configuredSecret === providedSecret);
+  return verifyCronSecret(req, "ACCOUNTING_REPORT_EXPORT_JOBS_CRON_SECRET");
 }
 
 async function cleanupExpiredExportJobs() {

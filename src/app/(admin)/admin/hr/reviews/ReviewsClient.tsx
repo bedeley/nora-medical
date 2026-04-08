@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -735,286 +736,306 @@ export default function ReviewsClient() {
   };
 
   return (
-    <section className="space-y-6">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Performance Reviews</h1>
-          <p className="text-muted-foreground">Track employee performance and goals.</p>
-          <p className="text-xs text-muted-foreground">Access policy: Admin only.</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            onClick={() => window.open("/admin/audit?entityType=PERFORMANCE_REVIEW&sourcePage=admin/hr/reviews", "_blank")}
-          >
-            Review Audit Log
-          </Button>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>+ Add Review</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Add Performance Review</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Select value={form.employeeId} onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Employee" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {employees.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>
-                        {employee.firstName} {employee.lastName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select value={form.rating} onValueChange={(value) => setForm((prev) => ({ ...prev, rating: value }))}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Rating" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="EXCEEDS">Exceeds</SelectItem>
-                    <SelectItem value="MEETS">Meets</SelectItem>
-                    <SelectItem value="NEEDS_IMPROVEMENT">Needs improvement</SelectItem>
-                    <SelectItem value="UNSATISFACTORY">Unsatisfactory</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="date"
-                  value={form.periodStart}
-                  onChange={(e) => setForm((prev) => ({ ...prev, periodStart: e.target.value }))}
-                />
-                <div className="space-y-2">
-                  <Input
-                    type="date"
-                    value={form.periodEnd}
-                    onChange={(e) => {
-                      setAutoEndDate(false);
-                      setForm((prev) => ({ ...prev, periodEnd: e.target.value }));
-                    }}
-                  />
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <input
-                      type="checkbox"
-                      checked={autoEndDate}
-                      onChange={(e) => setAutoEndDate(e.target.checked)}
+    <section className="space-y-6 pb-20 md:pb-0">
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">Staff workspace</Badge>
+                <span>Review cycles</span>
+              </div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">Performance Reviews</h1>
+                <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+                  Track review coverage, overdue follow-up, and employee performance trends from one HR review workspace.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {analytics.overdueCount > 0
+                    ? `${analytics.overdueCount} employee review${analytics.overdueCount === 1 ? " is" : "s are"} overdue on the current ${cadence} cadence.`
+                    : analytics.dueSoonCount > 0
+                      ? `${analytics.dueSoonCount} employee review${analytics.dueSoonCount === 1 ? " is" : "s are"} due within the next 14 days.`
+                      : analytics.totalReviews > 0
+                        ? `${analytics.completionPct}% of employee profiles have at least one completed review on record.`
+                        : "No performance reviews are currently on record."}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-md xl:justify-end">
+              <Button
+                variant="outline"
+                onClick={() => window.open("/admin/audit?entityType=PERFORMANCE_REVIEW&sourcePage=admin/hr/reviews", "_blank")}
+              >
+                Review Audit Log
+              </Button>
+              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button>+ Add Review</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>Add Performance Review</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Select value={form.employeeId} onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {employees.map((employee) => (
+                          <SelectItem key={employee.id} value={employee.id}>
+                            {employee.firstName} {employee.lastName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select value={form.rating} onValueChange={(value) => setForm((prev) => ({ ...prev, rating: value }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Rating" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="EXCEEDS">Exceeds</SelectItem>
+                        <SelectItem value="MEETS">Meets</SelectItem>
+                        <SelectItem value="NEEDS_IMPROVEMENT">Needs improvement</SelectItem>
+                        <SelectItem value="UNSATISFACTORY">Unsatisfactory</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="date"
+                      value={form.periodStart}
+                      onChange={(e) => setForm((prev) => ({ ...prev, periodStart: e.target.value }))}
                     />
-                    Auto-calc end date from cadence
-                  </label>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" type="button" onClick={() => applyCreatePreset("this_month")}>
-                      This month
-                    </Button>
-                    <Button size="sm" variant="outline" type="button" onClick={() => applyCreatePreset("last_quarter")}>
-                      Last quarter
-                    </Button>
-                  </div>
-                </div>
-                <Textarea
-                  placeholder="Summary"
-                  value={form.summary}
-                  onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <div className="sm:col-span-2 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "balanced")}>
-                    Use Balanced Template
-                  </Button>
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "strong")}>
-                    Use Strong Template
-                  </Button>
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "improve")}>
-                    Use Improvement Template
-                  </Button>
-                </div>
-                <Textarea
-                  placeholder="Strengths"
-                  value={form.strengths}
-                  onChange={(e) => setForm((prev) => ({ ...prev, strengths: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <Textarea
-                  placeholder="Improvements"
-                  value={form.improvements}
-                  onChange={(e) => setForm((prev) => ({ ...prev, improvements: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <Textarea
-                  placeholder="Goals"
-                  value={form.goals}
-                  onChange={(e) => setForm((prev) => ({ ...prev, goals: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-              </div>
-              <div className="flex justify-end">
-                <Button onClick={handleCreate}>Save review</Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Review Details</DialogTitle>
-              </DialogHeader>
-              {detailReview ? (
-                <div className="grid gap-4 text-sm">
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Employee</div>
-                    <div className="font-medium">
-                      {detailReview.employee
-                        ? `${detailReview.employee.firstName} ${detailReview.employee.lastName}`
-                        : "Not available"}
+                    <div className="space-y-2">
+                      <Input
+                        type="date"
+                        value={form.periodEnd}
+                        onChange={(e) => {
+                          setAutoEndDate(false);
+                          setForm((prev) => ({ ...prev, periodEnd: e.target.value }));
+                        }}
+                      />
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={autoEndDate}
+                          onChange={(e) => setAutoEndDate(e.target.checked)}
+                        />
+                        Auto-calc end date from cadence
+                      </label>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" type="button" onClick={() => applyCreatePreset("this_month")}>
+                          This month
+                        </Button>
+                        <Button size="sm" variant="outline" type="button" onClick={() => applyCreatePreset("last_quarter")}>
+                          Last quarter
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Period</div>
-                    <div className="font-medium">
-                      {new Date(detailReview.periodStart).toLocaleDateString()} -{" "}
-                      {new Date(detailReview.periodEnd).toLocaleDateString()}
+                    <Textarea
+                      placeholder="Summary"
+                      value={form.summary}
+                      onChange={(e) => setForm((prev) => ({ ...prev, summary: e.target.value }))}
+                      className="sm:col-span-2"
+                    />
+                    <div className="sm:col-span-2 flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "balanced")}>
+                        Use Balanced Template
+                      </Button>
+                      <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "strong")}>
+                        Use Strong Template
+                      </Button>
+                      <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("create", "improve")}>
+                        Use Improvement Template
+                      </Button>
                     </div>
+                    <Textarea
+                      placeholder="Strengths"
+                      value={form.strengths}
+                      onChange={(e) => setForm((prev) => ({ ...prev, strengths: e.target.value }))}
+                      className="sm:col-span-2"
+                    />
+                    <Textarea
+                      placeholder="Improvements"
+                      value={form.improvements}
+                      onChange={(e) => setForm((prev) => ({ ...prev, improvements: e.target.value }))}
+                      className="sm:col-span-2"
+                    />
+                    <Textarea
+                      placeholder="Goals"
+                      value={form.goals}
+                      onChange={(e) => setForm((prev) => ({ ...prev, goals: e.target.value }))}
+                      className="sm:col-span-2"
+                    />
                   </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Rating</div>
-                    <div className="font-medium">{detailReview.rating.replace("_", " ")}</div>
+                  <div className="flex justify-end">
+                    <Button onClick={handleCreate}>Save review</Button>
                   </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Summary</div>
-                    <div className="font-medium">{detailReview.summary || "Not available"}</div>
-                  </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Strengths</div>
-                    <div className="font-medium">{detailReview.strengths || "Not available"}</div>
-                  </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Improvements</div>
-                    <div className="font-medium">{detailReview.improvements || "Not available"}</div>
-                  </div>
-                  <div className="grid gap-1">
-                    <div className="text-xs text-muted-foreground">Goals</div>
-                    <div className="font-medium">{detailReview.goals || "Not available"}</div>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">Select a review to view details.</p>
-              )}
-            </DialogContent>
-          </Dialog>
-          <Dialog open={editOpen} onOpenChange={setEditOpen}>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Edit Review</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Select
-                  value={editForm.rating}
-                  onValueChange={(value) => setEditForm((prev) => ({ ...prev, rating: value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Rating" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="EXCEEDS">Exceeds</SelectItem>
-                    <SelectItem value="MEETS">Meets</SelectItem>
-                    <SelectItem value="NEEDS_IMPROVEMENT">Needs improvement</SelectItem>
-                    <SelectItem value="UNSATISFACTORY">Unsatisfactory</SelectItem>
-                  </SelectContent>
-                </Select>
-                <div />
-                <Input
-                  type="date"
-                  value={editForm.periodStart}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, periodStart: e.target.value }))}
-                />
-                <Input
-                  type="date"
-                  value={editForm.periodEnd}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, periodEnd: e.target.value }))}
-                />
-                <Textarea
-                  placeholder="Summary"
-                  value={editForm.summary}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, summary: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <div className="sm:col-span-2 flex flex-wrap gap-2">
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "balanced")}>
-                    Use Balanced Template
-                  </Button>
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "strong")}>
-                    Use Strong Template
-                  </Button>
-                  <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "improve")}>
-                    Use Improvement Template
-                  </Button>
-                </div>
-                <Textarea
-                  placeholder="Strengths"
-                  value={editForm.strengths}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, strengths: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <Textarea
-                  placeholder="Improvements"
-                  value={editForm.improvements}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, improvements: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-                <Textarea
-                  placeholder="Goals"
-                  value={editForm.goals}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, goals: e.target.value }))}
-                  className="sm:col-span-2"
-                />
-              </div>
-              <div className="flex justify-end">
-                <Button onClick={handleUpdate}>Save changes</Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </header>
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Review Analytics</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Total Reviews</div>
-            <div className="font-semibold">{analytics.totalReviews}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Overdue Reviews</div>
-            <div className="font-semibold text-red-600">{analytics.overdueCount}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Due Soon (14 days)</div>
-            <div className="font-semibold text-amber-700">{analytics.dueSoonCount}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Completion Rate</div>
-            <div className="font-semibold">{analytics.completionPct}%</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Exceeds</div>
-            <div className="font-semibold">{analytics.ratingCounts.EXCEEDS}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Meets</div>
-            <div className="font-semibold">{analytics.ratingCounts.MEETS}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Needs Improvement</div>
-            <div className="font-semibold">{analytics.ratingCounts.NEEDS_IMPROVEMENT}</div>
-          </div>
-          <div className="rounded-md border px-3 py-2">
-            <div className="text-xs text-muted-foreground">Unsatisfactory</div>
-            <div className="font-semibold">{analytics.ratingCounts.UNSATISFACTORY}</div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Total reviews</p>
+                <p className="text-2xl font-semibold">{analytics.totalReviews}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Overdue reviews</p>
+                <p className="text-2xl font-semibold">{analytics.overdueCount}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Due soon</p>
+                <p className="text-2xl font-semibold">{analytics.dueSoonCount}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Completion rate</p>
+                <p className="text-2xl font-semibold">{analytics.completionPct}%</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Exceeds</p>
+                <p className="text-2xl font-semibold">{analytics.ratingCounts.EXCEEDS}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Needs improvement</p>
+                <p className="text-2xl font-semibold">{analytics.ratingCounts.NEEDS_IMPROVEMENT}</p>
+              </CardContent>
+            </Card>
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Review Details</DialogTitle>
+          </DialogHeader>
+          {detailReview ? (
+            <div className="grid gap-4 text-sm">
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Employee</div>
+                <div className="font-medium">
+                  {detailReview.employee
+                    ? `${detailReview.employee.firstName} ${detailReview.employee.lastName}`
+                    : "Not available"}
+                </div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Period</div>
+                <div className="font-medium">
+                  {new Date(detailReview.periodStart).toLocaleDateString()} -{" "}
+                  {new Date(detailReview.periodEnd).toLocaleDateString()}
+                </div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Rating</div>
+                <div className="font-medium">{detailReview.rating.replace("_", " ")}</div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Summary</div>
+                <div className="font-medium">{detailReview.summary || "Not available"}</div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Strengths</div>
+                <div className="font-medium">{detailReview.strengths || "Not available"}</div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Improvements</div>
+                <div className="font-medium">{detailReview.improvements || "Not available"}</div>
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Goals</div>
+                <div className="font-medium">{detailReview.goals || "Not available"}</div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Select a review to view details.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Review</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              value={editForm.rating}
+              onValueChange={(value) => setEditForm((prev) => ({ ...prev, rating: value }))}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Rating" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="EXCEEDS">Exceeds</SelectItem>
+                <SelectItem value="MEETS">Meets</SelectItem>
+                <SelectItem value="NEEDS_IMPROVEMENT">Needs improvement</SelectItem>
+                <SelectItem value="UNSATISFACTORY">Unsatisfactory</SelectItem>
+              </SelectContent>
+            </Select>
+            <div />
+            <Input
+              type="date"
+              value={editForm.periodStart}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, periodStart: e.target.value }))}
+            />
+            <Input
+              type="date"
+              value={editForm.periodEnd}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, periodEnd: e.target.value }))}
+            />
+            <Textarea
+              placeholder="Summary"
+              value={editForm.summary}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, summary: e.target.value }))}
+              className="sm:col-span-2"
+            />
+            <div className="sm:col-span-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "balanced")}>
+                Use Balanced Template
+              </Button>
+              <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "strong")}>
+                Use Strong Template
+              </Button>
+              <Button size="sm" variant="outline" type="button" onClick={() => applyTemplate("edit", "improve")}>
+                Use Improvement Template
+              </Button>
+            </div>
+            <Textarea
+              placeholder="Strengths"
+              value={editForm.strengths}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, strengths: e.target.value }))}
+              className="sm:col-span-2"
+            />
+            <Textarea
+              placeholder="Improvements"
+              value={editForm.improvements}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, improvements: e.target.value }))}
+              className="sm:col-span-2"
+            />
+            <Textarea
+              placeholder="Goals"
+              value={editForm.goals}
+              onChange={(e) => setEditForm((prev) => ({ ...prev, goals: e.target.value }))}
+              className="sm:col-span-2"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={handleUpdate}>Save changes</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Card>
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

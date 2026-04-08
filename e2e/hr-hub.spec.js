@@ -1,26 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockHrHubApis(page, trackers) {
   const summaryPayload = {
@@ -115,19 +95,6 @@ async function mockHrHubApis(page, trackers) {
     });
   });
 
-  await page.route("**/api/admin/hr/employees", async (route) => {
-    if (route.request().method() === "POST") {
-      trackers.employeePayloads.push(route.request().postDataJSON() || {});
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ id: "emp-new" }),
-      });
-      return;
-    }
-    await route.fallback();
-  });
-
   await page.route("**/api/admin/hr/payroll", async (route) => {
     if (route.request().method() === "POST") {
       trackers.payrollPayloads.push(route.request().postDataJSON() || {});
@@ -149,8 +116,7 @@ function toIsoDateTime(dateOnly, endOfDay = false) {
 
 test.describe("HR hub page", () => {
   test("shows grouped hub sections and trims recent activity to two items", async ({ page }) => {
-    const trackers = { employeePayloads: [], payrollPayloads: [] };
-    await signIn(page);
+    const trackers = { payrollPayloads: [] };
     await mockHrHubApis(page, trackers);
     await page.goto("/admin/hr");
 
@@ -166,26 +132,15 @@ test.describe("HR hub page", () => {
     await expect(page.getByRole("link", { name: /open hr audit/i })).toBeVisible();
   });
 
-  test("submits add employee and create payroll run quick actions", async ({ page }) => {
-    const trackers = { employeePayloads: [], payrollPayloads: [] };
-    await signIn(page);
+  test("routes onboarding and submits create payroll run quick actions", async ({ page }) => {
+    const trackers = { payrollPayloads: [] };
     await mockHrHubApis(page, trackers);
     await page.goto("/admin/hr");
 
-    await page.getByRole("button", { name: /add employee/i }).click();
-    await page.getByPlaceholder(/first name/i).fill("Nora");
-    await page.getByPlaceholder(/last name/i).fill("Hub");
-    await page.getByPlaceholder(/^email$/i).fill("hub@example.com");
-    await page.getByPlaceholder(/department/i).fill("HR");
-    await page.getByRole("button", { name: /create employee/i }).click();
-
-    await expect.poll(() => trackers.employeePayloads.length).toBe(1);
-    expect(trackers.employeePayloads[0]).toMatchObject({
-      firstName: "Nora",
-      lastName: "Hub",
-      email: "hub@example.com",
-      department: "HR",
-    });
+    await expect(page.getByRole("link", { name: /start onboarding/i }).first()).toHaveAttribute(
+      "href",
+      "/admin/hr/onboarding?source=hr",
+    );
 
     await page.getByRole("button", { name: /create payroll run/i }).click();
     const dateInputs = page.locator('input[type="date"]');

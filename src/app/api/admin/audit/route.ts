@@ -163,7 +163,10 @@ type AuditQueueMode =
   | "critical_unreviewed"
   | "archive_soon_unreviewed"
   | "needs_assignment"
-  | "overdue_tasks";
+  | "overdue_tasks"
+  | "overdue_reviews_critical"
+  | "overdue_reviews_high"
+  | "overdue_reviews_medium";
 
 function normalizeQueueMode(value: string | null): AuditQueueMode {
   const mode = String(value || "all").toLowerCase();
@@ -171,7 +174,10 @@ function normalizeQueueMode(value: string | null): AuditQueueMode {
     mode === "critical_unreviewed" ||
     mode === "archive_soon_unreviewed" ||
     mode === "needs_assignment" ||
-    mode === "overdue_tasks"
+    mode === "overdue_tasks" ||
+    mode === "overdue_reviews_critical" ||
+    mode === "overdue_reviews_high" ||
+    mode === "overdue_reviews_medium"
   ) {
     return mode;
   }
@@ -218,6 +224,23 @@ function filterByQueueMode(logs: RawAuditLog[], queueMode: AuditQueueMode, setti
     if (queueMode === "overdue_tasks") {
       return !reviewed && Boolean(taskDueAtMs && taskDueAtMs < nowMs);
     }
+    if (
+      queueMode === "overdue_reviews_critical" ||
+      queueMode === "overdue_reviews_high" ||
+      queueMode === "overdue_reviews_medium"
+    ) {
+      const slaHours =
+        risk.severity === "CRITICAL"
+          ? settings.reviewSlaHours.critical
+          : risk.severity === "HIGH"
+            ? settings.reviewSlaHours.high
+            : settings.reviewSlaHours.medium;
+      const isOverdue = nowMs > createdAtMs + slaHours * 60 * 60 * 1000;
+      if (!isOverdue || reviewed) return false;
+      if (queueMode === "overdue_reviews_critical") return risk.severity === "CRITICAL";
+      if (queueMode === "overdue_reviews_high") return risk.severity === "HIGH";
+      return risk.severity === "MEDIUM";
+    }
     return true;
   });
 }
@@ -251,6 +274,10 @@ type RawAuditLog = {
   entityType: string;
   entityId: string;
   meta: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  requestId?: string | null;
+  outcome?: string | null;
   createdAt: Date;
 };
 
@@ -416,6 +443,11 @@ export async function GET(req: Request) {
   const customerId = searchParams.get("customerId") || undefined;
   const customerQuery = (searchParams.get("customerQuery") || "").trim();
   const action = searchParams.get("action") || undefined;
+  const outcomeParam = (searchParams.get("outcome") || "").toUpperCase();
+  const outcome =
+    outcomeParam === "SUCCESS" || outcomeParam === "FAILED" || outcomeParam === "PARTIAL"
+      ? outcomeParam
+      : undefined;
   const correlationId = (searchParams.get("correlationId") || "").trim();
   const actorId = searchParams.get("actorId") || undefined;
   const actorType = (searchParams.get("actorType") || "").toUpperCase();
@@ -477,6 +509,7 @@ export async function GET(req: Request) {
     });
   }
   if (action) andWhere.push({ action });
+  if (outcome) andWhere.push({ outcome: outcome as "SUCCESS" | "FAILED" | "PARTIAL" });
   if (correlationId) {
     andWhere.push({ meta: { contains: `"correlationId":"${correlationId}"` } });
   }
@@ -650,6 +683,10 @@ export async function GET(req: Request) {
       entityType: l.entityType,
       entityId: l.entityId,
       meta: parseMeta(l.meta),
+      ipAddress: l.ipAddress ?? null,
+      userAgent: l.userAgent ?? null,
+      requestId: l.requestId ?? null,
+      outcome: l.outcome ?? null,
       createdAt: l.createdAt.toISOString(),
     }));
 

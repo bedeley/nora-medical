@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
 import { assertSameOrigin } from "@/lib/origin";
 import { extractAuditTrace, hashAuditState } from "@/lib/accounting-period-audit";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function isAuthorizedUser(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -12,16 +13,7 @@ function isAuthorizedUser(user?: AuthenticatedUser | null) {
 }
 
 function isAuthorizedCron(req: Request) {
-  const configuredSecret = String(
-    process.env.ACCOUNTING_PERIODS_AUTOGEN_CRON_SECRET || process.env.CRON_SECRET || "",
-  ).trim();
-  if (!configuredSecret) return false;
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  return bearer === configuredSecret || headerSecret === configuredSecret;
+  return verifyCronSecret(req, "ACCOUNTING_PERIODS_AUTOGEN_CRON_SECRET");
 }
 
 type InitializedYearRow = {

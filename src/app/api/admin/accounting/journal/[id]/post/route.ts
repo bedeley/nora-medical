@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
+import { isJournalEntryBalanced } from "@/lib/journal-entry-balance";
 import { findClosedPeriod } from "@/lib/accounting-periods";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -35,7 +36,17 @@ export async function POST(
   try {
     const existing = await prisma.journalEntry.findUnique({
       where: { id: entryId },
-      select: { entryDate: true, status: true, archivedAt: true },
+      select: {
+        entryDate: true,
+        status: true,
+        archivedAt: true,
+        lines: {
+          select: {
+            debit: true,
+            credit: true,
+          },
+        },
+      },
     });
     if (!existing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -53,6 +64,12 @@ export async function POST(
     if (closedPeriod) {
       return NextResponse.json(
         { error: `Period "${closedPeriod.name}" is closed.` },
+        { status: 400 },
+      );
+    }
+    if (!isJournalEntryBalanced(existing.lines)) {
+      return NextResponse.json(
+        { error: "Draft entry is out of balance and cannot be posted." },
         { status: 400 },
       );
     }

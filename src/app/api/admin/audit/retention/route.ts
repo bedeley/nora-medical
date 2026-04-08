@@ -14,12 +14,8 @@ function parseRetentionDays(value: string | undefined) {
 }
 
 export async function POST(req: Request) {
-  const cronSecret = process.env.CRON_SECRET || "";
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const bearer = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length)
-    : "";
-  const hasCronAccess = cronSecret && bearer === cronSecret;
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  const hasCronAccess = verifyCronSecret(req);
 
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;

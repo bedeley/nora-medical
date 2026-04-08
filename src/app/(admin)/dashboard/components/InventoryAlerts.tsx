@@ -5,6 +5,8 @@ import Link from "next/link";
 import { formatCurrency } from "@/lib/currency";
 import { AlertTriangle, CheckCircle, Download } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableHeader,
@@ -13,8 +15,6 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 type InventoryAlert = {
   id: string;
@@ -69,7 +69,7 @@ export default function InventoryAlerts() {
 
   if (error)
     return (
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Inventory Alerts</CardTitle>
         </CardHeader>
@@ -81,7 +81,7 @@ export default function InventoryAlerts() {
 
   if (isLoading || !data)
     return (
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>Inventory Alerts</CardTitle>
         </CardHeader>
@@ -92,10 +92,10 @@ export default function InventoryAlerts() {
     );
 
   return (
-    <Card>
-      <CardHeader className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <CardTitle>Inventory Alerts</CardTitle>
+    <Card className="min-w-0">
+      <CardHeader className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <CardTitle className="min-w-0">Inventory Alerts</CardTitle>
           {data.length === 0 && (
             <Badge variant="success" className="flex items-center gap-1">
               <CheckCircle className="h-4 w-4" /> All good
@@ -109,14 +109,14 @@ export default function InventoryAlerts() {
             onClick={exportCSV}
             variant="outline"
             size="sm"
-            className="flex items-center gap-2"
+            className="flex w-full items-center justify-center gap-2 sm:w-auto"
           >
             <Download className="h-4 w-4" /> Export CSV
           </Button>
         )}
       </CardHeader>
 
-      <CardContent>
+      <CardContent className="min-w-0">
         {data.length === 0 ? (
           <div className="text-sm text-muted-foreground">
             <p>No low-stock products detected.</p>
@@ -130,59 +130,119 @@ export default function InventoryAlerts() {
             </div>
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Product</TableHead>
-                <TableHead>Price</TableHead>
-              <TableHead>Stock</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Message</TableHead>
-              <TableHead>Last Updated</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-            </TableHeader>
-            <TableBody>
+          <>
+            <div className="grid gap-3 md:hidden">
               {data.map((p) => (
-                <TableRow key={p.id}>
-                  <TableCell>{p.name}</TableCell>
-                  <TableCell>{formatCurrency(Number(p.price))}</TableCell>
-                  <TableCell>{p.stock}</TableCell>
-                  <TableCell>
-                    {p.severity === "critical" ? (
-                      <Badge
-                        variant="destructive"
-                        className="flex items-center gap-1"
-                      >
-                        <AlertTriangle className="h-3 w-3" /> Critical
-                      </Badge>
-                    ) : (
-                      <Badge
-                        variant="warning"
-                        className="flex items-center gap-1"
-                      >
-                        <AlertTriangle className="h-3 w-3" /> {p.type.replace(/_/g, " ")}
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{p.message}</TableCell>
-                  <TableCell>
-                    {new Date(p.updatedAt).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-wrap gap-2">
-                      <Button asChild size="sm" variant="outline">
-                        <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
-                      </Button>
-                      <Button asChild size="sm" variant="ghost">
-                        <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
-                      </Button>
+                <div key={p.id} className="rounded-lg border bg-muted/20 p-3">
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="min-w-0 text-sm font-semibold break-words">{p.name}</h3>
+                      {p.severity === "critical" ? (
+                        <Badge variant="destructive" className="flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" />
+                          Critical
+                        </Badge>
+                      ) : (
+                        <Badge variant="warning" className="flex items-center gap-1">
+                          <AlertTriangle className="h-3 w-3" />
+                          {p.type.replace(/_/g, " ")}
+                        </Badge>
+                      )}
                     </div>
-                  </TableCell>
-                </TableRow>
+                    <p className="text-xs text-muted-foreground break-words">{p.message}</p>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-md border bg-background px-3 py-2">
+                      <div className="text-muted-foreground">Price</div>
+                      <div className="mt-1 font-medium text-foreground">
+                        {formatCurrency(Number(p.price))}
+                      </div>
+                    </div>
+                    <div className="rounded-md border bg-background px-3 py-2">
+                      <div className="text-muted-foreground">Stock</div>
+                      <div className="mt-1 font-medium text-foreground">{p.stock}</div>
+                    </div>
+                    <div className="rounded-md border bg-background px-3 py-2">
+                      <div className="text-muted-foreground">Type</div>
+                      <div className="mt-1 font-medium text-foreground break-words">
+                        {p.type.replace(/_/g, " ")}
+                      </div>
+                    </div>
+                    <div className="rounded-md border bg-background px-3 py-2">
+                      <div className="text-muted-foreground">Last updated</div>
+                      <div className="mt-1 font-medium text-foreground">
+                        {new Date(p.updatedAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button asChild size="sm" variant="outline">
+                      <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
+                    </Button>
+                    <Button asChild size="sm" variant="ghost">
+                      <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
+                    </Button>
+                  </div>
+                </div>
               ))}
-            </TableBody>
-          </Table>
+            </div>
+
+            <div className="hidden md:block">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Product</TableHead>
+                    <TableHead>Price</TableHead>
+                    <TableHead>Stock</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Message</TableHead>
+                    <TableHead>Last Updated</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.map((p) => (
+                    <TableRow key={p.id}>
+                      <TableCell>{p.name}</TableCell>
+                      <TableCell>{formatCurrency(Number(p.price))}</TableCell>
+                      <TableCell>{p.stock}</TableCell>
+                      <TableCell>
+                        {p.severity === "critical" ? (
+                          <Badge variant="destructive" className="flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            Critical
+                          </Badge>
+                        ) : (
+                          <Badge variant="warning" className="flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            {p.type.replace(/_/g, " ")}
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="whitespace-normal break-words text-xs text-muted-foreground">
+                        {p.message}
+                      </TableCell>
+                      <TableCell>
+                        {new Date(p.updatedAt).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-2">
+                          <Button asChild size="sm" variant="outline">
+                            <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
+                          </Button>
+                          <Button asChild size="sm" variant="ghost">
+                            <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
         )}
       </CardContent>
     </Card>

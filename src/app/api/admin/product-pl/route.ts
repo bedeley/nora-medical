@@ -25,6 +25,17 @@ type Row = {
   margin: number;
 };
 
+type ReturnLogMeta = {
+  itemId?: string;
+  quantity?: number;
+  refundAmount?: number;
+  appliedToBalance?: number;
+  disposition?: string;
+  restockToStock?: boolean;
+  restock?: boolean;
+  restocked?: boolean;
+};
+
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -47,6 +58,8 @@ export async function GET(request: Request) {
     const q = searchParams.get("q") || "";
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
     const pageSize = Math.max(1, Math.min(200, parseInt(searchParams.get("pageSize") || "25", 10) || 25));
+    const sortMetric = (searchParams.get("sort") as "profit" | "revenue" | "qty" | "margin" | null) || "profit";
+    const lossOnly = searchParams.get("lossOnly") === "1";
 
     // Compute date range
     let gte: Date | undefined;
@@ -82,6 +95,7 @@ export async function GET(request: Request) {
     const items = await prisma.orderItem.findMany({
       where,
       select: {
+        id: true,
         productId: true,
         quantity: true,
         price: true,
@@ -92,6 +106,11 @@ export async function GET(request: Request) {
 
     // Aggregate by product
     const map = new Map<string, Row>();
+    const applyRowMetrics = (row: Row) => {
+      row.weightedCost = row.qty > 0 ? row.costTotal / row.qty : 0;
+      row.profit = row.revenue - row.costTotal;
+      row.margin = row.revenue > 0 ? (row.profit / row.revenue) * 100 : 0;
+    };
     for (const it of items) {
       const pid = it.productId;
       const qty = Number(it.quantity || 0);
@@ -107,66 +126,220 @@ export async function GET(request: Request) {
           qty,
           revenue,
           costTotal: cost,
-          weightedCost: qty > 0 ? cost / qty : 0,
-          profit: revenue - cost,
-          margin: revenue > 0 ? ((revenue - cost) / revenue) * 100 : 0,
+          weightedCost: 0,
+          profit: 0,
+          margin: 0,
         });
+        applyRowMetrics(map.get(pid)!);
       } else {
         current.qty += qty;
         current.revenue += revenue;
         current.costTotal += cost;
-        current.weightedCost = current.qty > 0 ? current.costTotal / current.qty : 0;
-        current.profit = current.revenue - current.costTotal;
-        current.margin = current.revenue > 0 ? (current.profit / current.revenue) * 100 : 0;
+        applyRowMetrics(current);
       }
     }
+    const validItemIds = new Set(items.map((item) => item.id));
 
-    const rows = Array.from(map.values());
-
-    // Rank by selected metric (default: profit)
-    const sortMetric = (searchParams.get("sort") as "profit" | "revenue" | "qty" | "margin" | null) || "profit";
-    rows.sort((a: Row, b: Row) => {
-      const getValue = (r: Row) => {
-        if (sortMetric === "qty") return r.qty;
-        if (sortMetric === "revenue") return r.revenue;
-        if (sortMetric === "margin") return r.margin;
-        return r.profit;
-      };
-      return getValue(b) - getValue(a);
+    const returnLogs = await prisma.auditLog.findMany({
+      where: {
+        action: "ORDER_ITEM_RETURN",
+        ...(gte || lte ? { createdAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } } : {}),
+      },
+      orderBy: { createdAt: "asc" },
     });
-    const withRank = rows.map((r: Row, idx: number) => ({ ...r, rank: idx + 1 }));
 
-    // Sort order for UI – best to worst (desc) or reverse
-    const finalRows = orderDir === "asc" ? [...withRank].reverse() : withRank;
+    const parsedReturnLogs = returnLogs.map((log) => {
+      let meta: ReturnLogMeta | null = null;
+      try {
+        meta = log.meta ? (JSON.parse(String(log.meta)) as ReturnLogMeta) : null;
+      } catch {
+        meta = null;
+      }
+      const itemId = meta?.itemId || null;
+      const quantity = Number(meta?.quantity || 0);
+      const refundTotal = Number(meta?.refundAmount || 0) + Number(meta?.appliedToBalance || 0);
+      const windowStart = new Date(log.createdAt.getTime() - 10 * 60 * 1000);
+      const windowEnd = new Date(log.createdAt.getTime() + 10 * 60 * 1000);
+      return { log, meta, itemId, quantity, refundTotal, windowStart, windowEnd };
+    });
+
+    const returnItemIds = Array.from(
+      new Set(parsedReturnLogs.map((row) => row.itemId).filter((id): id is string => Boolean(id))),
+    );
+    const returnedItems = returnItemIds.length
+      ? await prisma.orderItem.findMany({
+          where: {
+            id: { in: returnItemIds },
+            ...(q
+              ? {
+                  product: {
+                    name: { contains: q, mode: "insensitive" },
+                  },
+                }
+              : {}),
+          },
+          select: {
+            id: true,
+            productId: true,
+            price: true,
+            costAtSale: true,
+            product: { select: { name: true, cost: true } },
+          },
+        })
+      : [];
+    const returnedItemById = new Map(returnedItems.map((row) => [row.id, row]));
+
+    const restockCandidates = parsedReturnLogs
+      .map((row) => {
+        const item = row.itemId ? returnedItemById.get(row.itemId) || null : null;
+        return { ...row, item, productId: item?.productId || null };
+      })
+      .filter((row) => row.item && row.productId && row.quantity > 0 && validItemIds.has(row.itemId || ""));
+    const uniqueRestockQueries = Array.from(
+      new Map(
+        restockCandidates.map((row) => [
+          `${row.productId}|${row.quantity}|${row.windowStart.toISOString()}|${row.windowEnd.toISOString()}`,
+          row,
+        ]),
+      ).values(),
+    );
+    const restockMovements = uniqueRestockQueries.length
+      ? await prisma.inventoryMovement.findMany({
+          where: {
+            OR: uniqueRestockQueries.map((row) => ({
+              productId: row.productId || undefined,
+              reason: { in: ["RETURN_PARTIAL", "RETURN_FULL", "RETURN", "RETURN_RESTOCK", "RETURN_ITEM"] },
+              delta: row.quantity,
+              createdAt: { gte: row.windowStart, lte: row.windowEnd },
+            })),
+          },
+          select: { productId: true, delta: true, createdAt: true },
+        })
+      : [];
+    const matchedRestockKeys = new Set(
+      uniqueRestockQueries
+        .filter((row) =>
+          restockMovements.some(
+            (movement) =>
+              movement.productId === row.productId &&
+              movement.delta === row.quantity &&
+              movement.createdAt >= row.windowStart &&
+              movement.createdAt <= row.windowEnd,
+          ),
+        )
+        .map((row) => `${row.log.id}|${row.quantity}`),
+    );
+
+    for (const row of restockCandidates) {
+      const item = row.item;
+      if (!item) continue;
+      const pid = item.productId;
+      const current =
+        map.get(pid) ||
+        ({
+          productId: pid,
+          name: item.product?.name || "Unknown",
+          qty: 0,
+          revenue: 0,
+          costTotal: 0,
+          weightedCost: 0,
+          profit: 0,
+          margin: 0,
+        } satisfies Row);
+      current.qty -= row.quantity;
+      if (row.refundTotal > 0) {
+        current.revenue -= row.refundTotal;
+      }
+      const restockFlag = Boolean(
+        row.meta?.restockToStock ||
+        row.meta?.restock ||
+        row.meta?.restocked ||
+        String(row.meta?.disposition || "").toUpperCase() === "RESTOCK",
+      );
+      const matchedRestock = matchedRestockKeys.has(`${row.log.id}|${row.quantity}`);
+      if (restockFlag || matchedRestock) {
+        const unitCost = Number(item.costAtSale ?? item.product?.cost ?? 0);
+        current.costTotal -= unitCost * row.quantity;
+      }
+      applyRowMetrics(current);
+      map.set(pid, current);
+    }
+
+    // Sort all rows by selected metric descending (best first)
+    const allRows = Array.from(map.values());
+    const getSortValue = (r: Row) => {
+      if (sortMetric === "qty") return r.qty;
+      if (sortMetric === "revenue") return r.revenue;
+      if (sortMetric === "margin") return r.margin;
+      return r.profit;
+    };
+    allRows.sort((a, b) => getSortValue(b) - getSortValue(a));
+
+    // Period-level totals computed from all products (before any filtering)
+    let periodRevenue = 0;
+    let periodCost = 0;
+    let periodProfit = 0;
+    let periodQty = 0;
+    for (const r of allRows) {
+      periodRevenue += r.revenue;
+      periodCost += r.costTotal;
+      periodProfit += r.profit;
+      periodQty += r.qty;
+    }
+    const periodMargin = periodRevenue > 0 ? (periodProfit / periodRevenue) * 100 : 0;
+    const periodTotals = {
+      revenue: periodRevenue,
+      cost: periodCost,
+      profit: periodProfit,
+      qty: periodQty,
+      margin: periodMargin,
+      productCount: allRows.length,
+    };
+
+    // Apply lossOnly filter
+    const filteredRows = lossOnly ? allRows.filter((r) => r.profit < 0) : allRows;
+
+    // Apply display order then assign rank based on displayed position
+    const ordered = orderDir === "asc" ? [...filteredRows].reverse() : filteredRows;
+    const finalRows = ordered.map((r, idx) => ({ ...r, rank: idx + 1 }));
+
     const total = finalRows.length;
-    const startIdx = (page - 1) * pageSize;
-    const endIdx = startIdx + pageSize;
-    const pageRows = finalRows.slice(startIdx, endIdx);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const startIdx = (currentPage - 1) * pageSize;
+    const pageRows = finalRows.slice(startIdx, startIdx + pageSize);
+
+    // Helper: quote a CSV field (escapes internal double-quotes)
+    const csvField = (v: string | number): string => {
+      const s = String(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
 
     if (formatType === "csv") {
       const headers = [
         "Rank",
         "Product",
-        "Qty Sold",
-        "Weighted Cost (per item)",
-        "Weighted Sold Price (per item)",
-        "Total Weighted Cost",
-        "Revenue",
+        "Net Qty",
+        "Weighted Cost (per item) GHS",
+        "Weighted Sold Price (per item) GHS",
+        "Total Weighted Cost GHS",
+        "Revenue GHS",
         "Margin %",
-        "Profit / Loss",
+        "Profit / Loss GHS",
       ];
       const lines = finalRows.map((r: Row & { rank: number }) => {
         const weightedSold = r.qty > 0 ? r.revenue / r.qty : 0;
         return [
-          r.rank,
-          r.name,
-          r.qty,
-          r.weightedCost.toFixed(2),
-          weightedSold.toFixed(2),
-          r.costTotal.toFixed(2),
-          r.revenue.toFixed(2),
-          r.margin.toFixed(1),
-          r.profit.toFixed(2),
+          csvField(r.rank),
+          csvField(r.name),
+          csvField(r.qty),
+          csvField(r.weightedCost.toFixed(2)),
+          csvField(weightedSold.toFixed(2)),
+          csvField(r.costTotal.toFixed(2)),
+          csvField(r.revenue.toFixed(2)),
+          csvField(r.margin.toFixed(1)),
+          csvField(r.profit.toFixed(2)),
         ].join(",");
       });
       const csv = [headers.join(","), ...lines].join("\n");
@@ -183,6 +356,7 @@ export async function GET(request: Request) {
           columnCount: headers.length,
           byteSize: Buffer.byteLength(csv, "utf8"),
           query: q || null,
+          lossOnly,
         },
       });
       return new Response(csv, {
@@ -195,35 +369,93 @@ export async function GET(request: Request) {
 
     if (formatType === "pdf") {
       const chunks: Buffer[] = [];
-      const doc = new PDFDocument({ margin: 40, size: "A4" });
+      const doc = new PDFDocument({ margin: 40, size: "A4", layout: "landscape" });
       doc.on("data", (c) => chunks.push(c));
       const done = new Promise<void>((resolve) => doc.on("end", resolve));
 
-      doc.font("Helvetica-Bold").fontSize(16).text("Product Performance (P&L)", { align: "center" });
-      doc.moveDown(0.4);
-      doc
-        .font("Helvetica")
-        .fontSize(11)
-        .text(`Range: ${range || "CUSTOM"}    Generated: ${new Date().toLocaleString()}`, { align: "center" });
-      doc.moveDown(1);
+      // Column layout (x position + width) for A4 landscape (usable ~762pt)
+      const COL = {
+        rank:      { x: 40,  w: 32  },
+        product:   { x: 80,  w: 195 },
+        qty:       { x: 283, w: 45  },
+        wgtCost:   { x: 336, w: 72  },
+        wgtPrice:  { x: 416, w: 72  },
+        totalCost: { x: 496, w: 72  },
+        revenue:   { x: 576, w: 72  },
+        margin:    { x: 656, w: 48  },
+        profit:    { x: 712, w: 72  },
+      } as const;
 
-      doc.font("Helvetica-Bold").fontSize(11);
-      doc.text(
-        "Rank  Product                              Qty   WgtCost  WgtPrice  TotalCost   Revenue   Margin   Profit",
+      const drawRow = (
+        rankVal: string,
+        productVal: string,
+        qtyVal: string,
+        wgtCostVal: string,
+        wgtPriceVal: string,
+        totalCostVal: string,
+        revenueVal: string,
+        marginVal: string,
+        profitVal: string,
+        y: number,
+      ) => {
+        doc.text(rankVal,      COL.rank.x,      y, { width: COL.rank.w,      align: "right"  });
+        doc.text(productVal,   COL.product.x,   y, { width: COL.product.w,   align: "left"   });
+        doc.text(qtyVal,       COL.qty.x,       y, { width: COL.qty.w,       align: "right"  });
+        doc.text(wgtCostVal,   COL.wgtCost.x,   y, { width: COL.wgtCost.w,   align: "right"  });
+        doc.text(wgtPriceVal,  COL.wgtPrice.x,  y, { width: COL.wgtPrice.w,  align: "right"  });
+        doc.text(totalCostVal, COL.totalCost.x, y, { width: COL.totalCost.w, align: "right"  });
+        doc.text(revenueVal,   COL.revenue.x,   y, { width: COL.revenue.w,   align: "right"  });
+        doc.text(marginVal,    COL.margin.x,    y, { width: COL.margin.w,    align: "right"  });
+        doc.text(profitVal,    COL.profit.x,    y, { width: COL.profit.w,    align: "right"  });
+      };
+
+      doc.font("Helvetica-Bold").fontSize(14).text("Product Performance (P&L)", { align: "center" });
+      doc.moveDown(0.3);
+      doc.font("Helvetica").fontSize(10).text(
+        `Range: ${range || "custom"}${lossOnly ? "  |  Loss-makers only" : ""}    Generated: ${new Date().toLocaleString("en-GH", { timeZone: "Africa/Accra" })}`,
+        { align: "center" },
       );
-      doc.moveTo(40, doc.y + 2).lineTo(550, doc.y + 2).stroke();
-      doc.font("Helvetica").fontSize(10);
-      finalRows.forEach((r) => {
+      doc.moveDown(0.8);
+
+      // Header row
+      doc.font("Helvetica-Bold").fontSize(9);
+      const headerY = doc.y;
+      drawRow("Rank", "Product", "Net Qty", "Wgt Cost", "Wgt Price", "Total Cost", "Revenue (GHS)", "Margin%", "Profit (GHS)", headerY);
+      doc.moveDown(0.5);
+      doc.moveTo(40, doc.y).lineTo(800, doc.y).stroke();
+      doc.moveDown(0.3);
+
+      // Data rows
+      doc.font("Helvetica").fontSize(9);
+      for (const r of finalRows) {
         const weightedSold = r.qty > 0 ? r.revenue / r.qty : 0;
-        const marginStr = `${r.margin.toFixed(1)}%`;
-        const line = `${String(r.rank).padStart(4)}  ${r.name.padEnd(34).slice(0, 34)}  ${String(r.qty).padStart(4)}  ${r.weightedCost
-          .toFixed(2)
-          .padStart(8)}  ${weightedSold.toFixed(2).padStart(8)}  ${r.costTotal
-          .toFixed(2)
-          .padStart(10)}  ${r.revenue.toFixed(2).padStart(9)}  ${marginStr
-          .padStart(7)}  ${r.profit.toFixed(2).padStart(8)}`;
-        doc.text(line);
-      });
+        const rowY = doc.y;
+        drawRow(
+          String(r.rank),
+          r.name.length > 30 ? r.name.slice(0, 29) + "…" : r.name,
+          String(r.qty),
+          r.weightedCost.toFixed(2),
+          weightedSold.toFixed(2),
+          r.costTotal.toFixed(2),
+          r.revenue.toFixed(2),
+          `${r.margin.toFixed(1)}%`,
+          r.profit.toFixed(2),
+          rowY,
+        );
+        doc.moveDown(0.45);
+        // Page break if near bottom margin
+        if (doc.y > 540) {
+          doc.addPage();
+          doc.font("Helvetica-Bold").fontSize(9);
+          const newHeaderY = doc.y;
+          drawRow("Rank", "Product", "Net Qty", "Wgt Cost", "Wgt Price", "Total Cost", "Revenue (GHS)", "Margin%", "Profit (GHS)", newHeaderY);
+          doc.moveDown(0.5);
+          doc.moveTo(40, doc.y).lineTo(800, doc.y).stroke();
+          doc.moveDown(0.3);
+          doc.font("Helvetica").fontSize(9);
+        }
+      }
+
       doc.end();
       await done;
       const pdf = Buffer.concat(chunks);
@@ -239,6 +471,7 @@ export async function GET(request: Request) {
           rowCount: finalRows.length,
           byteSize: pdf.length,
           query: q || null,
+          lossOnly,
         },
       });
       return new Response(pdf, {
@@ -254,8 +487,9 @@ export async function GET(request: Request) {
       start: gte ? gte.toISOString() : null,
       end: lte ? lte.toISOString() : null,
       total,
-      page,
+      page: currentPage,
       pageSize,
+      periodTotals,
       rows: pageRows,
     });
   } catch (error) {

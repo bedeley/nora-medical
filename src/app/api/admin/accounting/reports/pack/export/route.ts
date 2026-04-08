@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
+import { RETAINED_EARNINGS_ACCOUNT_CODE } from "@/lib/opening-retained-earnings";
 import { loadAccountTotals, parseDateRange, parseValidatedDateRange, toNet, type AccountTotals } from "../../utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -109,13 +110,19 @@ export async function GET(req: Request) {
 
   const bsAssets = bsTotals.filter((row) => row.type === "ASSET");
   const bsLiabilities = bsTotals.filter((row) => row.type === "LIABILITY");
-  const bsEquity = bsTotals.filter((row) => row.type === "EQUITY");
+  const bsOpeningRetainedEarningsRows = bsTotals.filter(
+    (row) => row.type === "EQUITY" && row.code === RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
+  const bsEquity = bsTotals.filter(
+    (row) => row.type === "EQUITY" && row.code !== RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
   const bsIncome = bsTotals.filter((row) => row.type === "INCOME");
   const bsExpenses = bsTotals.filter((row) => row.type === "EXPENSE");
 
   const assetTotal = bsAssets.reduce((sum, row) => sum + toNet(row), 0);
   const liabilityTotal = bsLiabilities.reduce((sum, row) => sum + toNet(row), 0);
   const equityTotal = bsEquity.reduce((sum, row) => sum + toNet(row), 0);
+  const openingRetainedEarningsTotal = bsOpeningRetainedEarningsRows.reduce((sum, row) => sum + toNet(row), 0);
   const incomeTotal = bsIncome.reduce((sum, row) => sum + toNet(row), 0);
   const expenseTotal = bsExpenses.reduce((sum, row) => sum + toNet(row), 0);
   const netIncomeToDate = incomeTotal - expenseTotal;
@@ -130,7 +137,7 @@ export async function GET(req: Request) {
     const periodExpenseTotal = periodExpenses.reduce((sum, row) => sum + toNet(row), 0);
     currentPeriodNetIncome = periodIncomeTotal - periodExpenseTotal;
   }
-  const retainedEarnings = netIncomeToDate - currentPeriodNetIncome;
+  const retainedEarnings = openingRetainedEarningsTotal + netIncomeToDate - currentPeriodNetIncome;
   const equityWithEarnings: AccountTotals[] = [
     ...bsEquity,
     {
@@ -150,7 +157,7 @@ export async function GET(req: Request) {
       type: "EQUITY",
     },
   ];
-  const equityWithEarningsTotal = equityTotal + netIncomeToDate;
+  const equityWithEarningsTotal = equityTotal + openingRetainedEarningsTotal + netIncomeToDate;
 
   const rows: Array<Array<string | number>> = [
     ["REPORTING PACK", "Noralls Medical Supplies"],

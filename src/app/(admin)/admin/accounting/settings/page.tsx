@@ -14,6 +14,12 @@ import { toast } from "sonner";
 type ThresholdConfig = {
   arDifference: number;
   inventoryDifference: number;
+  apDifference: number;
+  trialBalance: number;
+  revenueDifference: number;
+  vatDifference: number;
+  cogsDifference: number;
+  storeCreditDifference: number;
   draftEntries: boolean;
   negativeStock: boolean;
 };
@@ -36,6 +42,7 @@ type JournalRuntimePolicy = {
   manualEntryAllowPnl: boolean;
   archiveAfterMonths: number;
   archiveCronDryRun: boolean;
+  largeAmountAnomalyThreshold: number;
 };
 type SettingsAuditRow = {
   id: string;
@@ -50,6 +57,12 @@ type SettingsAuditResponse = {
 const DEFAULT_THRESHOLDS: ThresholdConfig = {
   arDifference: 0.01,
   inventoryDifference: 0.01,
+  apDifference: 0.01,
+  trialBalance: 0.01,
+  revenueDifference: 0.01,
+  vatDifference: 0.01,
+  cogsDifference: 0.01,
+  storeCreditDifference: 0.01,
   draftEntries: true,
   negativeStock: true,
 };
@@ -76,6 +89,7 @@ const DEFAULT_JOURNAL_POLICY: JournalRuntimePolicy = {
   manualEntryAllowPnl: false,
   archiveAfterMonths: 18,
   archiveCronDryRun: false,
+  largeAmountAnomalyThreshold: 25000,
 };
 
 export default function AccountingSettingsPage() {
@@ -137,6 +151,12 @@ export default function AccountingSettingsPage() {
 
   const [arDifference, setArDifference] = useState(String(DEFAULT_THRESHOLDS.arDifference));
   const [inventoryDifference, setInventoryDifference] = useState(String(DEFAULT_THRESHOLDS.inventoryDifference));
+  const [apDifference, setApDifference] = useState(String(DEFAULT_THRESHOLDS.apDifference));
+  const [trialBalance, setTrialBalance] = useState(String(DEFAULT_THRESHOLDS.trialBalance));
+  const [revenueDifference, setRevenueDifference] = useState(String(DEFAULT_THRESHOLDS.revenueDifference));
+  const [vatDifference, setVatDifference] = useState(String(DEFAULT_THRESHOLDS.vatDifference));
+  const [cogsDifference, setCogsDifference] = useState(String(DEFAULT_THRESHOLDS.cogsDifference));
+  const [storeCreditDifference, setStoreCreditDifference] = useState(String(DEFAULT_THRESHOLDS.storeCreditDifference));
   const [draftEntries, setDraftEntries] = useState(DEFAULT_THRESHOLDS.draftEntries);
   const [negativeStock, setNegativeStock] = useState(DEFAULT_THRESHOLDS.negativeStock);
   const [saving, setSaving] = useState(false);
@@ -163,6 +183,7 @@ export default function AccountingSettingsPage() {
   const [journalManualEntryAllowPnl, setJournalManualEntryAllowPnl] = useState(DEFAULT_JOURNAL_POLICY.manualEntryAllowPnl);
   const [journalArchiveAfterMonths, setJournalArchiveAfterMonths] = useState(String(DEFAULT_JOURNAL_POLICY.archiveAfterMonths));
   const [journalArchiveCronDryRun, setJournalArchiveCronDryRun] = useState(DEFAULT_JOURNAL_POLICY.archiveCronDryRun);
+  const [journalLargeAmountAnomalyThreshold, setJournalLargeAmountAnomalyThreshold] = useState(String(DEFAULT_JOURNAL_POLICY.largeAmountAnomalyThreshold));
   const [savingJournalPolicy, setSavingJournalPolicy] = useState(false);
   const [monthlyReopenWindowDays, setMonthlyReopenWindowDays] = useState(String(DEFAULT_MONTHLY_REOPEN_WINDOW_DAYS));
   const [fiscalReopenWindowDays, setFiscalReopenWindowDays] = useState(String(DEFAULT_FISCAL_REOPEN_WINDOW_DAYS));
@@ -179,6 +200,12 @@ export default function AccountingSettingsPage() {
     return {
       arDifference: Number(value.arDifference ?? DEFAULT_THRESHOLDS.arDifference),
       inventoryDifference: Number(value.inventoryDifference ?? DEFAULT_THRESHOLDS.inventoryDifference),
+      apDifference: Number(value.apDifference ?? DEFAULT_THRESHOLDS.apDifference),
+      trialBalance: Number(value.trialBalance ?? DEFAULT_THRESHOLDS.trialBalance),
+      revenueDifference: Number(value.revenueDifference ?? DEFAULT_THRESHOLDS.revenueDifference),
+      vatDifference: Number(value.vatDifference ?? DEFAULT_THRESHOLDS.vatDifference),
+      cogsDifference: Number(value.cogsDifference ?? DEFAULT_THRESHOLDS.cogsDifference),
+      storeCreditDifference: Number(value.storeCreditDifference ?? DEFAULT_THRESHOLDS.storeCreditDifference),
       draftEntries: Boolean(value.draftEntries ?? DEFAULT_THRESHOLDS.draftEntries),
       negativeStock: Boolean(value.negativeStock ?? DEFAULT_THRESHOLDS.negativeStock),
     };
@@ -234,11 +261,13 @@ export default function AccountingSettingsPage() {
     if (!value) return DEFAULT_JOURNAL_POLICY;
     const recentWindowDays = Number(value.recentWindowDays ?? DEFAULT_JOURNAL_POLICY.recentWindowDays);
     const archiveAfterMonths = Number(value.archiveAfterMonths ?? DEFAULT_JOURNAL_POLICY.archiveAfterMonths);
+    const largeAmountAnomalyThreshold = Number(value.largeAmountAnomalyThreshold ?? DEFAULT_JOURNAL_POLICY.largeAmountAnomalyThreshold);
     return {
       recentWindowDays: Number.isFinite(recentWindowDays) ? Math.min(3660, Math.max(1, Math.floor(recentWindowDays))) : DEFAULT_JOURNAL_POLICY.recentWindowDays,
       manualEntryAllowPnl: Boolean(value.manualEntryAllowPnl ?? DEFAULT_JOURNAL_POLICY.manualEntryAllowPnl),
       archiveAfterMonths: Number.isFinite(archiveAfterMonths) ? Math.min(120, Math.max(1, Math.floor(archiveAfterMonths))) : DEFAULT_JOURNAL_POLICY.archiveAfterMonths,
       archiveCronDryRun: Boolean(value.archiveCronDryRun ?? DEFAULT_JOURNAL_POLICY.archiveCronDryRun),
+      largeAmountAnomalyThreshold: Number.isFinite(largeAmountAnomalyThreshold) ? Math.min(1_000_000_000, Math.max(0, Math.floor(largeAmountAnomalyThreshold))) : DEFAULT_JOURNAL_POLICY.largeAmountAnomalyThreshold,
     };
   }, [journalPolicyData?.value]);
   const currentMonthlyReopenWindowDays = useMemo(() => {
@@ -270,6 +299,12 @@ export default function AccountingSettingsPage() {
   useEffect(() => {
     setArDifference(String(currentThresholds.arDifference));
     setInventoryDifference(String(currentThresholds.inventoryDifference));
+    setApDifference(String(currentThresholds.apDifference));
+    setTrialBalance(String(currentThresholds.trialBalance));
+    setRevenueDifference(String(currentThresholds.revenueDifference));
+    setVatDifference(String(currentThresholds.vatDifference));
+    setCogsDifference(String(currentThresholds.cogsDifference));
+    setStoreCreditDifference(String(currentThresholds.storeCreditDifference));
     setDraftEntries(currentThresholds.draftEntries);
     setNegativeStock(currentThresholds.negativeStock);
   }, [currentThresholds]);
@@ -302,6 +337,7 @@ export default function AccountingSettingsPage() {
     setJournalManualEntryAllowPnl(currentJournalPolicy.manualEntryAllowPnl);
     setJournalArchiveAfterMonths(String(currentJournalPolicy.archiveAfterMonths));
     setJournalArchiveCronDryRun(currentJournalPolicy.archiveCronDryRun);
+    setJournalLargeAmountAnomalyThreshold(String(currentJournalPolicy.largeAmountAnomalyThreshold));
   }, [currentJournalPolicy]);
   useEffect(() => {
     setMonthlyReopenWindowDays(String(currentMonthlyReopenWindowDays));
@@ -318,10 +354,38 @@ export default function AccountingSettingsPage() {
 
   const arVal = Number(arDifference);
   const invVal = Number(inventoryDifference);
-  const thresholdsValid = Number.isFinite(arVal) && arVal >= 0 && Number.isFinite(invVal) && invVal >= 0;
+  const apVal = Number(apDifference);
+  const trialBalanceVal = Number(trialBalance);
+  const revenueVal = Number(revenueDifference);
+  const vatVal = Number(vatDifference);
+  const cogsVal = Number(cogsDifference);
+  const storeCreditVal = Number(storeCreditDifference);
+  const thresholdsValid =
+    Number.isFinite(arVal) &&
+    arVal >= 0 &&
+    Number.isFinite(invVal) &&
+    invVal >= 0 &&
+    Number.isFinite(apVal) &&
+    apVal >= 0 &&
+    Number.isFinite(trialBalanceVal) &&
+    trialBalanceVal >= 0 &&
+    Number.isFinite(revenueVal) &&
+    revenueVal >= 0 &&
+    Number.isFinite(vatVal) &&
+    vatVal >= 0 &&
+    Number.isFinite(cogsVal) &&
+    cogsVal >= 0 &&
+    Number.isFinite(storeCreditVal) &&
+    storeCreditVal >= 0;
   const thresholdDirty =
     arDifference.trim() !== String(currentThresholds.arDifference) ||
     inventoryDifference.trim() !== String(currentThresholds.inventoryDifference) ||
+    apDifference.trim() !== String(currentThresholds.apDifference) ||
+    trialBalance.trim() !== String(currentThresholds.trialBalance) ||
+    revenueDifference.trim() !== String(currentThresholds.revenueDifference) ||
+    vatDifference.trim() !== String(currentThresholds.vatDifference) ||
+    cogsDifference.trim() !== String(currentThresholds.cogsDifference) ||
+    storeCreditDifference.trim() !== String(currentThresholds.storeCreditDifference) ||
     draftEntries !== currentThresholds.draftEntries ||
     negativeStock !== currentThresholds.negativeStock;
 
@@ -366,20 +430,26 @@ export default function AccountingSettingsPage() {
     reconcileMarginWarningAbsPct.trim() !== String(currentReconcileThresholds.marginWarningAbsPct);
   const journalRecentWindowVal = Number(journalRecentWindowDays);
   const journalArchiveMonthsVal = Number(journalArchiveAfterMonths);
+  const journalLargeAmountAnomalyThresholdVal = Number(journalLargeAmountAnomalyThreshold);
   const journalPolicyValid =
     Number.isFinite(journalRecentWindowVal) &&
     Number.isFinite(journalArchiveMonthsVal) &&
+    Number.isFinite(journalLargeAmountAnomalyThresholdVal) &&
     Number.isInteger(journalRecentWindowVal) &&
     Number.isInteger(journalArchiveMonthsVal) &&
+    Number.isInteger(journalLargeAmountAnomalyThresholdVal) &&
     journalRecentWindowVal >= 1 &&
     journalRecentWindowVal <= 3660 &&
     journalArchiveMonthsVal >= 1 &&
-    journalArchiveMonthsVal <= 120;
+    journalArchiveMonthsVal <= 120 &&
+    journalLargeAmountAnomalyThresholdVal >= 0 &&
+    journalLargeAmountAnomalyThresholdVal <= 1_000_000_000;
   const journalPolicyDirty =
     journalRecentWindowDays.trim() !== String(currentJournalPolicy.recentWindowDays) ||
     journalManualEntryAllowPnl !== currentJournalPolicy.manualEntryAllowPnl ||
     journalArchiveAfterMonths.trim() !== String(currentJournalPolicy.archiveAfterMonths) ||
-    journalArchiveCronDryRun !== currentJournalPolicy.archiveCronDryRun;
+    journalArchiveCronDryRun !== currentJournalPolicy.archiveCronDryRun ||
+    journalLargeAmountAnomalyThreshold.trim() !== String(currentJournalPolicy.largeAmountAnomalyThreshold);
   const monthlyReopenWindowVal = Number(monthlyReopenWindowDays);
   const fiscalReopenWindowVal = Number(fiscalReopenWindowDays);
   const reopenPolicyValid =
@@ -458,6 +528,12 @@ export default function AccountingSettingsPage() {
   const thresholdChangedFields = [
     arDifference.trim() !== String(currentThresholds.arDifference) ? "AR difference threshold" : null,
     inventoryDifference.trim() !== String(currentThresholds.inventoryDifference) ? "Inventory difference threshold" : null,
+    apDifference.trim() !== String(currentThresholds.apDifference) ? "AP difference threshold" : null,
+    trialBalance.trim() !== String(currentThresholds.trialBalance) ? "Trial balance threshold" : null,
+    revenueDifference.trim() !== String(currentThresholds.revenueDifference) ? "Revenue difference threshold" : null,
+    vatDifference.trim() !== String(currentThresholds.vatDifference) ? "VAT difference threshold" : null,
+    cogsDifference.trim() !== String(currentThresholds.cogsDifference) ? "COGS difference threshold" : null,
+    storeCreditDifference.trim() !== String(currentThresholds.storeCreditDifference) ? "Store-credit difference threshold" : null,
     draftEntries !== currentThresholds.draftEntries ? "Draft-entry alert toggle" : null,
     negativeStock !== currentThresholds.negativeStock ? "Negative-stock alert toggle" : null,
   ].filter(Boolean) as string[];
@@ -483,6 +559,7 @@ export default function AccountingSettingsPage() {
     journalManualEntryAllowPnl !== currentJournalPolicy.manualEntryAllowPnl ? "Manual P&L posting toggle" : null,
     journalArchiveAfterMonths.trim() !== String(currentJournalPolicy.archiveAfterMonths) ? "Archive cutoff months" : null,
     journalArchiveCronDryRun !== currentJournalPolicy.archiveCronDryRun ? "Scheduled dry-run toggle" : null,
+    journalLargeAmountAnomalyThreshold.trim() !== String(currentJournalPolicy.largeAmountAnomalyThreshold) ? "Large-amount anomaly threshold" : null,
   ].filter(Boolean) as string[];
   const reopenChangedFields = [
     monthlyReopenWindowDays.trim() !== String(currentMonthlyReopenWindowDays) ? "Monthly reopen window" : null,
@@ -573,6 +650,12 @@ export default function AccountingSettingsPage() {
           value: {
             arDifference: arVal,
             inventoryDifference: invVal,
+            apDifference: apVal,
+            trialBalance: trialBalanceVal,
+            revenueDifference: revenueVal,
+            vatDifference: vatVal,
+            cogsDifference: cogsVal,
+            storeCreditDifference: storeCreditVal,
             draftEntries,
             negativeStock,
           },
@@ -803,6 +886,7 @@ export default function AccountingSettingsPage() {
             manualEntryAllowPnl: journalManualEntryAllowPnl,
             archiveAfterMonths: Math.floor(journalArchiveMonthsVal),
             archiveCronDryRun: journalArchiveCronDryRun,
+            largeAmountAnomalyThreshold: Math.floor(journalLargeAmountAnomalyThresholdVal),
           },
           expectedUpdatedAt: journalPolicyData?.updatedAt ?? null,
           audit: {
@@ -1175,11 +1259,11 @@ export default function AccountingSettingsPage() {
         <CardHeader>
           <CardTitle>Integrity thresholds</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-2">
+        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <p className="sm:col-span-2 text-xs text-muted-foreground">
-            Controls when integrity checks show warning status for AR/inventory differences and stock/draft conditions.
+            Controls when integrity checks show warning status for balance differences, trial-balance deltas, and stock/draft conditions.
           </p>
-          <p className="sm:col-span-2 text-[11px] text-muted-foreground">
+          <p className="sm:col-span-2 lg:col-span-3 text-[11px] text-muted-foreground">
             {describeLastUpdated("integrity-thresholds")}{" "}
             <Link className="underline" href={getSectionAuditLink("integrity-thresholds")}>Open section audit</Link>
           </p>
@@ -1205,8 +1289,74 @@ export default function AccountingSettingsPage() {
               onChange={(e) => setInventoryDifference(e.target.value)}
             />
           </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">AP difference threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={apDifference}
+              onChange={(e) => setApDifference(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">Trial balance delta threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={trialBalance}
+              onChange={(e) => setTrialBalance(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">Revenue difference threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={revenueDifference}
+              onChange={(e) => setRevenueDifference(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">VAT difference threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={vatDifference}
+              onChange={(e) => setVatDifference(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">COGS difference threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={cogsDifference}
+              onChange={(e) => setCogsDifference(e.target.value)}
+            />
+          </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">Store-credit difference threshold (GHS)</span>
+            <Input
+              placeholder="Example: 0.01"
+              inputMode="decimal"
+              min={0}
+              step="0.01"
+              value={storeCreditDifference}
+              onChange={(e) => setStoreCreditDifference(e.target.value)}
+            />
+          </label>
           {!thresholdsValid ? (
-            <p className="sm:col-span-2 text-xs text-red-600">Threshold values must be numeric and &gt;= 0.</p>
+            <p className="sm:col-span-2 lg:col-span-3 text-xs text-red-600">Threshold values must be numeric and &gt;= 0.</p>
           ) : null}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={draftEntries} onChange={(e) => setDraftEntries(e.target.checked)} />
@@ -1216,7 +1366,7 @@ export default function AccountingSettingsPage() {
             <input type="checkbox" checked={negativeStock} onChange={(e) => setNegativeStock(e.target.checked)} />
             Alert on negative stock
           </label>
-          <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+          <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap items-center gap-2">
             <Button className="w-full sm:w-auto" onClick={() => void saveSettings()} disabled={saving || !thresholdDirty || !thresholdsValid}>
               {saving ? "Saving..." : "Save integrity thresholds"}
             </Button>
@@ -1234,6 +1384,12 @@ export default function AccountingSettingsPage() {
               onClick={() => {
                 setArDifference(String(currentThresholds.arDifference));
                 setInventoryDifference(String(currentThresholds.inventoryDifference));
+                setApDifference(String(currentThresholds.apDifference));
+                setTrialBalance(String(currentThresholds.trialBalance));
+                setRevenueDifference(String(currentThresholds.revenueDifference));
+                setVatDifference(String(currentThresholds.vatDifference));
+                setCogsDifference(String(currentThresholds.cogsDifference));
+                setStoreCreditDifference(String(currentThresholds.storeCreditDifference));
                 setDraftEntries(currentThresholds.draftEntries);
                 setNegativeStock(currentThresholds.negativeStock);
               }}
@@ -1244,12 +1400,13 @@ export default function AccountingSettingsPage() {
             <span className="text-xs text-muted-foreground">{thresholdDirty ? "Unsaved changes" : "No changes"}</span>
           </div>
           {thresholdChangedFields.length > 0 ? (
-            <p className="sm:col-span-2 text-[11px] text-amber-700">Pending changes: {thresholdChangedFields.join(", ")}.</p>
+            <p className="sm:col-span-2 lg:col-span-3 text-[11px] text-amber-700">Pending changes: {thresholdChangedFields.join(", ")}.</p>
           ) : null}
-          <p className="sm:col-span-2 text-[11px] text-muted-foreground">
-            Effective now: warning when AR difference &gt; {arDifference || "0"} GHS, inventory difference &gt;{" "}
-            {inventoryDifference || "0"} GHS, draft entries {draftEntries ? "included" : "ignored"}, negative stock{" "}
-            {negativeStock ? "included" : "ignored"}.
+          <p className="sm:col-span-2 lg:col-span-3 text-[11px] text-muted-foreground">
+            Effective now: AR &gt; {arDifference || "0"} GHS, inventory &gt; {inventoryDifference || "0"} GHS, AP &gt; {apDifference || "0"} GHS,
+            trial balance &gt; {trialBalance || "0"} GHS, revenue &gt; {revenueDifference || "0"} GHS, VAT &gt; {vatDifference || "0"} GHS,
+            COGS &gt; {cogsDifference || "0"} GHS, store credit &gt; {storeCreditDifference || "0"} GHS, draft entries {draftEntries ? "included" : "ignored"},
+            negative stock {negativeStock ? "included" : "ignored"}.
           </p>
         </CardContent>
       </Card>
@@ -1260,7 +1417,7 @@ export default function AccountingSettingsPage() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <p className="text-xs text-muted-foreground">
-            Sets whether dashboard/main P&L uses posted journal entries or operational totals.
+            Sets the default source for dashboard and main P&amp;L: Operational View or Posted Ledger View.
           </p>
           <p className="text-[11px] text-muted-foreground">
             {describeLastUpdated("reporting-source")}{" "}
@@ -1268,7 +1425,7 @@ export default function AccountingSettingsPage() {
           </p>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={useLedger} onChange={(e) => setUseLedger(e.target.checked)} disabled={!isAdmin} />
-            Use accounting ledger for dashboard and main P&amp;L
+            Default dashboard and main P&amp;L to Posted Ledger View
           </label>
           {!isAdmin ? <p className="text-xs text-amber-700">Only ADMIN can change this setting.</p> : null}
           <div className="flex flex-wrap items-center gap-2">
@@ -1297,7 +1454,7 @@ export default function AccountingSettingsPage() {
             <p className="text-[11px] text-amber-700">Pending changes: {reportingChangedFields.join(", ")}.</p>
           ) : null}
           <p className="text-[11px] text-muted-foreground">
-            Effective now: dashboard and main P&amp;L are using {useLedger ? "posted ledger" : "operational totals"}.
+            Effective now: dashboard and main P&amp;L default to {useLedger ? "Posted Ledger View" : "Operational View"}.
           </p>
         </CardContent>
       </Card>
@@ -1648,6 +1805,19 @@ export default function AccountingSettingsPage() {
               disabled={!isAdmin}
             />
           </label>
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">Large-amount anomaly threshold (GHS)</span>
+            <Input
+              placeholder="Example: 25000"
+              inputMode="numeric"
+              min={0}
+              max={1000000000}
+              step={1}
+              value={journalLargeAmountAnomalyThreshold}
+              onChange={(e) => setJournalLargeAmountAnomalyThreshold(e.target.value)}
+              disabled={!isAdmin}
+            />
+          </label>
           <label className="flex items-center gap-2 rounded-md border px-3 py-2">
             <input
               type="checkbox"
@@ -1658,7 +1828,7 @@ export default function AccountingSettingsPage() {
             <span>Scheduled archive runs in dry-run mode by default</span>
           </label>
           {!journalPolicyValid ? (
-            <p className="text-xs text-red-600">Journal recent window must be 1-3660 days and archive months must be 1-120.</p>
+            <p className="text-xs text-red-600">Journal recent window must be 1-3660 days, archive months 1-120, and the anomaly threshold 0-1,000,000,000.</p>
           ) : null}
           {!isAdmin ? <p className="text-xs text-amber-700">Only ADMIN can change this policy.</p> : null}
           <div className="flex flex-wrap items-center gap-2">
@@ -1685,6 +1855,7 @@ export default function AccountingSettingsPage() {
                 setJournalManualEntryAllowPnl(currentJournalPolicy.manualEntryAllowPnl);
                 setJournalArchiveAfterMonths(String(currentJournalPolicy.archiveAfterMonths));
                 setJournalArchiveCronDryRun(currentJournalPolicy.archiveCronDryRun);
+                setJournalLargeAmountAnomalyThreshold(String(currentJournalPolicy.largeAmountAnomalyThreshold));
               }}
               disabled={savingJournalPolicy || !journalPolicyDirty}
             >
@@ -1698,7 +1869,7 @@ export default function AccountingSettingsPage() {
           <p className="text-[11px] text-muted-foreground">
             Effective now: recent window {journalRecentWindowDays || "0"} day(s), manual income/expense entries{" "}
             {journalManualEntryAllowPnl ? "allowed" : "blocked"}, archive cutoff {journalArchiveAfterMonths || "0"} month(s),
-            scheduled mode {journalArchiveCronDryRun ? "dry run" : "live run"}.
+            large-amount anomaly threshold GHS {journalLargeAmountAnomalyThreshold || "0"}, scheduled mode {journalArchiveCronDryRun ? "dry run" : "live run"}.
           </p>
         </CardContent>
       </Card>

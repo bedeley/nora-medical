@@ -425,10 +425,14 @@ export default function NavBar() {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container mx-auto flex items-center gap-3 py-2 px-4 relative min-w-0 max-[360px]:gap-2 max-[360px]:px-3">
-        <Link href="/" className="flex items-center gap-2 flex-shrink-0 min-w-0">
+        <Link
+          href="/"
+          aria-label="Noralls Medical Supplies home"
+          className="flex items-center gap-2 flex-shrink-0 min-w-0"
+        >
           <Image
             src="/logo.svg"
-            alt="Noralls Medical Supplies"
+            alt=""
             width={140}
             height={40}
             sizes="(max-width: 360px) 90px, (max-width: 640px) 110px, 140px"
@@ -706,6 +710,8 @@ export default function NavBar() {
             size="icon"
             onClick={() => setMobileOpen((prev) => !prev)}
             aria-label="Toggle navigation menu"
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav-menu"
           >
             {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
@@ -715,6 +721,7 @@ export default function NavBar() {
       {mobileOpen && mounted
         ? createPortal(
             <div
+              id="mobile-nav-menu"
               className="fixed inset-0 z-50 bg-background text-foreground px-6 pt-24 pb-8 lg:hidden overflow-y-auto shadow-2xl"
               role="dialog"
               aria-modal="true"

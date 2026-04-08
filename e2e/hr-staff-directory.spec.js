@@ -1,26 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockStaffDirectoryApis(page, trackers) {
   const staffPayload = {
@@ -49,6 +29,12 @@ async function mockStaffDirectoryApis(page, trackers) {
         status: "ACTIVE",
         hireDate: "",
         updatedAt: "2026-03-25T09:30:00.000Z",
+        onboarding: {
+          status: "pending",
+          summary: "Imported from hiring pipeline and waiting for HR completion.",
+          missingFields: [],
+          hasPendingMarker: true,
+        },
         user: null,
       },
     ],
@@ -65,6 +51,7 @@ async function mockStaffDirectoryApis(page, trackers) {
       terminated: 0,
       missingProfile: 1,
       missingBankDetails: 1,
+      pendingOnboarding: 1,
       linkedAccount: 1,
       unlinkedAccount: 1,
     },
@@ -158,17 +145,108 @@ async function mockStaffDirectoryApis(page, trackers) {
 }
 
 test.describe("HR staff directory page", () => {
+  test("attention cards replace each other instead of stacking filters", async ({ page }) => {
+    await page.route("**/api/admin/hr/employees/views", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [] }),
+      });
+    });
+
+    await page.route("**/api/admin/audit?**sourcePage=admin%2Fhr%2Fstaff**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rows: [] }),
+      });
+    });
+
+    await page.route("**/api/admin/hr/employees?**", async (route) => {
+      const url = new URL(route.request().url());
+      const completeness = url.searchParams.get("completeness") || "all";
+      const onboarding = url.searchParams.get("onboarding") || "all";
+
+      let total = 6;
+      if (completeness === "missing" && onboarding === "all") total = 3;
+      if (onboarding === "pending" && completeness === "all") total = 4;
+      if (onboarding === "pending" && completeness === "missing") total = 3;
+
+      const rows = Array.from({ length: total }, (_, index) => ({
+        id: `emp-${index + 1}`,
+        firstName: `Employee${index + 1}`,
+        lastName: "Example",
+        email: index % 2 === 0 ? `employee${index + 1}@example.com` : "",
+        phone: "0240000000",
+        department: "HR",
+        position: "Coordinator",
+        status: "ACTIVE",
+        hireDate: "2025-01-02T00:00:00.000Z",
+        updatedAt: "2026-03-26T10:00:00.000Z",
+        onboarding: {
+          status: onboarding === "pending" || index < 4 ? "pending" : "complete",
+          summary: "Resume onboarding.",
+          missingFields: [],
+          hasPendingMarker: onboarding === "pending" || index < 4,
+        },
+        user: index === 0 ? null : { id: `user-${index + 1}`, role: "STAFF" },
+      }));
+
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          rows,
+          page: 1,
+          pageSize: 25,
+          total,
+          totalPages: 1,
+          departmentOptions: ["HR"],
+          summary: {
+            total: 6,
+            active: 6,
+            onLeave: 0,
+            suspended: 0,
+            terminated: 0,
+            missingProfile: 3,
+            missingBankDetails: 1,
+            pendingOnboarding: 4,
+            linkedAccount: 5,
+            unlinkedAccount: 1,
+          },
+        }),
+      });
+    });
+
+    await page.goto("/admin/hr/staff");
+
+    await page.getByRole("button", { name: /Profiles missing key fields/i }).click();
+    await expect(page).toHaveURL(/completeness=missing/);
+    await expect(page).not.toHaveURL(/onboarding=/);
+    await expect(page.getByText("Showing 1 to 3 of 3", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: /Onboarding still pending/i }).click();
+    await expect(page).toHaveURL(/onboarding=pending/);
+    await expect(page).not.toHaveURL(/completeness=missing/);
+    await expect(page.getByText("Showing 1 to 4 of 4", { exact: true })).toBeVisible();
+  });
+
   test("shows recent staff activity and creates a linked user from the row menu", async ({ page }) => {
     const trackers = { userPayloads: [], importPayloads: [] };
-    await signIn(page);
     await mockStaffDirectoryApis(page, trackers);
     await page.goto("/admin/hr/staff");
 
+    await expect(page.getByRole("link", { name: /Start onboarding/i })).toHaveAttribute(
+      "href",
+      "/admin/hr/onboarding?source=staff",
+    );
+    await expect(page.getByText("Needs onboarding", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Recent staff activity", { exact: true })).toBeVisible();
     await expect(page.getByText("Employee import completed successfully.", { exact: true })).toBeVisible();
     await expect(page.getByRole("cell", { name: /No linked account/i })).toBeVisible();
 
     await page.getByRole("button", { name: /More actions for Kofi Mensah/i }).click();
+    await expect(page.getByRole("menuitem", { name: /Resume onboarding/i })).toBeVisible();
     await page.getByRole("menuitem", { name: /Create linked user/i }).click();
 
     const linkedUserDialog = page.getByRole("dialog", { name: /Create linked user/i });
@@ -193,7 +271,6 @@ test.describe("HR staff directory page", () => {
 
   test("shows richer import readiness preview before import", async ({ page }) => {
     const trackers = { userPayloads: [], importPayloads: [] };
-    await signIn(page);
     await mockStaffDirectoryApis(page, trackers);
     await page.goto("/admin/hr/staff");
 

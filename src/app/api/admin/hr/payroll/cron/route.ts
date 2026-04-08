@@ -17,12 +17,8 @@ function monthRange(year: number, month: number) {
 }
 
 export async function GET(req: Request) {
-  const secret = (process.env.HR_PAYROLL_CRON_SECRET || "").trim();
-  const authHeader = req.headers.get("authorization") || "";
-  const headerSecret = req.headers.get("x-cron-secret") || "";
-  const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : headerSecret.trim();
-
-  if (!secret || provided !== secret) {
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  if (!verifyCronSecret(req, "HR_PAYROLL_CRON_SECRET")) {
     return NextResponse.json({ enabled: false }, { status: 200 });
   }
 

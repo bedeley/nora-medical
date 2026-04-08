@@ -2,14 +2,27 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip } from "@/components/ui/tooltip";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
 import { toast } from "sonner";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type SummaryResponse = {
   summary?: {
@@ -50,8 +63,19 @@ type ReconcileResponse = {
       description: string | null;
     }>;
   }>;
-  autoApply: Array<{ id: string; orderId: string | null; amount: number; createdAt: string }>;
-  returns: Array<{ id: string; orderId: string | null; amount: number; refundDisposition: string | null; createdAt: string }>;
+  autoApply: Array<{
+    id: string;
+    orderId: string | null;
+    amount: number;
+    createdAt: string;
+  }>;
+  returns: Array<{
+    id: string;
+    orderId: string | null;
+    amount: number;
+    refundDisposition: string | null;
+    createdAt: string;
+  }>;
   error?: string;
 };
 
@@ -66,12 +90,16 @@ type FiscalPeriod = {
 type MetricKey = "totalRevenue" | "totalCOGS" | "totalExpense" | "profit" | "margin";
 type PresetKey = "custom" | "today" | "last7" | "month" | "active";
 type Severity = "ok" | "minor" | "warning" | "critical";
+type DetailTab = "manual" | "autoApply" | "returns";
+
 type ReconcileThresholds = {
   currencyMinorPct: number;
   currencyWarningPct: number;
   marginMinorAbsPct: number;
   marginWarningAbsPct: number;
 };
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const metrics: Array<{ key: MetricKey; label: string; isPercent?: boolean }> = [
   { key: "totalRevenue", label: "Revenue" },
@@ -80,12 +108,15 @@ const metrics: Array<{ key: MetricKey; label: string; isPercent?: boolean }> = [
   { key: "profit", label: "Net Profit" },
   { key: "margin", label: "Margin %", isPercent: true },
 ];
+
 const DEFAULT_RECONCILE_THRESHOLDS: ReconcileThresholds = {
   currencyMinorPct: 0.01,
   currencyWarningPct: 0.05,
   marginMinorAbsPct: 0.1,
   marginWarningAbsPct: 0.5,
 };
+
+// ── Pure helpers (defined before component) ───────────────────────────────────
 
 function dateToYmdLocal(date: Date) {
   const y = date.getFullYear();
@@ -96,7 +127,7 @@ function dateToYmdLocal(date: Date) {
 
 function toCsvCell(value: unknown) {
   const text = String(value ?? "");
-  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, "\"\"")}"`;
+  if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;
 }
 
@@ -128,63 +159,122 @@ function severityBadge(severity: Severity) {
   return <Badge variant="destructive">Critical</Badge>;
 }
 
+function deltaColorClass(delta: number, isPercent?: boolean): string {
+  const abs = Math.abs(isPercent ? delta : delta);
+  if (abs <= 0.01) return "text-muted-foreground";
+  return delta < 0 ? "text-red-600 font-medium" : "text-emerald-600 font-medium";
+}
+
 function buildDrillLinks(metric: MetricKey, start: string, end: string) {
-  const params = new URLSearchParams();
-  if (start) params.set("start", start);
-  if (end) params.set("end", end);
-  const range = params.toString() ? `?${params.toString()}` : "";
   const journalParams = new URLSearchParams();
   if (start) journalParams.set("start", start);
   if (end) journalParams.set("end", end);
+  const rangeParams = new URLSearchParams();
+  if (start) rangeParams.set("start", start);
+  if (end) rangeParams.set("end", end);
+  const range = rangeParams.toString() ? `?${rangeParams.toString()}` : "";
 
   if (metric === "totalRevenue") {
     return [
-      { label: "Open Journal (Orders/Payments)", href: `/admin/accounting/journal?${journalParams.toString()}&source=ORDER` },
-      { label: "Open Return Credits", href: `/admin/orders${range}` },
+      { label: "Journal (Orders/Payments)", href: `/admin/accounting/journal?${journalParams.toString()}&source=ORDER` },
+      { label: "Return Credits", href: `/admin/orders${range}` },
     ];
   }
   if (metric === "totalCOGS") {
     return [
-      { label: "Open Journal (COGS lines)", href: `/admin/accounting/journal?${journalParams.toString()}&accountType=EXPENSE` },
-      { label: "Open Inventory Integrity", href: `/admin/accounting/integrity${range}` },
+      { label: "Journal (COGS lines)", href: `/admin/accounting/journal?${journalParams.toString()}&accountType=EXPENSE` },
+      { label: "Inventory Integrity", href: `/admin/accounting/integrity${range}` },
     ];
   }
   if (metric === "totalExpense") {
     return [
-      { label: "Open Expenses", href: `/admin/expenses${range}` },
-      { label: "Open Journal (Manual)", href: `/admin/accounting/journal?${journalParams.toString()}&source=MANUAL` },
+      { label: "Expenses", href: `/admin/expenses${range}` },
+      { label: "Journal (Manual)", href: `/admin/accounting/journal?${journalParams.toString()}&source=MANUAL` },
     ];
   }
   if (metric === "profit") {
     return [
-      { label: "Open P&L Report", href: `/admin/accounting/reports/pl${range}` },
-      { label: "Open Reconcile Drivers", href: `/admin/accounting/reconcile${range}` },
+      { label: "P&L Report", href: `/admin/accounting/reports/pl${range}` },
+      { label: "Reconcile Drivers", href: `/admin/accounting/reconcile${range}` },
     ];
   }
   return [
-    { label: "Open P&L Report", href: `/admin/accounting/reports/pl${range}` },
-    { label: "Open Dashboard", href: `/admin/dashboard${range}` },
+    { label: "P&L Report", href: `/admin/accounting/reports/pl${range}` },
+    { label: "Dashboard", href: `/admin/dashboard${range}` },
   ];
 }
+
+function buildWhyNotes(
+  metric: MetricKey,
+  input: {
+    delta: number;
+    severity: Severity;
+    isPercent: boolean;
+    manualCount: number;
+    autoApplyCount: number;
+    returnCount: number;
+  },
+): string[] {
+  const notes: string[] = [];
+  if (input.severity === "ok") {
+    notes.push(
+      input.isPercent
+        ? "No material variance detected for this metric in the selected range."
+        : `No material variance detected (${formatCurrency(input.delta)}).`,
+    );
+  } else {
+    notes.push(
+      input.isPercent
+        ? `Variance detected (${input.delta >= 0 ? "+" : ""}${input.delta.toFixed(2)}%).`
+        : `Variance detected (${formatCurrency(input.delta)}).`,
+    );
+  }
+  if (input.manualCount > 0) {
+    notes.push(
+      `${input.manualCount} manual journal entr${input.manualCount === 1 ? "y is" : "ies are"} included and may shift ledger-only totals.`,
+    );
+  }
+  if (metric === "totalRevenue" || metric === "profit" || metric === "margin") {
+    if (input.returnCount > 0) {
+      notes.push(
+        `${input.returnCount} return/refund entr${input.returnCount === 1 ? "y was" : "ies were"} found in this range and can reduce net figures.`,
+      );
+    }
+    if (input.autoApplyCount > 0) {
+      notes.push(
+        `${input.autoApplyCount} store-credit auto-apply entr${input.autoApplyCount === 1 ? "y was" : "ies were"} found and may change payment timing vs order timing.`,
+      );
+    }
+  }
+  if (metric === "totalCOGS") {
+    notes.push("Inventory valuation timing, late receipts, or adjustments can move COGS between periods.");
+  }
+  if (metric === "totalExpense") {
+    notes.push("Accrual vs cash timing and manual expense journals commonly explain expense deltas.");
+  }
+  if (notes.length === 0) {
+    notes.push("No major explanatory signals were detected in this sample.");
+  }
+  notes.push("Use the drill-down links below to verify source transactions and posted journal lines.");
+  return notes;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function AccountingReconcilePage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+
   const [start, setStart] = useState(searchParams.get("start") || "");
   const [end, setEnd] = useState(searchParams.get("end") || "");
   const [searchText, setSearchText] = useState(searchParams.get("q") || "");
   const [preset, setPreset] = useState<PresetKey>((searchParams.get("preset") as PresetKey) || "custom");
   const [lockActivePeriod, setLockActivePeriod] = useState(searchParams.get("lock") === "1");
   const [expandedMetric, setExpandedMetric] = useState<MetricKey | null>(null);
+  const [activeTab, setActiveTab] = useState<DetailTab>("manual");
 
-  const queryString = useMemo(() => {
-    const p = new URLSearchParams();
-    if (start) p.set("start", start);
-    if (end) p.set("end", end);
-    p.set("groupBy", "day");
-    return p.toString();
-  }, [start, end]);
+  // ── URL sync ───────────────────────────────────────────────────────────────
 
   const shareablePath = useMemo(() => {
     const sp = new URLSearchParams();
@@ -196,29 +286,23 @@ export default function AccountingReconcilePage() {
     return `${pathname}${sp.toString() ? `?${sp.toString()}` : ""}`;
   }, [end, lockActivePeriod, pathname, preset, searchText, start]);
 
-  const pushStateToUrl = useCallback((
-    next: {
-      start?: string;
-      end?: string;
-      q?: string;
-      preset?: PresetKey;
-      lock?: boolean;
+  const pushStateToUrl = useCallback(
+    (next: { start?: string; end?: string; q?: string; preset?: PresetKey; lock?: boolean }) => {
+      const sp = new URLSearchParams();
+      const nextStart = next.start ?? start;
+      const nextEnd = next.end ?? end;
+      const nextQ = next.q ?? searchText;
+      const nextPreset = next.preset ?? preset;
+      const nextLock = next.lock ?? lockActivePeriod;
+      if (nextStart) sp.set("start", nextStart);
+      if (nextEnd) sp.set("end", nextEnd);
+      if (nextQ) sp.set("q", nextQ);
+      if (nextPreset !== "custom") sp.set("preset", nextPreset);
+      if (nextLock) sp.set("lock", "1");
+      router.replace(sp.toString() ? `${pathname}?${sp.toString()}` : pathname, { scroll: false });
     },
-  ) => {
-    const sp = new URLSearchParams();
-    const nextStart = next.start ?? start;
-    const nextEnd = next.end ?? end;
-    const nextQ = next.q ?? searchText;
-    const nextPreset = next.preset ?? preset;
-    const nextLock = next.lock ?? lockActivePeriod;
-
-    if (nextStart) sp.set("start", nextStart);
-    if (nextEnd) sp.set("end", nextEnd);
-    if (nextQ) sp.set("q", nextQ);
-    if (nextPreset !== "custom") sp.set("preset", nextPreset);
-    if (nextLock) sp.set("lock", "1");
-    router.replace(sp.toString() ? `${pathname}?${sp.toString()}` : pathname, { scroll: false });
-  }, [end, lockActivePeriod, pathname, preset, router, searchText, start]);
+    [end, lockActivePeriod, pathname, preset, router, searchText, start],
+  );
 
   useEffect(() => {
     setStart(searchParams.get("start") || "");
@@ -227,6 +311,16 @@ export default function AccountingReconcilePage() {
     setPreset((searchParams.get("preset") as PresetKey) || "custom");
     setLockActivePeriod(searchParams.get("lock") === "1");
   }, [searchParams]);
+
+  // ── Data fetching ──────────────────────────────────────────────────────────
+
+  const queryString = useMemo(() => {
+    const p = new URLSearchParams();
+    if (start) p.set("start", start);
+    if (end) p.set("end", end);
+    p.set("groupBy", "day");
+    return p.toString();
+  }, [start, end]);
 
   const operationalQuery = useClientQuery<SummaryResponse>({
     queryKey: ["accounting", "reconcile", "operational", queryString],
@@ -246,8 +340,10 @@ export default function AccountingReconcilePage() {
   });
   const reconcileThresholdsQuery = useClientQuery<{ value: ReconcileThresholds | null }>({
     queryKey: ["accounting", "reconcile-thresholds"],
-    queryFn: () => fetch("/api/admin/settings/app?key=accounting.reconcile.thresholds").then((r) => r.json()),
+    queryFn: () =>
+      fetch("/api/admin/settings/app?key=accounting.reconcile.thresholds").then((r) => r.json()),
   });
+
   const reconcileThresholds = useMemo<ReconcileThresholds>(() => {
     const value = reconcileThresholdsQuery.data?.value;
     if (!value) return DEFAULT_RECONCILE_THRESHOLDS;
@@ -258,15 +354,20 @@ export default function AccountingReconcilePage() {
     return {
       currencyMinorPct: Number.isFinite(minor) && minor >= 0 ? minor : DEFAULT_RECONCILE_THRESHOLDS.currencyMinorPct,
       currencyWarningPct:
-        Number.isFinite(warning) && warning >= minor ? warning : DEFAULT_RECONCILE_THRESHOLDS.currencyWarningPct,
+        Number.isFinite(warning) && warning >= minor
+          ? warning
+          : DEFAULT_RECONCILE_THRESHOLDS.currencyWarningPct,
       marginMinorAbsPct:
-        Number.isFinite(marginMinor) && marginMinor >= 0 ? marginMinor : DEFAULT_RECONCILE_THRESHOLDS.marginMinorAbsPct,
+        Number.isFinite(marginMinor) && marginMinor >= 0
+          ? marginMinor
+          : DEFAULT_RECONCILE_THRESHOLDS.marginMinorAbsPct,
       marginWarningAbsPct:
         Number.isFinite(marginWarning) && marginWarning >= marginMinor
           ? marginWarning
           : DEFAULT_RECONCILE_THRESHOLDS.marginWarningAbsPct,
     };
   }, [reconcileThresholdsQuery.data?.value]);
+
   const lastRefreshedAt = useMemo(() => {
     const latest = Math.max(
       operationalQuery.dataUpdatedAt || 0,
@@ -281,7 +382,9 @@ export default function AccountingReconcilePage() {
     if (periods.length === 0) return null;
     const now = new Date();
     const open = periods.filter((p) => p.status === "OPEN");
-    const currentOpen = open.find((p) => new Date(p.startDate) <= now && new Date(p.endDate) >= now);
+    const currentOpen = open.find(
+      (p) => new Date(p.startDate) <= now && new Date(p.endDate) >= now,
+    );
     return currentOpen || open[0] || periods[0];
   }, [periodsQuery.data]);
 
@@ -297,18 +400,34 @@ export default function AccountingReconcilePage() {
     }
   }, [activePeriod, lockActivePeriod, start, end, pushStateToUrl]);
 
-  const operationalSummary = operationalQuery.data?.summary || {};
-  const ledgerSummary = ledgerQuery.data?.summary || {};
+  // ── Derived state ──────────────────────────────────────────────────────────
+
+  const operationalSummary = useMemo(
+    () => operationalQuery.data?.summary || {},
+    [operationalQuery.data?.summary],
+  );
+  const ledgerSummary = useMemo(
+    () => ledgerQuery.data?.summary || {},
+    [ledgerQuery.data?.summary],
+  );
   const reconcile = reconcileQuery.data;
+  const isLoading =
+    operationalQuery.isLoading || ledgerQuery.isLoading || reconcileQuery.isLoading;
+  const hasError =
+    operationalQuery.isError ||
+    ledgerQuery.isError ||
+    reconcileQuery.isError ||
+    Boolean(operationalQuery.data?.error || ledgerQuery.data?.error || reconcile?.error);
 
   const lowerSearch = searchText.trim().toLowerCase();
+
   const filteredManualEntries = useMemo(() => {
     const rows = reconcile?.manualEntries || [];
     if (!lowerSearch) return rows;
     return rows.filter((entry) => {
       const head = `${entry.id} ${entry.memo || ""} ${entry.entryDate}`.toLowerCase();
       const lineText = entry.lines
-        .map((line) => `${line.accountCode} ${line.accountName} ${line.description || ""}`)
+        .map((l) => `${l.accountCode} ${l.accountName} ${l.description || ""}`)
         .join(" ")
         .toLowerCase();
       return head.includes(lowerSearch) || lineText.includes(lowerSearch);
@@ -319,7 +438,9 @@ export default function AccountingReconcilePage() {
     const rows = reconcile?.autoApply || [];
     if (!lowerSearch) return rows;
     return rows.filter((row) =>
-      `${row.id} ${row.orderId || ""} ${row.amount} ${row.createdAt}`.toLowerCase().includes(lowerSearch),
+      `${row.id} ${row.orderId || ""} ${row.amount} ${row.createdAt}`
+        .toLowerCase()
+        .includes(lowerSearch),
     );
   }, [reconcile?.autoApply, lowerSearch]);
 
@@ -333,7 +454,35 @@ export default function AccountingReconcilePage() {
     );
   }, [reconcile?.returns, lowerSearch]);
 
-  const postAuditAction = async (action: "accounting.reconcile.refresh" | "accounting.reconcile.export" | "accounting.reconcile.drilldown", meta: Record<string, unknown>) => {
+  // Health summary counts
+  const healthCounts = useMemo(() => {
+    const counts = { ok: 0, minor: 0, warning: 0, critical: 0 };
+    for (const row of metrics) {
+      const opVal = Number((operationalSummary as Record<string, number>)[row.key] || 0);
+      const ldgVal = Number((ledgerSummary as Record<string, number>)[row.key] || 0);
+      const delta = ldgVal - opVal;
+      const sev = severityForMetric(row.key, delta, opVal, reconcileThresholds);
+      counts[sev]++;
+    }
+    return counts;
+  }, [operationalSummary, ledgerSummary, reconcileThresholds]);
+
+  const overallSeverity: Severity = useMemo(() => {
+    if (healthCounts.critical > 0) return "critical";
+    if (healthCounts.warning > 0) return "warning";
+    if (healthCounts.minor > 0) return "minor";
+    return "ok";
+  }, [healthCounts]);
+
+  // ── Audit ──────────────────────────────────────────────────────────────────
+
+  const postAuditAction = async (
+    action:
+      | "accounting.reconcile.refresh"
+      | "accounting.reconcile.export"
+      | "accounting.reconcile.drilldown",
+    meta: Record<string, unknown>,
+  ) => {
     try {
       await fetch("/api/admin/accounting/reconcile/actions", {
         method: "POST",
@@ -341,9 +490,11 @@ export default function AccountingReconcilePage() {
         body: JSON.stringify({ action, meta: { ...meta, start, end, preset, lockActivePeriod } }),
       });
     } catch {
-      // Non-blocking audit call.
+      // Non-blocking.
     }
   };
+
+  // ── Presets ────────────────────────────────────────────────────────────────
 
   const applyPreset = (nextPreset: PresetKey) => {
     const now = new Date();
@@ -369,18 +520,23 @@ export default function AccountingReconcilePage() {
     setStart(nextStart);
     setEnd(nextEnd);
     if (nextPreset !== "active" && lockActivePeriod) setLockActivePeriod(false);
-    pushStateToUrl({ start: nextStart, end: nextEnd, preset: nextPreset, lock: nextPreset === "active" ? lockActivePeriod : false });
+    pushStateToUrl({
+      start: nextStart,
+      end: nextEnd,
+      preset: nextPreset,
+      lock: nextPreset === "active" ? lockActivePeriod : false,
+    });
   };
 
+  // ── Exports ────────────────────────────────────────────────────────────────
+
   const exportCsv = async () => {
-    const lines = [
-      "Metric,Operational,Ledger,Delta,Severity,Notes",
-    ];
+    const lines = ["Metric,Operational,Ledger,Delta,Severity,Notes"];
     for (const metric of metrics) {
-      const operationalValue = Number((operationalSummary as Record<string, number>)[metric.key] || 0);
-      const ledgerValue = Number((ledgerSummary as Record<string, number>)[metric.key] || 0);
-      const delta = ledgerValue - operationalValue;
-      const severity = severityForMetric(metric.key, delta, operationalValue, reconcileThresholds);
+      const opVal = Number((operationalSummary as Record<string, number>)[metric.key] || 0);
+      const ldgVal = Number((ledgerSummary as Record<string, number>)[metric.key] || 0);
+      const delta = ldgVal - opVal;
+      const severity = severityForMetric(metric.key, delta, opVal, reconcileThresholds);
       const notes = buildWhyNotes(metric.key, {
         delta,
         severity,
@@ -392,20 +548,26 @@ export default function AccountingReconcilePage() {
       lines.push(
         [
           metric.label,
-          metric.isPercent ? `${operationalValue.toFixed(2)}%` : formatCurrency(operationalValue),
-          metric.isPercent ? `${ledgerValue.toFixed(2)}%` : formatCurrency(ledgerValue),
-          metric.isPercent ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%` : formatCurrency(delta),
+          metric.isPercent ? `${opVal.toFixed(2)}%` : formatCurrency(opVal),
+          metric.isPercent ? `${ldgVal.toFixed(2)}%` : formatCurrency(ldgVal),
+          metric.isPercent
+            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%`
+            : formatCurrency(delta),
           severity.toUpperCase(),
           notes.join(" | "),
-        ].map(toCsvCell).join(","),
+        ]
+          .map(toCsvCell)
+          .join(","),
       );
     }
-    lines.push("");
-    lines.push("Section,Rows");
+    lines.push("", "Section,Rows");
     lines.push(["Manual entries", String(filteredManualEntries.length)].map(toCsvCell).join(","));
-    lines.push(["Store-credit auto-apply", String(filteredAutoApply.length)].map(toCsvCell).join(","));
-    lines.push(["Return credits/refunds", String(filteredReturns.length)].map(toCsvCell).join(","));
-
+    lines.push(
+      ["Store-credit auto-apply", String(filteredAutoApply.length)].map(toCsvCell).join(","),
+    );
+    lines.push(
+      ["Return credits/refunds", String(filteredReturns.length)].map(toCsvCell).join(","),
+    );
     const blob = new Blob(["\uFEFF", lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -423,7 +585,7 @@ export default function AccountingReconcilePage() {
         returns: filteredReturns.length,
       },
     });
-    toast.success("Reconcile CSV exported.");
+    toast.success("Reconcile summary CSV exported.");
   };
 
   const exportDetailsCsv = async () => {
@@ -431,15 +593,9 @@ export default function AccountingReconcilePage() {
     lines.push("Section,ID,Date,Reference,Amount,Disposition,Notes");
     for (const entry of filteredManualEntries) {
       lines.push(
-        [
-          "ManualEntry",
-          entry.id,
-          new Date(entry.entryDate).toISOString(),
-          entry.memo || "",
-          "",
-          "",
-          `${entry.lines.length} line(s)`,
-        ].map(toCsvCell).join(","),
+        ["ManualEntry", entry.id, new Date(entry.entryDate).toISOString(), entry.memo || "", "", "", `${entry.lines.length} line(s)`]
+          .map(toCsvCell)
+          .join(","),
       );
       for (const line of entry.lines) {
         lines.push(
@@ -451,37 +607,26 @@ export default function AccountingReconcilePage() {
             "",
             "",
             `Dr ${Number(line.debit || 0).toFixed(2)} | Cr ${Number(line.credit || 0).toFixed(2)} | ${line.description || ""}`.trim(),
-          ].map(toCsvCell).join(","),
+          ]
+            .map(toCsvCell)
+            .join(","),
         );
       }
     }
     for (const row of filteredAutoApply) {
       lines.push(
-        [
-          "StoreCreditAutoApply",
-          row.id,
-          new Date(row.createdAt).toISOString(),
-          row.orderId || "",
-          Number(row.amount || 0).toFixed(2),
-          "",
-          "",
-        ].map(toCsvCell).join(","),
+        ["StoreCreditAutoApply", row.id, new Date(row.createdAt).toISOString(), row.orderId || "", Number(row.amount || 0).toFixed(2), "", ""]
+          .map(toCsvCell)
+          .join(","),
       );
     }
     for (const row of filteredReturns) {
       lines.push(
-        [
-          "ReturnRefund",
-          row.id,
-          new Date(row.createdAt).toISOString(),
-          row.orderId || "",
-          Number(row.amount || 0).toFixed(2),
-          row.refundDisposition || "",
-          "",
-        ].map(toCsvCell).join(","),
+        ["ReturnRefund", row.id, new Date(row.createdAt).toISOString(), row.orderId || "", Number(row.amount || 0).toFixed(2), row.refundDisposition || "", ""]
+          .map(toCsvCell)
+          .join(","),
       );
     }
-
     const blob = new Blob(["\uFEFF", lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -503,37 +648,102 @@ export default function AccountingReconcilePage() {
     toast.success("Reconcile details CSV exported.");
   };
 
-  const hasError =
-    operationalQuery.isError ||
-    ledgerQuery.isError ||
-    reconcileQuery.isError ||
-    Boolean(operationalQuery.data?.error || ledgerQuery.data?.error || reconcile?.error);
-  const isLoading =
-    operationalQuery.isLoading ||
-    ledgerQuery.isLoading ||
-    reconcileQuery.isLoading;
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <section className="container mx-auto py-8 space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Operational vs Ledger Reconcile</h1>
-        <p className="text-sm text-muted-foreground">
-          Compare operational totals to ledger totals, check variance severity, and drill into likely drivers.
-        </p>
+
+      {/* PAGE HEADER */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold">Operational vs Ledger Reconciliation</h1>
+          <p className="text-sm text-muted-foreground">
+            Compares business transaction totals{" "}
+            <span className="font-medium text-foreground">(Operational)</span> to posted GL
+            journal entry totals{" "}
+            <span className="font-medium text-foreground">(Ledger)</span>. A positive delta means
+            Ledger &gt; Operational; a negative delta means Operational &gt; Ledger.
+          </p>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {activePeriod ? (
+              <Badge variant="secondary">
+                Active period: {activePeriod.name} (
+                {dateToYmdLocal(new Date(activePeriod.startDate))} →{" "}
+                {dateToYmdLocal(new Date(activePeriod.endDate))})
+                {lockActivePeriod ? " · locked" : ""}
+              </Badge>
+            ) : (
+              <Badge variant="outline">No active accounting period</Badge>
+            )}
+            <Badge variant="outline" className="text-xs font-normal">
+              {lastRefreshedAt
+                ? `Refreshed ${lastRefreshedAt.toLocaleTimeString()}`
+                : "Not yet refreshed"}
+            </Badge>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="outline" onClick={exportCsv}>
+            Export Summary CSV
+          </Button>
+          <Button size="sm" variant="outline" onClick={exportDetailsCsv}>
+            Export Details CSV
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              try {
+                const origin = window.location.origin;
+                const fullUrl = `${origin}${shareablePath}`;
+                await navigator.clipboard.writeText(fullUrl);
+                const display =
+                  fullUrl.length > 80 ? `${fullUrl.slice(0, 77)}…` : fullUrl;
+                toast.success(`Share link copied: ${display}`);
+              } catch {
+                toast.error("Failed to copy link.");
+              }
+            }}
+          >
+            Copy share link
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              await Promise.all([
+                operationalQuery.refetch(),
+                ledgerQuery.refetch(),
+                reconcileQuery.refetch(),
+              ]);
+              await postAuditAction("accounting.reconcile.refresh", {
+                filterSearch: searchText.trim() || null,
+              });
+              toast.success("Reconcile data refreshed.");
+            }}
+          >
+            Refresh
+          </Button>
+        </div>
       </div>
 
+      {/* FILTER BAR */}
       <Card>
         <CardHeader>
           <CardTitle>Filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Start date</span>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="recon-start" className="text-xs text-muted-foreground font-normal">
+                Start date
+              </Label>
               <Input
+                id="recon-start"
                 className="w-full sm:w-auto"
                 type="date"
                 value={start}
+                disabled={lockActivePeriod}
                 onChange={(e) => {
                   const value = e.target.value;
                   setStart(value);
@@ -541,15 +751,18 @@ export default function AccountingReconcilePage() {
                   if (lockActivePeriod) setLockActivePeriod(false);
                   pushStateToUrl({ start: value, preset: "custom", lock: false });
                 }}
-                disabled={lockActivePeriod}
               />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">End date</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="recon-end" className="text-xs text-muted-foreground font-normal">
+                End date
+              </Label>
               <Input
+                id="recon-end"
                 className="w-full sm:w-auto"
                 type="date"
                 value={end}
+                disabled={lockActivePeriod}
                 onChange={(e) => {
                   const value = e.target.value;
                   setEnd(value);
@@ -557,14 +770,16 @@ export default function AccountingReconcilePage() {
                   if (lockActivePeriod) setLockActivePeriod(false);
                   pushStateToUrl({ end: value, preset: "custom", lock: false });
                 }}
-                disabled={lockActivePeriod}
               />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">Search details</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="recon-search" className="text-xs text-muted-foreground font-normal">
+                Search driver details
+              </Label>
               <Input
+                id="recon-search"
                 className="w-full sm:w-[260px]"
-                placeholder="Search IDs, memos, accounts..."
+                placeholder="Search IDs, memos, accounts…"
                 value={searchText}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -572,83 +787,70 @@ export default function AccountingReconcilePage() {
                   pushStateToUrl({ q: value });
                 }}
               />
-            </label>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={async () => {
-                await Promise.all([
-                  operationalQuery.refetch(),
-                  ledgerQuery.refetch(),
-                  reconcileQuery.refetch(),
-                ]);
-                await postAuditAction("accounting.reconcile.refresh", {
-                  filterSearch: searchText.trim() || null,
-                });
-                toast.success("Reconcile data refreshed.");
-              }}
-            >
-              Refresh
-            </Button>
-            <Button size="sm" className="w-full sm:w-auto" onClick={exportCsv}>
-              Export reconcile CSV
-            </Button>
-            <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={exportDetailsCsv}>
-              Export details CSV
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={async () => {
-                try {
-                  const origin = window.location.origin;
-                  await navigator.clipboard.writeText(`${origin}${shareablePath}`);
-                  toast.success("Share link copied.");
-                } catch {
-                  toast.error("Failed to copy link.");
-                }
-              }}
-            >
-              Copy share link
-            </Button>
+            </div>
           </div>
+
+          {/* Quick presets */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">Quick presets:</span>
-            <Button size="sm" variant={preset === "today" ? "default" : "outline"} onClick={() => applyPreset("today")}>Today</Button>
-            <Button size="sm" variant={preset === "last7" ? "default" : "outline"} onClick={() => applyPreset("last7")}>Last 7 days</Button>
-            <Button size="sm" variant={preset === "month" ? "default" : "outline"} onClick={() => applyPreset("month")}>This month</Button>
             <Button
               size="sm"
-              variant={preset === "active" ? "default" : "outline"}
-              onClick={() => applyPreset("active")}
-              disabled={!activePeriod}
+              variant={preset === "today" ? "default" : "outline"}
+              onClick={() => applyPreset("today")}
             >
-              Active period
+              Today
             </Button>
             <Button
               size="sm"
-              variant={lockActivePeriod ? "default" : "outline"}
-              onClick={() => {
-                if (!activePeriod) return;
-                const next = !lockActivePeriod;
-                setLockActivePeriod(next);
-                if (next) {
-                  const s = dateToYmdLocal(new Date(activePeriod.startDate));
-                  const e = dateToYmdLocal(new Date(activePeriod.endDate));
-                  setStart(s);
-                  setEnd(e);
-                  setPreset("active");
-                  pushStateToUrl({ start: s, end: e, preset: "active", lock: true });
-                } else {
-                  pushStateToUrl({ lock: false });
-                }
-              }}
-              disabled={!activePeriod}
+              variant={preset === "last7" ? "default" : "outline"}
+              onClick={() => applyPreset("last7")}
             >
-              {lockActivePeriod ? "Unlock period" : "Lock to active period"}
+              Last 7 days
             </Button>
+            <Button
+              size="sm"
+              variant={preset === "month" ? "default" : "outline"}
+              onClick={() => applyPreset("month")}
+            >
+              This month
+            </Button>
+            {activePeriod ? (
+              <Button
+                size="sm"
+                variant={preset === "active" ? "default" : "outline"}
+                onClick={() => applyPreset("active")}
+              >
+                Active period
+              </Button>
+            ) : (
+              <Tooltip content="No active accounting period is configured.">
+                <Button size="sm" variant="outline" disabled>
+                  Active period
+                </Button>
+              </Tooltip>
+            )}
+            {activePeriod ? (
+              <Button
+                size="sm"
+                variant={lockActivePeriod ? "default" : "outline"}
+                onClick={() => {
+                  const next = !lockActivePeriod;
+                  setLockActivePeriod(next);
+                  if (next) {
+                    const s = dateToYmdLocal(new Date(activePeriod.startDate));
+                    const e = dateToYmdLocal(new Date(activePeriod.endDate));
+                    setStart(s);
+                    setEnd(e);
+                    setPreset("active");
+                    pushStateToUrl({ start: s, end: e, preset: "active", lock: true });
+                  } else {
+                    pushStateToUrl({ lock: false });
+                  }
+                }}
+              >
+                {lockActivePeriod ? "Unlock period" : "Lock to active period"}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"
@@ -661,30 +863,17 @@ export default function AccountingReconcilePage() {
                 pushStateToUrl({ start: "", end: "", q: "", preset: "custom", lock: false });
               }}
             >
-              Clear filters
+              Clear
             </Button>
           </div>
-          {activePeriod ? (
-            <p className="text-xs text-muted-foreground">
-              Active period: {activePeriod.name} ({dateToYmdLocal(new Date(activePeriod.startDate))} to {dateToYmdLocal(new Date(activePeriod.endDate))})
-              {lockActivePeriod ? " - locked" : ""}
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">No active accounting period found.</p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            Last refreshed: {lastRefreshedAt ? lastRefreshedAt.toLocaleString() : "Not refreshed yet"}
-          </p>
         </CardContent>
       </Card>
 
+      {/* ERROR BANNER */}
       {hasError ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Reconcile load issue</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <p className="text-red-700">
+        <Card className="border-red-300 bg-red-50">
+          <CardContent className="pt-4 space-y-2 text-sm text-red-800">
+            <p className="font-medium">
               Failed to load one or more reconcile sections. Retry after confirming your date range.
             </p>
             <Button
@@ -702,237 +891,436 @@ export default function AccountingReconcilePage() {
         </Card>
       ) : null}
 
+      {/* HEALTH SUMMARY BANNER */}
+      {!isLoading && !hasError ? (
+        <div
+          className={`flex flex-wrap items-center gap-3 rounded-md border px-4 py-3 text-sm ${
+            overallSeverity === "critical"
+              ? "border-red-300 bg-red-50 text-red-900"
+              : overallSeverity === "warning"
+                ? "border-amber-300 bg-amber-50 text-amber-900"
+                : overallSeverity === "minor"
+                  ? "border-sky-300 bg-sky-50 text-sky-900"
+                  : "border-emerald-300 bg-emerald-50 text-emerald-900"
+          }`}
+        >
+          <span className="font-medium">
+            {overallSeverity === "ok"
+              ? "All metrics reconciled — no material variance detected."
+              : `Variance detected — review highlighted metrics below.`}
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {healthCounts.ok > 0 && <Badge variant="success">{healthCounts.ok} OK</Badge>}
+            {healthCounts.minor > 0 && (
+              <Badge variant="outline">{healthCounts.minor} Minor</Badge>
+            )}
+            {healthCounts.warning > 0 && (
+              <Badge variant="warning">{healthCounts.warning} Warning</Badge>
+            )}
+            {healthCounts.critical > 0 && (
+              <Badge variant="destructive">{healthCounts.critical} Critical</Badge>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {/* TOTALS VARIANCE TABLE */}
       <Card>
         <CardHeader>
-          <CardTitle>Totals variance</CardTitle>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <CardTitle>Totals variance</CardTitle>
+            <p className="text-xs text-muted-foreground max-w-md">
+              Delta = Ledger − Operational. Green = Ledger &gt; Operational; red = Operational &gt;
+              Ledger.
+              {reconcileThresholds.currencyMinorPct !== DEFAULT_RECONCILE_THRESHOLDS.currencyMinorPct ||
+              reconcileThresholds.currencyWarningPct !== DEFAULT_RECONCILE_THRESHOLDS.currencyWarningPct ? (
+                <> Thresholds: Minor &lt;{(reconcileThresholds.currencyMinorPct * 100).toFixed(1)}%,
+                  Warning &lt;{(reconcileThresholds.currencyWarningPct * 100).toFixed(1)}% (custom).</>
+              ) : (
+                <> Default thresholds: Minor &lt;1%, Warning &lt;5%.</>
+              )}
+            </p>
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="px-0">
           {isLoading ? (
-            <div className="text-sm text-muted-foreground">Loading reconcile totals...</div>
+            <div className="px-6 space-y-2">
+              {metrics.map((m) => (
+                <Skeleton key={m.key} className="h-12 w-full" />
+              ))}
+            </div>
           ) : (
-            <div className="grid gap-2 text-sm">
-              <div className="hidden rounded-md border bg-muted/30 px-3 py-2 text-xs font-medium text-muted-foreground lg:grid lg:grid-cols-6">
-                <div>Metric</div>
-                <div>Operational</div>
-                <div>Ledger</div>
-                <div>Delta</div>
-                <div>Status</div>
-                <div>Actions</div>
-              </div>
-              {metrics.map((row) => {
-                const operationalValue = Number((operationalSummary as Record<string, number>)[row.key] || 0);
-                const ledgerValue = Number((ledgerSummary as Record<string, number>)[row.key] || 0);
-                const delta = ledgerValue - operationalValue;
-                const severity = severityForMetric(row.key, delta, operationalValue, reconcileThresholds);
-                const links = buildDrillLinks(row.key, start, end);
-                const whyNotes = buildWhyNotes(row.key, {
-                  delta,
-                  severity,
-                  isPercent: Boolean(row.isPercent),
-                  manualCount: reconcile?.manualEntries?.length || 0,
-                  autoApplyCount: reconcile?.autoApply?.length || 0,
-                  returnCount: reconcile?.returns?.length || 0,
-                });
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Metric</TableHead>
+                  <TableHead className="text-right">Operational</TableHead>
+                  <TableHead className="text-right">Ledger</TableHead>
+                  <TableHead className="text-right">Delta</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Drill-down</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {metrics.map((row) => {
+                  const opVal = Number(
+                    (operationalSummary as Record<string, number>)[row.key] || 0,
+                  );
+                  const ldgVal = Number(
+                    (ledgerSummary as Record<string, number>)[row.key] || 0,
+                  );
+                  const delta = ldgVal - opVal;
+                  const severity = severityForMetric(
+                    row.key,
+                    delta,
+                    opVal,
+                    reconcileThresholds,
+                  );
+                  const links = buildDrillLinks(row.key, start, end);
+                  const whyNotes = buildWhyNotes(row.key, {
+                    delta,
+                    severity,
+                    isPercent: Boolean(row.isPercent),
+                    manualCount: reconcile?.manualEntries?.length || 0,
+                    autoApplyCount: reconcile?.autoApply?.length || 0,
+                    returnCount: reconcile?.returns?.length || 0,
+                  });
 
-                return (
-                  <div key={row.key} className="rounded-md border p-3">
-                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6 items-center">
-                      <div className="font-medium">{row.label}</div>
-                      <div>{row.isPercent ? `${operationalValue.toFixed(2)}%` : formatCurrency(operationalValue)}</div>
-                      <div>{row.isPercent ? `${ledgerValue.toFixed(2)}%` : formatCurrency(ledgerValue)}</div>
-                      <div className="text-muted-foreground">
-                        {row.isPercent
-                          ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%`
-                          : formatCurrency(delta)}
-                      </div>
-                      <div>{severityBadge(severity)}</div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setExpandedMetric((curr) => (curr === row.key ? null : row.key))}
+                  return (
+                    <React.Fragment key={row.key}>
+                      <TableRow
+                        className={
+                          severity === "critical"
+                            ? "bg-red-50/40"
+                            : severity === "warning"
+                              ? "bg-amber-50/40"
+                              : undefined
+                        }
+                      >
+                        <TableCell className="font-medium">{row.label}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.isPercent ? `${opVal.toFixed(2)}%` : formatCurrency(opVal)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.isPercent ? `${ldgVal.toFixed(2)}%` : formatCurrency(ldgVal)}
+                        </TableCell>
+                        <TableCell
+                          className={`text-right tabular-nums ${deltaColorClass(delta, row.isPercent)}`}
                         >
-                          Why different?
-                        </Button>
-                        <Link
-                          href={links[0].href}
-                          className="text-xs underline"
-                          onClick={() => {
-                            void postAuditAction("accounting.reconcile.drilldown", {
-                              metric: row.key,
-                              target: links[0].href,
-                            });
-                          }}
-                        >
-                          {links[0].label}
-                        </Link>
-                      </div>
-                    </div>
-                    {expandedMetric === row.key ? (
-                      <div className="mt-3 space-y-2 rounded-md bg-muted/30 p-3 text-xs">
-                        <div className="font-medium">Likely drivers</div>
-                        {whyNotes.map((note, idx) => (
-                          <div key={`${row.key}-note-${idx}`}>{note}</div>
-                        ))}
-                        <div className="flex flex-wrap gap-3 pt-1">
-                          {links.map((link) => (
-                            <Link
-                              key={`${row.key}-${link.href}`}
-                              href={link.href}
-                              className="underline"
-                              onClick={() => {
-                                void postAuditAction("accounting.reconcile.drilldown", {
-                                  metric: row.key,
-                                  target: link.href,
-                                });
-                              }}
-                            >
-                              {link.label}
-                            </Link>
-                          ))}
+                          {row.isPercent
+                            ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}%`
+                            : delta >= 0
+                              ? `+${formatCurrency(delta)}`
+                              : formatCurrency(delta)}
+                        </TableCell>
+                        <TableCell>{severityBadge(severity)}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap items-center gap-3 text-xs">
+                            {links.map((link) => (
+                              <Link
+                                key={link.href}
+                                href={link.href}
+                                className="text-blue-600 hover:underline whitespace-nowrap"
+                                onClick={() =>
+                                  void postAuditAction("accounting.reconcile.drilldown", {
+                                    metric: row.key,
+                                    target: link.href,
+                                  })
+                                }
+                              >
+                                {link.label}
+                              </Link>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() =>
+                              setExpandedMetric((curr) =>
+                                curr === row.key ? null : row.key,
+                              )
+                            }
+                          >
+                            {expandedMetric === row.key ? "Close" : "Why?"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                      {expandedMetric === row.key ? (
+                        <TableRow key={`${row.key}-why`} className="bg-muted/20">
+                          <TableCell
+                            colSpan={7}
+                            className="p-4 whitespace-normal text-xs space-y-1"
+                          >
+                            <p className="font-medium text-sm mb-2">Likely drivers — {row.label}</p>
+                            {whyNotes.map((note, idx) => (
+                              <p key={`${row.key}-n-${idx}`} className="text-muted-foreground">
+                                {note}
+                              </p>
+                            ))}
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* RECONCILIATION DRIVERS — single tabbed card */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>Reconciliation drivers</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Items below commonly explain gaps between Operational and Ledger totals.
+              {searchText.trim()
+                ? ` Filtered by "${searchText.trim()}" across all three sections.`
+                : ""}
+            </p>
+          </div>
+          {/* Tab bar */}
+          <div className="mt-2 flex gap-1 border-b">
+            {(
+              [
+                {
+                  key: "manual" as DetailTab,
+                  label: "Manual Entries",
+                  count: filteredManualEntries.length,
+                },
+                {
+                  key: "autoApply" as DetailTab,
+                  label: "Store Credit Auto-Apply",
+                  count: filteredAutoApply.length,
+                },
+                {
+                  key: "returns" as DetailTab,
+                  label: "Returns & Refunds",
+                  count: filteredReturns.length,
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.key
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`ml-1.5 rounded-full px-1.5 py-0.5 text-xs ${
+                    tab.count > 0
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {tab.count}
+                </span>
+              </button>
+            ))}
+          </div>
+        </CardHeader>
+
+        <CardContent className="px-0 text-sm">
+          {isLoading ? (
+            <div className="px-6 space-y-2 pt-2">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          ) : (
+            <>
+              {/* Manual entries tab */}
+              {activeTab === "manual" ? (
+                filteredManualEntries.length === 0 ? (
+                  <div className="px-6 py-8 text-center text-muted-foreground">
+                    <p>No manual journal entries found in this range.</p>
+                    <p className="text-xs mt-1">
+                      Manual entries post directly to the ledger without a matching operational
+                      transaction, which is the most common source of Operational vs Ledger gaps.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 px-6 pt-2">
+                    {filteredManualEntries.map((entry) => (
+                      <div key={entry.id} className="rounded-md border overflow-hidden">
+                        <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/20 px-3 py-2">
+                          <div className="font-medium text-sm">
+                            {new Date(entry.entryDate).toLocaleDateString()} —{" "}
+                            {entry.memo || "Manual entry"}
+                          </div>
+                          <Link
+                            href={`/admin/accounting/journal?entryId=${encodeURIComponent(entry.id)}`}
+                            className="text-xs text-blue-600 hover:underline font-mono"
+                            onClick={() =>
+                              void postAuditAction("accounting.reconcile.drilldown", {
+                                metric: "manual",
+                                target: entry.id,
+                              })
+                            }
+                          >
+                            {entry.id.slice(0, 10)}…
+                          </Link>
                         </div>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Account</TableHead>
+                              <TableHead className="text-right">Debit</TableHead>
+                              <TableHead className="text-right">Credit</TableHead>
+                              <TableHead>Description</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {entry.lines.map((line) => (
+                              <TableRow key={line.id}>
+                                <TableCell>
+                                  {line.accountCode} · {line.accountName}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {Number(line.debit || 0) > 0
+                                    ? formatCurrency(line.debit)
+                                    : "—"}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {Number(line.credit || 0) > 0
+                                    ? formatCurrency(line.credit)
+                                    : "—"}
+                                </TableCell>
+                                <TableCell className="text-muted-foreground">
+                                  {line.description || "—"}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
                       </div>
-                    ) : null}
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                )
+              ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Manual journal entries in range ({filteredManualEntries.length})</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          {isLoading ? (
-            <div className="text-muted-foreground">Loading manual entries...</div>
-          ) : filteredManualEntries.length ? (
-            filteredManualEntries.map((entry) => (
-              <div key={entry.id} className="border rounded-md p-3 space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="font-medium">
-                    {new Date(entry.entryDate).toLocaleDateString()} - {entry.memo || "Manual entry"}
+              {/* Store credit auto-apply tab */}
+              {activeTab === "autoApply" ? (
+                filteredAutoApply.length === 0 ? (
+                  <div className="px-6 py-8 text-center text-muted-foreground">
+                    <p>No store-credit auto-apply entries found in this range.</p>
+                    <p className="text-xs mt-1">
+                      Auto-apply entries can shift revenue recognition timing between periods.
+                    </p>
                   </div>
-                  <div className="text-xs text-muted-foreground">ID: {entry.id}</div>
-                </div>
-                <div className="grid gap-2 text-xs">
-                  {entry.lines.map((line) => (
-                    <div key={line.id} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                      <div>{line.accountCode} - {line.accountName}</div>
-                      <div>Dr {formatCurrency(line.debit || 0)}</div>
-                      <div>Cr {formatCurrency(line.credit || 0)}</div>
-                      <div className="text-muted-foreground">{line.description || "-"}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="text-muted-foreground">
-              {searchText.trim() ? "No manual entries match your search." : "No manual journal entries found."}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Date</TableHead>
+                        <TableHead>ID</TableHead>
+                        <TableHead>Order</TableHead>
+                        <TableHead className="text-right">Amount</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredAutoApply.map((row) => (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            {new Date(row.createdAt).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {row.id.slice(0, 10)}…
+                          </TableCell>
+                          <TableCell>
+                            {row.orderId ? (
+                              <Link
+                                href={`/admin/orders/${encodeURIComponent(row.orderId)}`}
+                                className="text-blue-600 hover:underline text-xs"
+                              >
+                                {row.orderId.slice(0, 10)}…
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">
+                            {formatCurrency(row.amount)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )
+              ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Store credit auto-apply entries ({filteredAutoApply.length})</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          {isLoading ? (
-            <div className="text-muted-foreground">Loading auto-apply entries...</div>
-          ) : filteredAutoApply.length ? (
-            filteredAutoApply.map((row) => (
-              <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 border rounded-md px-3 py-2">
-                <span>
-                  {new Date(row.createdAt).toLocaleDateString()} - {formatCurrency(row.amount)}
-                </span>
-                <span className="text-xs text-muted-foreground">Order: {row.orderId || "-"}</span>
-              </div>
-            ))
-          ) : (
-            <div className="text-muted-foreground">
-              {searchText.trim() ? "No auto-apply entries match your search." : "No auto-apply entries found."}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Return credits/refunds ({filteredReturns.length})</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          {isLoading ? (
-            <div className="text-muted-foreground">Loading return entries...</div>
-          ) : filteredReturns.length ? (
-            filteredReturns.map((row) => (
-              <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 border rounded-md px-3 py-2">
-                <span>
-                  {new Date(row.createdAt).toLocaleDateString()} - {formatCurrency(row.amount)} - {row.refundDisposition || "-"}
-                </span>
-                <span className="text-xs text-muted-foreground">Order: {row.orderId || "-"}</span>
-              </div>
-            ))
-          ) : (
-            <div className="text-muted-foreground">
-              {searchText.trim() ? "No return entries match your search." : "No return entries found."}
-            </div>
+              {/* Returns tab */}
+              {activeTab === "returns" ? (
+                filteredReturns.length === 0 ? (
+                  <div className="px-6 py-8 text-center text-muted-foreground">
+                    <p>No return or refund entries found in this range.</p>
+                    <p className="text-xs mt-1">
+                      Returns and refunds reduce net revenue and can create timing differences
+                      between operational and ledger figures.
+                    </p>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Date</TableHead>
+                        <TableHead>ID</TableHead>
+                        <TableHead>Order</TableHead>
+                        <TableHead className="text-right">Amount</TableHead>
+                        <TableHead>Disposition</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredReturns.map((row) => (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            {new Date(row.createdAt).toLocaleDateString()}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {row.id.slice(0, 10)}…
+                          </TableCell>
+                          <TableCell>
+                            {row.orderId ? (
+                              <Link
+                                href={`/admin/orders/${encodeURIComponent(row.orderId)}`}
+                                className="text-blue-600 hover:underline text-xs"
+                              >
+                                {row.orderId.slice(0, 10)}…
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums font-medium">
+                            {formatCurrency(row.amount)}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {row.refundDisposition ? (
+                              <Badge variant="outline">{row.refundDisposition}</Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )
+              ) : null}
+            </>
           )}
         </CardContent>
       </Card>
     </section>
   );
-}
-
-function buildWhyNotes(
-  metric: MetricKey,
-  input: {
-    delta: number;
-    severity: Severity;
-    isPercent: boolean;
-    manualCount: number;
-    autoApplyCount: number;
-    returnCount: number;
-  },
-) {
-  const notes: string[] = [];
-  if (input.severity === "ok") {
-    notes.push(
-      input.isPercent
-        ? "No material variance detected for this metric in the selected range."
-        : `No material variance detected (${formatCurrency(input.delta)}).`,
-    );
-  } else {
-    notes.push(
-      input.isPercent
-        ? `Variance detected (${input.delta >= 0 ? "+" : ""}${input.delta.toFixed(2)}%).`
-        : `Variance detected (${formatCurrency(input.delta)}).`,
-    );
-  }
-  if (input.manualCount > 0) {
-    notes.push(`${input.manualCount} manual journal entr${input.manualCount === 1 ? "y is" : "ies are"} included and may shift ledger-only totals.`);
-  }
-  if (metric === "totalRevenue" || metric === "profit" || metric === "margin") {
-    if (input.returnCount > 0) {
-      notes.push(`${input.returnCount} return/refund entr${input.returnCount === 1 ? "y was" : "ies were"} found in this range and can reduce net figures.`);
-    }
-    if (input.autoApplyCount > 0) {
-      notes.push(`${input.autoApplyCount} store-credit auto-apply entr${input.autoApplyCount === 1 ? "y was" : "ies were"} found and may change payment timing vs order timing.`);
-    }
-  }
-  if (metric === "totalCOGS") {
-    notes.push("Inventory valuation timing, late receipts, or adjustments can move COGS between periods.");
-  }
-  if (metric === "totalExpense") {
-    notes.push("Accrual vs cash timing and manual expense journals commonly explain expense deltas.");
-  }
-  if (notes.length === 0) {
-    notes.push("No major explanatory signals were detected in this sample.");
-  }
-  notes.push("Use drill-down links to verify source transactions and posted journal lines for this date range.");
-  return notes;
 }

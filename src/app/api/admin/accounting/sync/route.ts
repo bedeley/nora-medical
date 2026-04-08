@@ -264,6 +264,7 @@ export async function POST(req: Request) {
         entityType: "ACCOUNTING",
         entityId: "sync",
         meta: {
+          sourcePage: "admin/accounting/integrity",
           postedOrders,
           postedPayments,
           postedExpenses,

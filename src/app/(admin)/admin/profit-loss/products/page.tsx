@@ -1,6 +1,4 @@
-﻿"use client";
-
-export const dynamic = "force-dynamic";
+"use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useClientQuery } from "@/hooks/use-client-query";
@@ -8,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   DropdownMenu,
@@ -32,10 +31,19 @@ type Row = {
   qty: number;
   revenue: number;
   costTotal: number;
-  weightedCost: number; // per unit
+  weightedCost: number;
   profit: number;
   margin: number;
   rank: number;
+};
+
+type PeriodTotals = {
+  revenue: number;
+  cost: number;
+  profit: number;
+  qty: number;
+  margin: number;
+  productCount: number;
 };
 
 type Payload = {
@@ -45,10 +53,15 @@ type Payload = {
   total: number;
   page: number;
   pageSize: number;
+  periodTotals: PeriodTotals;
   rows: Row[];
 };
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+};
 
 function ProductPLContent() {
   const router = useRouter();
@@ -70,6 +83,8 @@ function ProductPLContent() {
   const [showWeightedCost, setShowWeightedCost] = useState(true);
   const [showWeightedPrice, setShowWeightedPrice] = useState(true);
   const [showTotalCost, setShowTotalCost] = useState(true);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -88,6 +103,7 @@ function ProductPLContent() {
     const sort0 = (sp.get("sort") as "profit" | "revenue" | "qty" | "margin" | null) || "profit";
     const p0 = parseInt(sp.get("page") || "1", 10) || 1;
     const ps0 = parseInt(sp.get("pageSize") || "25", 10) || 25;
+    const loss0 = sp.get("lossOnly") === "1";
     if (!spMode && typeof window !== "undefined") {
       const storedMode = window.localStorage.getItem("productPlMode");
       if (storedMode && ["day", "week", "month", "year", "all", "custom"].includes(storedMode)) {
@@ -111,6 +127,7 @@ function ProductPLContent() {
     setQInput(q0);
     setPage(Math.max(1, p0));
     setPageSize(Math.max(1, Math.min(200, ps0)));
+    setLossOnly(loss0);
     initialized.current = true;
   }, [searchParams]);
 
@@ -143,22 +160,34 @@ function ProductPLContent() {
     if (q) params.set("q", q); else params.delete("q");
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
+    if (lossOnly) params.set("lossOnly", "1"); else params.delete("lossOnly");
     const next = `${pathname}?${params.toString()}`.replace(/\?$/, "");
     const current = `${pathname}?${searchParams?.toString() || ""}`.replace(/\?$/, "");
     if (next !== current) {
       router.replace(next, { scroll: false });
     }
-  }, [mode, start, end, order, sortMetric, q, page, pageSize, pathname, router, searchParams]);
+  }, [mode, start, end, order, sortMetric, q, page, pageSize, lossOnly, pathname, router, searchParams]);
 
-  // Debounce search input (~2s) -> q used for API/URL
+  // Debounce search input (300ms) -> q used for API/URL
+  // Page reset lives here so it only fires when the query actually changes, not on every keystroke.
   useEffect(() => {
     const id = setTimeout(() => {
+      if (qInput === q) return;
       setQ(qInput);
-    }, 2000);
+      setPage(1);
+    }, 300);
     return () => clearTimeout(id);
-  }, [qInput]);
+  }, [q, qInput]);
+
+  function clearStoredFilters() {
+    if (typeof window === "undefined") return;
+    window.localStorage.removeItem("productPlMode");
+    window.localStorage.removeItem("productPlStart");
+    window.localStorage.removeItem("productPlEnd");
+  }
 
   function clearFilters() {
+    clearStoredFilters();
     setMode("month");
     setStart("");
     setEnd("");
@@ -168,6 +197,7 @@ function ProductPLContent() {
     setQInput("");
     setPage(1);
     setPageSize(25);
+    setLossOnly(false);
   }
 
   // Keyboard Shortcut: Alt + Left Arrow to go back to main P&L
@@ -194,59 +224,74 @@ function ProductPLContent() {
     if (q) p.set("q", q);
     p.set("page", String(page));
     p.set("pageSize", String(pageSize));
+    if (lossOnly) p.set("lossOnly", "1");
     return `/api/admin/product-pl?${p.toString()}`;
-  }, [mode, start, end, order, sortMetric, q, page, pageSize]);
+  }, [mode, start, end, order, sortMetric, q, page, pageSize, lossOnly]);
 
   const { data, error, isLoading } = useClientQuery<Payload>({
-    queryKey: ["admin", "product-pl", { mode, start, end, order, sort: sortMetric, q, page, pageSize }],
+    queryKey: ["admin", "product-pl", { mode, start, end, order, sort: sortMetric, q, page, pageSize, lossOnly }],
     queryFn: () => fetcher(apiUrl),
-    // Data only needs to refresh when filters change, not on a timer.
     refetchInterval: false,
   });
-  const filteredRows = useMemo(() => {
-    if (!data?.rows) return [];
-    if (!lossOnly) return data.rows;
-    return data.rows.filter((row) => row.profit < 0);
-  }, [data?.rows, lossOnly]);
-  const summary = useMemo(() => {
-    if (!filteredRows.length) return null;
-    const totals = filteredRows.reduce(
-      (acc, row) => {
-        acc.qty += row.qty;
-        acc.revenue += row.revenue;
-        acc.costTotal += row.costTotal;
-        acc.profit += row.profit;
-        return acc;
-      },
-      { qty: 0, revenue: 0, costTotal: 0, profit: 0 }
-    );
-    const margin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0;
-    return { ...totals, margin };
-  }, [filteredRows]);
+
+  useEffect(() => {
+    if (!data) return;
+    if (data.page !== page) {
+      setPage(data.page);
+    }
+  }, [data, page]);
+
+  const rows = data?.rows ?? [];
+
   const tableColSpan = 7
     + (showWeightedCost ? 1 : 0)
     + (showWeightedPrice ? 1 : 0)
     + (showTotalCost ? 1 : 0);
 
+  // Human-readable label for the active date range
+  const dateRangeLabel = useMemo(() => {
+    const labels: Record<string, string> = {
+      day: "Today",
+      week: "This Week",
+      month: "This Month",
+      year: "Last 12 Months",
+      all: "All Time",
+    };
+    if (mode !== "custom") return labels[mode] ?? mode;
+    const parts: string[] = [];
+    if (start) parts.push(`From ${start}`);
+    if (end) parts.push(`To ${end}`);
+    return parts.join(" - ") || "Custom range";
+  }, [mode, start, end]);
+
   async function exportFile(kind: "csv" | "pdf") {
-    const p = new URLSearchParams();
-    if (mode !== "custom") p.set("range", mode);
-    if (mode === "custom") {
-      if (start) p.set("start", start);
-      if (end) p.set("end", end);
+    const setter = kind === "csv" ? setExportingCsv : setExportingPdf;
+    setter(true);
+    try {
+      const p = new URLSearchParams();
+      if (mode !== "custom") p.set("range", mode);
+      if (mode === "custom") {
+        if (start) p.set("start", start);
+        if (end) p.set("end", end);
+      }
+      p.set("order", order);
+      p.set("sort", sortMetric);
+      if (q) p.set("q", q);
+      if (lossOnly) p.set("lossOnly", "1");
+      p.set("format", kind);
+      const res = await fetch(`/api/admin/product-pl?${p.toString()}`);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = kind === "csv" ? `product_pl_${Date.now()}.csv` : `product_pl_${Date.now()}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(link.href);
+    } finally {
+      setter(false);
     }
-    p.set("order", order);
-    p.set("sort", sortMetric);
-    p.set("format", kind);
-    const res = await fetch(`/api/admin/product-pl?${p.toString()}`);
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = kind === "csv" ? `product_pl_${Date.now()}.csv` : `product_pl_${Date.now()}.pdf`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
   }
 
   function resetToToday() {
@@ -262,6 +307,8 @@ function ProductPLContent() {
     setEnd("");
     setPage(1);
   }
+
+  const pt = data?.periodTotals;
 
   return (
     <section className="container mx-auto py-8 space-y-6">
@@ -282,13 +329,32 @@ function ProductPLContent() {
           <p className="text-sm text-muted-foreground">
             Rank products by profit, margin, and revenue.
           </p>
+          {mounted && (
+            <p className="text-sm font-medium text-primary mt-1">
+              {dateRangeLabel}{lossOnly ? " - Loss-makers only" : ""}
+            </p>
+          )}
         </div>
         <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <Button variant="outline" className="w-full sm:w-auto" onClick={resetToThisWeek}>This Week</Button>
           <Button variant="outline" className="w-full sm:w-auto" onClick={resetToToday}>Today</Button>
           <Button variant="outline" className="w-full sm:w-auto" onClick={clearFilters}>Clear Filters</Button>
-          <Button variant="outline" className="w-full sm:w-auto" onClick={() => exportFile("csv")}>Export CSV</Button>
-          <Button variant="outline" className="w-full sm:w-auto" onClick={() => exportFile("pdf")}>Export PDF</Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => exportFile("csv")}
+            disabled={exportingCsv}
+          >
+            {exportingCsv ? "Exporting..." : "Export CSV"}
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={() => exportFile("pdf")}
+            disabled={exportingPdf}
+          >
+            {exportingPdf ? "Exporting..." : "Export PDF"}
+          </Button>
         </div>
       </div>
 
@@ -354,19 +420,17 @@ function ProductPLContent() {
             <label htmlFor="search" className="text-sm">Search products</label>
             <Input
               id="search"
-              placeholder="Type name…"
+              placeholder="Type name..."
               value={qInput}
-              onChange={(e) => { setQInput(e.target.value); setPage(1); }}
+              onChange={(e) => setQInput(e.target.value)}
             />
           </div>
           <div>
             <label htmlFor="mode" className="text-sm">Range</label>
-            <select
-              id="mode"
-              className="border rounded-md h-9 w-full bg-background"
+            <Select
               value={mode}
-              onChange={(e) => {
-                const nextMode = e.target.value as "day" | "week" | "month" | "year" | "all" | "custom";
+              onValueChange={(value) => {
+                const nextMode = value as "day" | "week" | "month" | "year" | "all" | "custom";
                 setMode(nextMode);
                 if (nextMode !== "custom") {
                   setStart("");
@@ -375,13 +439,18 @@ function ProductPLContent() {
                 setPage(1);
               }}
             >
-              <option value="day">Today</option>
-              <option value="week">This Week</option>
-              <option value="month">This Month</option>
-              <option value="year">Last 12 months</option>
-              <option value="all">All time</option>
-              <option value="custom">Custom</option>
-            </select>
+              <SelectTrigger id="mode" className="h-9 w-full">
+                <SelectValue placeholder="Select range" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="day">Today</SelectItem>
+                <SelectItem value="week">This Week</SelectItem>
+                <SelectItem value="month">This Month</SelectItem>
+                <SelectItem value="year">Last 12 months</SelectItem>
+                <SelectItem value="all">All time</SelectItem>
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <label htmlFor="start" className="text-sm">Start</label>
@@ -391,80 +460,94 @@ function ProductPLContent() {
             <label htmlFor="end" className="text-sm">End</label>
             <Input id="end" type="date" value={end} onChange={(e) => { setEnd(e.target.value); setPage(1); }} disabled={mode !== "custom"} />
           </div>
-            <div className="min-w-0">
-              <label className="text-sm">Sort</label>
+          <div className="min-w-0">
+            <label className="text-sm">Sort</label>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <select
-                className="border rounded-md h-9 bg-background px-2 w-full sm:w-auto max-w-full"
+              <Select
                 value={sortMetric}
-                onChange={(e) => {
-                  setSortMetric(e.target.value as "profit" | "revenue" | "qty" | "margin");
+                onValueChange={(value) => {
+                  setSortMetric(value as "profit" | "revenue" | "qty" | "margin");
                   setPage(1);
                 }}
               >
-                <option value="profit">Profit</option>
-                <option value="revenue">Revenue</option>
-                <option value="qty">Quantity Sold</option>
-                <option value="margin">Margin %</option>
-              </select>
+                <SelectTrigger className="h-9 w-full sm:w-auto max-w-full">
+                  <SelectValue placeholder="Sort" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="profit">Profit</SelectItem>
+                  <SelectItem value="revenue">Revenue</SelectItem>
+                  <SelectItem value="qty">Net Quantity</SelectItem>
+                  <SelectItem value="margin">Margin %</SelectItem>
+                </SelectContent>
+              </Select>
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => setOrder(order === "desc" ? "asc" : "desc")}
                 className="w-full sm:w-auto max-w-full whitespace-normal text-center"
               >
-                {order === "desc" ? "Best → Worst" : "Worst → Best"}
+                {order === "desc" ? "Best -> Worst" : "Worst -> Best"}
               </Button>
             </div>
           </div>
           <div>
             <label htmlFor="rows" className="text-sm">Rows</label>
-            <select
-              id="rows"
-              className="border rounded-md h-9 w-full bg-background"
-              value={pageSize}
-              onChange={(e) => { setPageSize(parseInt(e.target.value, 10)); setPage(1); }}
+            <Select
+              value={String(pageSize)}
+              onValueChange={(value) => { setPageSize(parseInt(value, 10)); setPage(1); }}
             >
-              <option value={10}>10</option>
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-            </select>
+              <SelectTrigger id="rows" className="h-9 w-full">
+                <SelectValue placeholder="Rows" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="text-sm text-muted-foreground lg:col-span-1">
             {!mounted
               ? "\u00A0"
               : isLoading
                 ? "Loading..."
-                : `${filteredRows.length} of ${data?.total ?? 0} product(s)`}
+                : `${data?.total ?? 0} product(s)`}
           </div>
         </CardContent>
       </Card>
 
+      {/* Period-level summary — totals across ALL matching products, not just this page */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base font-semibold">Summary</CardTitle>
+          <CardTitle className="text-base font-semibold">
+            Summary
+            <span className="ml-2 text-xs font-normal text-muted-foreground">
+              {dateRangeLabel}{q ? ` - "${q}"` : ""} - full period, GHS
+              {lossOnly && <span className="ml-1 italic">(loss filter applied to table only)</span>}
+            </span>
+          </CardTitle>
         </CardHeader>
         <CardContent className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="rounded-md bg-background p-3 shadow-sm">
-            <div className="text-xs text-muted-foreground">Products shown</div>
-            <div className="text-lg font-semibold">{filteredRows.length}</div>
+            <div className="text-xs text-muted-foreground">All products in period</div>
+            <div className="text-lg font-semibold">{pt ? pt.productCount : "-"}</div>
           </div>
           <div className="rounded-md bg-background p-3 shadow-sm">
-            <div className="text-xs text-muted-foreground">Total qty sold</div>
-            <div className="text-lg font-semibold">{summary ? summary.qty : "-"}</div>
+            <div className="text-xs text-muted-foreground">Net qty sold</div>
+            <div className="text-lg font-semibold">{pt ? pt.qty : "-"}</div>
           </div>
           <div className="rounded-md bg-background p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Total revenue</div>
-            <div className="text-lg font-semibold">{summary ? formatCurrency(summary.revenue) : "-"}</div>
+            <div className="text-lg font-semibold">{pt ? formatCurrency(pt.revenue) : "-"}</div>
           </div>
           <div className="rounded-md bg-background p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Total profit</div>
-            <div className={`text-lg font-semibold ${summary && summary.profit >= 0 ? "text-green-600" : "text-red-600"}`}>
-              {summary ? formatCurrency(summary.profit) : "-"}
+            <div className={`text-lg font-semibold ${pt && pt.profit >= 0 ? "text-green-600" : "text-red-600"}`}>
+              {pt ? formatCurrency(pt.profit) : "-"}
             </div>
             <div className="text-xs text-muted-foreground">
-              Avg margin {summary ? `${summary.margin.toFixed(1)}%` : "—"}
+              Overall margin {pt ? `${pt.margin.toFixed(1)}%` : "--"}
             </div>
           </div>
         </CardContent>
@@ -472,14 +555,18 @@ function ProductPLContent() {
 
       <Card>
         <CardHeader className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base font-semibold">Performance Details</CardTitle>
+          <CardTitle className="text-base font-semibold">
+            Performance Details
+            <span className="ml-2 text-xs font-normal text-muted-foreground">Monetary values in GH₵</span>
+          </CardTitle>
           <div className="text-sm text-muted-foreground">
-            Showing {filteredRows.length} of {data?.total ?? 0} products
+            Showing {rows.length} of {data?.total ?? 0} products
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="lg:hidden px-4 pb-4 pt-2 space-y-3">
-            {filteredRows.map((r) => {
+          {/* Mobile / tablet card layout */}
+          <div className="md:hidden px-4 pb-4 pt-2 space-y-3">
+            {rows.map((r) => {
               const weightedSoldPrice = r.qty > 0 ? r.revenue / r.qty : 0;
               return (
                 <div key={r.productId} className="rounded-md border p-3 text-sm">
@@ -497,40 +584,40 @@ function ProductPLContent() {
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
-                      <div>Qty Sold</div>
+                      <div>Net Qty</div>
                       <div className="text-foreground">{r.qty}</div>
                     </div>
                     <div>
-                      <div>Revenue</div>
+                      <div>Revenue (GH₵)</div>
                       <div className="text-foreground">{formatCurrency(r.revenue)}</div>
                     </div>
                     <div>
                       <div>Margin %</div>
                       <div className="text-foreground">
-                        {Number.isFinite(r.margin) ? `${r.margin.toFixed(1)}%` : "—"}
+                        {Number.isFinite(r.margin) ? `${r.margin.toFixed(1)}%` : "--"}
                       </div>
                     </div>
                     <div>
-                      <div>Profit / Loss</div>
+                      <div>Profit / Loss (GH₵)</div>
                       <div className={`font-medium ${r.profit >= 0 ? "text-green-600" : "text-red-600"}`}>
                         {formatCurrency(r.profit)}
                       </div>
                     </div>
                     {showWeightedCost && (
                       <div>
-                        <div>Weighted Cost</div>
+                        <div>Weighted Cost (GH₵)</div>
                         <div className="text-foreground">{formatCurrency(r.weightedCost)}</div>
                       </div>
                     )}
                     {showWeightedPrice && (
                       <div>
-                        <div>Weighted Sold Price</div>
+                        <div>Weighted Sold Price (GH₵)</div>
                         <div className="text-foreground">{formatCurrency(weightedSoldPrice)}</div>
                       </div>
                     )}
                     {showTotalCost && (
                       <div>
-                        <div>Total Weighted Cost</div>
+                        <div>Total Weighted Cost (GH₵)</div>
                         <div className="text-foreground">{formatCurrency(r.costTotal)}</div>
                       </div>
                     )}
@@ -548,16 +635,17 @@ function ProductPLContent() {
                 Loading...
               </div>
             )}
-            {!error && mounted && !isLoading && filteredRows.length === 0 && (
+            {!error && mounted && !isLoading && rows.length === 0 && (
               <div className="rounded-md border p-4 text-center text-sm text-muted-foreground">
                 <p>No data for the current filters.</p>
                 <div className="mt-2 flex flex-wrap justify-center gap-2">
-                  <Link
-                    href="/admin/profit-loss/products"
+                  <button
+                    type="button"
+                    onClick={clearFilters}
                     className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                   >
                     Reset filters
-                  </Link>
+                  </button>
                   <Link
                     href="/admin/products"
                     className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
@@ -568,20 +656,21 @@ function ProductPLContent() {
               </div>
             )}
           </div>
+          {/* Desktop table */}
           <div className="overflow-x-auto">
-            <Table className="hidden lg:table">
+            <Table className="hidden md:table">
               <TableHeader className="sticky top-0 z-10 bg-background shadow-sm">
                 <TableRow>
                   <TableHead className="w-20 text-center">Rank</TableHead>
                   <TableHead className="text-center">Product</TableHead>
                   <TableHead className="text-center">View</TableHead>
-                  <TableHead className="text-center">Qty Sold</TableHead>
+                  <TableHead className="text-center">Net Qty</TableHead>
                   {showWeightedCost && (
                     <TableHead
                       className="text-center"
                       title="Average cost per unit, weighted by purchase quantities."
                     >
-                      Weighted Cost (per item)
+                      Weighted Cost (GH₵)
                     </TableHead>
                   )}
                   {showWeightedPrice && (
@@ -589,7 +678,7 @@ function ProductPLContent() {
                       className="text-center"
                       title="Average sold price per unit, weighted by quantities sold."
                     >
-                      Weighted Sold Price (per item)
+                      Weighted Sold Price (GH₵)
                     </TableHead>
                   )}
                   {showTotalCost && (
@@ -597,12 +686,12 @@ function ProductPLContent() {
                       className="text-center"
                       title="Total cost of goods sold for this product."
                     >
-                      Total Weighted Cost
+                      Total Weighted Cost (GH₵)
                     </TableHead>
                   )}
-                  <TableHead className="text-center">Revenue</TableHead>
+                  <TableHead className="text-center">Revenue (GH₵)</TableHead>
                   <TableHead className="text-center">Margin %</TableHead>
-                  <TableHead className="text-center">Profit / Loss</TableHead>
+                  <TableHead className="text-center">Profit / Loss (GH₵)</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -616,18 +705,19 @@ function ProductPLContent() {
                     <TableCell colSpan={tableColSpan} className="text-center py-6 text-muted-foreground">Loading...</TableCell>
                   </TableRow>
                 )}
-                {!error && mounted && !isLoading && filteredRows.length === 0 && (
+                {!error && mounted && !isLoading && rows.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={tableColSpan} className="text-center py-6">
                       <div className="text-sm text-muted-foreground">
                         <p>No data for the current filters.</p>
                         <div className="mt-2 flex flex-wrap justify-center gap-2">
-                          <Link
-                            href="/admin/profit-loss/products"
+                          <button
+                            type="button"
+                            onClick={clearFilters}
                             className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
                           >
                             Reset filters
-                          </Link>
+                          </button>
                           <Link
                             href="/admin/products"
                             className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
@@ -639,36 +729,38 @@ function ProductPLContent() {
                     </TableCell>
                   </TableRow>
                 )}
-                {filteredRows.map((r) => {
+                {rows.map((r) => {
                   const weightedSoldPrice = r.qty > 0 ? r.revenue / r.qty : 0;
                   return (
-                  <TableRow key={r.productId} className="odd:bg-muted/30">
-                    <TableCell className="text-center">#{r.rank}</TableCell>
-                    <TableCell className="text-center">{r.name}</TableCell>
-                    <TableCell className="text-center">
-                      <Link
-                        className="text-primary hover:underline"
-                        href={`/admin/inventory?q=${encodeURIComponent(r.name)}`}
-                      >
-                        View
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-center">{r.qty}</TableCell>
-                    {showWeightedCost && (
-                      <TableCell className="text-center">{formatCurrency(r.weightedCost)}</TableCell>
-                    )}
-                    {showWeightedPrice && (
-                      <TableCell className="text-center">{formatCurrency(weightedSoldPrice)}</TableCell>
-                    )}
-                    {showTotalCost && (
-                      <TableCell className="text-center">{formatCurrency(r.costTotal)}</TableCell>
-                    )}
-                    <TableCell className="text-center">{formatCurrency(r.revenue)}</TableCell>
-                    <TableCell className="text-center">
-                      {Number.isFinite(r.margin) ? `${r.margin.toFixed(1)}%` : "—"}
-                    </TableCell>
-                    <TableCell className={`text-center ${r.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(r.profit)}</TableCell>
-                  </TableRow>
+                    <TableRow key={r.productId} className="odd:bg-muted/30">
+                      <TableCell className="text-center">#{r.rank}</TableCell>
+                      <TableCell className="text-center">{r.name}</TableCell>
+                      <TableCell className="text-center">
+                        <Link
+                          className="text-primary hover:underline"
+                          href={`/admin/inventory?q=${encodeURIComponent(r.name)}`}
+                        >
+                          View
+                        </Link>
+                      </TableCell>
+                      <TableCell className="text-center">{r.qty}</TableCell>
+                      {showWeightedCost && (
+                        <TableCell className="text-center">{formatCurrency(r.weightedCost)}</TableCell>
+                      )}
+                      {showWeightedPrice && (
+                        <TableCell className="text-center">{formatCurrency(weightedSoldPrice)}</TableCell>
+                      )}
+                      {showTotalCost && (
+                        <TableCell className="text-center">{formatCurrency(r.costTotal)}</TableCell>
+                      )}
+                      <TableCell className="text-center">{formatCurrency(r.revenue)}</TableCell>
+                      <TableCell className="text-center">
+                        {Number.isFinite(r.margin) ? `${r.margin.toFixed(1)}%` : "--"}
+                      </TableCell>
+                      <TableCell className={`text-center ${r.profit >= 0 ? "text-green-600" : "text-red-600"}`}>
+                        {formatCurrency(r.profit)}
+                      </TableCell>
+                    </TableRow>
                   );
                 })}
               </TableBody>
@@ -685,7 +777,6 @@ function ProductPLContent() {
         const current = Math.min(page, totalPages);
         if (!total || totalPages <= 1) return null;
 
-        // Build simple window around current
         const pages: number[] = [];
         const startP = Math.max(1, current - 2);
         const endP = Math.min(totalPages, current + 2);
@@ -698,11 +789,9 @@ function ProductPLContent() {
                 <PaginationPrevious href="#" onClick={(e) => { e.preventDefault(); if (current > 1) setPage(current - 1); }} />
               </PaginationItem>
               {startP > 1 && (
-                <>
-                  <PaginationItem>
-                    <PaginationLink href="#" onClick={(e) => { e.preventDefault(); setPage(1); }}>1</PaginationLink>
-                  </PaginationItem>
-                </>
+                <PaginationItem>
+                  <PaginationLink href="#" onClick={(e) => { e.preventDefault(); setPage(1); }}>1</PaginationLink>
+                </PaginationItem>
               )}
               {startP > 2 && (
                 <PaginationItem>
@@ -753,4 +842,3 @@ export default function ProductPLPage() {
     </Suspense>
   );
 }
-

@@ -42,7 +42,21 @@ export async function PATCH(
         action: "USER_FORCE_LOGOUT",
         entityType: "USER",
         entityId: updated.id,
+        request: req,
+        outcome: "SUCCESS",
         meta: { email: updated.email },
+      });
+      await recordAuditLog({
+        action: "USER_SESSION_INVALIDATED",
+        entityType: "USER",
+        entityId: updated.id,
+        request: req,
+        outcome: "SUCCESS",
+        meta: {
+          email: updated.email,
+          invalidatedByUserId: user.id,
+          invalidatedByRole: user.role,
+        },
       });
     } catch {
       // best-effort

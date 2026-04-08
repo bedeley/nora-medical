@@ -1,25 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockTrialBalanceApis(page) {
   await page.route("**/api/admin/accounting/periods", async (route) => {
@@ -76,7 +57,6 @@ async function mockTrialBalanceApis(page) {
 
 test.describe("Trial balance report page", () => {
   test("loads new controls and shows last refreshed label", async ({ page }) => {
-    await signIn(page);
     await mockTrialBalanceApis(page);
     await page.goto("/admin/accounting/reports/trial-balance");
 
@@ -91,7 +71,6 @@ test.describe("Trial balance report page", () => {
   });
 
   test("supports date preset keyboard shortcuts", async ({ page }) => {
-    await signIn(page);
     await mockTrialBalanceApis(page);
     await page.goto("/admin/accounting/reports/trial-balance");
 
@@ -103,6 +82,7 @@ test.describe("Trial balance report page", () => {
     const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 10);
     const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().slice(0, 10);
 
+    await page.getByRole("heading", { name: /trial balance/i }).click();
     await page.keyboard.press("Alt+1");
     await expect(startInput).toHaveValue(thisMonthStart);
     await expect(endInput).toHaveValue(thisMonthEnd);
@@ -117,7 +97,6 @@ test.describe("Trial balance report page", () => {
   });
 
   test("exports CSV with correlation ID feedback", async ({ page }) => {
-    await signIn(page);
     await mockTrialBalanceApis(page);
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {

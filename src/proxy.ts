@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import type { NextRequestWithAuth } from "next-auth/middleware";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
 import { verifyMfaCookie } from "@/lib/mfa";
+import { verifyCronSecretAny } from "@/lib/cron-auth";
 
 type AuthToken = {
   role?: string;
@@ -37,16 +38,7 @@ function isApiAdminCronPath(pathname: string) {
 }
 
 function hasValidCronSecret(req: NextRequestWithAuth) {
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const bearer = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length).trim()
-    : "";
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const provided = bearer || headerSecret;
-  if (!provided) return false;
-  const cronSecret = String(process.env.CRON_SECRET || "").trim();
-  const hrCronSecret = String(process.env.HR_PAYROLL_CRON_SECRET || "").trim();
-  return (cronSecret && provided === cronSecret) || (hrCronSecret && provided === hrCronSecret);
+  return verifyCronSecretAny(req, ["CRON_SECRET", "HR_PAYROLL_CRON_SECRET"]);
 }
 
 export default withAuth(

@@ -3,10 +3,10 @@ Nora Hospital Supplies — Admin Guide
 This guide uses collapsible sections in the app. Open any section for a concise walkthrough.
 
 Quick Links (sections)
-- Operations: Dashboard & Recent Activity, Products & Catalog, Suppliers, Orders & Receipts, Inventory & Alerts, Inventory Planning
-- Accounting: Accounting Portal Overview
-- HR: HR Portal Overview
-- Access & Security
+- Operations: Dashboard & Recent Activity, Profit & Loss, Products & Catalog, Suppliers, Orders & Receipts, Inventory & Alerts, Inventory Planning
+- Accounting: Accounting Portal Overview, Health Check & Operations
+- HR: HR Portal Overview, HR Onboarding
+- Access & Security: Access & Security, Users & Roles
 
 Phase 1 Index (where to find the pages)
 - Operations: Returns & RMA, Stock Adjustments, Supplier Performance
@@ -25,17 +25,624 @@ Phase 1 Index (where to find the pages)
 - Role gates: Admin-only actions include purchase creation/receiving, returns/refunds, supplier payments, and journal approvals.
 - Users & roles: Manage staff roles in /admin/users (role changes require NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED=1). Use “Invite employee” to send a 24-hour invite link with verification code via email ? SMS ? WhatsApp fallback.
 
+## Users & Roles
+- Page: /admin/users
+- What it is: The staff identity and access workspace. Use it to invite staff user accounts, assign roles, repair HR profile links, monitor invite status, and manage session/access controls without going through the customer list.
+- When to use it:
+  - When a new employee already exists in HR and now needs portal access.
+  - When a role changes between Staff, Dispatcher, Accountant, and Admin.
+  - When an older bootstrapped account is missing an HR profile link.
+  - When a staff account needs deactivation, reactivation, or forced logout.
+- Data rule:
+  - This page manages user identity and access state.
+  - HR remains the source of truth for the full employee profile.
+  - `Start HR onboarding` is the employee-create handoff when the employee record does not exist yet.
+  - `Create HR profile` only creates or links the HR employee record; it does not complete the full staff profile details.
+
+Page walkthrough - top to bottom
+
+1) Hero
+   - Eyebrow: `People access` with `HR-linked identities`.
+   - Title: `Users & Roles`.
+   - Summary line calls out missing HR links and pending invites.
+   - Hero actions:
+     - `Invite user account`
+     - `Start HR onboarding`
+     - `Open staff directory`
+     - `View audit trail`
+   - Quick jumps:
+     - `Controls`
+     - `Directory`
+     - `Pending invites`
+
+2) Access summary tiles
+   - `Total accounts`
+   - `Active access`
+   - `Pending invites`
+   - `Missing HR links`
+   - Use these to understand access-state health before changing any account.
+
+3) Current access snapshot
+   - Plain-English summary of:
+     - recent sign-ins in the last 30 days
+     - protected admin count
+     - dormant elevated-access count
+     - whether role editing is enabled
+   - Treat this as the top-line access risk summary.
+
+4) Directory controls
+   - Search by name, email, or phone.
+   - Role filter: `All roles`, `Staff`, `Dispatcher`, `Accountant`, `Admin`.
+   - `Show archived` includes deactivated accounts in the result set.
+   - Inline message shows whether role editing is enabled and reminds that protected admins are server-locked.
+   - Quick-filter buttons:
+     - `All accounts`
+     - `Missing HR profile`
+     - `Pending invite`
+     - `Protected admin`
+     - `Dormant elevated access`
+   - Quick filters are operational shortcuts layered on top of search, role, and archive filtering.
+
+5) Access and HR sync
+   - Explains invite delivery and first-login expectations.
+   - Confirms that HR is the source of truth for employee records.
+   - `Start HR onboarding` routes into centralized employee creation from this page when the employee record does not exist yet.
+   - `Backfill HR profiles` attempts to create or link missing employee records in bulk for existing users.
+
+6) Directory
+   - Shows `Selected` count and the currently active quick-view label.
+   - Bulk actions:
+     - `Deactivate selected`
+     - `Reactivate selected`
+     - `Force logout selected`
+   - Mobile layout uses stacked cards.
+   - Desktop layout uses the access-focused directory columns:
+     - Name
+     - Role
+     - Last role change
+     - Last login
+     - Status
+     - HR profile
+     - Actions
+     - Access
+
+7) Directory row meaning
+   - Name column may show badges:
+     - `Protected admin`
+     - `Pending invite`
+     - `Dormant elevated access`
+   - Role column:
+     - if role management is enabled, a dropdown changes the role directly;
+     - protected admins show a lock and cannot be downgraded from the page.
+   - Last login:
+     - shows relative recency first (`2d ago`, `Never`, etc.), then the exact timestamp.
+   - Status:
+     - `Active`
+     - `Archived`
+   - HR profile:
+     - `Ready` means the user is linked to an employee record;
+     - `Missing HR profile` means the user cannot fully use staff-profile-driven flows yet.
+   - Mobile cards keep the same access and HR-link context without relying on the desktop table layout.
+
+8) Row actions
+   - `Open staff profile` appears when the HR employee record is already linked.
+   - `Create HR profile` or `Fix HR link` ensures the employee record exists and is linked.
+     After success, the row should switch from `Create HR profile` to `Open staff profile`.
+   - `Reset invite` appears when an active invite exists and resends the invitation.
+   - `Deactivate` / `Reactivate` changes account active state.
+   - `Force logout` clears the user session.
+   - `View history` opens the filtered audit trail for that user.
+
+9) Pending invites
+   - Lists outstanding invites separately for follow-up.
+   - Invite urgency badge:
+     - `Active`
+     - `Expires soon`
+     - `Expired`
+   - Expiry detail shows remaining time or the exact expiry timestamp.
+   - Actions:
+     - `Resend`
+     - `Copy link`
+
+10) Invite user account dialog
+   - Fields:
+     - Full name
+     - Email
+     - Phone
+     - Role
+   - On success:
+     - the page shows the invite URL in the dialog;
+     - a delivery note explains whether the system sent it automatically or whether it should be shared manually.
+
+How to use the page well
+- Start with quick filters when you already know the problem category.
+- Use `Start HR onboarding` when the employee record does not exist yet.
+- Use `Invite user account` when the employee is already known to HR and now needs access.
+- Use `Missing HR profile` after imports or account cleanup.
+- Use `Pending invite` to follow up on onboarding that has not completed.
+- Use `Dormant elevated access` as a periodic control check for admin/accountant access hygiene.
+- After using `Create HR profile`, open the staff profile and complete the missing HR details there.
+
+Test strip - `/admin/users`
+- Page opens successfully for an authenticated admin and the main heading is `Users & Roles`.
+- Hero shows:
+  - `People access`
+  - `HR-linked identities`
+  - actions for `Invite user account`, `Start HR onboarding`, `Open staff directory`, and `View audit trail`.
+- Summary tiles render for:
+  - total accounts
+  - active access
+  - pending invites
+  - missing HR links
+- `Current access snapshot` includes dormant elevated-access wording.
+- `Access and HR sync` explains that employee creation belongs in HR onboarding and this page is for access delivery and account-link repair.
+- Directory controls work:
+  - search narrows rows by name, email, or phone;
+  - role filter narrows by assigned role;
+  - `Show archived` includes archived rows.
+- Quick-filter buttons work:
+  - `Missing HR profile` shows only rows missing `employeeId`;
+  - `Pending invite` shows only rows with active invite records;
+  - `Protected admin` shows only protected admin rows;
+  - `Dormant elevated access` shows stale Admin or Accountant access rows.
+- `Create HR profile` behavior:
+  - click it on a row missing HR link;
+  - expected result: success toast appears, row refreshes, and action changes to `Open staff profile`.
+- `Start HR onboarding` behavior:
+  - click it from the hero;
+  - expected result: `/admin/hr/onboarding?source=users` opens instead of a local employee-create dialog.
+- Directory row badges appear correctly for:
+  - protected admin
+  - pending invite
+  - dormant elevated access
+- Last login shows both relative recency and exact timestamp on desktop.
+- Pending invites section shows urgency badges and supports `Resend` and `Copy link`.
+- Mobile check:
+  - directory switches to stacked cards;
+  - invite list switches to stacked cards;
+  - no horizontal overflow is required to understand the page.
+- Audit links:
+  - `View audit trail` opens `/admin/audit?entityType=USER&sourcePage=admin/users`;
+  - row history links include `entityId` plus `sourcePage=admin/users`.
+
 ## Dashboard & Recent Activity
 - Pages: /admin/dashboard, /admin/recent
-- What it is: KPIs and latest operational activity.
-- How to use: Monitor sales, payments, inventory alerts, and trends.
-- KPI interpretation:
-  - `Billed order total` is tax-inclusive.
-  - `Gross sales` is pre-tax sales value.
-  - `Tax collected` is shown separately.
-  - `Discounts` is shown separately and reduces net sales.
-  - Reconciliation card explains: `Billed = Collected + Outstanding`, and `Billed = Gross + Tax - Discounts`.
-- Related: Uses live order/payment/expense data; can switch to ledger reporting.
+- What it is: The redesigned management dashboard. It separates ledger-backed financial reporting from operational workflow context so the team can review sales, cash, exceptions, and trend charts from one page.
+- Default entry: `/admin/dashboard?groupBy=day` is the normal daily view. `day` is the baseline grouping; switch to `week`, `month`, or `year` only when you need a wider trend view.
+- Data-source rule:
+  - Financial KPIs use posted GL values where available.
+  - `Financial reporting` is the main ledger-backed section for revenue, discounts, refunds, tax, expenses, profit, and cash.
+  - `Operational context` keeps collections, outstanding balances, orders, and fulfillment in the live operational layer.
+  - `Cash` cards are payment-date based.
+  - `Ledger Alignment` compares operational and posted-ledger numbers for the same filters.
+
+Page walkthrough - top to bottom
+
+1) Header actions
+   - Title: `Dashboard`.
+   - Subtitle explains that the page tracks revenue, expenses, and cash flow at a glance.
+   - Helper text explains that financial reporting is ledger-backed while collections, outstanding balances, and fulfillment remain operational.
+   - Action buttons:
+     - `Add Expense`
+     - `Refresh`
+     - `Raw Data`
+     - `CSV`
+     - `PDF`
+     - `Copy Link`
+   - Use `CSV` and `PDF` to export the current filtered view, not a separate unfiltered report.
+
+2) Health banner and anomaly chips
+   - If health issues exist, an amber banner appears with counts such as stock, balance, payment, or legacy issues and a `Review health check` link.
+   - Small anomaly chips can appear below the banner, for example:
+     - high outstanding ratio
+     - negative net cash
+     - ledger alignment review
+   - Treat these as triage prompts, not final diagnosis.
+
+3) Filter row
+   - `Period` shows the active start/end range and current grouping.
+   - `Refreshed` shows the most recent successful data refresh time.
+   - `Comparison On/Off` controls previous-period delta labels on key cards.
+   - `Reset` clears start, end, customer, category, and returns grouping to `day`.
+   - Date picker quick ranges include `Today`, `Last 7 days`, `This month`, `Last 30 days`, `This quarter`, `Last quarter`, `Last 12 months`, and `This year`.
+   - `This quarter`, `Last quarter`, and `Last 12 months` switch grouping to `month` automatically.
+   - Customer and category filters sync to the URL so the current view can be shared with `Copy Link`.
+
+4) Snapshot + accounting status row
+   - `ProfitSummary` appears first as the high-level KPI strip.
+   - Three compact status cards follow:
+     - `Open period`
+     - `Latest VAT filing`
+     - `Integrity status`
+   - Use these cards to confirm whether accounting period control and integrity checks are healthy before trusting the trend story.
+
+5) Alerts, expense mix, and quick links
+   - Operational widgets follow:
+     - inventory alerts
+     - margin risk
+     - monitoring summary
+   - `Expense breakdown` shows payroll first, then other categories ranked by share of total expense.
+   - Quick links:
+     - `Review Outstanding`
+     - `Review Pending MoMo`
+     - `Open Integrity`
+     - `Open Health`
+   - `Metric definitions` explains the financial-versus-operational split. Use it when there is confusion over ledger-backed metrics versus workflow metrics.
+
+6) `Ledger Alignment`
+   - This card compares operational and posted-ledger values for the same filters.
+   - Each row shows:
+     - operational value
+     - ledger value
+     - delta
+     - status badge
+   - Status meaning:
+     - `Aligned`
+     - `Within GH₵1`
+     - `Review`
+   - Use this card to monitor whether the two reporting bases are converging cleanly enough to retire the operational financial view later.
+
+7) `Financial reporting`, `Cash`, payroll, and `Operational context`
+   - `Financial reporting` contains the ledger-backed revenue and profitability cards:
+     - `Gross sales (pre-tax)`
+     - `Tax collected`
+     - `Discounts`
+     - `Net sales`
+     - `Refunds`
+   - `Cash (payment-date basis)` contains:
+     - `Cash in`
+     - `Cash out`
+     - `Net cash`
+   - `Payroll expense` is shown as its own follow-on detail card so payroll can be read as part of the financial story.
+   - `Operational context` separates workflow and AR interpretation from financial reporting.
+   - Use these sections intentionally:
+     - financial cards for financial reporting
+     - operational cards for collections, outstanding, and fulfillment explanation
+
+8) `Operational context` details
+   - `Period sales reconciliation` explains the current-period relationship:
+     - `Billed order total (incl. tax) = Collected on period sales + Outstanding on period sales`
+   - The mobile `Show operational context` button expands the operational cards on small screens.
+   - Operational cards include:
+     - `Outstanding (period orders)`
+     - orders and AOV
+     - fulfillment split
+   - Use this section when collections, open balances, or delivery-state workflow need explanation.
+
+9) Ranked lists
+   - `Top products (by quantity)` lists the strongest-selling SKUs for the current date range.
+   - `Top customers` ranks accounts by order value and shows available credit when relevant.
+   - If there is no data for the selected range, these panels may be absent.
+
+10) Charts
+   - `Sales Trend (Gross vs Net)`
+   - `Expense Trend`
+   - `Cash Flow`
+   - `Orders & AOV`
+   - `Margin Trend`
+   - When using `day`, expect the densest operational view. Use `month` when leadership wants cleaner trend direction and payroll month-over-month context.
+
+11) Raw Data dialog
+   - `Raw Data` opens a modal listing the backing records used by the dashboard pull.
+   - If no records are available, the dialog shows `No records found` with reload actions instead of a table.
+
+How to use the page in practice
+- Start on `/admin/dashboard?groupBy=day`.
+- Check the health banner and anomaly chips first.
+- Confirm the period and grouping before reading any KPI.
+- Read `Ledger Alignment` before trusting a surprising number.
+- Read `Financial reporting` and `Cash` separately.
+- Use `Operational context` only for workflow interpretation, not as the final financial source of truth.
+- Use quick links to drill into balances, pending MoMo, integrity, or health when a card looks off.
+- Switch to `month` for quarter or rolling-12-month management review.
+- Export only after the filters and grouping match the story you want to share.
+
+Test strip - redesigned `/admin/dashboard?groupBy=day`
+- Page opens successfully for an authenticated admin and the main heading is `Dashboard`.
+- Header action buttons are visible: `Refresh`, `Raw Data`, `CSV`, `PDF`, `Copy Link`.
+- `Financial reporting`, `Cash (payment-date basis)`, `Operational context`, and `Ledger Alignment` are visible.
+- `groupBy=day` is present on first load and switching to `month` updates the URL.
+- Customer and category filters update the URL and `Reset` clears them.
+- Health/context cards load: `Open period`, `Latest VAT filing`, `Integrity status`.
+- `Metric definitions` opens and explains the financial-versus-operational split.
+- `Ledger Alignment` loads and shows reconciliation rows when both sources are available.
+- Quick links are visible: `Review Outstanding`, `Review Pending MoMo`, `Open Integrity`, `Open Health`.
+- `Show operational context` appears on mobile and expands the operational cards.
+- `Raw Data` opens a modal and shows either a table or an empty-state message.
+- `CSV` download uses the active filters and grouping and returns a `.csv` file.
+- `PDF` download uses the active grouping and returns a `.pdf` file.
+- Visual regression baseline for the redesigned dashboard matches the current layout.
+
+- Related:
+  - `/admin/recent` is still the simpler recent-activity page when you only want the event feed without the KPI dashboard.
+
+## Profit & Loss
+- Pages: /admin/profit-loss, /admin/profit-loss/products
+- What it is: The main management P&L page. Use it to review revenue, refunds, discounts, COGS, expenses, margins, and trend behavior with either Operational View or Posted Ledger View.
+- Do not confuse it with: `/admin/accounting/reports/pl`, which is the formal accounting statement page. `/admin/profit-loss` is the operational-management report with source switching, KPI cards, alignment checks, operational context, and product drill-down.
+- Source rule:
+  - `Operational View` uses live order, return, payment, and expense activity.
+  - `Posted Ledger View` uses posted journal entries for financial reporting.
+  - The page can override the default source from Accounting Settings without changing the global setting.
+  - The `Ledger Alignment` block compares both sources for the same filters and flags any drift above GH₵1.
+
+Top-to-bottom walkthrough
+
+1) Header and page actions
+   - Title: `Profit & Loss`.
+   - Subtitle explains that the page reviews revenue, costs, and margins over time.
+   - The helper text explains the difference between `Operational View` and `Posted Ledger View`.
+   - Header actions:
+     - `View Product Performance`
+     - `Export CSV` and `Export PDF` when the page is in Operational View
+     - `Open Accounting Reports` when the page is in Posted Ledger View
+   - Read the `Current source` line before interpreting the numbers.
+
+2) `Report View`
+   - This card controls the reporting basis for the current page.
+   - Buttons:
+     - `Operational View`
+     - `Posted Ledger View`
+     - `Use Default`
+   - `Use Default` clears the page override and returns to the Accounting Settings default.
+   - The note below the buttons explains:
+     - the current default source from settings
+     - whether the page is currently using an override
+     - whether the page is reading posted journals or operational activity
+
+3) `Filters`
+   - Controls:
+     - `Start`
+     - `End`
+     - `Group by`
+     - `Customer`
+     - `Expense Category`
+     - `Exclude zero periods`
+   - The page shows period count plus a `Coverage` note explaining exactly what data is included for the active source.
+   - The URL stores filter state and source override so the view can be reopened or shared exactly.
+
+4) `Financial KPIs`
+   - This is the main KPI strip for the page.
+   - Cards include:
+     - `Revenue`
+     - `Discounts`
+     - `Net Sales (after discounts, before refunds)`
+     - `Refunds`
+     - `Net Revenue`
+     - `Gross Profit`
+     - `COGS`
+     - `Expenses`
+     - `Net Profit`
+     - `Tax Collected`
+     - `Gross Margin`
+     - `Operating Margin`
+   - Important calculation rule:
+     - Gross profit and gross margin are based on net revenue, not gross revenue.
+   - In Posted Ledger View, the page may show some detail as unavailable if the ledger route does not expose that metric separately for the selected period.
+   - The text below the cards states whether the KPIs are coming from posted journals or operational activity.
+   - `Trend window` changes the sparkline history shown inside the KPI cards.
+
+5) `Ledger Alignment`
+   - This card compares Operational and Posted Ledger values for the same filters.
+   - Each row shows:
+     - Operational value
+     - Ledger value
+     - Delta
+     - status badge
+   - Status meaning:
+     - `Aligned` means the numbers match
+     - `Within GH₵1` means the difference is small and inside tolerance
+     - `Review` means the difference is material and should be investigated
+   - Use this block before retiring Operational View. It is the page-level reconciliation check.
+
+6) `Expense Breakdown`
+   - Shows expense categories and amounts for the current filters.
+   - Use this section to see which expense categories are driving the selected period.
+   - If there are no expenses in scope, the page shows a clear empty state instead of blank rows.
+
+7) `Operational Context`
+   - This section separates workflow metrics from financial reporting.
+   - In `Operational View`, it shows:
+     - `Orders`
+     - `Avg Order Value`
+     - `Delivered`
+     - `Partial`
+     - `Returned`
+     - `Pending`
+   - In `Posted Ledger View`, the page explains that workflow metrics stay operational and should be reviewed here only after switching source or by using the dashboard.
+
+8) `Trend Overview`
+   - This is the SVG trend chart area.
+   - `Download chart` exports the visible chart as an SVG.
+   - Series legend appears above the chart and the x-axis uses formatted period labels, not raw date keys.
+   - Use this section for visual trend direction across the selected grouping.
+
+9) Trend table / mobile cards
+   - Desktop shows the full trend table with formatted period labels.
+   - Mobile shows stacked period cards instead of the full table.
+   - The table includes a totals row so the page-level period totals can be checked directly in the table.
+   - Pagination controls and `Rows per page` apply to the trend table.
+
+10) Product drill-down
+   - `View Product Performance` opens `/admin/profit-loss/products`.
+   - Use it when the page-level P&L looks unusual and you need to isolate product-level contribution.
+   - Product P&L now deducts return effects instead of overstating revenue and quantity.
+
+How to use the page in practice
+- Start with the correct source.
+- Confirm the date range, grouping, and customer/category filters.
+- Read the `Financial KPIs` first, then check `Ledger Alignment` if the source story looks questionable.
+- Use `Expense Breakdown` to understand which cost categories are driving the result.
+- Use `Operational Context` only for workflow interpretation, not as the final financial source of truth.
+- Use `Trend Overview` and the trend table to decide whether the issue is isolated to one period or part of a broader pattern.
+- Use `View Product Performance` when the page-level story needs product-level explanation.
+
+Test strip - `/admin/profit-loss`
+- Page opens successfully for an authenticated admin and the main heading is `Profit & Loss`.
+- `Report View` is visible and shows `Operational View`, `Posted Ledger View`, and `Use Default`.
+- Source switching updates the URL with `source=operational` or `source=ledger`.
+- The header action changes correctly:
+  - Operational View shows `Export CSV` and `Export PDF`
+  - Posted Ledger View shows `Open Accounting Reports`
+- `Filters` are visible and changing start, end, group by, customer, category, or `Exclude zero periods` updates the current page state correctly.
+- `Financial KPIs` render without calculation gaps and Gross Profit uses net revenue as the base.
+- `Refunds` is visible as its own KPI and Net Profit tooltip reflects refunds in the formula.
+- `Ledger Alignment` loads and shows reconciliation rows for shared metrics across both sources.
+- `Expense Breakdown` renders categories when expense data exists and shows an empty state when none exist.
+- `Operational Context` shows order/fulfillment metrics in Operational View and explanatory guidance in Posted Ledger View.
+- `Trend Overview` renders with formatted period labels and `Download chart` exports the current chart.
+- The trend table uses formatted period labels on desktop and totals row values appear at the bottom.
+- Mobile layout shows stacked period cards instead of the full table and still uses formatted period labels.
+- `Rows per page` and pagination change the visible trend rows correctly.
+- `View Product Performance` opens `/admin/profit-loss/products`.
+- Operational exports succeed only in Operational View.
+- Posted Ledger View does not show broken export buttons for CSV/PDF.
+
+## Product Profit & Loss
+- Page: /admin/profit-loss/products
+- What it is: The product-level drill-down from the main management P&L. Use it to rank products by net quantity, revenue, margin, and profit after return deductions.
+- How to use it: Start here when the page-level P&L looks unusual and you need to isolate which SKUs are driving profit, loss, or margin compression.
+- Data rule:
+  - Product totals are built from order items in the selected period.
+  - Returned quantity and refunded revenue are deducted from product totals.
+  - COGS is reversed only for returns that were actually restocked.
+  - `Summary` reflects the full filtered result set for the period, not just the current page of rows.
+
+Top-to-bottom walkthrough
+
+1) Header and quick actions
+   - Breadcrumb: `Profit & Loss / Products`.
+   - Header title: `Product Performance (P&L)`.
+   - Subtitle explains that the page ranks products by profit, margin, and revenue.
+   - The blue range line shows the active date window and whether `Loss-makers only` is enabled.
+   - Header actions:
+     - `Back`
+     - `This Week`
+     - `Today`
+     - `Clear Filters`
+     - `Export CSV`
+     - `Export PDF`
+   - `Back` returns to `/admin/profit-loss`.
+   - `Alt + Left Arrow` is the keyboard shortcut back to the main P&L page.
+
+2) `Filters`
+   - The first row includes:
+     - `Columns`
+     - `Top 10`
+     - `Top 25`
+     - `Top 50`
+     - `Loss-makers only`
+   - `Columns` controls whether the table shows:
+     - `Weighted Cost (per item)`
+     - `Weighted Sold Price (per item)`
+     - `Total Weighted Cost`
+   - The main filter grid includes:
+     - `Search products`
+     - `Range`
+     - `Start`
+     - `End`
+     - `Sort`
+     - `Rows`
+   - `Range` supports:
+     - `Today`
+     - `This Week`
+     - `This Month`
+     - `Last 12 months`
+     - `All time`
+     - `Custom`
+   - `Start` and `End` are active only when `Range` is `Custom`.
+   - `Sort` chooses the ranking metric:
+     - `Profit`
+     - `Revenue`
+     - `Net Quantity`
+     - `Margin %`
+   - The adjacent button flips the list between `Best -> Worst` and `Worst -> Best`.
+   - `Rows` controls the visible page size.
+   - Filter state is stored in the URL so the view can be reopened or shared.
+   - The page also remembers the last custom date range locally until filters are cleared.
+
+3) `Summary`
+   - This card shows full-period totals for all matching products, not just the visible rows.
+   - KPIs:
+     - `All products in period`
+     - `Net qty sold`
+     - `Total revenue`
+     - `Total profit`
+   - The subtitle shows the active range and any active search term.
+   - If `Loss-makers only` is on, the note clarifies that the loss filter applies only to the table, not to the period summary.
+
+4) `Performance Details`
+   - Desktop uses a table; mobile uses stacked cards.
+   - Core row fields:
+     - `Rank`
+     - `Product`
+     - `View`
+     - `Net Qty`
+     - `Revenue`
+     - `Margin %`
+     - `Profit / Loss`
+   - Optional columns appear when enabled from `Columns`:
+     - `Weighted Cost`
+     - `Weighted Sold Price`
+     - `Total Weighted Cost`
+   - `View` opens the inventory page filtered to that product.
+   - Profit values show positive/negative emphasis to make loss-makers easier to spot quickly.
+   - The row counter above the table shows `Showing X of Y products`.
+
+5) Empty, loading, and error states
+   - Loading state shows a simple `Loading...` message in the table or mobile card area.
+   - Error state shows `Failed to load product P&L`.
+   - Empty state shows `No data for the current filters.` plus:
+     - `Reset filters`
+     - `View products`
+   - `Reset filters` now clears persisted custom-range memory as well as current URL filters.
+
+6) Pagination
+   - Pagination appears when more than one page of products exists.
+   - Previous, next, first, last, and nearby page links are shown.
+   - If a bookmarked URL requests an out-of-range page, the API clamps to the last valid page and the page state normalizes to that real page instead of showing a false empty state.
+
+How to use the page well
+- Start with `Profit` sort and `Best -> Worst` for the default margin story.
+- Switch to `Loss-makers only` when you are triaging negative contribution products.
+- Use `Revenue` sort when the concern is sales concentration rather than profitability.
+- Keep `Summary` and `Performance Details` separate in your reading: the summary is full-period, while the table is paginated.
+- Use `Columns` to hide cost detail when you only need ranking and expose it when margin compression needs explanation.
+- Use the inventory `View` link on an unusual row to inspect stock position and movement context for that product.
+
+Test strip - `/admin/profit-loss/products`
+- Page opens successfully for an authenticated admin and the main heading is `Product Performance (P&L)`.
+- Header actions render:
+  - `Back`
+  - `This Week`
+  - `Today`
+  - `Clear Filters`
+  - `Export CSV`
+  - `Export PDF`
+- `Filters` render and support:
+  - `Columns`
+  - `Loss-makers only`
+  - `Search products`
+  - `Range`
+  - `Start`
+  - `End`
+  - `Sort`
+  - `Rows`
+- `Range`, `Sort`, and `Rows` use the shared select component rather than native browser selects.
+- `Summary` shows:
+  - all products in period
+  - net qty sold
+  - total revenue
+  - total profit
+- `Performance Details` renders rows with rank, product, net quantity, revenue, margin, and profit/loss.
+- Column toggles show and hide weighted-cost fields correctly.
+- `Loss-makers only` filters the visible rows without changing the full-period `Summary`.
+- Search input debounces correctly and resets pagination only when the search term actually changes.
+- Empty state shows `Reset filters` and `View products`.
+- `Reset filters` clears both the current filter state and any remembered custom-range values.
+- Requesting an out-of-range page does not show a false empty state; the page normalizes to the last valid page and still shows rows.
+- `View` links open inventory filtered to the selected product.
+- Page-specific Playwright coverage exists in `e2e/admin-profit-loss-products.spec.js`.
 
 ## Products & Catalog
 - Pages: /admin/products, /admin/purchases, /admin/movements
@@ -305,15 +912,226 @@ Inventory Planning — Reports
 
 ## Accounting Portal Overview
 - Page: /admin/accounting
-- What it is: Main control center for chart of accounts, journal, reports, reconciliations, integrity checks, and posting rules.
-- How to use:
-  1) Start each day in Data Integrity (quick check).
-  2) Use Journal for posting review and drill-down.
-  3) Use Cash Reconciliation (operational mode) for end-of-day cash-up.
-  4) Use reports (P&L, Balance Sheet, Trial Balance, VAT) for management and filing.
-  5) Use Reconcile Totals when operational and ledger figures diverge.
-- Fiscal period baseline:
-  - After a fresh reset with no periods, the system auto-creates one OPEN period for the current calendar year on first load of accounting pages.
+- What it is: Central hub for the accounting module. Provides live financial position, alert banners, recent journal activity, and grouped navigation to every accounting sub-module.
+
+Page layout — top to bottom:
+
+  1. Header
+     - Title: "Accounting" with a subtitle.
+     - "+ New Journal Entry" button (top-right) — opens /admin/accounting/journal?new=1 directly.
+
+  2. Alert banners (shown conditionally, stacked)
+     a) Integrity banner (amber):
+        - Appears when any integrity issue is detected: draft journal entries, AR ledger mismatch, inventory ledger mismatch, or negative stock items.
+        - Lists each issue by name and count inline. "Review" link → /admin/accounting/integrity.
+        - Disappears automatically once all issues are cleared.
+     b) Period close reminder banner (amber):
+        - Appears when the nearest OPEN fiscal period ends within the configured reminder window (default 7 days, set in Accounting Settings).
+        - Shows period name, days remaining, and close date.
+        - Pre-close checklist (2 items, fetched from the period checklist API):
+            ✓ No draft journal entries — green checkmark when count = 0; otherwise shows count with link to Journal.
+            ✓ All reconciliations closed — green checkmark when count = 0; otherwise shows count with link to Reconciliations.
+        - Progress shown as "X of 2 complete". Clicking a failing item navigates directly to the blocking page.
+
+  3. Financial Position (6 KPI cards, live data)
+     Each card has a left-border color: green = healthy/zero-balance, amber = needs attention, slate = neutral.
+     - Cash on Hand     — account 1000 (physical cash). Links to Cash Reconciliation.
+     - Bank Balance     — sum across all bank accounts (account 1010). Links to Bank Accounts.
+     - Accounts Receivable — total outstanding customer balances. Links to AR Aging (?type=ar).
+                            4th line: amber "GHS X overdue 61+ days" when any AR aged 61+; green "No overdue balances" when all current.
+     - Accounts Payable    — total owed to suppliers. Links to AP Aging (?type=ap).
+                            4th line: amber "GHS X overdue 61+ days" or green "All payables current".
+     - Inventory Value  — ledger inventory at weighted average cost. Links to Inventory Valuation.
+     - VAT Payable      — output VAT less input VAT. Links to VAT Filings.
+     All six cards are equal height regardless of which have overdue notes.
+     "Full reports →" link (top-right of section) → /admin/accounting/reports.
+
+  4. Recent Activity feed
+     - Shows the last 5 journal entries sorted by date descending.
+     - Each row: date · memo (or source type) · POSTED/DRAFT/VOID status badge · entry amount.
+     - POSTED = green badge, DRAFT = amber badge, VOID = muted badge.
+     - Click any row → /admin/accounting/journal.
+     - "View all →" link at top-right of section.
+     - Section is hidden entirely when no journal entries exist.
+
+  5. Module groups (navigation tiles, each is a full-card link)
+     Grouped into 5 sections:
+
+     Transactions & Ledger (4 tiles):
+       Journal Entries, Chart of Accounts, Posting Rules, Tax Codes.
+
+     Reconciliation & Banking (4 tiles):
+       Bank Reconciliation — shows amber "N pending" badge when draft or in-progress reconciliations exist.
+       Cash Reconciliation, Reconcile Totals, Bank Accounts.
+
+     Receivables, Payables & Inventory (3 tiles):
+       AR Aging, AP Aging, Inventory Valuation.
+
+     Reports & Compliance (3 tiles):
+       Financial Reports, Profit & Loss, VAT Filings.
+
+     Administration (5 tiles/actions):
+       Fiscal Periods, Data Integrity, Owner Equity (dialog), Opening Retained Earnings (dialog), Settings.
+
+  6. Owner Equity dialog (Administration section)
+     - "Record contribution" opens an in-page dialog. Does not navigate away.
+     - Use this for new money the owner is putting into the business after go-live.
+     - Fields: Deposit to (Cash / Bank account selector), Amount, Notes (optional).
+     - If Bank is selected: a second dropdown lists bank accounts by name + masked number.
+     - On save: posts a balanced journal entry — Debit Cash (1000) or Bank (1010), Credit Owner Equity (3000).
+     - Validation: amount must be a positive number; bank account required when source = Bank.
+
+  7. Opening Retained Earnings dialog (Administration section)
+     - "Set opening balance" opens an in-page dialog. After first use, the action changes to "View setup".
+     - Use this once at go-live when the business already has retained earnings from before this app was adopted.
+     - Function: reclassifies part of Opening Balance Equity into Retained Earnings so the balance sheet reflects pre-app accumulated profit correctly.
+     - Entry posted: Debit Opening Balance Equity (3900), Credit Retained Earnings (3100).
+     - Fields before setup: Effective date, Retained earnings amount, Notes (optional).
+     - Validation and controls:
+         amount must be a positive number;
+         entry date cannot fall in a closed fiscal period;
+         setup is locked after first successful save.
+     - After setup:
+         dialog shows configured amount, effective date, notes, and journal entry id;
+         "Open journal entry" jumps directly to the posted journal;
+         corrections should be handled with a controlled journal adjustment, not by rerunning the setup.
+
+Day-start workflow:
+  1) Check Integrity banner — resolve any listed issues before starting operations.
+  2) Check Period close banner — complete checklist items if period is ending soon.
+  3) Review Financial Position — verify Cash on Hand and Bank Balance match your expectation.
+  4) Review Recent Activity — spot any unexpected DRAFT entries that need posting or approval.
+
+Test strips:
+  - Integrity banner: create a draft journal entry → banner should appear with count. Post the entry → banner clears.
+  - Period close checklist: ensure a fiscal period ends within the reminder window → banner appears. Verify checklist reflects accurate draft-entry and open-reconciliation counts.
+  - Financial Position — AR overdue: create a customer order with a balance dated 62+ days ago → AR card shows amber "GHS X overdue 61+ days" line.
+  - Financial Position — card heights: all 6 KPI cards render at equal height regardless of overdue note content.
+  - Recent Activity: post a new journal entry → it appears as the first row in the feed with a POSTED badge and correct amount.
+  - Bank Reconciliation badge: create a draft reconciliation → "N pending" badge appears on the Bank Reconciliation tile.
+  - Owner Equity: open dialog, enter a valid amount with source = Bank but no bank selected → error toast. Select a bank, submit → success toast and dialog closes; a new journal entry should appear in Recent Activity.
+  - Opening Retained Earnings: open dialog, leave amount blank or enter 0 → validation should block save. Enter a valid amount and date in an open period, submit → success toast, dialog closes, and the action changes from "Set opening balance" to "View setup".
+  - Opening Retained Earnings lock: reopen the dialog after successful setup → configured amount/date/journal id are shown and the one-time setup cannot be submitted again from the page.
+  - Fiscal period baseline: on a fresh install with no periods, the system auto-creates one OPEN period for the current calendar year on first load of any accounting page.
+
+## Health Check & Operations
+- Pages: /admin/health, /admin/health/incidents
+- What it is: The accounting and operations exception board. Use it to confirm that ledger totals, posting completeness, stock movements, payment allocations, and POD compliance are aligned before you trust dashboard or report totals.
+- When to use it:
+  - Start of day, before finance review or dispatch follow-up.
+  - After bulk imports, reconciliation work, backfills, or accounting fixes.
+  - Before period close, audit export, or management reporting.
+- Data-source rule:
+  - /admin/health is the summary-and-triage page. It shows counts, mismatch amounts, action links, and repair tools.
+  - /admin/accounting/integrity is the drilldown page for accounting-specific diagnosis.
+  - /admin/health/incidents is the response log and handoff trail for tracked health incidents.
+
+Page walkthrough - top to bottom
+
+1) Header
+   - Title: `Health Check`.
+   - Subtitle links to `/admin/accounting/integrity` for deeper accounting-only review.
+
+2) Health Operations panel
+   - This is the action layer at the top of the page.
+   - It includes the triage queue, runbook-by-signal view, export actions, alert controls, and incident shortcuts.
+   - Treat this panel as the place to decide what to work first, not as the final evidence table.
+
+3) Triage queue
+   - Each row is a direct operational exception with an `Open queue` link.
+   - `Ledger mismatches` shows a count of failing ledger checks, not a transaction count.
+   - The ledger check count is built from these checks:
+     - AR ledger vs customer balances
+     - Inventory ledger vs stock valuation
+     - AP ledger vs outstanding purchases
+     - Trial balance out of balance
+   - Queue routing:
+     - `Ledger mismatches` -> `#ledger-integrity`
+     - `Missing postings` -> `#ledger-readiness`
+     - `Stock mismatches` -> `#stock-movement-mismatches`
+     - `Order balance mismatches` -> `#order-balance-mismatches`
+     - `Payment mismatches` -> `#payment-mismatches`
+     - `Legacy auto-apply` -> `#legacy-auto-apply`
+     - `POD compliance alert` -> `#pod-compliance`
+
+4) Runbook by signal
+   - These cards group related issues by theme and each card has an `Open signal view` link.
+   - `Posting + ledger` shows combined open issue count across failing ledger checks plus missing posting buckets.
+   - Signal routing:
+     - `Posting + ledger` -> `#ledger-integrity`
+     - `Stock integrity` -> `#stock-movement-mismatches`
+     - `Payments + balances` -> `#data-quality`
+     - `POD compliance` -> `#pod-compliance`
+
+5) Severity banners
+   - Warning or error banners summarize the highest-severity active problems near the top of the page.
+   - Use these as escalation signals when deciding same-day response priority.
+
+6) Ledger integrity
+   - Anchor: `#ledger-integrity`
+   - This section compares ledger balances against operational truth for AR, inventory, AP, and trial-balance balance.
+   - A warning state here means the GL cannot be trusted at face value until the mismatch is explained or repaired.
+
+7) Ledger readiness
+   - Anchor: `#ledger-readiness`
+   - This shows posting completeness by source type, including orders, payments, expenses, purchases, supplier payments, credit payouts, and settlements.
+   - Use it to confirm that real-world activity has actually reached the ledger.
+
+8) Recent posting failures
+   - Lists the most recent failed or skipped posting events from the audit trail.
+   - Review this table before doing manual backfills so you know whether the issue is current or historical.
+
+9) Data quality
+   - Anchor: `#data-quality`
+   - This section summarizes mismatches between denormalized order fields and underlying payment/order math.
+   - `#payment-mismatches`: order `amountPaid` differs from summed linked payments.
+   - `#order-balance-mismatches`: order `balance` differs from recalculated outstanding balance.
+   - For AP review, rely on the page totals: the app normalizes liability signs correctly, so the AP mismatch amount on the page is the correct reference value.
+
+10) Operational checks
+   - Includes stock movement mismatches, negative stock, and legacy auto-apply checks.
+   - Use these to separate pure accounting drift from inventory or allocation defects.
+
+11) POD compliance
+   - Anchor: `#pod-compliance`
+   - Shows recent proof-of-delivery completion health for dispatched orders over the rolling alert window.
+   - Use this before following up on settlement, dispatch, or delivery-control issues.
+
+12) Orders and financial summary
+   - This is the roll-up area that gives context on order counts, totals, and operational exposure.
+   - Read it after triage so you can judge how material the open issues are.
+
+13) Detail tables
+   - `#stock-movement-mismatches`: products where current stock does not equal summed inventory movement delta.
+   - `#negative-stock`: products with movement-derived stock below zero.
+   - `#legacy-auto-apply`: old auto-apply payment artifacts that need review or cleanup.
+
+14) Health incidents
+   - Page: `/admin/health/incidents`
+   - Use this when an issue needs ownership, notes, split/merge handling, or shift handoff.
+   - This is the audit-friendly trail for incident response, not the main diagnostics page.
+
+How to use the page well
+- Start with the top panel and banners to decide severity.
+- Open the linked section instead of scanning the whole page manually.
+- Confirm whether the issue is a count problem, an amount problem, or a posting-completeness problem.
+- Fix source data first where possible, then use backfill/repair actions only after you understand the cause.
+- Recheck the section after each fix so you confirm the mismatch actually clears.
+
+Test strip
+- Load `/admin/health` and confirm the page title is `Health Check`.
+- Confirm the Health Operations panel appears above the severity banners and summary sections.
+- In the triage queue, verify `Ledger mismatches` shows a check-based label such as `2 checks`, not only a bare number.
+- In Runbook by signal, verify `Posting + ledger` shows an issue-based label such as `2 issues open`.
+- Click `Open queue` on `Ledger mismatches` and confirm the page scrolls to `#ledger-integrity`.
+- Click `Open queue` on `Missing postings` and confirm the page scrolls to `#ledger-readiness`.
+- Click `Open queue` on `Payment mismatches` and confirm the page scrolls to `#payment-mismatches`.
+- Click `Open queue` on `Order balance mismatches` and confirm the page scrolls to `#order-balance-mismatches`.
+- Click `Open signal view` on `Posting + ledger` and confirm the page scrolls to `#ledger-integrity`.
+- Click `Open signal view` on `Payments + balances` and confirm the page scrolls to `#data-quality`.
+- Confirm the data-quality cards explain whether the mismatch is in payments, balances, or both.
+- Confirm the AP mismatch amount on the page matches the liability-normalized calculation used by the app, not a raw debit-minus-credit interpretation.
+- If you need regression coverage, use `e2e/admin-health.spec.js`; it already checks anchor presence and link-to-section behavior for the health ops panel.
 
 ## Accounting — Accounts
 - Page: /admin/accounting/accounts
@@ -398,133 +1216,195 @@ Inventory Planning — Reports
 
 ## Accounting — Journal
 - Page: /admin/accounting/journal
-- What it is: Book of record for posted, draft, and void entries.
-- Top-to-bottom walkthrough:
-  1) Header and open period context:
-     - Shows page title and current open fiscal period.
-  2) Export/actions strip:
-     - `Export CSV (filtered)`, `Export PDF (filtered)`, `Export audit pack`, `Export audit pack PDF`.
-     - `Show manual entry` toggles manual entry forms.
-  3) Journal policy summary card:
-     - Shows effective journal policy currently in force:
-       - recent-window days,
-       - manual P&L allow/block state,
-       - archive default months,
-       - archive cron dry-run/live mode.
-  4) Quick tour + draft queue strips:
-     - Quick tour explains review flow and keyboard shortcuts.
-     - Draft queue shows draft count, oldest draft age/memo, and `Approve oldest`.
-  5) Scope summary row:
-     - Shows current scope/status/source/archive and entry counts for active query.
-  6) Primary filter row:
-     - Search box (`Search memo/source`) is debounced and server-side.
-     - Status and source selectors.
-     - `Out-of-balance only`.
-     - `Include archive`.
-     - Server sort toggles: `Date`, `Status`, `Amount`.
-  7) Advanced filter panel:
-     - Link/batch search, account text search, account dropdown, account drill chips.
-     - Source chips with per-source counts.
-     - Period/date controls.
-     - Exception toggles: `Missing source ref`, `Large amount`, `Stale drafts 7d+`.
-     - `Largest variance first`.
-     - `Clear filters`.
-  8) Saved view + work mode controls:
-     - Save/rename/remove views.
-     - Default view, auto-restore last view.
-     - Row density (`Comfortable`/`Compact`).
-     - `Review mode` for focused action columns.
-  9) Archive controls and timeline:
-     - Admin can run `Dry run archive`, `Run archive`, `Undo last batch` (5-minute window), and export archive run CSV.
-     - `Open archive logs` deep-links to Audit page with journal archive records.
-  10) Bulk approval controls:
-      - `Approve selected`.
-      - `Select drafts across pages` (with safety cap warning when result set is large).
-  11) Quick presets:
-      - `Today posted`, `Draft only`, `Payments today`.
-  12) Metrics and legends:
-      - Entry/status counts plus debit/credit totals for current result set.
-      - Plain-English status/source legend.
-  13) Table and row actions:
-      - Columns include Date, Memo, Source, Status, Balance, Approved By, totals, Actions.
-      - Draft rows show select checkbox and approve action.
-      - Posted/void rows show plain-English non-action reason.
-      - `View lines` expands journal lines and balance-after diagnostics.
-      - `Copy link` gives entry permalink; source badge links to source page.
-  14) Pagination and keyboard workflow:
-      - `First`, `Prev`, `Next`, `Last`, and page `Go`.
-      - Keyboard: `J/K`, `Shift+J/K`, `Enter`, `A`, `Home/End`, `G/Shift+G`.
+- What it is: The journal review and entry workbench for posted, draft, void, and archived GL entries. This page is used for search, review, posting, export, archive operations, and manual draft creation.
+- Roles and permissions:
+  - `ADMIN` and `ACCOUNTANT` can open and review the page.
+  - Roles with `journal.post` can post drafts from the page. In the current setup that includes `ADMIN` and `ACCOUNTANT`.
+  - Manual entry creation is admin-facing workflow.
+  - Archive controls are admin-only.
 
-- Step-by-step testing script (with expected results):
+- Top-to-bottom walkthrough:
+  1) Header and open-period context:
+     - Shows the page title, short description, and current open fiscal period when one exists.
+
+  2) Export/action strip:
+     - `Export CSV (filtered)`
+     - `Export PDF (filtered)`
+     - `Export audit pack`
+     - `Export audit pack PDF`
+     - `Show manual entry` / `Hide manual entry`
+     - Filtered exports now use the full filtered scope, not only the visible page.
+
+  3) Journal policy summary card:
+     - Summarizes the effective runtime policy from accounting settings.
+     - Shows:
+       - recent default window,
+       - whether manual P&L accounts are allowed,
+       - archive default months,
+       - archive cron dry-run/live mode,
+       - large-amount anomaly threshold.
+
+  4) Manual entry cards (shown only when `Show manual entry` is enabled):
+     - `Quick manual entry`
+       - Single-amount draft entry flow.
+       - Requires date, reason, category, amount, debit account, and credit account.
+       - Supports exception note and optional prior-period reference.
+       - Prevents same-account debit/credit and zero-amount saves.
+     - `Full journal entry`
+       - Multi-line draft entry flow.
+       - Supports account, debit, credit, optional tax code, and description per line.
+       - Shows running debit/credit totals and blocks unbalanced entries.
+       - Includes helpers like VAT sale template.
+     - Manual entries save as drafts first and must be posted afterward.
+     - When policy blocks manual P&L entry, only balance-sheet accounts are available. When policy allows it, Income and Expense accounts also appear.
+
+  5) Review helper strips:
+     - Quick tour/help strip explains shortcuts and review flow.
+     - Draft queue strip shows draft count, oldest draft age/memo, and helper actions such as `Approve oldest`.
+
+  6) Full-scope summary tiles:
+     - Tiles show `Entries`, `Posted`, `Draft`, `Void`, `Debits`, and `Credits`.
+     - These values reflect the full active scope across pages, not just the current page.
+
+  7) Sticky filter bar:
+     - Debounced server-side search: `Search memo/source`
+     - Sort controls: `Date`, `Status`, `Amount`
+     - Active-filter summary chips
+     - `Advanced filters`
+     - `Reset`
+     - The table stays in place when filters open; the old inline push-down behavior is no longer used.
+
+  8) Advanced filters drawer:
+     - Scope controls:
+       - period presets,
+       - custom `From` / `To`,
+       - include archive.
+     - Review filters:
+       - status,
+       - source type,
+       - batch/link ID,
+       - account code/name search,
+       - specific account dropdown,
+       - account drill chips (`1100`, `2000`, `1200`, `1000`, `2300`),
+       - debit/credit direction.
+     - Exception and review toggles:
+       - `Out-of-balance only`
+       - `Largest variance first`
+       - `Missing source ref`
+       - `Large amount`
+       - `Stale drafts 7d+`
+     - Saved views:
+       - save,
+       - rename,
+       - remove,
+       - default view,
+       - auto-restore last view.
+     - Work mode:
+       - row density,
+       - review mode.
+     - Quick presets:
+       - `Today posted`
+       - `Draft only`
+       - `Payments today`
+     - Archive tools:
+       - `Dry run archive`
+       - `Run archive`
+       - `Undo last batch` within the recovery window
+       - archive run CSV export
+       - archive timeline/status
+       - `Open archive logs`
+     - Bulk posting tools:
+       - `Approve selected`
+       - `Select drafts across pages`
+
+  9) Warning banner behavior:
+     - If the scoped summary query fails, the page warns that the summary tiles and exception counts are temporarily page-only.
+     - If the balance-scope query fails, the page warns that `Balance after` values are temporarily page-only.
+     - Each warning path exposes a retry button.
+
+  10) Journal table:
+      - Title reflects the active scope.
+      - Rows show date, memo, source, status, totals, approval state, and actions.
+      - Source badges link to related records where available.
+      - Draft rows support selection and posting actions.
+      - Posted and void rows show non-action messaging instead of unusable approval controls.
+      - `View lines` expands line-level details.
+      - AR balance-after is shown only on the AR line, not on every payment line.
+      - Running balance diagnostics use accounting scope only (period/date/archive), not review-only filters such as source search or anomaly toggles.
+      - Missing source reference is treated as the high-severity anomaly condition for posted non-manual entries.
+
+  11) Pagination and navigation:
+      - Bottom controls show current row window, total rows, page-size selector, and direct page jump.
+      - Keyboard review helpers include `J/K`, `Shift+J/K`, `Enter`, `A`, `Home/End`, and `G/Shift+G`.
+
+- Key behavior changes now in place:
+  - Summary counts, exception counts, and source counts are full-scope.
+  - `Largest variance first` is server-side and works across pages.
+  - Filtered exports fetch full scope before generating output.
+  - Posted non-manual entries require source linkage server-side to reduce missing-reference anomalies.
+  - Archive status and controls are grouped together in the advanced drawer.
+
+- Updated manual testing script:
   1) Open `/admin/accounting/journal`.
-     - Expected: page loads with header, policy summary, filters, metrics, and table rows.
-  2) Validate policy summary card.
-     - Expected: 4 policy lines appear and read in plain English.
-  3) Search behavior (normal query).
-     - Action: type a short term in search and pause.
-     - Expected: brief loading indicator, then results update.
-  4) Search guard (long query).
-     - Action: enter text longer than 120 characters.
-     - Expected: sticky error banner appears with clear message and `Retry`.
-  5) Retry error flow.
-     - Action: correct query and click `Retry`.
-     - Expected: banner clears and table refreshes.
-  6) Sorting checks.
-     - Action: toggle `Date`, `Status`, `Amount`.
-     - Expected: row order updates; active sort direction indicator updates.
-  7) Status business order check.
-     - Action: sort by status ascending.
-     - Expected: rows grouped in business order `DRAFT`, then `POSTED`, then `VOID`.
-  8) Out-of-balance filter check.
-     - Action: toggle `Out-of-balance only` when count is zero.
-     - Expected: empty state appears saying no out-of-balance entries for current filters.
-  9) Advanced filter checks.
-     - Action: apply account/date/source filters and exception toggles.
-     - Expected: result set narrows correctly and URL reflects filter state.
-  10) Saved view round-trip.
-      - Action: save a view with advanced toggles/sort, reset, then re-apply.
-      - Expected: all saved settings restore (including sort, review mode, density, exception toggles).
-  11) Pagination controls.
-      - Action: use `First/Prev/Next/Last` and page `Go`.
-      - Expected: page moves within bounds and row window/count text stays correct.
-  12) Draft selection (page scope).
-      - Action: set `Draft only`, tick draft checkbox(es).
-      - Expected: sticky selection bar shows selected count and enables bulk approve.
-  13) Draft selection (cross-page).
+     - Expected: header, export strip, policy summary, summary tiles, sticky filter bar, and table render successfully.
+  2) Validate policy summary.
+     - Expected: recent window, manual P&L rule, archive months, cron mode, and anomaly threshold are shown.
+  3) Search behavior.
+     - Action: enter a short memo/source term and pause.
+     - Expected: table refreshes after debounce and the URL query updates.
+  4) Sort behavior.
+     - Action: toggle `Date`, `Status`, and `Amount`.
+     - Expected: row order and active direction indicator update correctly.
+  5) Advanced drawer behavior.
+     - Action: click `Advanced filters`.
+     - Expected: drawer opens from the right without pushing the table down.
+  6) Account filter tools.
+     - Action: use account text search, then the account dropdown, then a drill chip such as `1100`.
+     - Expected: the result set narrows correctly and selected account state is obvious.
+  7) Exception filters.
+     - Action: toggle `Out-of-balance only`, `Large amount`, `Missing source ref`, and `Stale drafts 7d+`.
+     - Expected: rows narrow correctly and the count labels reflect the active full scope.
+  8) Largest variance ordering.
+     - Action: click `Largest variance first`.
+     - Expected: highest-variance out-of-balance entries move to the top even if they were previously on later pages.
+  9) Saved view round-trip.
+     - Action: save a non-default filter set, reset, then re-apply the saved view.
+     - Expected: filters, sort, density, review mode, and exception toggles are restored.
+  10) Draft posting flow.
+      - Action: switch to `Draft only`, select draft rows, and post them.
+      - Expected: posted count refreshes, draft rows leave the `Draft only` view, and selection clears.
+  11) Cross-page draft selection.
       - Action: click `Select drafts across pages`.
-      - Expected: selected count reflects cross-page IDs; if capped, warning text is shown.
-  14) Bulk approve dialog.
-      - Action: click `Approve selected`, confirm.
-      - Expected: selected drafts post successfully, counts refresh, selection clears.
-  15) Single approve flow.
-      - Action: on a draft row click `Approve`, then `Approve + next draft` where applicable.
-      - Expected: current draft posts and next draft opens.
-  16) Non-draft action messaging.
-      - Action: inspect posted/void rows.
-      - Expected: action column shows plain-English non-action reason (not selectable).
-  17) Archive dry run and run.
-      - Action: run dry run, then run archive.
-      - Expected: success toasts, candidate/archived counts, and timeline rows update.
-  18) Undo archive window.
-      - Action: click `Undo last batch` within 5 minutes.
-      - Expected: restore count returned; timeline updates with undo record.
-  19) Archive log deep-link.
-      - Action: click `Open archive logs`.
-      - Expected: audit page opens and shows journal archive actions in the list.
-  20) Unsaved manual form leave guard.
-      - Action: open manual entry, type data, navigate away or refresh.
-      - Expected: browser confirmation warns about unsaved manual journal changes.
-  21) Export checks.
-      - Action: run each export button with active filters.
-      - Expected: files download and match active scope/filters.
+      - Expected: selected count reflects broader draft scope; capped-result warning appears if needed.
+  12) Archive tools.
+      - Action: run `Dry run archive`, then `Run archive`, then `Undo last batch` within the recovery window.
+      - Expected: toasts, counts, and archive timeline update after each action.
+  13) Export behavior.
+      - Action: run each export with a multi-page filtered result set.
+      - Expected: exported output reflects the full filtered scope, not only the visible page.
+  14) Manual entry validation.
+      - Action: open manual entry, try invalid states (same debit/credit, zero amount, unbalanced full entry), then correct them.
+      - Expected: invalid states are blocked with clear validation; valid saves create drafts.
+  15) Unsaved-change guard.
+      - Action: type into manual entry and navigate away or refresh.
+      - Expected: browser warns about unsaved manual journal changes.
+
+- Focused automated test script:
+  - Command:
+    - `cmd /c "cd nora-hospital-supply && npx playwright test e2e/admin-accounting-journal.spec.js --reporter=list"`
+  - Current coverage:
+    - advanced drawer footer remains reachable,
+    - account drill chips render below the account selector,
+    - large-amount filter respects configured threshold,
+    - accountants can see draft posting controls,
+    - AR balance-after uses accounting scope even when filtered to payments,
+    - filtered export performs a full-scope fetch,
+    - `Largest variance first` reorders entries across pages.
 
 - Manual entry policy:
-  - Admin-only.
-  - Requires reason.
-  - Policy can block manual postings to Income/Expense accounts.
-  - Effective behavior follows app settings (`accounting.journal.policy`) with environment fallback.
-- Note: Journal account filter supports code/name lookup and account deep-links from line details.
-
+  - Effective behavior follows `accounting.journal.policy`.
+  - Policy controls recent default scope, archive defaults, anomaly threshold, and whether manual P&L accounts are allowed.
+  - Manual adjustments still require a reason and remain draft-first workflow.
 ## Accounting — Aging Hub
 - Page: /admin/accounting/aging
 - What it is: One-screen AR/AP control tower before drilling into detailed aging pages.
@@ -717,19 +1597,57 @@ Inventory Planning — Reports
 ## Accounting — Reports
 - Pages: /admin/accounting/reports, /admin/accounting/reports/pl,
   /admin/accounting/reports/balance-sheet, /admin/accounting/reports/trial-balance,
-  /admin/accounting/reports/vat, /admin/accounting/reports/order-discounts,
-  /admin/accounting/reports/scheduled
-- What it is: Ledger-backed statements and filing support.
-- How to use:
-  - Trial Balance: validate total debits = total credits.
-  - P&L: review income, discounts (contra-revenue), COGS, and expense classes.
-  - Balance Sheet: verify Assets = Liabilities + Equity.
-  - VAT: verify output/input/net and filing pack.
-  - Order Discounts: review discount amount, discount %, creator, and reason by order.
-  - Scheduled Reports: sends secure link emails (not raw financial data in email body).
+  /admin/accounting/reports/vat, /admin/accounting/vat-filings,
+  /admin/accounting/reports/order-discounts, /admin/accounting/reports/scheduled
+- What it is: Hub page for all ledger-backed financial statements and compliance reports.
+
+Hub page layout — top to bottom:
+
+  1. Header
+     - Title: "Reports" with subtitle "Ledger-backed financial statements and compliance reports."
+     - Current period badge (top-right): shows the nearest open fiscal period name with a green "open"
+       label. Skeleton while loading. Shows "No open period" if none exists.
+     - "Export all reports" button: downloads P&L, Balance Sheet, and Trial Balance as a single CSV
+       for the current open period (calls /api/admin/accounting/reports/pack/export).
+       - Disabled while periods are loading or when no open period exists.
+       - Shows a spinner with "Exporting…" text while the download is in progress.
+       - File is named: reporting-pack-{period-name}.csv
+       - For custom date ranges, users must open each report individually.
+     - A footnote below the groups explains the pack export scope.
+
+  2. Report groups (navigation tiles — full card is the link)
+     Each card shows: title, description of what the report contains, italic "when to use" hint.
+
+     Financial Statements (3-col grid):
+       Profit & Loss        — Revenue minus expenses for a date range. → /admin/accounting/reports/pl
+       Balance Sheet        — Assets, liabilities, and equity at a point in time. → /reports/balance-sheet
+       Trial Balance        — All account debits and credits; debits must equal credits. → /reports/trial-balance
+
+     Tax & Compliance (2-col grid):
+       VAT Report           — Output VAT minus input VAT by tax code. → /admin/accounting/reports/vat
+       VAT Filings          — Saved filing snapshots and submission history. → /admin/accounting/vat-filings
+                              Note: routes outside the /reports tree to the dedicated VAT filings page.
+
+     Operational & Automation (2-col grid):
+       Order Discounts      — Discounts by order, staff, and reason code. → /reports/order-discounts
+       Scheduled Reports    — Configure automated recurring exports. → /reports/scheduled
+
+     Note: The Reconciliation card that previously appeared here has been removed — Bank Reconciliation
+     is an operational process, not a report. It remains accessible from the main Accounting hub.
+
 - Email behavior:
   - Report email intentionally sends a link, not report payload.
   - Link should be clickable and opens admin report route with date parameters.
+
+Hub test strips:
+  - Period badge: ensure a fiscal period is OPEN → badge shows period name with green "open" label.
+    Close all periods → badge shows "No open period" and export button is disabled.
+  - Export all reports: with an open period, click "Export all reports" → spinner appears, then a CSV
+    file downloads named reporting-pack-{period-name}.csv. Open file and verify it contains P&L,
+    Balance Sheet, and Trial Balance sections.
+  - Export blocked: when no open period exists, the button is disabled and clicking does nothing.
+  - Navigation: click each report tile → correct sub-page opens. Verify VAT Filings opens
+    /admin/accounting/vat-filings (not a /reports sub-route).
 - P&L page (`/admin/accounting/reports/pl`) top-to-bottom walkthrough:
   1. Header and export actions:
      - Open from Reports hub or direct URL.
@@ -913,51 +1831,59 @@ Inventory Planning — Reports
   - It is idempotent: if a reconciliation for that bank+period already exists, it is left unchanged.
   - Auto-created rows default to `DRAFT` with statement balance `0` until accounting updates statement totals.
   - Cron endpoint: `/api/admin/accounting/reconciliations/auto-create` (authorized via `RECONCILIATION_AUTOCREATE_CRON_SECRET` or `CRON_SECRET`).
-  - Manual trigger (ADMIN/ACCOUNTANT): `POST /api/admin/accounting/reconciliations/auto-create`.
+  - Manual trigger button on page: `Auto-create for current period` (ADMIN/ACCOUNTANT) — calls `POST /api/admin/accounting/reconciliations/auto-create`; returns 409 with info toast if all banks already have a reconciliation for the current period.
 - Top-to-bottom walkthrough (how to use the page):
   1) Header/actions:
      - `Manage bank accounts` opens bank setup and transaction/rule maintenance.
-     - `Refresh now` updates cards/list; `Auto-refresh` can be toggled for active triage sessions.
-     - `Open selected workspace` jumps directly to `/admin/accounting/reconciliations/[id]`.
-  2) Summary cards:
-     - `Total`, `In Progress`, `Closed`, `Statement Total`.
-     - SLA cards: `Open > 7 Days`, `Open > 14 Days`, `Oldest Open Age`.
-     - Cards are computed from current filtered scope, not global totals.
-  3) SLA Notifications panel:
-     - Highlights 14-day breaches and provides quick triage links (`View needs attention`, `Show >14d only`).
-  4) Create reconciliation:
-     - Choose bank + period start/end + statement ending balance.
+     - `Refresh now` updates the stat strip and list; `Auto-refresh` can be toggled for live triage sessions.
+     - `Open selected workspace` jumps directly to `/admin/accounting/reconciliations/[id]` for the keyboard-selected row.
+  2) Compact stat strip:
+     - Single horizontal divided row: `Total | Draft | In progress | Closed | Statement total | Open >7d | Open >14d`.
+     - `Open >7d` and `Open >14d` cells turn amber/red respectively when non-zero; the `Open >14d` sub-label shows the oldest open age in days.
+     - All values reflect the current filtered scope, not global totals.
+     - SLA breach banner: appears below the strip only when `Open >14d > 0` — shows count and provides `View needs attention` / `Show >14d only` shortcuts.
+  3) Create reconciliation card:
+     - Choose bank + period start/end + statement ending balance, then click `Create reconciliation`.
+     - `Auto-create for current period` button in the card header auto-creates a reconciliation for every active bank account covering the current open fiscal period.
      - Duplicate bank-period creation is blocked (server+DB enforcement; duplicate returns `409`).
-  5) History filters:
-     - Bank, assignee, status, search (debounced), period range, sort, page size, pagination mode.
-     - Quick presets: `Open only`, `Closing this month`, `Needs attention (>7d open)`.
-  6) Saved Views & Columns:
-     - Save common scopes and column visibility for repeated workflows.
-     - URL state is shareable/reload-safe (filters, pagination mode, selection, create draft fields).
-  7) History table + bulk toolbar:
-     - Row shows bank, period, status, assignee, open age, last activity, and matched progress.
-     - Bulk actions: `Open selected`, `Close selected` (dry-run checklist), `Export summary CSV`, `Export detailed CSVs`.
-     - Keyboard shortcuts: `/`, `j/k`, `enter`, `?`.
-  8) Selected reconciliation panel:
-     - Shows selected row summary and matched-line preview.
+  4) Filters:
+     - Always visible: Bank, Status, Search (debounced 350 ms), quick presets, `Clear filters`, `Refresh`.
+     - `More filters` toggle reveals: Assignee, Sort, Period start from/end to, Min open age, Rows per page, Pagination mode.
+     - Quick presets: `Open only`, `Closing this month`, `Needs attention (>7d)`.
+  5) Saved Views & Columns:
+     - Save common filter combinations for repeated workflows (up to 30 views, server-persisted with localStorage fallback).
+     - Toggle visible row columns (status, progress, age, lastActivity, balance, assignee).
+     - URL state is shareable/reload-safe.
+  6) History list + bulk toolbar:
+     - Age-based row colouring: subtle amber left border for open >7 days; red left border for open >14 days; age badge shown inline next to the bank name.
+     - Progress column: small inline progress bar replaces the old matched-% text (green=100%, amber=50-99%, red=<50%) with count hint `(matched/total)`.
+     - Bulk actions: `Open selected` (new tabs), `Close selected` (dry-run checklist), `Export summary CSV`, `Export detailed CSVs`.
+     - Keyboard shortcuts: `/` focus search, `j/k` move row selection, `enter` open workspace, `?` show help panel.
+  7) Selected reconciliation panel:
+     - Shows bank, period, balance, status, and matched-line preview for the highlighted row.
      - Actions: `Open matching workspace`, `Export CSV`.
 - Concise testing flow (page acceptance):
   1) Create flow:
-     - create a valid reconciliation and confirm row appears.
-     - attempt duplicate bank+period and confirm block.
-  2) Filter and state persistence:
-     - apply filters/sort/page mode, refresh browser, confirm state restored.
-  3) SLA/triage:
-     - apply `Needs attention` and `>14d` shortcuts, confirm expected rows.
-  4) Keyboard:
+     - create a valid reconciliation and confirm row appears with correct period/bank.
+     - attempt duplicate bank+period → confirm 409 block.
+     - click `Auto-create for current period` when no reconciliation exists → confirm row created; click again → confirm info toast (already exists).
+  2) Stat strip:
+     - seed reconciliations at various ages; confirm In progress/Closed/Draft counts match; confirm Open >7d and >14d turn amber/red.
+     - confirm SLA breach banner appears only when >14d > 0.
+  3) Filter and state persistence:
+     - apply bank/status/search filters, toggle `More filters` and set period range/sort, refresh browser, confirm all state restored via URL.
+  4) Row colouring and progress bars:
+     - seed a reconciliation open for 8d → amber border; 15d → red border.
+     - seed matched stats at 0%, 60%, 100% → confirm bar colours (red, amber, green).
+  5) Keyboard:
      - verify `/`, `j/k`, `enter`, `?`.
-  5) Bulk close safety:
-     - select open rows, open close action, verify dry-run checklist before final close.
-  6) Export traceability:
+  6) Bulk close safety:
+     - select open rows, open close action, verify dry-run checklist summary before confirming.
+  7) Export traceability:
      - run summary/detailed export and confirm entries in Audit Log.
-  7) End-to-end completion:
-     - complete one reconciliation manually and one via auto-match in workspace, then close and verify status/card updates.
-  8) Deterministic test data reset:
+  8) End-to-end completion:
+     - complete one reconciliation manually and one via auto-match in workspace, close both, verify status updates in stat strip.
+  9) Deterministic test data reset:
      - run `pnpm -s db:seed-reconciliations-page` when you need canonical seeded scenarios.
 - Related: Supports period close checklists and integrity checks.
 
@@ -965,162 +1891,427 @@ Inventory Planning — Reports
 - Page: /admin/accounting/reconciliations/[id]
 - What it is:
   - The execution workspace where one reconciliation is completed and then closed.
-  - You match transaction rows to journal lines, use auto-match helpers, review outcome, and finalize.
+  - You match bank transaction rows to journal lines, use auto-match helpers, review outcome, and finalize.
 - Top-to-bottom walkthrough (how to use the page):
   1) Header/actions:
      - `Export CSV` for this reconciliation.
-     - `Close reconciliation` opens checklist dialog; close is explicit (not automatic).
-  2) Close readiness card:
-     - Shows live readiness (`matched` vs `unmatched`) and opens checklist review.
-  3) Bank transactions panel:
-     - Period-scoped rows only (same reconciliation period).
-     - Use filters and optional `Show only unmatched`.
-     - Checkmark indicates `matched=true`.
-     - Unmatched rows now show inline hints (`Rule miss`, `Amount mismatch`, `Date out-of-range`) to speed triage.
-  4) Journal lines panel:
-     - Period-scoped lines only.
-     - Defaults to unmatched-only view; toggle available.
-     - Use tolerance/date/search filters to narrow candidates.
-  5) Suggested matches panel:
-     - Appears when a transaction is selected.
-     - Uses amount/date scoring and rule hints.
-  6) Apply match action bar:
-     - `Save match`, `Use top suggestion`.
-     - Auto-match actions (`exact`, `tolerance`, `rules`) open in-page confirmation modal.
-     - Action bar stays sticky for long lists.
-  7) Last auto-match result panel:
-     - Shows attempted/matched totals and skip reasons.
-     - `Download skip report` exports skipped rows.
-     - `Undo last auto-match batch` reverts the most recent auto-match set.
-  8) Workspace activity:
-     - Server-persisted timeline sourced from audit logs (survives page refresh and user session changes).
-  9) Guardrails:
-     - Matching is blocked for closed reconciliations.
+     - `Close reconciliation` button opens checklist dialog; close is explicit (not automatic).
+  2) Progress/readiness strip:
+     - Slim banner showing Total txns | Matched | Unmatched txns | Unmatched lines + inline progress bar (green=100%, amber=partial, red=low).
+     - Strip border turns green when ready to close, amber while work remains.
+     - When reconciliation is `CLOSED`, strip shows a green "Closed" badge instead of the close button.
+  3) Side-by-side split panels:
+     - Bank transactions (left) and Journal lines (right) display simultaneously — no scrolling between them.
+     - Both panels are independently scrollable and filterable.
+  4) Bank transactions panel (left):
+     - Period-scoped rows only.
+     - Each row shows a DEBIT (red) or CREDIT (green) type pill, date, description, and coloured amount.
+     - Selected row has a blue left border + background tint; matched rows have a green left border.
+     - Unmatched hint badge (amber) appears inline when a triage reason is known: `Rule miss`, `Amount mismatch`, `Date out-of-range`.
+     - Filters: search, min/max amount, date range, `Show only unmatched` toggle.
+  5) Journal lines panel (right):
+     - Period-scoped lines only; defaults to unmatched-only view, toggle available.
+     - Each row shows a DR (red) or CR (green) type pill, date, account code/name, memo, and amount.
+     - Selected row has blue left border + background tint.
+     - Filters: search, min/max amount, date range, tolerance — auto-populates min/max from selected transaction amount.
+  6) Suggested matches panel:
+     - Appears below the split when a transaction is selected.
+     - Shows top 3 candidates scored by amount closeness and date proximity.
+     - Active bank rule hint shown if a rule matched the selected transaction.
+  7) Sticky match action bar (fixed bottom):
+     - Shows selected transaction ↔ selected journal line amounts side-by-side for instant comparison.
+     - Sign mismatch badge appears inline when debit/credit direction likely conflicts.
+     - Actions: `Save match` (primary), `Use top suggestion`, `Clear`.
+     - Auto-match buttons have been moved to the Auto-match tools card.
+  8) Auto-match tools card (collapsible):
+     - Header always shows last-run summary: mode, matched/attempted count, skips count.
+     - Expand to access: `Exact amounts`, `Within tolerance (±N)`, `By bank rules` buttons.
+     - `Undo last batch (N)` button appears after a run; reverts all transactions matched in that session.
+     - `Download skip report` button appears when skips exist.
+     - Expanded result panel shows mode, timing, and top 5 skip reasons.
+     - Each mode opens a confirmation modal with pre-flight counts before running.
+  9) Workspace activity:
+     - Server-persisted timeline (survives refresh/session changes); records auto-match runs and undo events.
+  10) Guardrails:
+     - Matching locked for closed reconciliations (all inputs disabled).
      - API rejects out-of-period and wrong-bank matches.
-     - Sign-mismatch warning appears when selected transaction direction and selected journal sign likely conflict.
-     - Force-close with unmatched items is ADMIN-only and requires a reason (minimum 8 characters).
+     - Force-close with unmatched items is ADMIN-only and requires a written reason (minimum 8 characters).
 - Concise testing flow:
   1) Scope correctness:
-     - confirm rows/lines shown belong only to the reconciliation period.
-  2) Manual match:
-     - select txn + line -> `Save match`, verify checkmark and counters update.
-  3) Auto-match modal:
-     - open each mode and verify modal text + pre-flight counts.
-  4) Auto-match results:
-     - run one mode, verify result panel totals and skip reasons.
-  5) Undo batch:
-     - click `Undo last auto-match batch`, verify matched rows revert.
-     - verify audit timeline records undo event.
-  6) Unmatched toggles:
-     - toggle `Show only unmatched` on both panels and verify row subsets.
-  7) Close checklist:
-     - verify checklist counts and close behavior (normal/force path as applicable).
-     - for unmatched close path, confirm non-admin cannot force-close and admin must enter reason.
+     - confirm bank txn rows and journal lines belong only to the reconciliation period.
+  2) Progress strip:
+     - match one txn and verify matched count increments and progress bar updates.
+     - confirm strip turns green when all txns matched.
+  3) Side-by-side layout:
+     - verify both panels are visible without vertical scrolling on a desktop viewport.
+  4) Row visuals:
+     - confirm DEBIT/CREDIT and DR/CR pills appear with correct colours.
+     - select a row and confirm blue left-border highlight; deselect and confirm it clears.
+     - confirm matched txn shows green left border + ✓.
+  5) Manual match:
+     - select txn + line → `Save match`, verify checkmark, unmatched counter drops, action bar clears.
+  6) Sign mismatch warning:
+     - select a CREDIT txn and a DR journal line → confirm sign mismatch badge in action bar.
+  7) Auto-match modal + tools card:
+     - expand Auto-match tools, run `Exact amounts`, verify modal pre-flight counts then run.
+     - confirm header summary updates to show matched/attempted after run.
+     - click `Undo last batch`, verify txns revert and audit timeline logs the undo.
+     - if skips exist, confirm `Download skip report` exports CSV.
+  8) Close checklist:
+     - verify checklist counts match strip counts.
+     - confirm normal close succeeds when 0 unmatched; force-close path requires ADMIN + reason.
 - Hands-on test script (seeded example):
   1) Open the March 2026 `Primary Operating Account` reconciliation workspace.
-  2) Confirm readiness shows unmatched counts (example baseline: 5 unmatched transactions, 3 unmatched journal lines).
-  3) Match `CURRENT-OPEN TXN 3 (+800)` to `1010 Bank 800` -> click `Save match`.
-  4) Match `CURRENT-OPEN TXN 2 (-650)` to `1010 Bank 650` -> click `Save match`.
-  5) Match `MOMO PAYMENT INV-1001 (+1380)` to `1010 Bank 1380` -> click `Save match`.
-  6) Verify:
-     - each matched transaction shows checkmark (`?`),
-     - unmatched journal line count drops toward zero,
-     - close readiness card updates live,
-     - workspace activity logs the actions.
-  7) Turn on `Show only unmatched` for both panels and verify matched rows are hidden.
-  8) Run `Auto-match exact amounts` and confirm result modal/panel behavior:
-     - if no exact pairs remain, result should report `0 matched` with skip reasons (not silent success).
-  9) Open `Review close checklist` and verify close is blocked while unmatched transactions remain.
-- Related: Matching rules from Bank Accounts can propose candidate matches.
+  2) Confirm progress strip shows unmatched counts (baseline: 5 unmatched txns, 3 unmatched lines).
+  3) Match `CURRENT-OPEN TXN 3 (+800)` to `1010 Bank 800` → `Save match`; confirm strip updates.
+  4) Match `CURRENT-OPEN TXN 2 (-650)` to `1010 Bank 650` → `Save match`.
+  5) Match `MOMO PAYMENT INV-1001 (+1380)` to `1010 Bank 1380` → `Save match`.
+  6) Verify: matched rows show green border + ✓, unmatched line count drops, activity log records events.
+  7) Toggle `Show only unmatched` on both panels; verify matched rows are hidden.
+  8) Expand Auto-match tools → run `Exact amounts`; if no pairs remain, confirm `0 matched` with skip reasons.
+  9) Open close checklist and verify close is blocked while unmatched transactions remain.
+- Related: Matching rules from Bank Accounts propose candidate matches and drive `By bank rules` auto-match.
 
 ## Accounting — Cash Reconciliation
 - Page: /admin/accounting/cash-reconciliations
-- What it is: Two-mode cash control page with strict day-close controls.
+- What it is: Three-step, two-mode cash control page for daily day-close and GL cash verification.
+  Roles: ADMIN and ACCOUNTANT can save reconciliations and deposits. Only ADMIN can run auto-catchup.
+- Page layout overview:
+  The page is structured as three sequential steps followed by a history section.
+  - Page header: title, description, and three global action buttons (Export CSV, Print Report,
+    Deposit Cash to Bank). The deposit button is disabled until the selected day is reconciled in
+    Operational mode.
+  - Step 1: Filter bar — mode, cash account, scope, as-of date.
+  - Alert banners: appear between Step 1 and the two-column workspace when conditions require attention.
+  - Two-column workspace (Step 2 left, Step 3 right on large screens, stacked on mobile):
+    - Left column: expected balance summary, operational source breakdown, till calculator (all
+      conditional on mode and data).
+    - Right column: the record cash count form.
+  - Bottom: Reconciliation history — a single consolidated card with stats badges, quick-preset
+    buttons, a collapsible filter bar, a sortable history table, and pagination.
+
 - Top-to-bottom walkthrough (how to use the page):
-  1. Date, mode, and scope controls:
-     - Choose `As-of date` and preset (`Today`, `Yesterday`, `Custom`).
-     - Select mode:
-       - `Operational`: reconciles day net movement.
-       - `Ledger`: reconciles GL cash balance as-of date.
-     - In `Operational`, choose scope (`All` or `OTC`).
-  2. Risk banners and diagnostics:
-     - Negative cash diagnostics show first negative day and investigation links to Journal.
-     - Unreconciled-day banner shows missing operational days and supports:
-       - jump to oldest missing day,
-       - open specific day,
-       - auto-catchup for verified zero-variance days only.
-     - Reconciled-day lock panel requires explicit override + reason for resave.
-  3. Operational source breakdown and summary:
-     - Operational mode shows per-source inflow/outflow/net.
-     - Summary cards show expected value, counted value, and variance preview.
-  4. Till calculator:
-     - Optional helper to compute counted day net and till-vs-ledger variance.
-  5. Record cash count:
-     - Enter counted amount.
-     - If variance is non-zero, variance reason and explanation are required.
-     - Complete checklist before save.
-     - Export print/CSV for selected day reconciliation pack.
-  6. Deposit cash flow:
-     - `Deposit cash to bank` opens transfer dialog.
-     - Deposit remains blocked until selected day is reconciled in operational mode.
-  7. History overview (enhanced):
-     - KPI cards: rows in page, non-zero variance count, latest variance, active filter scope.
-     - Quick presets:
-       - `Today non-zero`
-       - `This month all`
-       - `All non-zero`
-  8. Recent reconciliations (enhanced):
-     - History filters: range, from/to dates, variance filter, rows/page.
-     - Saved history filters: save/apply/delete per cash account.
-     - `Export history CSV` for current filtered page.
-     - Row-level day detail drilldown remains available via `View day details`.
+
+  Step 1 — Select date and mode (filter bar):
+  - Reconciliation mode:
+    - `Operational (day cash-up)`: reconciles the net cash movement (cash in minus cash out) for
+      the selected day. Default and most common for daily cash-up.
+    - `Ledger (GL as-of)`: reconciles the cumulative GL cash balance (account 1000) as of the
+      selected date end-of-day. Use for period-end or spot-check against the books.
+  - Cash account: select which cash ledger account to reconcile (defaults to account 1000).
+    Multiple cash accounts are supported if configured.
+  - Operational scope (Operational mode only):
+    - `All cash movements`: includes all cash journal lines (walk-in OTC, online orders, account
+      collections, manual entries).
+    - `OTC only`: filters to walk-in counter transactions only. Use when the cashier manages a
+      separate till for counter sales.
+  - As-of date: type a date or use the `Today` / `Yesterday` / `Custom` preset buttons. The preset
+    buttons update the date field and also detect when the field is manually changed back to today
+    or yesterday to keep the active preset highlighted correctly.
+  - A mode description line appears below the filter bar confirming which reconciliation logic is
+    active for the current mode selection.
+
+  Alert banners (appear as needed between Step 1 and the workspace):
+  - Negative GL balance (Ledger mode only, red card): shown when GL account 1000 has a negative
+    cumulative balance as of the selected date. Displays the first day the balance went negative,
+    the largest net cash-out day, and two action links to open the Journal filtered to the issue
+    window and to the selected day. Investigate and correct postings before saving a reconciliation.
+  - Unreconciled days (Operational mode, amber card): shown when one or more days with cash
+    movements have no reconciliation record up to the as-of date. Shows oldest and newest missing
+    day, sample dates, and two actions:
+    - `Jump to oldest missing day`: sets the as-of date to the oldest unreconciled day.
+    - `Run auto-catchup (verified zero variance)`: opens the auto-catchup dialog to bulk-close
+      missing days with zero variance (ADMIN only, requires physical verification note).
+    - `View all missing days`: expandable list with per-day `Open day` buttons.
+  - Unreconciled days (Ledger mode, amber card): informational only — tells the user to switch to
+    Operational mode to close the missing day records before running a ledger reconciliation.
+  - Day already reconciled (sky/blue card): shown when the as-of date already has one or more
+    reconciliation records. Displays the record count, latest reconciler, and latest variance.
+    - To resave the day: check `Allow override (resave reconciled day)`, enter a reason of at least
+      10 characters, then proceed with the form. Overriding creates an additional record for the
+      same day rather than replacing the existing one.
+
+  Step 2 — Expected balance (left column):
+  - Operational mode shows three summary items: Cash in (day), Cash out (day), and Expected day net
+    (in minus out). The expected day net is the target value the cashier's count should match.
+  - Ledger mode shows only the GL cash balance as-of the selected date.
+  - Both modes always show the "Expected value for reconciliation" item, which is the figure the
+    counted amount will be compared against.
+  - Source breakdown (Operational mode only): a per-source grid showing cash in, cash out, and net
+    for each source type (e.g., Walk-in OTC, Online orders, Account collections, Manual). Net
+    values use signed colour coding: red for negative (net cash out), green for positive (net cash
+    in), no colour for zero.
+  - Till calculator (Operational mode only, optional): enter the opening till float and counted
+    closing till balance. The calculator shows the counted day net (closing minus opening) and the
+    till-vs-ledger day variance. This is a local helper only — it does not pre-fill the count form.
+    Use it when the cashier counts the full till rather than tracking intraday net movement.
+
+  Step 3 — Record cash count (right column):
+  - Counted amount field: enter the physical count figure. For Operational mode this is the counted
+    net movement; for Ledger mode this is the total physical cash in the drawer.
+  - Variance preview: appears as soon as a counted amount is entered. Shows the difference between
+    expected and actual, with direction label (shortage / overage / balanced) and signed colour
+    (red for shortage, green for overage).
+  - Variance reason (appears only when variance is non-zero): required dropdown — Count error,
+    Unrecorded payout, Timing difference, Suspected shrinkage, or Other.
+  - Variance explanation (appears only when variance is non-zero): required free-text field with
+    500-character limit and live character counter.
+  - Notes (appears when variance is zero): optional free-text field for any remarks.
+  - Pre-submission checklist: three checkboxes that must all be ticked before the Save button
+    becomes effective:
+    1. Physical cash count completed.
+    2. Any discrepancy reviewed and validated.
+    3. Notes/reason captured where required.
+  - Save cash reconciliation button: disabled until the counted amount field is non-empty.
+    On success: clears the form, shows a success toast, refreshes the history.
+    On failure: shows an error toast with the server reason.
+  - Deposit reminder: a hint line below the save button shows why the Deposit button in the page
+    header is currently blocked (wrong mode, or day not yet reconciled).
+
+  Page header actions:
+  - Export CSV: exports summary, source breakdown, and reconciliation records for the selected day
+    into a CSV file named `cash-reconciliation-{date}-{mode}.csv`.
+  - Print Report: opens a formatted HTML report in a new browser tab and triggers the print dialog.
+    The report includes the summary table, source breakdown, and reconciliation records for the
+    selected day, with signature lines for preparer and reviewer at the bottom.
+  - Deposit Cash to Bank: opens a dialog to record a cash-to-bank transfer. Only available in
+    Operational mode after the selected day is reconciled.
+    - Select the destination bank account from the configured bank list.
+    - Enter the deposit amount (must be positive).
+    - Optional notes.
+    - On save: posts a journal entry debiting Bank and crediting Cash (account 1000), and shows a
+      success toast.
+
+  Auto-catchup dialog (ADMIN only):
+  - Opened from the unreconciled-days amber banner.
+  - Lists all unreconciled days with individual checkboxes (all pre-selected).
+  - `Select all` and `Deselect all` toggle buttons with a live selected-count display.
+  - Verification checkbox: "I verified each selected day physically and confirmed zero variance."
+    Must be ticked before the run button activates.
+  - Verification note: required free-text, minimum 10 characters, with character counter and
+    below-minimum warning.
+  - Run button: labelled with the selected day count (e.g., "Run auto-catchup (3 days)"). Disabled
+    until all conditions are met. Creates zero-variance records (expected = actual, no journal
+    entry) for each selected day, skipping any already reconciled.
+
+  Reconciliation history (bottom of page):
+  - Card header contains:
+    - Title "Reconciliation history".
+    - Stats badges: total record count, non-zero variance count (amber badge when > 0), latest
+      variance amount (red badge for shortage, green for overage, hidden when zero).
+    - Active filter scope label (e.g., "ALL / ALL VARIANCES").
+    - Quick preset buttons: `Today non-zero`, `This month`, `All non-zero` — each applies a
+      preset combination of range and variance filter and resets to page 1.
+    - `Filters` toggle button: expands / collapses the filter bar. Button becomes filled when
+      the bar is open.
+    - `Export CSV` button: downloads the current page of records as a CSV. The success toast
+      states how many rows were exported out of the total (e.g., "10 of 47 rows — current page").
+  - Collapsible filter bar (inside the card header, visible when Filters is open):
+    - Range: Today, This month, All.
+    - From / To: custom date range (works alongside the range preset).
+    - Variance filter: All or Non-zero only.
+    - Rows per page: 10, 25, 50.
+    - Saved filters: a select dropdown of filters saved to localStorage per cash account.
+      - To save the current filter state: click `Save current`, type a name in the inline input
+        (press Enter or click `Save`, press Escape to cancel), confirm.
+      - To apply a saved filter: choose it from the dropdown.
+      - To delete a saved filter: select it then click `Delete filter`.
+    - `Clear filters` button: resets range to All, clears from/to, sets variance to All.
+  - History table:
+    - Columns: Date / Account, Mode, Expected, Actual, Variance, Journal, By, (expand button).
+    - Date / Account cell: shows date and time (to disambiguate same-day multi-records), account
+      code and name on a second line, and the notes field on a third line in italic if present.
+    - Mode badge: LEDGER (sky) or OPERATIONAL (emerald).
+    - Variance column: signed colour (red for shortage with "(short)" label, green for overage
+      with "(over)" label, no colour for zero).
+    - Journal column: when a journal entry was posted for the variance, shows the first 8
+      characters of the journal entry ID as a clickable link to
+      `/admin/accounting/journal?entryId=...`. Shows dash when no journal entry exists.
+    - By column: the name or email of the user who created the record, or "System".
+    - `Details` / `Hide` expand button: fetches and shows the operational source breakdown for
+      that day inline below the row. Cached after the first fetch.
+  - Pagination: shows page X of Y and total count, with Prev and Next buttons.
+
+- API-level test coverage (vitest — run with `pnpm test:vitest`):
+  The route.vitest.spec.ts for cash-reconciliations covers 14 tests:
+  - Auth guards: rejects null session and insufficient role (non-ADMIN/ACCOUNTANT) with 401/403.
+  - CSRF protection: rejects requests with invalid origin.
+  - Input validation: required fields (actualAmount, countedAt, mode), invalid enum values.
+  - Cash account resolution: returns 404 when no cash account exists and none can be resolved.
+  - Duplicate day handling: returns 409 with DAY_ALREADY_RECONCILED code when saving a day that
+    already has a reconciliation record without the allowReopenOverride flag; accepts override with
+    a reason of at least 10 characters.
+  - Variance validation: rejects saves where variance is non-zero but varianceReason or notes are
+    missing.
+  - Closed period check: returns 400 when the target date falls in a closed accounting period.
+  - Journal entry creation: creates a journal entry only when variance is non-zero; skips when zero.
+  All 14 tests pass. Run:
+  `pnpm test:vitest -- src/app/api/admin/accounting/cash-reconciliations/route.vitest.spec.ts`
+
 - Practical hands-on testing script (seeded data):
+  Setup:
   1. In `nora-hospital-supply/`, seed baseline data:
      - `pnpm -s db:seed-accounting`
      - `pnpm -s db:seed-cash-reconciliation`
-     - Expected result: page loads with cash account, movement data, and reconciliation history.
+     - Expected result: cash account 1000 exists, movement data is present, history has existing
+       reconciliation records to browse.
   2. Open `/admin/accounting/cash-reconciliations`.
-     - Expected result: mode/date controls, summary cards, record form, and recent history are visible.
-  3. Operational reconciliation happy path:
-     - Keep mode `Operational`, set date to today.
-     - Enter counted amount equal to expected day net.
-     - Check all checklist boxes.
-     - Save reconciliation.
-     - Expected result: success toast; selected day appears reconciled; latest record appears in history.
-  4. Variance enforcement:
-     - Change counted amount to create non-zero variance.
-     - Try save without variance reason/notes.
-     - Expected result: save blocked with required-field guidance.
-     - Add reason + notes and save.
-     - Expected result: save succeeds; variance value appears on latest record.
-  5. Reconciled-day lock and override:
-     - Attempt another save for same day without override.
-     - Expected result: blocked as already reconciled.
-     - Enable override and enter reason (>=10 chars), save again.
-     - Expected result: override save succeeds and new record is created for same day.
-  6. Deposit guard:
-     - Before reconciliation, verify `Deposit cash to bank` is blocked.
-     - After reconciliation, open deposit dialog, choose bank, enter amount, save.
-     - Expected result: deposit recorded and reflected after refresh.
-  7. Unreconciled-day catchup:
-     - If unreconciled banner appears, open auto-catchup dialog.
-     - Select days, verify checkbox, enter verification note, run.
-     - Expected result: selected zero-variance days are created or skipped if already reconciled.
-  8. History enhancements validation:
-     - Apply presets (`Today non-zero`, `This month all`, `All non-zero`).
-     - Save current filter as `cash-nonzero`.
-     - Re-apply saved filter and verify state restoration.
-     - Export history CSV.
-     - Expected result: filters apply as expected, saved filter persists, CSV downloads with current page rows.
-  9. Day detail drilldown:
-     - Expand one history row with `View day details`.
-     - Expected result: operational source-level in/out/net appears for that day.
+     - Expected result: page loads showing the Step 1 filter bar, the two-column Step 2/3
+       workspace, and the history card at the bottom. The page header shows Export CSV, Print
+       Report, and Deposit Cash to Bank (disabled initially).
 
-## Accounting — Owner Equity Contributions
-- Page: /admin/accounting
-- What it is: Quick way to record owner equity added to cash/bank.
-- How to use: Open “Record owner equity,” enter amount, select bank/cash account, and save.
-- Related: Posts a balanced journal entry (Debit Cash/Bank, Credit Equity).
+  Test 1 — Page structure and loading state:
+  3. On initial page load, observe that skeleton placeholders animate in the workspace and history
+     table areas while the API call completes.
+     - Expected result: skeletons render then are replaced by real data without layout shift.
+  4. Confirm the filter bar shows: Reconciliation mode (Operational), Cash account (populated
+     with account 1000 or equivalent), Operational scope (All cash movements), and the as-of date
+     set to today with the `Today` preset button highlighted.
+     - Expected result: all controls reflect their default values.
+
+  Test 2 — Operational reconciliation happy path (zero variance):
+  5. Keep mode `Operational`, date `Today`.
+  6. Review Step 2 (left column): note the Expected day net figure.
+  7. In Step 3 (right column), enter the same figure in `Counted day net movement`.
+     - Expected result: variance preview shows "GHS 0.00 (balanced)" with no colour change.
+     - Expected result: variance reason and variance explanation fields do not appear.
+     - Expected result: an optional Notes field appears instead.
+  8. Tick all three checklist boxes.
+  9. Click `Save cash reconciliation`.
+     - Expected result: success toast "Cash reconciliation saved."; form clears; history table
+       refreshes and shows a new row for today with variance GHS 0.00.
+     - Expected result: the sky/blue "already reconciled" banner now appears above the workspace.
+
+  Test 3 — Variance enforcement (non-zero variance):
+  10. Change the counted amount to a value that differs from the expected (e.g., subtract 50).
+      - Expected result: variance preview shows a negative amount in red with "(shortage)".
+      - Expected result: variance reason dropdown and variance explanation field appear (the
+        optional Notes field disappears).
+  11. Tick all three checklist boxes. Click `Save cash reconciliation` without selecting a reason.
+      - Expected result: save is blocked; error toast "Select a variance reason before saving."
+  12. Select `Count error` from the reason dropdown. Click save again without entering notes.
+      - Expected result: save is blocked; error toast "Add a variance explanation before saving."
+  13. Enter a note ("Till was short, recount confirmed same figure"). Click save.
+      - Expected result: save succeeds; history row shows the variance amount in red with "(short)"
+        and a clickable journal entry link in the Journal column.
+
+  Test 4 — Variance colour and direction labels:
+  14. Enter a counted amount greater than expected (e.g., add 100).
+      - Expected result: variance preview shows a positive amount in green with "(overage)".
+  15. Save with reason "Count error" and any note.
+      - Expected result: history row shows the variance in green with "(over)" label.
+
+  Test 5 — Reconciled-day lock and override:
+  16. With today's date still selected (now reconciled), attempt to save again without enabling
+      the override checkbox in the sky banner.
+      - Expected result: error toast "This day is already reconciled. Enable override and provide
+        a reason to resave."
+  17. Tick `Allow override (resave reconciled day)` in the banner. Leave the reason field empty.
+      Click save.
+      - Expected result: save blocked; error toast "Override reason must be at least 10 characters."
+  18. Enter a reason of at least 10 characters. Save.
+      - Expected result: override save succeeds; history now shows two records for the same day.
+
+  Test 6 — Deposit Cash to Bank flow:
+  19. With today reconciled, click `Deposit Cash to Bank` in the page header.
+      - Expected result: deposit dialog opens with bank account selector, amount field, and optional
+        notes field with labelled inputs.
+  20. Select a bank account from the dropdown.
+  21. Enter an amount. Click `Save deposit`.
+      - Expected result: success toast "Cash deposit recorded."; dialog closes; data refreshes.
+  22. Switch to Ledger mode and confirm the Deposit button becomes disabled.
+      - Expected result: button is greyed out; tooltip reads "Switch to Operational mode to record
+        cash deposits". A hint line also appears below the save button in Step 3.
+
+  Test 7 — Till calculator (optional helper):
+  23. Switch back to Operational mode. View the till calculator in the left column.
+  24. Enter an opening till float (e.g., 200) and a counted closing till (e.g., 850).
+      - Expected result: "Counted day net" shows GHS 650.00 (850 - 200).
+      - Expected result: "Till-vs-ledger day variance" shows the difference between GHS 650.00
+        and the expected day net, coloured red if negative or green if positive.
+  25. Confirm the till calculator values do not affect or pre-fill the Step 3 counted amount field.
+
+  Test 8 — Ledger mode and negative balance diagnostics:
+  26. Switch mode to `Ledger (GL as-of)`.
+      - Expected result: the Operational scope dropdown disappears; source breakdown and till
+        calculator disappear from the left column; Step 2 shows only the GL cash balance.
+  27. If the ledger balance is negative, the red negative-balance banner appears above the
+      workspace with the first negative day, the largest net cash-out day, and two investigation
+      links.
+      - Expected result: clicking "Investigate issue window" opens the Journal page filtered to
+        the issue window date range.
+
+  Test 9 — Unreconciled-day auto-catchup (ADMIN):
+  28. Set the as-of date to a past date that has unreconciled days (Operational mode).
+      - Expected result: the amber "unreconciled days" banner shows the count, oldest, newest,
+        and sample days.
+  29. Click `Run auto-catchup (verified zero variance)`.
+      - Expected result: dialog opens with all unreconciled days pre-selected and a counter
+        showing "N of N selected".
+  30. Click `Deselect all`. Confirm counter shows "0 of N selected" and the run button is disabled.
+  31. Click `Select all`. Reselect all.
+  32. Tick the verification checkbox.
+  33. Leave the note blank. Attempt to submit.
+      - Expected result: error toast "Verification note must be at least 10 characters."
+  34. Type a note shorter than 10 characters. Observe the counter shows remaining characters
+      needed in red below the field.
+  35. Enter a valid note (10+ characters). The run button label shows the day count (e.g.,
+      "Run auto-catchup (3 days)"). Click it.
+      - Expected result: success toast "Auto catch-up complete. Created N, skipped 0."; dialog
+        closes; history refreshes; amber banner disappears or count drops.
+
+  Test 10 — History table and filters:
+  36. Scroll to the Reconciliation history card. Confirm the header badges show total count,
+      non-zero variance count (amber if any), and the latest variance badge if non-zero.
+  37. Click the `Filters` button. Confirm the filter bar expands inline inside the card header
+      (not a new card). The button appearance changes to indicate it is active.
+      - Expected result: Range, From, To, Variance filter, Rows per page, and saved-filter
+        controls are all visible inside the card header area.
+  38. Change Variance filter to `Non-zero only`. Confirm the table refreshes to show only rows
+      with non-zero variance. The scope label in the badge row updates accordingly.
+  39. Click `Today non-zero` preset.
+      - Expected result: Range snaps to Today, Variance to Non-zero only, page resets to 1.
+  40. Click `This month`, then `All non-zero`.
+      - Expected result: each preset updates the filter state and refreshes the table.
+  41. Set a custom date range using From and To fields.
+      - Expected result: table refreshes with rows only in that date range.
+  42. Click `Clear filters`.
+      - Expected result: filters reset to All / All; table shows all records.
+  43. With current filters set (e.g., All non-zero), click `Save current`.
+      - Expected result: an inline input appears with placeholder "Filter name…".
+  44. Press Escape.
+      - Expected result: input disappears without saving.
+  45. Click `Save current` again. Type "my-nonzero". Press Enter.
+      - Expected result: toast "History filter saved."; filter appears in the saved-filter
+        dropdown as "my-nonzero"; inline input disappears.
+  46. Change the filter to All / All, then select "my-nonzero" from the dropdown.
+      - Expected result: filters restore to All non-zero and the table refreshes.
+  47. With "my-nonzero" selected, click `Delete filter`.
+      - Expected result: toast "Saved history filter removed."; dropdown no longer contains it.
+
+  Test 11 — History table detail rows and journal links:
+  48. Locate a history row with a non-zero variance (should have a journal entry ID).
+      - Expected result: the Journal column shows the first 8 characters of the entry ID as a
+        blue underlined link.
+  49. Click the journal entry link.
+      - Expected result: navigates to `/admin/accounting/journal?entryId=...`.
+  50. Click `Details` on any history row.
+      - Expected result: an expanded row appears below the row showing operational detail (day,
+        cash in, cash out, day net) and per-source breakdown with signed net colours.
+  51. Click `Hide` to collapse the expanded row.
+      - Expected result: detail row disappears.
+
+  Test 12 — Export and print:
+  52. Click `Export CSV` in the page header.
+      - Expected result: downloads `cash-reconciliation-{date}-{mode}.csv`; toast
+        "Reconciliation CSV exported."
+  53. Click `Export CSV` in the history card header.
+      - Expected result: downloads `cash-reconciliations-history-{date}.csv`; toast states the
+        number of rows exported out of the total (e.g., "10 of 47 rows — current page").
+  54. Click `Print Report` in the page header.
+      - Expected result: a new browser tab opens with a formatted HTML report including the
+        summary table, source breakdown, reconciliation records, and preparer/reviewer signature
+        lines; the browser print dialog appears automatically.
 
 ## Accounting — Fiscal Periods
 - Pages: /admin/accounting/periods, /admin/accounting/periods/[id]/snapshot
@@ -1235,188 +2426,592 @@ Related page
   - Use Settings to manage reopen policy and shared accounting policies used by this page.
 ## Accounting — Data Integrity
 - Pages: /admin/accounting/integrity, /admin/accounting/integrity/export
-- What it is: Consistency checks across AR, inventory, negative stock, and posting readiness.
-- Top-to-bottom walkthrough (what each line/control means):
-  1. Header:
-     - `Data Integrity`: page title for accounting consistency checks.
-     - Subtitle: quick checks to find accounting inconsistencies.
-  2. Filters row:
-     - `As of date`: point-in-time cutoff for all numbers and samples.
-     - `Search issue IDs, refs, notes...`: filters visible sample/failure rows.
-     - `Pinned source`: narrows content to one stream (`all`, `orders`, `payments`, `expenses`, `purchases`, `supplier payments`, `credit payouts`, `settlements`, `posting failures`).
-     - `Show problems only`: hides clean rows and shows warning-focused view.
-  3. Action buttons:
-     - `Use today` (only shown on past date): resets As of date to today.
-     - `Post inventory adjustment`: opens inventory valuation page with current as-of date.
-     - `Sync ledger`: runs posting backfill/sync (ADMIN-only).
-     - `Recalculate`: refreshes all checks using current filters.
-     - `Export CSV`: downloads full integrity report for current as-of date.
-     - `Export missing sample CSV`: downloads currently visible missing-posting sample rows.
-     - `Export failures CSV`: downloads visible recent posting failures.
-     - `Run retry precheck (N)`: validates visible retry targets and flags blocked rows before posting.
-     - `Post all visible (N)`: bulk retry posts visible rows (ADMIN-only, and blocked if safeguards fail).
-     - `Export precheck CSV`: exports latest precheck results.
-     - `Export retry CSV`: exports latest bulk retry results.
-     - `Acknowledge warnings`: opens dialog to save acknowledgement note for current warning set.
-     - `Clear acknowledgement`: removes acknowledgement for current warning signature/as-of.
-  4. Status/info cards:
-     - `Last successful sync`: shows latest sync timestamp and actor.
-     - Stale-date warning card appears when As of date is not today.
-     - `Latest acknowledgement` card shows who acknowledged, when, and note.
-     - Precheck summary card shows total/ready/blocked and optional blocked-only toggle.
-     - Bulk retry result card shows total/posted/skipped.
-  5. Summary KPI cards:
-     - `Warnings triggered`
-     - `Missing postings`
-     - `Recent post failures`
-     - `Focused mode` (`All checks` or `Problems only`)
-  6. `Severity by signal`:
-     - Shows each signal with value and status (`OK` or `Warning`), plus `Open source` link.
-     - Signals: draft entries, AR difference, inventory difference, negative stock, missing postings, recent posting failures.
-  7. Core balances and counts:
-     - `Draft journal entries`
-     - `AR ledger balance`
-     - `Customer balances total`
-     - `AR difference`
-     - `Inventory ledger balance`
-     - `Inventory valuation (stock x cost)`
-     - `Inventory difference`
-     - `Products with negative stock`
-  8. `Ledger readiness`:
-     - Missing-posting counters for `orders`, `payments`, `expenses`, `purchases`, `supplier payments`, `credit payouts`, `settlements`.
-  9. `Aging SLA`:
-     - Summary of visible missing rows grouped as `fresh`, `warning`, `overdue`.
-  10. `Missing postings (sample)`:
-      - Grouped sample rows per source with:
-        - age badge,
-        - linked entity ID,
-        - optional failure hint (especially payments),
-        - row-level `Post now` retry button (when permitted).
-  11. `Recent posting failures`:
-      - Latest posting-failure events with age badge and normalized reason/hint text.
-- AR note: The AR check uses live order totals (all non-cancelled orders, including admin-created orders), so a mismatch usually means a missing posting or stale data. Use Sync ledger first.
-- Related: Settings define thresholds for warnings.
+- What it is: The accounting control-center page for tracing GL vs operational mismatches, posting gaps, draft journals, data-quality issues, and warning signals from one screen.
+- Who can use it:
+  - `ADMIN`
+  - `ACCOUNTANT`
+- Why this page matters:
+  - It is the fastest place to answer three questions:
+    - Is the warning real?
+    - Is the variance coming from GL, operations, or timing?
+    - Can the fix be posted now, or does the source workflow need correction first?
 
-### Practical Validation Script
+Top-to-bottom walkthrough
+
+1) Header and context
+   - `Data Integrity` is the landing page for accounting health checks.
+   - `As of date` makes the page point-in-time. Every total, warning, drilldown, sample row, and export respects this date.
+   - Use a past `As of date` to review close status for an earlier day or period.
+
+2) Filter row
+   - `As of date`: sets the page cutoff.
+   - `Search IDs, refs, notes...`: filters visible missing-posting rows and posting-failure rows.
+   - `Pinned source`: narrows the operational/readiness section to one source stream.
+     - Options: `All sources`, `Orders`, `Payments`, `Expenses`, `Purchases`, `Supplier payments`, `Credit payouts`, `Settlements`, `Posting failures`.
+   - `Show problems only`: hides clean rows in the warning block so reviewers can focus only on triggered items.
+
+3) Action toolbar
+   - `Use today`: appears only when the page is being viewed as of a prior date.
+   - `Post inventory adjustment`: opens inventory valuation with the current `asOf`.
+   - `Recalculate`: refetches the integrity page immediately.
+   - `Sync ledger`: runs the accounting sync/posting refresh. `ADMIN` only.
+   - `Full report CSV`: exports the full integrity snapshot.
+   - `Missing sample CSV`, `Failures CSV`, `Precheck CSV`, `Retry CSV`: export the visible or latest supporting views.
+   - `Run precheck (N)`: validates visible retry targets before posting.
+   - `Post all visible (N)`: bulk retry for visible retry targets. `ADMIN` only.
+   - `Acknowledge warnings`: saves an acknowledgement note for the current warning signature and as-of date.
+   - `Clear acknowledgement`: removes the current acknowledgement.
+
+4) Status banners and context cards
+   - `Last sync`: latest successful sync timestamp and actor.
+   - `Checks loaded`: when the current page data was last fetched.
+   - Stale `As of date` banner: reminds the reviewer they are not looking at today.
+   - `Latest acknowledgement`: shows who acknowledged the current warning set and what note was left.
+   - Precheck result banner: shows `total`, `ready`, `blocked`, plus an optional blocked-only filter.
+   - Bulk retry result banner: shows `total`, `posted`, and `skipped`.
+
+5) Summary KPI cards
+   - `Warnings triggered`
+   - `Missing postings`
+   - `Trial balance delta`
+   - `Data quality issues`
+   - These are quick indicators only. The detailed investigation starts lower on the page.
+
+6) `Severity by signal`
+   - This is the prioritized warning board.
+   - Each signal shows the numeric value, current status (`OK` or `Warning`), and a `Drivers` action.
+   - Signals include:
+     - `Draft entries`
+     - `Trial balance delta`
+     - `AR difference`
+     - `Inventory difference`
+     - `AP difference`
+     - `Revenue difference`
+     - `VAT difference`
+     - `COGS difference`
+     - `Store credit difference`
+     - `Negative stock`
+     - `Missing postings`
+     - `Recent posting failures`
+     - `Duplicate payments`
+     - `Customer overpayments`
+     - `Order balance issues`
+     - `Supplier overpayments`
+   - `Drivers` behavior:
+     - reconciliation signals open the snapshot trace dialog,
+     - trial balance opens the journal in out-of-balance review mode,
+     - operational/data-quality signals jump to the exact section on the page or filtered operational page.
+
+7) `GL vs Operational reconciliation`
+   - This is the main tracing table.
+   - Rows include:
+     - `AR (Receivables)` `1100`
+     - `Inventory` `1200`
+     - `AP (Payables)` `2000`
+     - `Revenue` `4000`
+     - `COGS` `5000`
+     - `VAT Payable` `2100`
+     - `Store Credit` `2200`
+     - negative-balance watch rows for `Cash` and `Bank` when relevant
+   - For each reconciliation row:
+     - `Open GL entries` opens the journal scoped to the control account.
+     - `Open operational ...` opens the operational page used as the source of truth for that row.
+     - `Trace snapshot` opens an in-page dialog showing the exact GL contributors and exact operational contributors used in the current snapshot.
+   - Variance summary text on the row highlights whether the issue is mainly:
+     - operational-backed activity,
+     - order-backed activity,
+     - purchase-backed activity,
+     - or `GL-only/manual` journal activity.
+   - Use this table in the following order:
+     - open `Trace snapshot`,
+     - confirm whether the variance is backed by GL-only/manual lines,
+     - then open the two direct links if the source process itself needs correction.
+
+8) Snapshot trace dialog
+   - Opens from `Trace snapshot` or from `Drivers` on a reconciliation warning.
+   - Header metrics:
+     - `GL ledger`
+     - `Operational`
+     - `Difference`
+   - `Method` panel explains the basis used for that row.
+   - Alert strips call out important trace findings such as:
+     - `GL-only` journal lines included in the ledger side,
+     - operational totals matching the linked subset while the remaining variance is GL-only,
+     - AR operational basis being clamped to zero when settlements exceed receivable basis.
+   - `GL contributors` table:
+     - date,
+     - source,
+     - trace status (`Matches operational` or `GL only`),
+     - reference,
+     - amount.
+   - `Operational contributors` table:
+     - date,
+     - type,
+     - reference,
+     - amount.
+   - Current supported snapshot traces:
+     - `AR`
+     - `Inventory`
+     - `AP`
+     - `Revenue`
+     - `COGS`
+     - `VAT`
+     - `Store credit`
+
+9) `Ledger readiness - missing postings by source`
+   - Counts missing postings for:
+     - `Orders`
+     - `Payments`
+     - `Expenses`
+     - `Purchases`
+     - `Supplier payments`
+     - `Credit payouts`
+     - `Settlements`
+   - Use this area to decide whether the problem is `missing journal work` versus `bad source data` versus `GL-only adjustment`.
+
+10) `Aging SLA`
+   - Summarizes the currently visible missing-posting sample by age:
+     - `fresh`
+     - `warning`
+     - `overdue`
+
+11) `Draft journal entries - age breakdown`
+   - Shows the count of fresh, warning, old, and critical draft entries.
+   - Includes links to oldest drafts for cleanup.
+
+12) `Data quality`
+   - Highlights duplicate payments, customer overpayments, order balance inconsistencies, and supplier overpayments.
+   - These are operational issues that can create downstream accounting noise even when posting logic is correct.
+
+13) `Missing postings - sample`
+   - Lists traceable sample rows by source.
+   - Each row can show:
+     - age badge,
+     - linked entity ID,
+     - optional posting-failure hint,
+     - row-level `Post now` when the user has permission.
+
+14) `Recent posting failures`
+   - Lists the most recent posting failure events with normalized reason/hint text.
+   - Use this section before manual journal intervention; many integrity issues are blocked posting failures, not ledger math defects.
+
+- Operating rule:
+  - Start with `Severity by signal`.
+  - Move to the matching row in `GL vs Operational reconciliation`.
+  - Open `Trace snapshot`.
+  - Decide whether the issue is `GL-only/manual`, `missing posting`, or `operational source`.
+  - Only then post corrections or adjust source records.
+- Related: Warning thresholds and toggles are configured in `/admin/accounting/settings`.
+
+### Test Strip
 1) Open `/admin/accounting/integrity`.
-   - Expected result: filters, action buttons, summary cards, severity block, balance rows, ledger readiness, and samples all render.
-2) Change `As of date` to a past date.
-   - Expected result: stale-date warning appears and `Use today` button is visible.
+   - Expected: filter row, action toolbar, summary cards, severity block, reconciliation table, readiness block, draft aging, data quality, missing-posting sample, and posting failures all render.
+2) Change `As of date` to a past day.
+   - Expected: stale-date warning appears and `Use today` becomes visible.
 3) Click `Use today`.
-   - Expected result: stale warning clears and as-of date resets to today.
+   - Expected: as-of resets to today and the stale banner disappears.
 4) Toggle `Show problems only`.
-   - Expected result: focus mode state changes in summary card; if no warnings exist, green no-warning state appears.
-5) Test source pinning:
-   - Set `Pinned source` to `payments` (then `posting failures`).
-   - Expected result: visible samples/failures narrow to selected source.
-6) Test search filter:
-   - Enter part of an order/payment ID or reference in search box.
-   - Expected result: missing sample and recent failure rows are filtered.
-7) Test acknowledgement flow:
-   - Click `Acknowledge warnings`, enter a meaningful note.
-   - Expected result: success toast, acknowledgement button state updates, and `Latest acknowledgement` card shows actor/time/note.
-   - Click `Clear acknowledgement`.
-   - Expected result: acknowledgement card clears.
-8) Validate one-click row retries + aging:
-   - If sample rows exist, confirm each row has age badge and click `Post now` on one row.
-   - Expected result: retry runs with success/no-op toast and counts refresh.
-9) Export files:
-   - Click `Export missing sample CSV`.
-   - Click `Export failures CSV`.
-   - Click `Export CSV`.
-   - Expected result: files download when matching rows exist; if not, page shows no-data toast.
-10) Precheck and bulk retry:
-   - If visible retry targets > 0, click `Run retry precheck (N)`.
-   - Expected result: precheck card shows total/ready/blocked and row-level reasons.
-   - Click `Export precheck CSV`.
-   - Expected result: precheck CSV downloads.
-   - If blocked is 0 and your role is ADMIN, click `Post all visible (N)`.
-   - Expected result: bulk result card shows posted/skipped totals.
-   - Click `Export retry CSV`.
-   - Expected result: retry CSV downloads when bulk result rows exist.
-11) Click `Sync ledger`, confirm in modal, then run sync.
-   - Expected result: sync success toast appears and `Last successful sync` updates with timestamp and actor.
-12) Click `Recalculate`.
-   - Expected result: checks refresh immediately and all summary/metric cards update to current data.
+   - Expected: the `Severity by signal` block narrows to warning rows only.
+5) Test `Pinned source`.
+   - Set `Pinned source` to `Payments`, then `Posting failures`.
+   - Expected: missing-posting sample and related aging summary narrow to the selected stream.
+6) Test search filtering.
+   - Enter part of an entity ID, invoice number, or reference.
+   - Expected: visible missing-posting rows and recent posting failures filter immediately.
+7) Test acknowledgements.
+   - Click `Acknowledge warnings`, save a note, then click `Clear acknowledgement`.
+   - Expected: acknowledgement state updates, actor/time/note appear, then clear correctly.
+8) Test one reconciliation drilldown.
+   - On a warning row such as `AR`, `Inventory`, or `AP`, click `Trace snapshot`.
+   - Expected: dialog opens with `GL ledger`, `Operational`, `Difference`, method text, and both contributor tables.
+9) Test severity-card drivers.
+   - In `Severity by signal`, click `Drivers` on one reconciliation warning and one non-reconciliation warning.
+   - Expected:
+     - reconciliation warning opens the snapshot trace dialog,
+     - non-reconciliation warning jumps to the correct page section or filtered target page.
+10) Test direct links on one reconciliation row.
+   - Click `Open GL entries`, then `Open operational ...` on the same row.
+   - Expected: each link opens the correct investigation target for the same control point.
+11) Test export actions.
+   - Run `Full report CSV`, `Missing sample CSV`, and `Failures CSV`.
+   - Expected: each export downloads for the current as-of state when matching rows exist.
+12) Test retry flow.
+   - If visible retry targets exist, run `Run precheck (N)`.
+   - Expected: precheck banner shows `total`, `ready`, `blocked`, plus row-level reasons.
+   - If you are `ADMIN` and blockers are acceptable, run `Post all visible (N)`.
+   - Expected: bulk result banner shows posted/skipped totals and retry CSV becomes meaningful.
+13) Test `Sync ledger`.
+   - Run `Sync ledger` and confirm.
+   - Expected: success toast appears and `Last sync` updates.
+14) Test `Recalculate`.
+   - Expected: values and warning states refresh immediately without leaving the page.
 
 ## Accounting — Reconcile Totals
 - Page: /admin/accounting/reconcile
-- What it is: Reconcile bridge that compares operational totals vs posted-ledger totals and highlights variance severity.
+- What it is: A comparison dashboard that shows Operational (POS/order data) vs Ledger (GL journal
+  entries) for Revenue, COGS, Expenses, Net Profit, and Margin %. Highlights variance severity and
+  surfaces the manual entries, store-credit auto-applies, and returns that explain differences.
+- Who can use it:
+  - `ADMIN` and `ACCOUNTANT` roles only.
 - Why this page matters:
-  - Operational totals and ledger totals can differ due to timing and manual adjustments.
-  - This page is where accounting/admin confirms whether those differences are expected.
+  - Operational totals come from order/payment records. Ledger totals come from posted journal
+    entries. They can differ due to manual GL adjustments, timing differences, store-credit
+    auto-applies, or return credits hitting the books differently from the POS record.
+  - This page is where accounting/admin confirms whether differences are explainable and within
+    acceptable thresholds — or require investigation.
 
-Top-to-bottom walkthrough
+Top-to-bottom page walkthrough
+
 1) Header
-   - `Operational vs Ledger Reconcile`: confirms this is a comparison page (not posting page).
-2) Filters block
-   - `Start date` / `End date`: defines the comparison period.
-   - `Search details`: filters the three detail sections below (manual entries, auto-apply, returns).
-   - `Refresh`: refetches data and updates `Last refreshed`.
-   - `Export reconcile CSV`: metric-level summary export (operational, ledger, delta, severity, notes).
-   - `Export details CSV`: row-level export for manual entries and payment-derived rows.
-   - `Copy share link`: copies current filter state URL for team review.
-   - Quick presets:
-     - `Today`
-     - `Last 7 days`
-     - `This month`
-     - `Active period`
-   - `Lock to active period`: keeps range pinned to active fiscal period boundaries.
-   - `Clear filters`: resets date/search/preset/lock.
-   - `Active period`: displays current fiscal period range.
-   - `Last refreshed`: displays latest successful refresh time.
-3) Totals variance
-   - Columns are labeled:
-     - `Metric`
-     - `Operational`
-     - `Ledger`
-     - `Delta`
-     - `Status`
-     - `Actions`
-   - Metrics shown:
-     - Revenue
-     - COGS
-     - Expenses
-     - Net Profit
-     - Margin %
-   - `Status` uses severity badges (`OK`, `Minor`, `Warning`, `Critical`) from configured reconcile thresholds.
-   - `Why different?` expands likely-driver notes.
-   - `Open ...` links provide drill-down to related source pages.
-4) Manual journal entries in range
-   - Lists posted manual-source journal entries in period.
-   - This section primarily explains ledger-only movements that can cause deltas.
-5) Store credit auto-apply entries
-   - Lists store-credit auto-apply payment effects in range.
-6) Return credits/refunds
-   - Lists return/refund payment effects in range.
+   - Title: `Operational vs Ledger Reconcile`.
+   - Subtitle: explains that Operational totals derive from order/payment records; Ledger totals
+     from posted GL journal entries.
+   - `Active period` badge: shows the current fiscal period name and status.
+   - `Last refreshed` badge: timestamp of the most recent data fetch.
+   - Action buttons (top-right):
+     - `Export Summary CSV`: downloads metric-level summary (Operational, Ledger, Delta, Severity,
+       Likely drivers note) for each of the five metrics.
+     - `Export Details CSV`: downloads row-level manual entries and payment-derived rows.
+     - `Copy share link`: copies a URL with the current filter state encoded so teammates open
+       the exact same view; a toast shows a preview of the URL.
+     - `Refresh`: refetches all three data sources and updates `Last refreshed`.
 
-Step-by-step testing script (with expected result)
-1) Open `/admin/accounting/reconcile`.
-   - Expected: page loads all cards and `Last refreshed` shows a timestamp.
-2) Click `Today`.
-   - Expected: date fields update to today; totals and detail counts refresh.
-3) Click `Last 7 days`.
-   - Expected: range changes and results update.
-4) Click `Active period`, then `Lock to active period`.
-   - Expected: date inputs stay aligned to active period bounds and lock state is visible.
-5) Enter `Inventory valuation` in `Search details`.
-   - Expected: manual entry list narrows to matching rows; counts in section titles update.
-6) Click `Refresh`.
-   - Expected: success toast and `Last refreshed` changes to current time.
-7) In `Totals variance`, click `Why different?` for one metric with `OK`.
-   - Expected: note explicitly states no material variance.
-8) Click `Why different?` for a metric with non-zero delta (if available).
-   - Expected: note explicitly states variance detected with delta value and likely drivers.
-9) Click a drill-down action such as `Open Journal (COGS lines)` or `Open Expenses`.
-   - Expected: navigates to the related source page for investigation.
-10) Click `Export reconcile CSV`.
-   - Expected: CSV downloads with summary metrics/severity/notes.
-11) Click `Export details CSV`.
-   - Expected: CSV downloads with row-level details.
-12) Click `Copy share link`.
-   - Expected: success toast and copied URL opens the same filtered view.
-13) If no auto-apply or return rows exist in period:
-   - Expected: those cards show no-data messages; this is valid behavior.
+2) Filter bar
+   - `Start date` / `End date`: ISO date inputs defining the comparison window.
+   - Date presets: `Today`, `Last 7 days`, `This month`, `Active period` — each sets both dates
+     instantly. `Active period` also enables the lock button.
+   - `Active period` button (disabled when no fiscal period is open): jumps both dates to the
+     current fiscal period boundaries. Disabled state has a tooltip explaining why.
+   - `Search details`: text filter applied to manual entries, auto-apply, and returns cards.
+   - `Clear filters`: resets date range, search, preset, and URL state.
+   - Filter state is encoded in the URL (shareable); navigating back restores exact state.
+
+3) Health summary banner
+   - Appears below the filter bar.
+   - Color-coded border and background based on overall severity:
+     - Green border / light green background: all metrics are `OK`.
+     - Amber border / light amber background: one or more metrics are `Minor` or `Warning`.
+     - Red border / light red background: one or more metrics are `Critical`.
+   - Shows counts per severity level as Badge components (OK, Minor, Warning, Critical).
+   - Overall severity is the worst severity across all five metrics.
+
+4) Totals variance table
+   - Card header shows configured thresholds as a reference note (e.g., "Minor ≥ 1% · Warning ≥ 5%
+     of Operational; Margin: Minor ≥ 0.1pp · Warning ≥ 0.5pp").
+   - Columns: Metric | Operational | Ledger | Delta | Status | Drill-down | Why?
+   - Five rows: Revenue, COGS, Expenses, Net Profit, Margin %.
+   - Delta column is color-coded: negative = red (revenue/profit shortfall or cost overrun),
+     positive = green, zero = muted.
+   - Prefix: negative deltas show the signed value; positive deltas show `+` prefix.
+   - Status column: severity badge — `OK` (green), `Minor` (amber), `Warning` (orange),
+     `Critical` (red).
+   - Row background: critical rows have light-red tint; warning rows have light-amber tint.
+   - Drill-down column: inline links such as `Open P&L`, `Open COGS lines`, `Open Expenses`,
+     `Open Journal` — each navigates to the relevant source page for investigation.
+   - Why? button: toggles an expanded row (`colSpan=7`) showing "Likely drivers" notes explaining
+     typical causes of divergence for that metric. Notes are contextual (mentions the actual delta
+     value when non-zero).
+
+5) Drivers detail card (tabbed)
+   - Three tabs: `Manual Entries (N)`, `Store Credit Auto-Apply (N)`, `Returns & Refunds (N)`.
+   - Each tab shows a count badge; tab bar is always visible.
+
+   Tab A — Manual Entries:
+   - Lists all posted MANUAL-source journal entries in the date range.
+   - Per entry: date, memo, link to journal page.
+   - Expandable: click the entry row to see per-line breakdown (account code, name, type, debit,
+     credit, description). Lines shown in a nested Table.
+   - Empty state: "No manual journal entries posted in this period. This is the ideal state."
+
+   Tab B — Store Credit Auto-Apply:
+   - Lists payments with reference `AUTO_APPLY` in their note field.
+   - Columns: Date, Order ID (clickable link to order), Amount.
+   - Auto-apply payments reduce AR without a cash receipt, causing Operational vs Ledger deltas on
+     Revenue.
+   - Empty state: "No store-credit auto-applies found in this period."
+
+   Tab C — Returns & Refunds:
+   - Lists payments with reference `ITEM_RETURN` in their note field.
+   - Columns: Date, Order ID (clickable link to order), Amount, Disposition (badge).
+   - Empty state: "No return or refund payments found in this period."
+
+6) Skeleton loading
+   - All four sections (header badges, health banner, variance table, drivers card) show skeleton
+     placeholder rows while data is loading.
+
+7) Empty states
+   - Each section shows an explanatory message when no data is found for the selected period.
+   - Empty variance table shows: "No data available for the selected period."
+
+API test coverage (run: pnpm test:vitest)
+  File: src/app/api/admin/accounting/reconcile/route.vitest.spec.ts (14 tests)
+  - Auth guards: 401 for unauthenticated, STAFF, CUSTOMER; 200 for ACCOUNTANT.
+  - Success: returns 200 with manualEntries, autoApply, returns arrays.
+  - Field mapping: journal entry fields correctly mapped (id, memo, lines, accountCode, etc.).
+  - Payment bucketing: AUTO_APPLY → autoApply, ITEM_RETURN → returns, plain note → neither.
+  - Date filtering: passes gte/lte to Prisma when start/end provided; omits when absent;
+    handles invalid dates gracefully; applies single-sided filters.
+  - Empty states: returns empty arrays when no data.
+  - Error handling: returns 500 when Prisma throws.
+
+  File: src/app/api/admin/accounting/cash-reconciliations/opening-balance/route.vitest.spec.ts
+  (20 tests — see Opening Balance section below).
+
+Step-by-step testing script (with expected results)
+
+  Preconditions: logged in as ADMIN or ACCOUNTANT.
+
+  Test 1 — Page load and header:
+  1. Open `/admin/accounting/reconcile`.
+     - Expected: page loads; header shows title, subtitle, active-period badge, last-refreshed
+       badge; Export Summary CSV, Export Details CSV, Copy share link, and Refresh buttons visible.
+
+  Test 2 — Filter bar and presets:
+  2. Click `Today`.
+     - Expected: start and end dates update to today; all data cards refresh.
+  3. Click `Last 7 days`.
+     - Expected: date range updates to a 7-day window; results refresh.
+  4. Click `This month`.
+     - Expected: range covers first and last day of current month.
+  5. Click `Active period` (only if a fiscal period is open).
+     - Expected: dates align to fiscal period boundaries.
+  6. Click the `Active period` button in the filter bar when it is disabled (no open period).
+     - Expected: button is disabled and a tooltip explains why.
+  7. Type `inventory` into Search details.
+     - Expected: manual entries tab narrows to rows whose memo contains "inventory"; count badges
+       on tabs update.
+  8. Click `Clear filters`.
+     - Expected: date range, search, and URL params reset; all data reloads for the default range.
+
+  Test 3 — URL sharing:
+  9. Set a specific date range (e.g., 2026-03-01 to 2026-03-31). Click `Copy share link`.
+     - Expected: toast shows URL preview; clipboard contains the full URL with start and end
+       encoded as params.
+  10. Paste the URL in a new tab.
+      - Expected: page opens with the same date range and filter state restored.
+
+  Test 4 — Health banner:
+  11. With a date range that has no data, observe the health banner.
+      - Expected: all metrics show OK; banner is green.
+  12. With a range containing real transactions, observe the banner.
+      - Expected: banner color reflects the worst metric severity (green/amber/red).
+
+  Test 5 — Variance table:
+  13. Locate the Totals variance table. Confirm all five metrics appear: Revenue, COGS, Expenses,
+      Net Profit, Margin %.
+      - Expected: each row has Operational, Ledger, Delta, Status, Drill-down, and Why? columns.
+  14. For a metric with a non-zero delta, confirm Delta is color-coded (red if negative, green if
+      positive).
+  15. For a Critical severity row, confirm the row has a light-red background tint.
+  16. For a Warning severity row, confirm the row has a light-amber background tint.
+  17. Click `Why?` on any metric.
+      - Expected: an expanded row appears below the metric row with "Likely drivers" text.
+  18. Click `Why?` again on the same row.
+      - Expected: the expanded row collapses. Only one expanded row can be open at a time.
+  19. Click a drill-down link (e.g., `Open P&L`).
+      - Expected: navigates to the linked page.
+
+  Test 6 — Manual entries tab:
+  20. Click the `Manual Entries` tab. If entries exist in range:
+      - Expected: table lists entries with date, memo, and Journal link.
+  21. Click the Journal link on any entry.
+      - Expected: navigates to `/admin/accounting/journal?entryId=...`.
+  22. Click an entry row to expand line details.
+      - Expected: nested table shows account code, name, type, debit, credit, description.
+  23. If no manual entries: confirm the empty-state message appears.
+
+  Test 7 — Auto-apply tab:
+  24. Click the `Store Credit Auto-Apply` tab.
+      - Expected: table shows auto-apply payments with Date, Order ID (link), Amount.
+  25. Click an Order ID link.
+      - Expected: navigates to the order detail page.
+  26. If no auto-apply entries: confirm empty-state message.
+
+  Test 8 — Returns tab:
+  27. Click the `Returns & Refunds` tab.
+      - Expected: table shows return payments with Date, Order ID (link), Amount, Disposition badge.
+  28. If no return entries: confirm empty-state message.
+
+  Test 9 — Refresh:
+  29. Note the current `Last refreshed` timestamp. Click `Refresh`.
+      - Expected: success toast; `Last refreshed` updates to current time.
+
+  Test 10 — Export Summary CSV:
+  30. Click `Export Summary CSV`.
+      - Expected: CSV file downloads; contains rows for Revenue, COGS, Expenses, Net Profit,
+        Margin % with Operational, Ledger, Delta, Severity, Notes columns.
+
+  Test 11 — Export Details CSV:
+  31. Click `Export Details CSV`.
+      - Expected: CSV downloads with row-level manual entry and payment data.
+
+  Test 12 — Skeleton loading:
+  32. Throttle the network to slow 3G. Open the page.
+      - Expected: skeleton rows appear in all cards during loading; replaced by real data on load.
+
+  Test 13 — Audit trail:
+  33. Perform a drill-down click (Refresh, Export, or drill-down link).
+      - Expected: an audit log entry is written (check `/admin/audit` filtered to
+        `accounting.reconcile.*`).
+
+────────────────────────────────────────────────────────────────────────────────
+Opening Balance — How, Where, When, and What Not To Do
+────────────────────────────────────────────────────────────────────────────────
+
+What is the opening balance?
+  The opening balance anchor is a one-time verified physical count that sets the authoritative
+  starting point for the cash account in the GL. After it is set:
+  - The GL balance is guaranteed to match what was physically in the drawer on the anchor date.
+  - All future Operational (scope=all) expected amounts are derived as GL delta from this point
+    (ledger_balance_today minus ledger_balance_yesterday), making them identical in source to the
+    Ledger mode.
+  - The Operational vs Ledger divergence in cash reconciliation is structurally eliminated going
+    forward (for days with complete GL posting on the correct date).
+
+Where to set it:
+  Page: /admin/accounting/cash-reconciliations
+  Button: `Set Opening Balance` — top-right of the page header, alongside Export CSV, Print
+  Report, and Deposit Cash to Bank.
+
+How to set it (step by step):
+  1. Count the physical cash in the drawer. Write down the exact figure.
+  2. Open `/admin/accounting/cash-reconciliations`.
+  3. Click `Set Opening Balance` in the page header.
+  4. The dialog shows: current GL balance (what the system thinks the drawer contains) and the
+     selected cash account code and name.
+  5. Enter your verified physical count in the `Verified physical count` field.
+  6. The dialog immediately previews the required GL adjustment:
+     - Green box: "GL matches your count — no adjustment needed." (counts match exactly)
+     - Amber box: "GL adjustment required: +X.XX" or "-X.XX" (GL needs to be corrected)
+  7. Select the `Anchor date` (defaults to today). Use the date the physical count was performed.
+  8. Leave `Post a GL adjustment journal entry` checked (recommended) unless you are certain the
+     GL is already correct.
+  9. Add optional notes (e.g., "End-of-year physical count by management, witnessed by owner").
+  10. Click `Set Opening Balance`.
+      - If GL adjustment is non-zero: a journal entry is posted to debit or credit the cash
+        account (1000) against Opening Balance Equity (3900), bringing the GL to exactly match
+        your count.
+      - A CashReconciliation record is created marked OPENING BAL with variance = 0.
+      - A toast shows the adjustment amount (or confirms no adjustment was needed).
+
+When to set it:
+  - At the very start of using this system, before any reconciliations are saved.
+  - After any period where the GL history is unreliable (e.g., following a data migration, a
+    system reset, or discovering the GL was not being updated).
+  - At the start of a new fiscal year when you want a clean verified starting point.
+  - Do NOT set it in the middle of an active period without also running a physical count — an
+    anchor set to an incorrect figure will corrupt future expected amounts.
+
+Opening balance constraints:
+  - Only ONE opening balance anchor is allowed per cash account. If you need to reset it, contact
+    a developer to delete the existing OPENING BAL record from the database.
+  - The anchor date must fall in an open fiscal period if a GL adjustment is needed.
+  - The dialog does not accept negative counts.
+  - If `Post GL adjustment` is unchecked, the anchor is recorded but the GL is left as-is (use
+    this only if you have already manually corrected the GL via a journal entry and simply want the
+    reconciliation marker).
+
+What to do if the opening balance was set incorrectly:
+  - Contact an administrator to have the OPENING BAL reconciliation record deleted from the
+    database, and the associated journal entry (if any) reversed.
+  - Then set a new opening balance with the correct count.
+
+────────────────────────────────────────────────────────────────────────────────
+Preventing and Eliminating Variance
+────────────────────────────────────────────────────────────────────────────────
+
+Understanding the two types of variance:
+
+  Type 1 — Cash reconciliation variance (physical vs expected):
+    actual_amount - expected_amount
+    This is the most important variance. It measures whether the physical cash in the drawer
+    matches what the system expects. A non-zero value means money is unaccounted for. This
+    variance should NEVER be ignored or zeroed out without a documented reason.
+
+  Type 2 — Operational vs Ledger mode divergence (mode mismatch):
+    expected_operational - expected_ledger_delta
+    This is the variance between how two different calculation modes compute the expected amount
+    for a given day. As of the current implementation, both Operational (scope=all) and Ledger
+    modes derive from the same GL data, so this should be structurally zero for days with complete
+    and timely GL posting.
+
+Rules to prevent Type 1 variance (cash shortages/overages):
+
+  DO:
+  - Reconcile every trading day without gaps. Use auto-catchup for days where GL movements were
+    zero and no cash changed hands.
+  - Count cash at the end of every shift, before banking.
+  - Have a second person verify counts above a threshold (e.g., GH₵500 difference).
+  - Record the exact count — do not round to a "close enough" figure.
+  - Post all journal entries on the date the transaction actually occurred (same-day posting).
+  - When a variance is found, record the correct variance reason and a detailed note explaining
+    what caused it. Do not select `COUNT_ERROR` reflexively — only use it if the count was
+    genuinely incorrect.
+  - Run a physical cash count at month-end and confirm it matches the closing GL balance.
+
+  DO NOT:
+  - Do not reconcile without physically counting — guessing the count creates false zero-variance
+    records that hide real problems.
+  - Do not back-date reconciliations to cover gaps without physically verifying those days.
+  - Do not post adjustment journal entries in bulk to zero out a growing variance without
+    investigating the root cause.
+  - Do not use override (resave) to change a reconciliation without a documented reason.
+  - Do not mark a non-zero variance as a "count error" when the actual cause is unknown.
+
+Rules to prevent Type 2 variance (Operational vs Ledger mode divergence):
+
+  DO:
+  - Use Operational mode (scope=all) as the default. It now derives expected amounts from the GL
+    balance delta, ensuring it is always consistent with the Ledger.
+  - Set an opening balance anchor before the first reconciliation to establish a verified GL
+    starting point.
+  - Post all journal entries on the correct transaction date. Late-posted or backdated entries
+    will cause a one-day spike in the delta (the entry shows up in the wrong day's GL balance).
+  - Use auto-catchup for days with zero GL movement to keep the reconciliation chain unbroken.
+    A gap in the chain allows cumulative delta drift.
+  - At the end of each month, confirm the sum of all daily Operational expected amounts for the
+    month equals the Ledger balance change over the same month. If they differ, a journal entry
+    was posted on the wrong date.
+
+  DO NOT:
+  - Do not mix Operational and Ledger mode records for the same account without a documented
+    reason. Inconsistent mode usage makes the reconcile page variance table harder to interpret.
+  - Do not skip the opening balance anchor and expect the two modes to align — without an anchor,
+    there is no verified starting point from which to derive accurate deltas.
+  - Do not post GL entries without a corresponding business event (e.g., do not manually debit
+    Cash to inflate the balance). This creates a phantom expected amount that no physical count
+    can match.
+
+How to diagnose and fix a growing variance:
+  1. Open `/admin/accounting/cash-reconciliations`. Check `Unreconciled days` — if gaps exist,
+     the cumulative drift grows daily.
+  2. Check `Ledger diagnostics` — if the GL balance is negative, the GL was never anchored
+     correctly. Use `Set Opening Balance` to correct it.
+  3. Open `/admin/accounting/reconcile`. Look at the manual entries tab — if entries exist that
+     do not correspond to real cash events (sales, payroll, purchases), they are corrupting the
+     expected amount.
+  4. Filter the history table to Non-zero only. Look for patterns: same-day repeating variances
+     suggest a recurring unrecorded event (e.g., petty cash payments not entered); random
+     variances suggest counting errors or undocumented cash out.
+  5. If the variance is large and unexplained, escalate to management before posting any
+     adjustments. Post the correction as a SUSPECTED_SHRINKAGE variance with a full explanation.
+
+API test coverage for opening-balance endpoint:
+  File: src/app/api/admin/accounting/cash-reconciliations/opening-balance/route.vitest.spec.ts
+  20 tests covering:
+  - Auth guards (401 for unauthenticated / STAFF; 200 for ACCOUNTANT; 403 for bad origin)
+  - Input validation (missing verifiedCount; non-finite number; notes > 500 chars)
+  - Closed period guard (400 when adjustment needed but period is closed; passes when
+    postGlAdjustment=false)
+  - Duplicate anchor guard (409 with OPENING_BALANCE_EXISTS code when anchor already exists)
+  - GL adjustment posting (posts journal entry when count ≠ GL; skips when equal; skips when
+    postGlAdjustment=false)
+  - Journal entry direction (debits Cash when GL understated; credits Cash when GL overstated)
+  - Record creation (isOpeningBalance=true, reconcileMode="opening_balance", variance=0)
+  - Audit log (CASH_OPENING_BALANCE_SET action recorded)
+  - Response shape (ok, verifiedCount, previousGlBalance, glAdjustment, date, cashAccountCode)
+  - Auto-create equity account (3900 created if missing)
+  - Error handling (500 when Prisma throws)
 
 ## Accounting — Settings
 - Page: /admin/accounting/settings
@@ -1445,10 +3040,16 @@ Top-to-bottom page walkthrough
 4) Jump-to links
    - Quick links to all settings sections on the same page.
 5) Integrity thresholds
-   - Purpose: defines when Data Integrity should raise warnings for AR and inventory differences.
+   - Purpose: defines when Data Integrity should raise warnings for reconciliation deltas, trial-balance drift, and stock/draft conditions.
    - Fields:
      - `AR difference threshold (GHS)`
      - `Inventory difference threshold (GHS)`
+     - `AP difference threshold (GHS)`
+     - `Trial balance delta threshold (GHS)`
+     - `Revenue difference threshold (GHS)`
+     - `VAT difference threshold (GHS)`
+     - `COGS difference threshold (GHS)`
+     - `Store-credit difference threshold (GHS)`
      - `Alert on draft journal entries`
      - `Alert on negative stock`
    - Actions:
@@ -1457,7 +3058,7 @@ Top-to-bottom page walkthrough
      - `Discard changes`
    - Also shows:
      - pending changed fields
-     - effective-now summary
+     - effective-now summary for all integrity triggers
      - last-updated line with actor/time + section audit link
 6) Reporting source
    - Purpose: controls dashboard/main P&L source.
@@ -1607,7 +3208,7 @@ Related page
 - Related: When off, use Sync ledger in Data Integrity to backfill postings.
 
 ## HR Portal
-- Pages: /admin/hr, /admin/hr/staff, /admin/hr/staff/[id], /admin/hr/hiring,
+- Pages: /admin/hr, /admin/hr/onboarding, /admin/hr/staff, /admin/hr/staff/[id], /admin/hr/hiring,
   /admin/hr/issues, /admin/hr/leave, /admin/hr/compensation, /admin/hr/reviews, /admin/hr/payroll
 - What it is: HR workspace for people operations, payroll, leave, reviews, hiring, employee-portal oversight, and reporting.
 - How to use: Start at `/admin/hr` to review workforce counts, current HR blockers, portal visibility oversight, and quick actions, then move into the specific HR detail pages.
@@ -1628,14 +3229,15 @@ Related page
   6. Use `Employee portal oversight` to monitor self-service readiness:
      linked employees, unlinked employees, visible employee documents, visible review summaries, and reviews still awaiting portal visibility decision.
   7. Use `Quick actions` for direct HR actions from the hub:
-     `Add employee`, `Create payroll run`, `Open missing profiles`, `Open pending leave`, `Open payroll runs`, and `Open HR settings`.
+     `Start onboarding`, `Create payroll run`, `Open missing profiles`, `Open pending leave`, `Open payroll runs`, and `Open HR settings`.
   8. Use `Recent HR activity` as a light awareness strip only.
      It shows the latest 2 HR activity items and links to the full HR audit view.
   9. Use `Reporting and exports` for HR CSV/report entry points without leaving the workspace.
 - Validation and behavior notes:
   - Hub counts use API totals and summaries, not first-page row counts.
   - If a summary source fails, the page shows a visible warning with `Retry failed loads`.
-  - `Add employee` and `Create payroll run` open lightweight dialogs and submit directly from the hub.
+  - `Start onboarding` now routes into the centralized employee-onboarding flow at `/admin/hr/onboarding?source=hr`.
+  - The HR workspace no longer owns a separate employee-create dialog.
   - `Recent HR activity` is intentionally capped to 2 items so the page stays focused.
 - Step-by-step testing script with expected results:
   1. Open `/admin/hr`.
@@ -1646,8 +3248,8 @@ Related page
      Expected: missing profiles, pending leave, and the latest payroll-run state are shown with direct actions.
   4. Review `Employee portal oversight`.
      Expected: linked and unlinked employee counts plus portal visibility counts render correctly.
-  5. Use `Add employee`.
-     Expected: the dialog validates input, successful submit creates the employee, and invalid input is blocked with clear errors.
+  5. Use `Start onboarding`.
+     Expected: the action routes to `/admin/hr/onboarding?source=hr` instead of opening a local employee-create dialog.
   6. Use `Create payroll run`.
      Expected: the dialog validates period input and creates the run successfully.
   7. Review `Recent HR activity`.
@@ -1683,16 +3285,20 @@ Related page
      The more-actions menu holds interview planning and allowed stage moves.
   10. Use the `Review` drawer to see the full hiring context in one place:
       applicant details, resume link, role details, interview timing, notes, stage-change actions, and a direct audit link for that application.
-  11. Use the bulk actions area only when you intend to change several applications at once.
+  11. Use hiring-to-onboarding handoff when an application reaches `Hired`.
+      Marking an application `Hired` creates or reuses the employee record, then routes HR directly into `/admin/hr/onboarding` to complete the employee profile.
+      Hired rows can later show `Resume onboarding` when HR did not finish onboarding immediately.
+  12. Use the bulk actions area only when you intend to change several applications at once.
       You can select rows, choose the next stage, add a note when needed, apply the change, and use `Undo last bulk update` if the last bulk change needs to be reversed.
       Bulk hire, reject, and withdraw actions ask for confirmation before they continue.
-  12. Use `Audit and safeguards` at the bottom when you need to review hiring history.
+  13. Use `Audit and safeguards` at the bottom when you need to review hiring history.
       This section links to the full hiring audit log and explains what is tracked.
 - Important behavior notes:
   - Saved views stay on the current browser only.
   - `Copy view link` creates a shareable link to the exact current Applications view.
   - Application filters stay in the page URL, so refresh and back/forward navigation keep the same filtered view.
   - Job, applicant, interview, application, export, and bulk-update actions are audit-logged from this page.
+  - Hired applications now carry onboarding follow-through. The page can show onboarding-pending or onboarding-complete context for already hired candidates.
   - Cards replace wide tables on smaller screens so the page stays usable on mobile-sized layouts.
 - Step-by-step testing script with expected results:
   1. Open `/admin/hr/hiring`.
@@ -1731,22 +3337,70 @@ Related page
       Expected: the interview date, interviewer, outcome, and note save successfully and appear in the application details.
   18. Move an application to the next valid stage.
       Expected: the stage updates successfully and remains correct after refresh.
-  19. Try rejecting or withdrawing an application without a note.
+  19. Mark an application as `Hired`.
+      Expected: the page routes to `/admin/hr/onboarding` with the correct employee preloaded.
+  20. Try rejecting or withdrawing an application without a note.
       Expected: the page blocks the action and asks for a short note.
-  20. Reject or withdraw an application with a note.
+  21. Reject or withdraw an application with a note.
       Expected: the stage changes successfully and the note requirement is satisfied.
-  21. Select multiple applications and run a bulk update.
+  22. Return to a hired application later.
+      Expected: the applications area can show onboarding follow-through and provide `Resume onboarding` where onboarding is still pending.
+  23. Select multiple applications and run a bulk update.
       Expected: the selected count is correct, the bulk action runs, and any skipped applications are shown in the skipped-details panel.
-  22. Run a bulk action to `Hired`, `Rejected`, or `Withdrawn`.
+  24. Run a bulk action to `Hired`, `Rejected`, or `Withdrawn`.
       Expected: a confirmation dialog appears before the action is applied.
-  23. Use `Undo last bulk update`.
+  25. Use `Undo last bulk update`.
       Expected: the most recent eligible bulk change is reversed and the page reports any skipped undo items.
-  24. Open the `Audit and safeguards` section.
+  26. Open the `Audit and safeguards` section.
       Expected: the audit explanation cards and hiring audit links are visible.
-  25. Open the hiring audit log from this page.
+  27. Open the hiring audit log from this page.
       Expected: `/admin/audit` opens already filtered to hiring-page activity.
-  26. Test the page on a smaller screen width.
+  28. Test the page on a smaller screen width.
       Expected: Applicants, Job Postings, and Applications switch to stacked cards, buttons remain usable, and no section overflows horizontally.
+
+### HR - Onboarding
+- Page: /admin/hr/onboarding
+- What it is: The centralized employee-create and employee-completion flow. Use it for direct hires, hiring handoff after a candidate becomes `Hired`, and deferred onboarding that needs to be resumed later.
+- Top-to-bottom walkthrough:
+  1. Start at the hero.
+     It explains the source of the flow, shows readiness counts for core profile, contact readiness, and payroll readiness, and links back to HR, hiring, staff, or users depending on where the onboarding started.
+  2. Use the hero jump links to move directly to `Core profile`, `Payroll readiness`, and `Next steps`.
+  3. If you open the page without an `employeeId`, use the `Needs onboarding` queue first.
+     This queue shows deferred onboarding records and includes search plus `Resume onboarding`.
+  4. Use `Core profile` for the required employee identity and role details:
+     first name, last name, department, position, employment status, hire date, and internal note.
+  5. Use `Contact and payroll readiness` for contact details and optional bank data.
+     Email and phone drive portal and HR communication readiness.
+     Bank details stay optional here until payroll setup begins.
+  6. Use `Next steps` as the handoff panel.
+     It explains the transition into the full staff profile and into `Users & Roles` when access still needs to be created.
+  7. Save from this page only when the employee record is ready to hand off.
+     Successful save routes directly into `/admin/hr/staff/[id]`.
+- Validation and behavior notes:
+  - This is the only intended page for creating a new employee record from HR.
+  - Hiring handoff opens this page with the hired employee preloaded.
+  - Deferred onboarding is supported through the queue and `Resume onboarding` links from hiring and staff pages.
+  - The page warns before browser refresh, back/forward navigation, or internal link navigation when there are unsaved changes.
+  - Saving successfully disables the unsaved-changes guard and hands off to the staff profile.
+- Test strip - `/admin/hr/onboarding`
+  1. Open `/admin/hr/onboarding?source=hr`.
+     Expected: the page loads with the centralized-onboarding hero, readiness tiles, and the `Needs onboarding` queue.
+  2. Review the queue.
+     Expected: pending records show `Resume onboarding` and `Open staff profile` actions; queue search narrows the results.
+  3. Start a direct onboarding record.
+     Expected: first name, last name, department, position, and hire date are required; invalid input is blocked with clear field errors.
+  4. Save a valid new employee.
+     Expected: the employee is created successfully and the page routes to `/admin/hr/staff/[id]`.
+  5. Open the page from hiring with `employeeId`.
+     Expected: the employee form is preloaded and the hero copy reflects hiring handoff.
+  6. Add optional bank details for an existing hired employee and save.
+     Expected: onboarding saves successfully and routes to the employee staff profile.
+  7. Leave the page with unsaved changes.
+     Expected: refresh, browser back, or internal navigation shows an unsaved-changes confirmation.
+  8. Complete onboarding from a deferred queue item.
+     Expected: `Resume onboarding` reopens the correct employee record and the queue count drops after the record is completed.
+  9. Review small-screen behavior.
+     Expected: the queue, form cards, readiness tiles, and next-step cards stack cleanly with no horizontal overflow.
 
 ### HR - Staff Directory
 - Page: /admin/hr/staff
@@ -1755,27 +3409,33 @@ Related page
   1. Use the hero to review the staff snapshot:
      total staff, active staff, on leave, missing profile fields, linked accounts, and missing bank details.
   2. Use the top actions for the main directory workflows:
-     `Add employee`, `Import CSV`, `Export CSV`, and `Open staff audit log`.
-  3. Use `Add employee` to create a single employee record with optional payroll/bank data and an optional staff note.
+     `Start onboarding`, `Import CSV`, `Export CSV`, and `Open staff audit log`.
+  3. Use `Start onboarding` to create a new employee through the centralized onboarding flow.
   4. Use `Import CSV` for bulk intake.
      Start with `Download template`, upload the CSV, review the readiness preview, then run `Preview import` before `Import employees`.
      The preview shows portal-ready rows, missing contact and bank-detail gaps, plus the first few parsed rows with readiness notes.
   5. Use `Attention needed` to jump straight into the most important staff work:
      missing profile fields, no linked account, employees currently on leave, and payroll-readiness blockers.
-     These cards update the employee filters and scroll directly to the table.
+     These cards replace the current shortcut filter with their own intended view and scroll directly to the directory.
   6. Use `Directory tools` for quick filters, saved views, and reset behavior.
      This is the only quick-filter shortcut area on the page.
   7. Use `Recent staff activity` as a lightweight awareness strip for recent directory actions only.
   8. Use the employee table or mobile cards as the working directory:
-     search, status, department, role, account-link state, profile completeness, sort, page size, and filter chips all update the same employee-table state.
-  9. Use row actions carefully:
-     `Open profile` stays primary, while the `More` menu holds payslips, leave, compensation, copy-link, audit, and linked-user actions.
+     search, status, department, account-link state, onboarding readiness, sort, page size, and filter chips all update the same employee-table state.
+     The desktop table is now compressed into denser `Work`, `Status`, `Access`, and `Readiness` columns to reduce horizontal scrolling.
+  9. Use the row signals correctly:
+     `Profile` means field completeness.
+     `Onboarding` means workflow follow-through.
+     Pending rows can show `Resume onboarding` without repeating every missing field.
   10. Use `Create linked user` for unlinked employees to create the user account and link it directly to that employee in one step.
+      The `Access` column also includes `Open employee profile` so the staff record can be opened directly from access state.
+      Access roles now render as small color chips under the linked-account badge.
   11. Use the row status selector or bulk update flow for status changes.
       Individual status changes require confirmation.
       `SUSPENDED` and `TERMINATED` require a note that is stored in audit metadata.
 - Validation and behavior notes:
   - Quick filters in `Attention needed` and `Directory tools` scroll to the employee table and stay there.
+  - Attention cards and quick-filter buttons replace each other instead of stacking conflicting shortcut filters.
   - URL filter syncing uses no-scroll updates so the page does not jump back to the top.
   - The page shows explicit load-failure states with `Retry`; a failed query should not look like an empty directory.
   - Linked-account state is shown per employee as `Linked account` or `No linked account`.
@@ -1787,8 +3447,8 @@ Related page
      Expected: the page loads with hero metrics, `Attention needed`, `Directory tools`, `Recent staff activity`, and the employee table.
   2. Review the hero metrics.
      Expected: total staff, active staff, on leave, missing profile fields, linked accounts, and missing bank details all show real counts.
-  3. Use `Add employee`.
-     Expected: valid input creates the employee, invalid input is rejected, and the directory refreshes after success.
+  3. Use `Start onboarding`.
+     Expected: the action routes to `/admin/hr/onboarding?source=staff` instead of opening a local employee-create dialog.
   4. Use `Import CSV`.
      Expected: the dialog shows template download, row/error counts, portal-readiness summary, and preview rows with readiness notes.
   5. Click `Preview import`.
@@ -1796,18 +3456,20 @@ Related page
   6. Click `Import employees`.
      Expected: import succeeds, dialog closes, and the employee list refreshes.
   7. Click an `Attention needed` card or a `Directory tools` quick filter.
-     Expected: the employee table updates and the page scrolls to the table without bouncing back to the top.
+     Expected: the employee table updates, the page scrolls to the table without bouncing back to the top, and the selected shortcut replaces the previous shortcut filter instead of stacking on top of it.
   8. Review `Recent staff activity`.
      Expected: it shows only a small recent set of staff-directory actions with title, summary, actor, time, and entity type.
   9. Review linked-account states in the table.
-     Expected: linked employees show `Linked account`; unlinked employees show `No linked account` plus linked-user actions.
+     Expected: linked employees show `Linked account` plus a small role chip underneath; unlinked employees show `No linked account` plus linked-user actions.
   10. Use `Create linked user` for an unlinked employee.
       Expected: the dialog opens prefilled with employee name, email, and phone; a successful submit creates the user, sends the invite, links the account, and refreshes the directory.
-  11. Change an employee status.
+  11. Review a pending-onboarding row.
+      Expected: the row shows profile completeness separately from workflow state and offers `Resume onboarding` without duplicating the same missing-field explanation in multiple places.
+  12. Change an employee status.
       Expected: a confirmation dialog appears first, and suspension/termination require a note.
-  12. Use bulk selection and `Bulk update`.
+  13. Use bulk selection and `Bulk update`.
       Expected: the confirmation dialog appears, the update succeeds, and the directory refreshes.
-  13. Test small screen and dark mode.
+  14. Test small screen and dark mode.
       Expected: cards stack properly, rows/cards do not overflow, and the page remains readable in both themes.
 
 ### HR - Staff Profile
@@ -1977,86 +3639,85 @@ Related page
   - ADMIN, ACCOUNTANT: full audit visibility.
   - STAFF: payroll/compensation audit rows are hidden (including exports and filter options).
 - How to use:
-  1) Open `/admin/audit` and set filters (entity, action, actor, customer, date); confirm `Date range status` is valid.
-  2) Save reusable views with `Save current filter as`; enable sharing if the whole admin/accounting team should use it.
-  3) Reopen views from `Saved filters`:
-     `My filters` are editable by you; `Team filters` are shared and read-only for non-owners.
-  4) Use `Copy filter link` to send the exact filtered view to another user.
-  5) Use `Risk mode` to focus review:
-     `Exceptions only` (medium/high/critical), `Critical only`, or `Needs review` (exceptions not yet reviewed).
-     If all entries are currently low risk, `Needs review` will return no rows.
-     Use `Queue preset` for workflow queues:
-     `Critical unreviewed`, `Archive soon unreviewed`, `Needs assignment`, `Overdue tasks`.
-  6) Each row now shows `Risk` severity and review state (`Reviewed` / `Not reviewed`); use `Mark reviewed` when an exception is accepted.
-     High/critical (and selected control actions) now require a review task owner + due date before `Mark reviewed` is allowed.
-  7) `Clear review` / `Clear selected review` is ADMIN-only and requires a mandatory clear reason (minimum 8 characters) for re-opened exceptions.
-  8) The review action uses a confirmation dialog with note capture for audit traceability.
-  9) Use the queue strip above results for fast triage: `Needs review (all filtered)`, `Critical (all filtered)`, and `Reviewed today (all filtered)` based on your active filters (not only the visible page).
-  10) Health actions (`HEALTH_ACKNOWLEDGED`, `HEALTH_DIAGNOSTICS_RUN`, `HEALTH_AUTO_HEAL_RUN`) now render in compact plain-English form in the meta column:
-      key result, issue summary, and before/after workflow are shown first.
-      Zero-only issue breakdown and non-required follow-up notes are hidden to reduce noise.
-     The same strip also shows review pressure and archive pressure:
-     `Overdue reviews C/H/M`, `Archive soon (14d)`, `Archive escalation (3d)`, `Needs assignment (escalation window)`, `Open tasks`, `In-progress tasks`, `Overdue tasks`, and `Already archive-eligible unreviewed`.
-     Escalation requires assignment: unassigned rows in the escalation window are counted under `Needs assignment`.
-     Admin can send an escalation digest from `Notify escalation owners` (confirmation dialog) to configured recipients.
-     Use `Notification center` for in-app SLA breach alerts (overdue reviews, overdue tasks, archive-escalation without assignee).
-  10) For batches, tick row checkboxes (exception rows only), then use `Mark selected reviewed` or `Clear selected review`; a single confirmation dialog applies to all selected rows.
-      You can also use `Assign selected task` to set status/owner/due date for multiple rows at once.
-  11) Review each event row using `Actor`, `Entity`, and expanded `Meta` (`Show more`) for full context; meta values are shown in plain English (not JSON), including OTC shift, payment, and procurement status details, then use `View record` to open the source page when available.
-      Every row now includes an explicit `Initiated by` line in Meta (name/email/role, or `System` fallback for non-user/system events).
-      `View record` link coverage has been expanded (including product/supplier/journal/report/lot contexts) to reduce `No linked page` entries.
-      Review actions (`AUDIT_REVIEW_MARKED`, `AUDIT_REVIEW_CLEARED`, bulk variants) now include full trail context:
-      before/after review state, target event details, previous reviewer context, applied reviewer/timestamp, and clear reason.
-      `EXPENSE_CREATE` and `SUPPLIER_PRICE_CHANGE` rows now show dedicated plain-English fields (reason, reversal status, unit-cost delta, purchase reference), and supplier events include direct `View record` linking to the supplier page.
-      Additional high-volume entries now also use dedicated plain-English blocks:
-      `ORDER_CREATE_ADMIN`, `ORDER_CREATE`, `PAYMENT_SUCCESS`, `PURCHASE_CREATE`, `PURCHASE_RECEIVE`, `PURCHASE_APPROVE`, `EXPENSE_SETTLE`, `ORDER_ITEM_DELIVERY_UPDATE`, `IMAGE_UPLOAD`, and `PRODUCT_CREATE`.
-      Additional coverage from the next review pass:
-      `PRODUCT_STOCK_UPDATE`, `PRODUCT_DELETE`, `journal.archive.*` runs, `ACCOUNTING_POST_BACKFILL`, and `app-setting.update` (with masked value handling for sensitive keys).
-      `SUPPLIER_PAYABLES_EXPORT_BUNDLE` now shows export result, bundle name/time, initiated-by user (name/email/role), file count+size, scope snapshot (scope/basis/status/month/aging/page/rows), CSV row/column counts, notes/email indicators, and file manifest in plain English.
-      `PRODUCT_CREATE` now includes supplier context and initial purchase flow details; `IMAGE_UPLOAD` now includes storage/url and upload timestamp; `PURCHASE_RECEIVE` now includes receipt quantity + stock change with legacy-safe status rendering.
-      `PRODUCT_DELETE` now includes stronger audit context: SKU/category/brand/supplier, selling+cost snapshot, order-history count, cleanup effects, delete timestamp, and delete reason.
-      For all other entry types, fallback meta rendering now normalizes labels/values to plain English (status tokens, dates, currency-like fields, percentages, IDs, and empty values as `Not provided`) so raw JSON-style fragments are avoided.
-      Generic mutable-entry fallback now adds a `What changed` block when before/after fields exist.
-      Use `History` on a row to view review/task timeline (mark/clear/task updates with actor and timestamp).
-  12) Use the `Task` action on exception rows to assign owner, due date, and task status (`Open`, `In progress`, `Resolved`).
-      `In progress` and `Resolved` require an assignee (Admin/Accountant).
-      You can attach image evidence files to a task from the task dialog.
-      Task updates are audit-logged as `AUDIT_REVIEW_TASK_UPDATED` (single) or `AUDIT_REVIEW_TASK_BULK_UPDATED` (bulk).
-      The `Aging` column shows event age and SLA due/overdue timing for triage.
-      Critical review clear has dual approval:
-      non-admin users submit a clear request, then Admin can `Approve clear` or `Reject clear`.
-      Admin can still clear directly without second approval.
-  13) Use `Export CSV` or `Export PDF` for handoff; exports include plain-language `Details`, `Source link`, and risk/review status columns.
-      CSV/PDF downloads across admin pages are now audit-logged with initiator, file name, format, size, and scope context (where available).
-      You can filter `/admin/audit` by action:
-      `ADMIN_EXPORT_DOWNLOAD`, `CUSTOMER_STATEMENT_EXPORT_CSV`, `CUSTOMER_STATEMENT_EXPORT_PDF`,
-      `INVENTORY_LOTS_EXPORT_CSV`, `INVENTORY_LOTS_COMPLIANCE_EXPORT_CSV`,
-      `DASHBOARD_SUMMARY_EXPORT_CSV`, `DASHBOARD_SUMMARY_EXPORT_PDF`,
-      `PRODUCT_PL_EXPORT_CSV`, `PRODUCT_PL_EXPORT_PDF`,
-      `STOCKOUT_IMPACT_EXPORT_CSV`, `STOCKOUT_IMPACT_EXPORT_PDF`,
-      plus supplier-payables export actions.
-  14) Use bottom pagination to move across server-loaded results and `Refresh` to reload without clearing filters.
-  15) On small screens, audit rows switch to stacked cards with the same risk/review actions; desktop keeps table layout.
-  16) Open `/admin/audit/retention` for retention status and manual cleanup run.
-     Retention guard is enforced:
-     - Unreviewed `High/Critical` exceptions block purge (must be reviewed first).
-     - Unreviewed `Medium` exceptions require explicit one-run override + reason.
-  17) Open `/admin/audit/settings` to configure risk thresholds and review queue windows without code changes:
-     - Refund high/critical trigger amounts
-     - Payment void high trigger amount
-     - OTC unposted-payment high trigger count
-     - Review SLA windows (critical/high/medium)
-     - Archive reminder/escalation windows
-     Save uses confirmation dialog and inline validation.
-     Use `Reset to defaults` to immediately restore env/default baseline thresholds and windows (confirmation required).
-     `Risk rule matrix` toggles let Admin decide which control actions escalate severity (for example `ORDER_CANCEL` as High).
-     Every save is audit-logged as `audit-risk-setting.update` with before/after values.
-     Reset actions are audit-logged as `audit-risk-setting.reset`.
-     If editing is locked, check `AUDIT_SETTINGS_MODE`:
-     `editable` (can save), `read_only` (view only), `env_only` (DB ignored; env/defaults only).
-  18) Reviewer performance panel shows 30-day throughput per reviewer:
-      reviewed count, average hours-to-review, and assigned open/in-progress/overdue counts.
-  19) Open `/admin/health` to review `Health Operations` status, issue count, and SLA.
+  1) Open `/admin/audit` and start at the page header:
+     `Clear filters` resets the whole page state, `Copy filter link` shares the exact current view, `Export CSV` and `Export PDF` download the current filtered result, and `Retention` opens `/admin/audit/retention`.
+  2) Move into the `Filters` card:
+     the always-visible controls are `Entity type`, `Action`, `Customer`, `Risk mode`, `Queue preset`, and the `From` / `To` date range.
+     These are the main triage filters and should handle most day-to-day review without opening anything else.
+  3) Use `Saved filters` from the filter header for reusable views.
+     `My filters` are editable/removable by you.
+     `Team filters` are shared and can be applied by everyone with access.
+  4) Use `Advanced filters` when you need investigative or niche filters.
+     The drawer opens on the right and includes:
+     `Log ID`, `Entity ID`, `Correlation ID`, `Meta status`, `Outcome`, `Actor ID`, `Actor type`, `Source page`, HR-only status filters, and the `Save current filter` form.
+  5) Use `Outcome` mainly for auth and security rows.
+     It is most useful when reviewing success vs failure for login, password, 2FA, and session events.
+  6) Use `Security presets` in the advanced drawer for exact shortcuts:
+     `Successful logins`, `Failed logins`, `Password changes`, `Password resets`, `2FA enabled`, `2FA disabled`, `Session invalidations`, and `Force logout actions`.
+     These presets clear conflicting filters first so the result is predictable.
+  7) Watch the active-filter chips row directly under the filter card.
+     Each chip has its own clear action.
+     `Advanced filters (N)` shows how many active filters are currently hidden inside the drawer.
+  8) Use the quick preset row for the most common operational slices:
+     `All activity (7 days)`, `Expenses (7 days)`, `Refunds (30 days)`, `Stock updates (7 days)`, `Customer payments (30 days)`, `Critical unreviewed`, and `Overdue tasks`.
+     These are intended for fast queue entry rather than one-off forensic filtering.
+  9) If the page is entered from a scoped HR or payroll link, keep the employee/payroll scope banner in view.
+     That banner tells you the table is intentionally narrowed before any additional filters are applied.
+  10) Use `Risk mode` to focus review pressure:
+      `Exceptions only` returns medium/high/critical rows, `Critical only` shows only critical exceptions, and `Needs review` narrows to exceptions that still need review.
+      Use `Queue preset` for workflow slices such as `Critical unreviewed`, `Archive soon unreviewed`, `Needs assignment`, and `Overdue tasks`.
+  11) Use the summary strip above the results table as the main compliance workflow bar.
+      It surfaces clickable shortcuts for:
+      `Needs review (all filtered)`, `Critical (all filtered)`, `Reviewed today (all filtered)`, `Overdue reviews C/H/M`, `Archive soon (14d)`, `Archive escalation (3d)`, `Already archive-eligible unreviewed`, `Open tasks`, `In-progress tasks`, `Overdue tasks`, and `Needs assignment (escalation window)`.
+      It also exposes `Notification center`, `Audit settings`, and `Notify escalation owners`.
+  12) Review each row with the main columns first:
+      `Actor`, `Entity`, `Risk`, `Reviewed`, `Aging`, and the row actions.
+      Use `Show more` in the `Meta` column to expand details when the compact view is not enough.
+  13) Meta content is intentionally rendered in plain English rather than raw JSON.
+      Every row includes an `Initiated by` line.
+      Auth failures now read as readable audit statements such as no matching account, wrong password, temporary lockout, rate limiting, or validation failure instead of internal codes.
+      Auth successes/failures also carry request context such as IP, user agent, request ID, and outcome.
+  14) Use `View record` to jump back to the source page when the audit row can be traced to a concrete admin page or record.
+      Use `History` to inspect review/task timeline for that event.
+  15) Use `Mark reviewed` when an exception has been accepted.
+      High/critical rows and selected control actions may require an assigned review owner and due date before review can be completed.
+      `Clear review` and `Clear selected review` are ADMIN-only and require a clear reason.
+  16) Use `Task` on exception rows to assign owner, due date, and task status (`Open`, `In progress`, `Resolved`).
+      Bulk task assignment is available from row selection.
+      The `Aging` column gives age plus due/overdue timing for SLA review.
+  17) Use `Export CSV` or `Export PDF` when you need a handoff artifact.
+      Exports follow the current filters and include plain-language detail columns.
+      Export actions themselves are audit-logged, so you can later filter `/admin/audit` by export actions if needed.
+  18) Use bottom pagination to move through server-loaded results.
+      On small screens the rows switch to stacked cards; on desktop the page stays in table format.
+  19) Open `/admin/audit/retention` for retention status and manual cleanup run.
+      Retention guard is enforced:
+      - Unreviewed `High/Critical` exceptions block purge.
+      - Unreviewed `Medium` exceptions require explicit one-run override plus reason.
+  20) Open `/admin/audit/settings` to configure risk thresholds and review queue windows without code changes:
+      - Refund high/critical trigger amounts
+      - Payment void high trigger amount
+      - OTC unposted-payment high trigger count
+      - Review SLA windows (critical/high/medium)
+      - Archive reminder/escalation windows
+      Save uses confirmation dialog and inline validation.
+      `Reset to defaults` restores env/default baseline thresholds and windows.
+      Every save/reset is audit-logged.
+      If editing is locked, check `AUDIT_SETTINGS_MODE`:
+      `editable`, `read_only`, or `env_only`.
+  21) Reviewer performance is available only when there is real review-task data.
+      If there is no reviewer-performance data yet, that panel stays hidden instead of showing an empty card.
+  22) Test strip for `/admin/audit`:
+      - Load `/admin/audit` and confirm the quick filters, quick presets, summary strip, and results table render.
+      - Open `Advanced filters`, then close it again and confirm the drawer responds immediately.
+      - Apply `Successful logins` and verify the page sets the expected security slice instead of layering on stale filters.
+      - Set `Outcome = Failed` and verify the table/query narrows to failed security activity.
+      - Save a filter from the advanced drawer, reopen it from `Saved filters`, and confirm advanced state is restored.
+      - Use `Copy filter link` and confirm the URL contains the current filter state.
+      - Click a summary-strip queue shortcut such as `Overdue tasks` and confirm the table updates without losing filter state.
+      - Run `Export CSV` and `Export PDF` with a small filtered result and confirm the export opens with the current scope.
+      - Trigger an empty state with narrow filters and confirm the page shows `No activity found for the current filters.` plus `Clear filters`.
+  23) Open `/admin/health` to review `Health Operations` status, issue count, and SLA.
       Location guide:
       `Triage queue` is inside the `Health Operations` card (same page), below `Acknowledge + owner`.
       Use `Triage queue` presets to focus issues:

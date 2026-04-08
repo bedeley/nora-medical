@@ -22,6 +22,7 @@ import {
   removeGuestCartItem,
   updateGuestCartItem,
 } from "@/lib/guest-cart";
+import { trackProductView } from "@/lib/recently-viewed";
 
 interface ProductCardProps {
   id: string;
@@ -38,6 +39,7 @@ interface ProductCardProps {
   isNew?: boolean;
   lowStock?: boolean;
   inStock?: boolean;
+  stock?: number;
   variant?: "standard" | "compact" | "mini" | "auto";
 }
 
@@ -54,6 +56,7 @@ export default function ProductCard({
   isNew,
   lowStock,
   inStock = true,
+  stock,
   variant = "auto",
 }: ProductCardProps) {
   const { data: session } = useSession();
@@ -145,7 +148,7 @@ export default function ProductCard({
         className={`bg-card text-card-foreground rounded-none border-none shadow-sm transition-shadow duration-300 hover:shadow-lg flex h-full flex-col ${
           isMini ? "text-xs" : isCompact ? "text-sm" : ""
         }`}
-        onClick={() => router.push(`/products/${id}`)}
+        onClick={() => { trackProductView(id); router.push(`/products/${id}`); }}
       >
         <CardHeader className="p-0">
           <div className={`group relative overflow-hidden bg-white ${isMini ? "h-36" : "h-44"}`}>
@@ -154,18 +157,25 @@ export default function ProductCard({
               alt={name}
               fill
               sizes="(max-width: 768px) 50vw, 25vw"
-              className="object-contain object-center transition-transform duration-300 group-hover:-translate-y-1"
+              className="object-contain object-center transition-transform duration-300 group-hover:scale-110"
               onError={() => setImgSrc("/placeholder.png")}
             />
             <div className="pointer-events-none absolute inset-0 transition-shadow duration-300 group-hover:shadow-[inset_0_-30px_40px_-30px_rgba(15,23,42,0.25)]" />
 
-            {(isNew || lowStock || onSale) && (
+            {(isNew || lowStock || onSale || (inStock && !lowStock)) && (
               <div className="absolute left-2 top-2 flex flex-wrap gap-1">
                 {isNew && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary text-primary-foreground">New</span>
                 )}
+                {inStock && !lowStock && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:border-emerald-800">
+                    In Stock
+                  </span>
+                )}
                 {lowStock && (
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>Low Stock</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded border ${chipToneClass("warning")} ${chipToneBorderClass("warning")}`}>
+                    {typeof stock === "number" && stock > 0 ? `Only ${stock} left` : "Low Stock"}
+                  </span>
                 )}
                 {onSale && (
                   <span className={`text-[10px] px-1.5 py-0.5 rounded border ${chipToneClass("danger")} ${chipToneBorderClass("danger")}`}>{discountPct}% off</span>
@@ -180,6 +190,7 @@ export default function ProductCard({
                 className="h-7 px-2 text-[11px] opacity-0 transition-opacity duration-200 group-hover:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
+                  trackProductView(id);
                   router.push(`/products/${id}`);
                 }}
               >

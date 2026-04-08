@@ -9,14 +9,16 @@ import {
   rateLimit,
   recordOtpFailure,
 } from "@/lib/rate-limit";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
+import { passwordSchema } from "@/lib/validation";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const schema = z.object({
   identifier: z.string().min(3).optional(),
   email: z.string().optional(), // backward compatibility
   code: z.string().min(4),
-  password: z.string().min(10),
+  password: passwordSchema,
 });
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -115,6 +117,15 @@ export async function POST(req: Request) {
     const ok = await bcrypt.compare(code, otp.codeHash);
     if (!ok) {
       await recordOtpFailure("password_reset", user.id);
+      await recordAuditLog({
+        actorId: user.id,
+        action: "USER_PASSWORD_RESET_FAILED",
+        entityType: "USER",
+        entityId: user.id,
+        request: req,
+        outcome: "FAILED",
+        meta: { reason: "invalid_code" },
+      });
       return NextResponse.json({ error: "Invalid or expired code" }, { status: 400 });
     }
 
@@ -124,6 +135,15 @@ export async function POST(req: Request) {
       await tx.userOtp.deleteMany({ where: { userId: user.id, purpose: "password_reset" } });
     });
     await clearOtpFailures("password_reset", user.id);
+    await recordAuditLog({
+      actorId: user.id,
+      action: "USER_PASSWORD_RESET",
+      entityType: "USER",
+      entityId: user.id,
+      request: req,
+      outcome: "SUCCESS",
+      meta: { method: "password_reset" },
+    });
 
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

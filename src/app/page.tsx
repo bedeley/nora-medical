@@ -36,7 +36,7 @@ export default async function HomePage() {
   }));
 
   return (
-    <main
+    <div
       className="min-h-screen flex flex-col items-center justify-start text-center px-6 pt-10 pb-16 relative overflow-hidden"
       suppressHydrationWarning
     >
@@ -300,6 +300,6 @@ export default async function HomePage() {
           </div>
         </div>
       </section>
-    </main>
+    </div>
   );
 }

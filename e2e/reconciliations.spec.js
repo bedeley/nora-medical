@@ -1,52 +1,58 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
+test.use({ storageState: "e2e/.auth/admin.json" });
 
-  await page.goto("/login");
-  await page.getByPlaceholder(/email or username/i).fill(email);
-  await page.getByPlaceholder(/^password$/i).fill(password);
-  await page.getByRole("button", { name: /sign in|login/i }).click();
-  await page.waitForURL(/\/($|admin)/);
-  await page.goto("/admin");
-  await page.waitForURL(/\/admin/);
+async function waitForReconciliationList(page) {
+  await expect(page.locator("#history-search")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Close selected/i })).toBeVisible();
+}
+
+async function waitForWorkspace(page, txnName, lineName) {
+  await expect(page.getByRole("button", { name: txnName })).toBeVisible();
+  await expect(page.getByRole("button", { name: lineName })).toBeVisible();
+}
+
+async function expandAutoMatchTools(page) {
+  const toggle = page.getByRole("button", { name: /Expand/i });
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(page.getByRole("button", { name: /^Exact amounts$/i })).toBeVisible();
 }
 
 test.describe("Accounting Reconciliations Page", () => {
   test("keyboard shortcuts help + search focus", async ({ page }) => {
-    await signIn(page);
     await page.goto("/admin/accounting/reconciliations");
+    await waitForReconciliationList(page);
 
     await page.keyboard.press("?");
-    await expect(page.getByText(/Keyboard Shortcuts/i)).toBeVisible();
-    await page.getByRole("button", { name: /close/i }).click();
+    const dialog = page.getByRole("dialog", { name: /Keyboard Shortcuts/i });
+    await expect(dialog.getByRole("heading", { name: /Keyboard Shortcuts/i })).toBeVisible();
+    await dialog.getByRole("button", { name: /^Close$/i }).first().click();
 
     await page.keyboard.press("/");
-    await expect(page.getByLabel("Search")).toBeFocused();
+    await expect(page.locator("#history-search")).toBeFocused();
   });
 
   test("bulk close dialog opens and shows dry-run area", async ({ page }) => {
-    await signIn(page);
     await page.goto("/admin/accounting/reconciliations");
+    await waitForReconciliationList(page);
 
-    await page.getByText(/Select page/i).click();
+    await page.getByLabel(/Select page/i).check();
     await page.getByRole("button", { name: /Close selected/i }).click();
-    await expect(page.getByText(/Confirm Bulk Close/i)).toBeVisible();
-    await expect(page.getByText(/dry-run/i)).toBeVisible();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/Confirm Bulk Close/i)).toBeVisible();
+    await expect(dialog).toContainText(/dry-run checklist|unmatched items/i);
   });
 
   test("bulk ZIP export button is reachable", async ({ page }) => {
-    await signIn(page);
     await page.goto("/admin/accounting/reconciliations");
+    await waitForReconciliationList(page);
     await expect(page.getByRole("button", { name: /Export detailed CSVs/i })).toBeVisible();
   });
 });
 
 test.describe("Reconciliation Workspace Enhancements", () => {
   test("auto-match exact shows skip report and supports CSV download", async ({ page }) => {
-    await signIn(page);
     const recId = "rec-skip";
     const bankId = "bank-1";
 
@@ -118,10 +124,14 @@ test.describe("Reconciliation Workspace Enhancements", () => {
     });
 
     await page.goto(`/admin/accounting/reconciliations/${recId}`);
-    await page.getByRole("button", { name: /Auto-match exact amounts/i }).click();
-    await page.getByRole("button", { name: /Run auto-match/i }).click();
+    await waitForWorkspace(page, /TXN NO EXACT LINE/i, /1010 1010 Bank/i);
+    await expandAutoMatchTools(page);
+    await page.getByRole("button", { name: /^Exact amounts$/i }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/Run auto-match\?/i)).toBeVisible();
+    await dialog.getByRole("button", { name: /Run auto-match/i }).click();
 
-    await expect(page.getByRole("heading", { name: /Last auto-match result/i })).toBeVisible();
+    await expect(page.getByText(/Last:\s*exact/i)).toBeVisible();
     const downloadButton = page.getByRole("button", { name: /Download skip report/i });
     await expect(downloadButton).toBeEnabled();
 
@@ -133,7 +143,6 @@ test.describe("Reconciliation Workspace Enhancements", () => {
   });
 
   test("undo last auto-match batch sends UNMATCHED updates", async ({ page }) => {
-    await signIn(page);
     const recId = "rec-undo";
     const bankId = "bank-1";
     const matchStatuses = [];
@@ -211,10 +220,15 @@ test.describe("Reconciliation Workspace Enhancements", () => {
     });
 
     await page.goto(`/admin/accounting/reconciliations/${recId}`);
-    await page.getByRole("button", { name: /Auto-match exact amounts/i }).click();
-    await page.getByRole("button", { name: /Run auto-match/i }).click();
-    await expect(page.getByRole("button", { name: /Undo last auto-match batch/i })).toBeEnabled();
-    await page.getByRole("button", { name: /Undo last auto-match batch/i }).click();
+    await waitForWorkspace(page, /TXN EXACT/i, /1010 1010 Bank/i);
+    await expandAutoMatchTools(page);
+    await page.getByRole("button", { name: /^Exact amounts$/i }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/Run auto-match\?/i)).toBeVisible();
+    await dialog.getByRole("button", { name: /Run auto-match/i }).click();
+    const undoButton = page.getByRole("button", { name: /Undo last batch/i });
+    await expect(undoButton).toBeEnabled();
+    await undoButton.click();
 
     await expect.poll(() => matchStatuses.filter((s) => s === "MATCHED").length).toBeGreaterThan(0);
     await expect.poll(() => matchStatuses.filter((s) => s === "UNMATCHED").length).toBeGreaterThan(0);

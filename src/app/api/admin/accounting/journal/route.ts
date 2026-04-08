@@ -6,6 +6,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit-log";
 import { loadAccountingJournalPolicy } from "@/lib/accounting-journal-policy";
 import {
+  JOURNAL_IDS_ONLY_MAX,
   applyIdsOnlyCap,
   compareJournalStatus,
   normalizeJournalSearchQuery,
@@ -86,220 +87,37 @@ function isAuthorized(user?: AuthenticatedUser | null) {
   return role === "ADMIN" || role === "ACCOUNTANT";
 }
 
-export async function GET(req: Request) {
-  const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+function withAndClauses(
+  where: Prisma.JournalEntryWhereInput,
+  clauses: Prisma.JournalEntryWhereInput[],
+) {
+  if (clauses.length === 0) return where;
+  return {
+    ...where,
+    AND: [...(Array.isArray(where.AND) ? where.AND : []), ...clauses],
+  };
+}
 
-  const { searchParams } = new URL(req.url);
-  const status = searchParams.get("status");
-  const sourceType = searchParams.get("sourceType");
-  const start = searchParams.get("start");
-  const end = searchParams.get("end");
-  const includeArchive = searchParams.get("includeArchive") === "1";
-  const paginate = searchParams.get("paginate") === "1";
-  const idsOnly = searchParams.get("idsOnly") === "1";
-  const rawPage = Number(searchParams.get("page") || "1");
-  const rawPageSize = Number(searchParams.get("pageSize") || "25");
-  const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
-  const pageSize = Number.isFinite(rawPageSize) ? Math.max(10, Math.min(200, Math.floor(rawPageSize))) : 25;
-  const qRaw = String(searchParams.get("q") || "");
-  const normalizedQ = normalizeJournalSearchQuery(qRaw);
-  if (!normalizedQ.ok) {
-    return NextResponse.json(
-      { error: normalizedQ.error },
-      { status: 400 },
-    );
-  }
-  const q = normalizedQ.q;
-  const sortByRaw = String(searchParams.get("sortBy") || "date").toLowerCase();
-  const sortDirRaw = String(searchParams.get("sortDir") || "desc").toLowerCase();
-  const sortBy: "date" | "status" | "amount" =
-    sortByRaw === "status" || sortByRaw === "amount" ? sortByRaw : "date";
-  const sortDir: Prisma.SortOrder = sortDirRaw === "asc" ? "asc" : "desc";
+function emptyJournalListResponse(
+  page: number,
+  pageSize: number,
+  sortBy: "date" | "status" | "amount",
+  sortDir: Prisma.SortOrder,
+) {
+  return {
+    items: [],
+    page,
+    pageSize,
+    total: 0,
+    totalPages: 1,
+    sortBy,
+    sortDir,
+  };
+}
 
-  const where: {
-    status?: "DRAFT" | "POSTED" | "VOID";
-    sourceType?: "ORDER" | "PAYMENT" | "EXPENSE" | "PURCHASE" | "PAYROLL" | "MANUAL";
-    entryDate?: { gte?: Date; lte?: Date };
-    archivedAt?: Date | null;
-    AND?: Array<Record<string, unknown>>;
-  } = {};
-  if (!includeArchive) {
-    where.archivedAt = null;
-  }
-  if (status === "DRAFT" || status === "POSTED" || status === "VOID") {
-    where.status = status;
-  }
-  if (
-    sourceType === "ORDER" ||
-    sourceType === "PAYMENT" ||
-    sourceType === "EXPENSE" ||
-    sourceType === "PURCHASE" ||
-    sourceType === "PAYROLL" ||
-    sourceType === "MANUAL"
-  ) {
-    where.sourceType = sourceType;
-  }
-  if (start || end) {
-    where.entryDate = {};
-    if (start) {
-      if (YMD_RE.test(start)) {
-        where.entryDate.gte = new Date(`${start}T00:00:00.000Z`);
-      } else {
-        where.entryDate.gte = new Date(start);
-      }
-    }
-    if (end) {
-      if (YMD_RE.test(end)) {
-        where.entryDate.lte = new Date(`${end}T23:59:59.999Z`);
-      } else {
-        const endDate = new Date(end);
-        endDate.setHours(23, 59, 59, 999);
-        where.entryDate.lte = endDate;
-      }
-    }
-  }
-  const hasExplicitDateWindow = Boolean(start || end);
-  if (!hasExplicitDateWindow && !includeArchive) {
-    const policy = await loadAccountingJournalPolicy();
-    const recentWindowDays = policy.recentWindowDays;
-    const recentStart = new Date();
-    recentStart.setUTCDate(recentStart.getUTCDate() - recentWindowDays);
-    recentStart.setUTCHours(0, 0, 0, 0);
-    where.entryDate = {
-      ...(where.entryDate || {}),
-      gte: recentStart,
-    };
-  }
-  if (q) {
-    const qAsSourceType = q.toUpperCase();
-    const sourceTypeExactMatch = JOURNAL_SOURCE_TYPES.includes(qAsSourceType as (typeof JOURNAL_SOURCE_TYPES)[number])
-      ? [{ sourceType: { equals: qAsSourceType } }]
-      : [];
-    where.AND = [
-      {
-        OR: [
-          { memo: { contains: q, mode: "insensitive" } },
-          ...sourceTypeExactMatch,
-          { sourceId: { contains: q, mode: "insensitive" } },
-          {
-            lines: {
-              some: {
-                OR: [
-                  { description: { contains: q, mode: "insensitive" } },
-                  { account: { code: { contains: q, mode: "insensitive" } } },
-                  { account: { name: { contains: q, mode: "insensitive" } } },
-                ],
-              },
-            },
-          },
-        ],
-      },
-    ];
-  }
-
-  if (idsOnly) {
-    const rows = await prisma.journalEntry.findMany({
-      where,
-      orderBy: [{ entryDate: sortDir }, { createdAt: sortDir }],
-      select: { id: true },
-    });
-    const capped = applyIdsOnlyCap(rows.map((row) => row.id));
-    return NextResponse.json(capped);
-  }
-
-  let amountSortedEntryIds: string[] | null = null;
-  if (sortBy === "amount") {
-    const grouped = await prisma.journalLine.groupBy({
-      by: ["entryId"],
-      where: { entry: where },
-      _sum: { debit: true },
-      orderBy: { _sum: { debit: sortDir } },
-    });
-    amountSortedEntryIds = grouped.map((row) => row.entryId);
-    if (amountSortedEntryIds.length === 0) {
-      amountSortedEntryIds = [];
-    }
-  }
-
-  let entries: Awaited<ReturnType<typeof prisma.journalEntry.findMany>> = [];
-  let total = 0;
-  if (sortBy === "amount" && amountSortedEntryIds) {
-    total = amountSortedEntryIds.length;
-    const pagedIds = paginate
-      ? amountSortedEntryIds.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
-      : amountSortedEntryIds;
-    if (pagedIds.length > 0) {
-      const rows = await prisma.journalEntry.findMany({
-        where: { id: { in: pagedIds } },
-        include: {
-          approvedBy: { select: { id: true, name: true, email: true } },
-          lines: {
-            include: {
-              account: true,
-              taxCode: true,
-            },
-          },
-        },
-      });
-      const map = new Map(rows.map((row) => [row.id, row]));
-      entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
-    }
-  } else {
-    if (sortBy === "status") {
-      const statusRows = await prisma.journalEntry.findMany({
-        where,
-        select: { id: true, status: true, entryDate: true, createdAt: true },
-      });
-      statusRows.sort((a, b) => compareJournalStatus(a, b, sortDir));
-      total = statusRows.length;
-      const pagedIds = paginate
-        ? statusRows.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize).map((row) => row.id)
-        : statusRows.map((row) => row.id);
-      if (pagedIds.length > 0) {
-        const rows = await prisma.journalEntry.findMany({
-          where: { id: { in: pagedIds } },
-          include: {
-            approvedBy: { select: { id: true, name: true, email: true } },
-            lines: {
-              include: {
-                account: true,
-                taxCode: true,
-              },
-            },
-          },
-        });
-        const map = new Map(rows.map((row) => [row.id, row]));
-        entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
-      }
-    } else {
-      const orderBy: Prisma.JournalEntryOrderByWithRelationInput[] = [
-        { entryDate: sortDir },
-        { createdAt: sortDir },
-      ];
-      const [rows, count] = await Promise.all([
-        prisma.journalEntry.findMany({
-          where,
-          orderBy,
-          ...(paginate ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
-          include: {
-            approvedBy: { select: { id: true, name: true, email: true } },
-            lines: {
-              include: {
-                account: true,
-                taxCode: true,
-              },
-            },
-          },
-        }),
-        paginate ? prisma.journalEntry.count({ where }) : Promise.resolve(0),
-      ]);
-      entries = rows;
-      total = count;
-    }
-  }
+async function enrichJournalEntries<T extends { id: string; sourceType: string; sourceId?: string | null }>(
+  entries: T[],
+): Promise<Array<T & { sourceLabel: string | null; apBalanceAfter: number | null }>> {
   const orderIds = entries
     .filter((entry) => entry.sourceType === "ORDER" && entry.sourceId)
     .map((entry) => entry.sourceId as string);
@@ -404,24 +222,567 @@ export async function GET(req: Request) {
   }
 
   const enriched = entries.map((entry) => {
-    if (entry.sourceType !== "ORDER" || !entry.sourceId) return entry;
+    if (entry.sourceType !== "ORDER" || !entry.sourceId) return { ...entry, sourceLabel: null };
     return {
       ...entry,
       sourceLabel: invoiceByOrderId.get(entry.sourceId) || null,
     };
   });
-  const enrichedWithPayments = enriched.map((entry) => {
-    if (entry.sourceType !== "PAYMENT" || !entry.sourceId) return entry;
+
+  return enriched.map((entry) => {
+    if (entry.sourceType !== "PAYMENT" || !entry.sourceId) {
+      return {
+        ...entry,
+        apBalanceAfter: apBalanceByEntryId.get(entry.id) ?? null,
+      };
+    }
     const paymentId = String(entry.sourceId || "").split(":")[0] || "";
     return {
       ...entry,
       sourceLabel: invoiceByPaymentId.get(paymentId) || null,
+      apBalanceAfter: apBalanceByEntryId.get(entry.id) ?? null,
     };
   });
-  const enrichedWithAp = enrichedWithPayments.map((entry) => ({
-    ...entry,
-    apBalanceAfter: apBalanceByEntryId.get(entry.id) ?? null,
-  }));
+}
+
+export async function GET(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const status = searchParams.get("status");
+  const sourceType = searchParams.get("sourceType");
+  const start = searchParams.get("start");
+  const end = searchParams.get("end");
+  const scopeMode = String(searchParams.get("scopeMode") || "").toLowerCase();
+  const includeArchive = searchParams.get("includeArchive") === "1";
+  const paginate = searchParams.get("paginate") === "1";
+  const idsOnly = searchParams.get("idsOnly") === "1";
+  const aggregate = searchParams.get("aggregate") === "1";
+  const balanceScope = searchParams.get("balanceScope") === "1";
+  const link = String(searchParams.get("link") || "").trim();
+  const account = String(searchParams.get("account") || "").trim();
+  const accountId = String(searchParams.get("accountId") || "").trim();
+  const entryDirRaw = String(searchParams.get("entryDir") || "").toLowerCase();
+  const entryDir = entryDirRaw === "debit" || entryDirRaw === "credit" ? entryDirRaw : "";
+  const outOfBalanceOnly = searchParams.get("outOfBalance") === "1";
+  const missingRefOnly = searchParams.get("missingRef") === "1";
+  const largeAmountOnly = searchParams.get("largeAmount") === "1";
+  const staleDraftOnly = searchParams.get("staleDraft") === "1";
+  const largestVarianceFirst = searchParams.get("largestVariance") === "1";
+  const rawPage = Number(searchParams.get("page") || "1");
+  const rawPageSize = Number(searchParams.get("pageSize") || "25");
+  const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
+  const pageSize = Number.isFinite(rawPageSize) ? Math.max(10, Math.min(200, Math.floor(rawPageSize))) : 25;
+  const qRaw = String(searchParams.get("q") || "");
+  const normalizedQ = normalizeJournalSearchQuery(qRaw);
+  if (!normalizedQ.ok) {
+    return NextResponse.json(
+      { error: normalizedQ.error },
+      { status: 400 },
+    );
+  }
+  const q = normalizedQ.q;
+  const sortByRaw = String(searchParams.get("sortBy") || "date").toLowerCase();
+  const sortDirRaw = String(searchParams.get("sortDir") || "desc").toLowerCase();
+  const sortBy: "date" | "status" | "amount" =
+    sortByRaw === "status" || sortByRaw === "amount" ? sortByRaw : "date";
+  const sortDir: Prisma.SortOrder = sortDirRaw === "asc" ? "asc" : "desc";
+  const journalPolicy = await loadAccountingJournalPolicy();
+  const largeAmountAnomalyThreshold = journalPolicy.largeAmountAnomalyThreshold ?? 25000;
+
+  const where: Prisma.JournalEntryWhereInput = {};
+  const andClauses: Prisma.JournalEntryWhereInput[] = [];
+  if (!includeArchive) {
+    where.archivedAt = null;
+  }
+  if (status === "DRAFT" || status === "POSTED" || status === "VOID") {
+    where.status = status;
+  }
+  if (
+    sourceType === "ORDER" ||
+    sourceType === "PAYMENT" ||
+    sourceType === "EXPENSE" ||
+    sourceType === "PURCHASE" ||
+    sourceType === "PAYROLL" ||
+    sourceType === "MANUAL"
+  ) {
+    where.sourceType = sourceType;
+  }
+  if (start || end) {
+    where.entryDate = {};
+    if (start) {
+      if (YMD_RE.test(start)) {
+        where.entryDate.gte = new Date(`${start}T00:00:00.000Z`);
+      } else {
+        where.entryDate.gte = new Date(start);
+      }
+    }
+    if (end) {
+      if (YMD_RE.test(end)) {
+        where.entryDate.lte = new Date(`${end}T23:59:59.999Z`);
+      } else {
+        const endDate = new Date(end);
+        endDate.setHours(23, 59, 59, 999);
+        where.entryDate.lte = endDate;
+      }
+    }
+  }
+  const hasExplicitDateWindow = Boolean(start || end);
+  if (!hasExplicitDateWindow && !includeArchive && scopeMode !== "all_non_archived") {
+    const recentWindowDays = journalPolicy.recentWindowDays;
+    const recentStart = new Date();
+    recentStart.setUTCDate(recentStart.getUTCDate() - recentWindowDays);
+    recentStart.setUTCHours(0, 0, 0, 0);
+    const existingEntryDate =
+      where.entryDate && typeof where.entryDate === "object" && !("toISOString" in where.entryDate)
+        ? where.entryDate
+        : {};
+    where.entryDate = {
+      ...existingEntryDate,
+      gte: recentStart,
+    };
+  }
+  if (q) {
+    const qAsSourceType = q.toUpperCase();
+    const sourceTypeExactMatch = JOURNAL_SOURCE_TYPES.includes(qAsSourceType as (typeof JOURNAL_SOURCE_TYPES)[number])
+      ? [{ sourceType: qAsSourceType as (typeof JOURNAL_SOURCE_TYPES)[number] }]
+      : [];
+    andClauses.push({
+      OR: [
+        { memo: { contains: q, mode: "insensitive" } },
+        ...sourceTypeExactMatch,
+        { sourceId: { contains: q, mode: "insensitive" } },
+        {
+          lines: {
+            some: {
+              OR: [
+                { description: { contains: q, mode: "insensitive" } },
+                { account: { code: { contains: q, mode: "insensitive" } } },
+                { account: { name: { contains: q, mode: "insensitive" } } },
+              ],
+            },
+          },
+        },
+      ],
+    });
+  }
+  if (link) {
+    // Also search order invoice numbers — they live on the Order model and are
+    // joined in as sourceLabel during enrichment, so a plain sourceId search
+    // would miss them. We resolve matching order IDs here first.
+    const orderIdsMatchingInvoice = await prisma.order.findMany({
+      where: {
+        OR: [
+          { invoiceNumber: { contains: link, mode: "insensitive" } },
+          { receiptHash: { contains: link, mode: "insensitive" } },
+        ],
+      },
+      select: { id: true },
+    }).then((rows) => rows.map((r) => r.id));
+    andClauses.push({
+      OR: [
+        { sourceId: { contains: link, mode: "insensitive" } },
+        { memo: { contains: link, mode: "insensitive" } },
+        {
+          lines: {
+            some: {
+              description: { contains: link, mode: "insensitive" },
+            },
+          },
+        },
+        ...(orderIdsMatchingInvoice.length > 0
+          ? [{ sourceType: "ORDER" as const, sourceId: { in: orderIdsMatchingInvoice } }]
+          : []),
+      ],
+    });
+  }
+  if (accountId) {
+    andClauses.push({
+      lines: {
+        some: {
+          accountId,
+        },
+      },
+    });
+  }
+  if (account) {
+    andClauses.push({
+      lines: {
+        some: {
+          OR: [
+            { account: { code: { contains: account, mode: "insensitive" } } },
+            { account: { name: { contains: account, mode: "insensitive" } } },
+          ],
+        },
+      },
+    });
+  }
+  if (entryDir) {
+    // Build a line-level scope that respects any active account filter so the
+    // net-direction check is scoped to the same lines the user is drilling into.
+    const lineScopeForDir: Prisma.JournalLineWhereInput = {
+      ...(accountId ? { accountId } : {}),
+      ...(account
+        ? {
+            account: {
+              OR: [
+                { code: { contains: account, mode: "insensitive" } },
+                { name: { contains: account, mode: "insensitive" } },
+              ],
+            },
+          }
+        : {}),
+    };
+    // Determine net direction at the entry level: sum debits vs credits across
+    // all matching lines, then keep only entries whose net is debit-heavy or
+    // credit-heavy. Using `debit: { gt: 0 }` would match every double-entry
+    // because every entry has both debit and credit lines.
+    const dirGrouped = await prisma.journalLine.groupBy({
+      by: ["entryId"],
+      where: { entry: withAndClauses(where, andClauses), ...lineScopeForDir },
+      _sum: { debit: true, credit: true },
+    });
+    const dirMatchedIds = dirGrouped
+      .filter((row) => {
+        const net = Number(row._sum.debit || 0) - Number(row._sum.credit || 0);
+        return entryDir === "debit" ? net > 0 : net < 0;
+      })
+      .map((row) => row.entryId);
+    if (dirMatchedIds.length === 0) {
+      if (idsOnly) return NextResponse.json({ ids: [], total: 0, truncated: false, max: JOURNAL_IDS_ONLY_MAX });
+      if (aggregate) return NextResponse.json({ total: 0, posted: 0, draft: 0, void: 0, debit: 0, credit: 0, outOfBalanceCount: 0, exceptionCounts: { missingRef: 0, largeAmount: 0, staleDraft: 0 }, sourceCounts: {}, draftQueue: { count: 0, oldest: null, oldestAgeDays: 0 } });
+      if (paginate) return NextResponse.json(emptyJournalListResponse(page, pageSize, sortBy, sortDir));
+      return NextResponse.json([]);
+    }
+    andClauses.push({ id: { in: dirMatchedIds } });
+  }
+  if (missingRefOnly) {
+    andClauses.push({
+      status: "POSTED",
+      NOT: { sourceType: "MANUAL" },
+      OR: [{ sourceId: null }, { sourceId: "" }],
+    });
+  }
+  if (staleDraftOnly) {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    andClauses.push({
+      status: "DRAFT",
+      entryDate: { lte: cutoff },
+    });
+  }
+  let scopedWhere = withAndClauses(where, andClauses);
+  if (outOfBalanceOnly || largeAmountOnly) {
+    const grouped = await prisma.journalLine.groupBy({
+      by: ["entryId"],
+      where: { entry: scopedWhere },
+      _sum: { debit: true, credit: true },
+    });
+    const matchedIds = grouped
+      .filter((row) => {
+        const debit = Number(row._sum.debit || 0);
+        const credit = Number(row._sum.credit || 0);
+        if (outOfBalanceOnly && Math.abs(debit - credit) <= 0.01) return false;
+        if (largeAmountOnly && Math.max(Math.abs(debit), Math.abs(credit)) < largeAmountAnomalyThreshold) return false;
+        return true;
+      })
+      .map((row) => row.entryId);
+    if (matchedIds.length === 0) {
+      if (idsOnly) {
+        return NextResponse.json({
+          ids: [],
+          total: 0,
+          truncated: false,
+          max: JOURNAL_IDS_ONLY_MAX,
+        });
+      }
+      if (aggregate) {
+        return NextResponse.json({ total: 0, posted: 0, draft: 0, void: 0, debit: 0, credit: 0, outOfBalanceCount: 0, exceptionCounts: { missingRef: 0, largeAmount: 0, staleDraft: 0 }, sourceCounts: {}, draftQueue: { count: 0, oldest: null, oldestAgeDays: 0 } });
+      }
+      if (paginate) {
+        return NextResponse.json(emptyJournalListResponse(page, pageSize, sortBy, sortDir));
+      }
+      return NextResponse.json([]);
+    }
+    scopedWhere = withAndClauses(scopedWhere, [{ id: { in: matchedIds } }]);
+  }
+
+  if (aggregate) {
+    const staleDraftCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const [statusRows, sourceRows, groupedLines, missingRefCount, staleDraftCount, oldestDraft] = await Promise.all([
+      prisma.journalEntry.groupBy({
+        by: ["status"],
+        where: scopedWhere,
+        _count: { _all: true },
+      }),
+      prisma.journalEntry.groupBy({
+        by: ["sourceType"],
+        where: scopedWhere,
+        _count: { _all: true },
+      }),
+      prisma.journalLine.groupBy({
+        by: ["entryId"],
+        where: { entry: scopedWhere },
+        _sum: { debit: true, credit: true },
+      }),
+      prisma.journalEntry.count({
+        where: withAndClauses(scopedWhere, [
+          {
+            status: "POSTED",
+            NOT: { sourceType: "MANUAL" },
+            OR: [{ sourceId: null }, { sourceId: "" }],
+          },
+        ]),
+      }),
+      prisma.journalEntry.count({
+        where: withAndClauses(scopedWhere, [
+          {
+            status: "DRAFT",
+            entryDate: { lte: staleDraftCutoff },
+          },
+        ]),
+      }),
+      prisma.journalEntry.findFirst({
+        where: withAndClauses(scopedWhere, [{ status: "DRAFT" }]),
+        orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }],
+        include: {
+          approvedBy: { select: { id: true, name: true, email: true } },
+          lines: {
+            include: {
+              account: true,
+              taxCode: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const summary = {
+      total: 0,
+      posted: 0,
+      draft: 0,
+      void: 0,
+      debit: 0,
+      credit: 0,
+      outOfBalanceCount: 0,
+      exceptionCounts: {
+        missingRef: missingRefCount,
+        largeAmount: 0,
+        staleDraft: staleDraftCount,
+      },
+      sourceCounts: {} as Record<string, number>,
+      draftQueue: {
+        count: 0,
+        oldest: oldestDraft
+          ? {
+              ...oldestDraft,
+              entryDate: oldestDraft.entryDate.toISOString(),
+            }
+          : null,
+        oldestAgeDays: oldestDraft
+          ? Math.max(0, Math.floor((Date.now() - oldestDraft.entryDate.getTime()) / (1000 * 60 * 60 * 24)))
+          : 0,
+      },
+    };
+
+    for (const row of statusRows) {
+      const count = Number(row._count._all || 0);
+      summary.total += count;
+      if (row.status === "POSTED") summary.posted = count;
+      if (row.status === "DRAFT") {
+        summary.draft = count;
+        summary.draftQueue.count = count;
+      }
+      if (row.status === "VOID") summary.void = count;
+    }
+    for (const row of sourceRows) {
+      summary.sourceCounts[row.sourceType] = Number(row._count._all || 0);
+    }
+    for (const row of groupedLines) {
+      const debit = Number(row._sum.debit || 0);
+      const credit = Number(row._sum.credit || 0);
+      summary.debit += debit;
+      summary.credit += credit;
+      if (Math.abs(debit - credit) > 0.01) summary.outOfBalanceCount += 1;
+      if (Math.max(Math.abs(debit), Math.abs(credit)) >= largeAmountAnomalyThreshold) {
+        summary.exceptionCounts.largeAmount += 1;
+      }
+    }
+
+    return NextResponse.json(summary);
+  }
+
+  if (balanceScope) {
+    const rows = await prisma.journalEntry.findMany({
+      where: scopedWhere,
+      orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }],
+      select: {
+        id: true,
+        entryDate: true,
+        sourceType: true,
+        sourceId: true,
+        lines: {
+          select: {
+            debit: true,
+            credit: true,
+            account: {
+              select: {
+                code: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    const enriched = await enrichJournalEntries(rows);
+    return NextResponse.json(enriched);
+  }
+
+  if (idsOnly) {
+    const rows = await prisma.journalEntry.findMany({
+      where: scopedWhere,
+      orderBy: [{ entryDate: sortDir }, { createdAt: sortDir }],
+      select: { id: true },
+    });
+    const capped = applyIdsOnlyCap(rows.map((row) => row.id));
+    return NextResponse.json(capped);
+  }
+
+  let amountSortedEntryIds: string[] | null = null;
+  let varianceSortedEntryIds: string[] | null = null;
+  if (largestVarianceFirst) {
+    const grouped = await prisma.journalLine.groupBy({
+      by: ["entryId"],
+      where: { entry: scopedWhere },
+      _sum: { debit: true, credit: true },
+    });
+    varianceSortedEntryIds = grouped
+      .map((row) => ({
+        entryId: row.entryId,
+        variance: Math.abs(Number(row._sum.debit || 0) - Number(row._sum.credit || 0)),
+      }))
+      .sort((a, b) => {
+        if (b.variance !== a.variance) return b.variance - a.variance;
+        return a.entryId.localeCompare(b.entryId);
+      })
+      .map((row) => row.entryId);
+    if (varianceSortedEntryIds.length === 0) {
+      varianceSortedEntryIds = [];
+    }
+  }
+  if (sortBy === "amount") {
+    const grouped = await prisma.journalLine.groupBy({
+      by: ["entryId"],
+      where: { entry: scopedWhere },
+      _sum: { debit: true },
+      orderBy: { _sum: { debit: sortDir } },
+    });
+    amountSortedEntryIds = grouped.map((row) => row.entryId);
+    if (amountSortedEntryIds.length === 0) {
+      amountSortedEntryIds = [];
+    }
+  }
+
+  let entries: Awaited<ReturnType<typeof prisma.journalEntry.findMany>> = [];
+  let total = 0;
+  if (largestVarianceFirst && varianceSortedEntryIds) {
+    total = varianceSortedEntryIds.length;
+    const pagedIds = paginate
+      ? varianceSortedEntryIds.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
+      : varianceSortedEntryIds;
+    if (pagedIds.length > 0) {
+      const rows = await prisma.journalEntry.findMany({
+        where: { id: { in: pagedIds } },
+        include: {
+          approvedBy: { select: { id: true, name: true, email: true } },
+          lines: {
+            include: {
+              account: true,
+              taxCode: true,
+            },
+          },
+        },
+      });
+      const map = new Map(rows.map((row) => [row.id, row]));
+      entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
+    }
+  } else if (sortBy === "amount" && amountSortedEntryIds) {
+    total = amountSortedEntryIds.length;
+    const pagedIds = paginate
+      ? amountSortedEntryIds.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize)
+      : amountSortedEntryIds;
+    if (pagedIds.length > 0) {
+      const rows = await prisma.journalEntry.findMany({
+        where: { id: { in: pagedIds } },
+        include: {
+          approvedBy: { select: { id: true, name: true, email: true } },
+          lines: {
+            include: {
+              account: true,
+              taxCode: true,
+            },
+          },
+        },
+      });
+      const map = new Map(rows.map((row) => [row.id, row]));
+      entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
+    }
+  } else {
+    if (sortBy === "status") {
+      const statusRows = await prisma.journalEntry.findMany({
+        where: scopedWhere,
+        select: { id: true, status: true, entryDate: true, createdAt: true },
+      });
+      statusRows.sort((a, b) => compareJournalStatus(a, b, sortDir));
+      total = statusRows.length;
+      const pagedIds = paginate
+        ? statusRows.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize).map((row) => row.id)
+        : statusRows.map((row) => row.id);
+      if (pagedIds.length > 0) {
+        const rows = await prisma.journalEntry.findMany({
+          where: { id: { in: pagedIds } },
+          include: {
+            approvedBy: { select: { id: true, name: true, email: true } },
+            lines: {
+              include: {
+                account: true,
+                taxCode: true,
+              },
+            },
+          },
+        });
+        const map = new Map(rows.map((row) => [row.id, row]));
+        entries = pagedIds.map((id) => map.get(id)).filter(Boolean) as typeof rows;
+      }
+    } else {
+      const orderBy: Prisma.JournalEntryOrderByWithRelationInput[] = [
+        { entryDate: sortDir },
+        { createdAt: sortDir },
+      ];
+      const [rows, count] = await Promise.all([
+        prisma.journalEntry.findMany({
+          where: scopedWhere,
+          orderBy,
+          ...(paginate ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
+          include: {
+            approvedBy: { select: { id: true, name: true, email: true } },
+            lines: {
+              include: {
+                account: true,
+                taxCode: true,
+              },
+            },
+          },
+        }),
+        paginate ? prisma.journalEntry.count({ where: scopedWhere }) : Promise.resolve(0),
+      ]);
+      entries = rows;
+      total = count;
+    }
+  }
+  const enrichedWithAp = await enrichJournalEntries(entries);
   if (!paginate) {
     return NextResponse.json(enrichedWithAp);
   }
@@ -467,8 +828,15 @@ export async function POST(req: Request) {
     }
     const user = session.user as AuthenticatedUser;
     const isManual = parsed.data.sourceType === "MANUAL";
+    const normalizedSourceId = String(parsed.data.sourceId || "").trim();
     let manualPeriodBasisForAudit: "MONTHLY_CALENDAR" | "FISCAL_PERIOD_END" | null = null;
     const entryDate = new Date(parsed.data.entryDate);
+    if (!isManual && parsed.data.status === "POSTED" && !normalizedSourceId) {
+      return NextResponse.json(
+        { error: "Posted non-manual journal entries require a source reference." },
+        { status: 400 },
+      );
+    }
     if (isManual && user.role !== "ADMIN") {
       return NextResponse.json(
         { error: "Manual journal entries are limited to admins." },
@@ -653,7 +1021,7 @@ export async function POST(req: Request) {
         sourceId:
           parsed.data.sourceType === "MANUAL"
             ? `MANUAL:${parsed.data.manualCategory || "OTHER_EXCEPTION"}`
-            : parsed.data.sourceId ?? null,
+            : normalizedSourceId || null,
         status: parsed.data.status ?? "POSTED",
         approvedById: parsed.data.status === "POSTED" ? (session.user as AuthenticatedUser).id : null,
         approvedAt: parsed.data.status === "POSTED" ? new Date() : null,

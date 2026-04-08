@@ -1019,10 +1019,10 @@ function AdminOrdersContent() {
               setFilter(value);
               setPage(1);
             }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Filter by status" />
-            </SelectTrigger>
+            >
+              <SelectTrigger aria-label="Filter orders by status">
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All</SelectItem>
               <SelectItem value="UNPAID">Unpaid</SelectItem>
@@ -1038,10 +1038,10 @@ function AdminOrdersContent() {
               setDeliveryFilter(value);
               setPage(1);
             }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Filter by delivery" />
-            </SelectTrigger>
+            >
+              <SelectTrigger aria-label="Filter orders by delivery status">
+                <SelectValue placeholder="Filter by delivery" />
+              </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All Deliveries</SelectItem>
               <SelectItem value="NOT_DELIVERED">Not Delivered</SelectItem>
@@ -1056,10 +1056,10 @@ function AdminOrdersContent() {
               setPaymentMethod(value);
               setPage(1);
             }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Payment method" />
-            </SelectTrigger>
+            >
+              <SelectTrigger aria-label="Filter orders by payment method">
+                <SelectValue placeholder="Payment method" />
+              </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All methods</SelectItem>
               <SelectItem value="cash">Cash</SelectItem>
@@ -1075,10 +1075,10 @@ function AdminOrdersContent() {
               setCustomerType(value);
               setPage(1);
             }}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Customer type" />
-            </SelectTrigger>
+            >
+              <SelectTrigger aria-label="Filter orders by customer type">
+                <SelectValue placeholder="Customer type" />
+              </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">All customers</SelectItem>
               <SelectItem value="REGISTERED">Registered</SelectItem>
@@ -1691,6 +1691,7 @@ function AdminOrdersContent() {
           <div className="flex items-center gap-1">
             <span>Rows per page:</span>
             <select
+              aria-label="Rows per page"
               className="h-7 rounded border bg-background px-1 text-xs"
               value={pageSize}
               onChange={(e) => {
@@ -1708,6 +1709,7 @@ function AdminOrdersContent() {
             <span>Go to page:</span>
             <Input
               type="number"
+              aria-label="Go to page"
               min={1}
               max={totalPages}
               value={page}
@@ -1719,7 +1721,7 @@ function AdminOrdersContent() {
             />
           </div>
         </div>
-        <Pagination className="sm:mt-0">
+        <Pagination aria-label="Orders pagination" className="sm:mt-0">
           <PaginationContent>
             <PaginationItem>
               <PaginationPrevious
@@ -1907,6 +1909,7 @@ function AdminOrdersContent() {
 
               <Input
                 type="number"
+                aria-label="Payment amount"
                 placeholder="Enter payment amount"
                 value={paymentAmount}
                 onChange={(e) => {
@@ -1919,6 +1922,7 @@ function AdminOrdersContent() {
               {paymentError && <p className="text-xs text-red-600">{paymentError}</p>}
 
               <Textarea
+                aria-label="Payment note"
                 placeholder="Optional note (e.g., cash received by admin)"
                 value={paymentNote}
                 onChange={(e) => setPaymentNote(e.target.value)}

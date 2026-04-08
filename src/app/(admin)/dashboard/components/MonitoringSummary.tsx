@@ -53,13 +53,13 @@ export default function MonitoringSummary() {
     momoCounts.unposted > 0;
 
   return (
-    <Card>
-      <CardHeader className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+    <Card className="min-w-0">
+      <CardHeader className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2">
           <CardTitle>Monitoring</CardTitle>
           {!hasIssues ? <Badge variant="success">All clear</Badge> : null}
         </div>
-        <Button asChild size="sm" variant="outline">
+        <Button asChild size="sm" variant="outline" className="w-full sm:w-auto">
           <Link href="/admin/health">Open health check</Link>
         </Button>
       </CardHeader>

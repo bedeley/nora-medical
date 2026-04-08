@@ -30,8 +30,15 @@ loadEnvFile(path.join(projectRoot, ".env"));
 export default defineConfig({
   testDir: "./e2e",
   testMatch: /.*\.spec\.js/,
+  // Run tests serially to avoid overloading the dev server and to prevent
+  // concurrent login attempts from triggering the rate-limiter.
+  workers: 1,
+  timeout: 60_000,
+  globalSetup: "./e2e/global-setup.js",
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3000",
     trace: "on-first-retry",
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
   },
 });

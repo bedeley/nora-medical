@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
 import { assertSameOrigin } from "@/lib/origin";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function isAuthorizedUser(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -11,16 +12,7 @@ function isAuthorizedUser(user?: AuthenticatedUser | null) {
 }
 
 function isAuthorizedCron(req: Request) {
-  const configuredSecret = String(
-    process.env.RECONCILIATION_AUTOCREATE_CRON_SECRET || process.env.CRON_SECRET || "",
-  ).trim();
-  if (!configuredSecret) return false;
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  return bearer === configuredSecret || headerSecret === configuredSecret;
+  return verifyCronSecret(req, "RECONCILIATION_AUTOCREATE_CRON_SECRET");
 }
 
 function getPreviousMonthPeriod(now = new Date()) {
@@ -155,4 +147,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to auto-create reconciliations." }, { status: 500 });
   }
 }
-

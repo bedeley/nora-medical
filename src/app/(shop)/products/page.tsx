@@ -8,6 +8,7 @@ import { Metadata } from "next";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { PRODUCT_CATEGORIES, PRODUCT_CATEGORY_LABELS } from "@/lib/product-categories";
+import RecentlyViewed from "./RecentlyViewed";
 
 export const dynamic = "force-dynamic";
 
@@ -206,6 +207,7 @@ export default async function ProductsPage({
                         category={p.category ?? undefined}
                         brand={p.brand ?? undefined}
                         price={p.price}
+                        stock={typeof p.stock === "number" ? p.stock : undefined}
                         inStock={typeof p.stock === "number" ? p.stock > 0 : true}
                         lowStock={typeof p.stock === "number" ? p.stock > 0 && p.stock <= 3 : false}
                         isNew
@@ -232,6 +234,7 @@ export default async function ProductsPage({
                         category={p.category ?? undefined}
                         brand={p.brand ?? undefined}
                         price={p.price}
+                        stock={typeof p.stock === "number" ? p.stock : undefined}
                         inStock={typeof p.stock === "number" ? p.stock > 0 : true}
                         lowStock
                         isNew={(() => { try { return now - Date.parse(p.createdAt) < thirtyDaysMs; } catch { return false; } })()}
@@ -265,6 +268,7 @@ export default async function ProductsPage({
                     category={p.category ?? undefined}
                     brand={p.brand ?? undefined}
                     price={p.price}
+                    stock={typeof p.stock === "number" ? p.stock : undefined}
                     inStock={typeof p.stock === "number" ? p.stock > 0 : true}
                     lowStock={typeof p.stock === "number" ? p.stock > 0 && p.stock <= 3 : false}
                     isNew={(() => { try { return now - Date.parse(p.createdAt) < thirtyDaysMs; } catch { return false; } })()}
@@ -295,6 +299,7 @@ export default async function ProductsPage({
           </div>
         </div>
       )}
+      <RecentlyViewed />
       <BackToTop />
     </section>
   );

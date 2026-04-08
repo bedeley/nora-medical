@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { clearOtpFailures, rateLimit } from "@/lib/rate-limit";
 import { assertSameOrigin } from "@/lib/origin";
 import { sendWhatsApp } from "@/lib/whatsapp";

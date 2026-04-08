@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -713,236 +714,271 @@ export default function AdminHrCompensationPage() {
   };
 
   return (
-    <section className="space-y-6">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Compensation & Payroll</h1>
-          <p className="text-muted-foreground">Track salary history and payroll runs.</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Cron status: {cronEnabled ? "enabled" : "disabled"}
-          </p>
-          {lastRefreshedLabel ? (
-            <p className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href={compensationAuditHref}>View compensation audit</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/admin/hr/payroll/remittance">Open remittance register</Link>
-          </Button>
-          <Button variant="outline" onClick={handleRefreshPageData}>
-            Refresh data
-          </Button>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>+ Compensation</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-xl">
-              <DialogHeader>
-                <DialogTitle>Add Compensation</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3">
-                <Select
-                  value={form.employeeId}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select employee" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {employees.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>
-                        {employee.firstName} {employee.lastName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="number"
-                  placeholder="Base salary"
-                  value={form.baseSalary}
-                  onChange={(e) => setForm((prev) => ({ ...prev, baseSalary: e.target.value }))}
-                />
-                <p className="text-xs text-muted-foreground -mt-1">
-                  Use positive numbers. Leave optional fields blank for 0.
+    <section className="space-y-6 pb-20 md:pb-0">
+      <Card className="overflow-hidden border-border/70 bg-gradient-to-br from-background via-primary/5 to-background">
+        <CardContent className="space-y-6 p-6">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.28em] text-muted-foreground">
+                <Badge variant="outline">Staff workspace</Badge>
+                <span>Compensation planning</span>
+              </div>
+              <div className="space-y-2">
+                <h1 className="text-3xl font-bold tracking-tight">Compensation & Payroll</h1>
+                <p className="max-w-3xl text-sm text-muted-foreground sm:text-base">
+                  Manage salary records, payroll generation, and statutory remittance readiness from one HR operations workspace.
                 </p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Input
-                    type="number"
-                    placeholder="Allowances"
-                    value={form.allowances}
-                    onChange={(e) => setForm((prev) => ({ ...prev, allowances: e.target.value }))}
-                  />
-                  <Input
-                    type="number"
-                    placeholder="Deductions"
-                    value={form.deductions}
-                    onChange={(e) => setForm((prev) => ({ ...prev, deductions: e.target.value }))}
-                  />
-                  <Input
-                    type="number"
-                    placeholder="Bonus (optional)"
-                    value={form.bonus}
-                    onChange={(e) => setForm((prev) => ({ ...prev, bonus: e.target.value }))}
-                  />
+                <p className="text-xs text-muted-foreground">
+                  {pendingCompensationCount > 0
+                    ? `${pendingCompensationCount} compensation change${pendingCompensationCount === 1 ? " is" : "s are"} waiting for approval.`
+                    : draftRunCount > 0
+                      ? `${draftRunCount} payroll run${draftRunCount === 1 ? " is" : "s are"} still in draft and ready for review.`
+                      : cronEnabled
+                        ? "Payroll automation is enabled and the current queue is clear."
+                        : "Payroll automation is currently disabled in cron status."}
+                </p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>Cron status: {cronEnabled ? "enabled" : "disabled"}</span>
+                  {lastRefreshedLabel ? <span>Last refreshed: {lastRefreshedLabel}</span> : null}
                 </div>
-                <Input
-                  placeholder="Currency"
-                  value={form.currency}
-                  onChange={(e) => setForm((prev) => ({ ...prev, currency: e.target.value }))}
-                />
-                <Input
-                  type="date"
-                  value={form.effectiveDate}
-                  onChange={(e) => setForm((prev) => ({ ...prev, effectiveDate: e.target.value }))}
-                />
-                <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={requiresApproval}
-                    onChange={(e) => setRequiresApproval(e.target.checked)}
-                  />
-                  Require approval before activation
-                </label>
               </div>
-              <div className="flex justify-end">
-                <Button onClick={handleCreateCompensation}>Save compensation</Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={monthlyDialogOpen} onOpenChange={setMonthlyDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="secondary">Generate Monthly Paystubs</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-xl">
-              <DialogHeader>
-                <DialogTitle>Generate Monthly Paystubs</DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Input
-                  type="number"
-                  placeholder="Year"
-                  value={monthlyForm.year}
-                  onChange={(e) =>
-                    setMonthlyForm((prev) => ({ ...prev, year: e.target.value }))
-                  }
-                />
-                <Select
-                  value={monthlyForm.month}
-                  onValueChange={(value) =>
-                    setMonthlyForm((prev) => ({ ...prev, month: value }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Month" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Array.from({ length: 12 }, (_, i) => {
-                      const month = (i + 1).toString();
-                      return (
-                        <SelectItem key={month} value={month}>
-                          {month}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="number"
-                  placeholder="Bonus (flat)"
-                  value={monthlyForm.bonus}
-                  onChange={(e) =>
-                    setMonthlyForm((prev) => ({ ...prev, bonus: e.target.value }))
-                  }
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Tax and SSNIT follow your Ghana payroll policy in HR Settings.
-              </p>
-              <div className="rounded-md border p-3 text-xs text-muted-foreground space-y-1">
-                <div className="font-medium text-foreground">Current policy from HR Settings</div>
-                <div>Auto statutory calculation: {policyAutoCalculation ? "On" : "Off"}</div>
-                <div>Collect PAYE: {policyEnablePaye ? "On" : "Off"}</div>
-                <div>Collect SSNIT (employee): {policyEnableSsnitEmployee ? "On" : "Off"}</div>
-                <div>Track SSNIT (employer): {policyEnableSsnitEmployer ? "On" : "Off"}</div>
-                {!policyAutoCalculation ? (
-                  <div className="text-amber-700">
-                    Turn on automatic statutory calculation in HR Settings before generating paystubs.
+            </div>
+            <div className="flex flex-wrap gap-2 xl:max-w-2xl xl:justify-end">
+              <Button asChild variant="outline">
+                <Link href={compensationAuditHref}>View compensation audit</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link href="/admin/hr/payroll/remittance">Open remittance register</Link>
+              </Button>
+              <Button variant="outline" onClick={handleRefreshPageData}>
+                Refresh data
+              </Button>
+              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button>+ Compensation</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>Add Compensation</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3">
+                    <Select
+                      value={form.employeeId}
+                      onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {employees.map((employee) => (
+                          <SelectItem key={employee.id} value={employee.id}>
+                            {employee.firstName} {employee.lastName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      placeholder="Base salary"
+                      value={form.baseSalary}
+                      onChange={(e) => setForm((prev) => ({ ...prev, baseSalary: e.target.value }))}
+                    />
+                    <p className="text-xs text-muted-foreground -mt-1">
+                      Use positive numbers. Leave optional fields blank for 0.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Input
+                        type="number"
+                        placeholder="Allowances"
+                        value={form.allowances}
+                        onChange={(e) => setForm((prev) => ({ ...prev, allowances: e.target.value }))}
+                      />
+                      <Input
+                        type="number"
+                        placeholder="Deductions"
+                        value={form.deductions}
+                        onChange={(e) => setForm((prev) => ({ ...prev, deductions: e.target.value }))}
+                      />
+                      <Input
+                        type="number"
+                        placeholder="Bonus (optional)"
+                        value={form.bonus}
+                        onChange={(e) => setForm((prev) => ({ ...prev, bonus: e.target.value }))}
+                      />
+                    </div>
+                    <Input
+                      placeholder="Currency"
+                      value={form.currency}
+                      onChange={(e) => setForm((prev) => ({ ...prev, currency: e.target.value }))}
+                    />
+                    <Input
+                      type="date"
+                      value={form.effectiveDate}
+                      onChange={(e) => setForm((prev) => ({ ...prev, effectiveDate: e.target.value }))}
+                    />
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={requiresApproval}
+                        onChange={(e) => setRequiresApproval(e.target.checked)}
+                      />
+                      Require approval before activation
+                    </label>
                   </div>
-                ) : null}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Bonus here is a default add-on. Per-employee bonus in compensation overrides it.
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Month is required and must be between 1 and 12.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={handlePreviewMonthly}>
-                  Preview
-                </Button>
-                <Button onClick={handleGenerateMonthly}>Generate</Button>
-              </div>
-              {previewResult ? (
-                <div className="rounded-md border p-3 text-xs text-muted-foreground">
-                  Preview employees: {Array.isArray(previewResult.previewRows) ? previewResult.previewRows.length : 0}
-                  {" | "}Skipped: {Number(previewResult.skipped || 0)}
-                  {Array.isArray(previewResult.previewRows) && previewResult.previewRows.length > 0 ? (
-                    <div className="mt-2 space-y-1">
-                      {previewResult.previewRows.slice(0, 5).map((row) => (
-                        <div key={row.employeeId}>
-                          {row.employeeId.slice(0, 8)}... Gross {formatCurrency(Number(row.grossPay || 0))} Net{" "}
-                          {formatCurrency(Number(row.netPay || 0))}
+                  <div className="flex justify-end">
+                    <Button onClick={handleCreateCompensation}>Save compensation</Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
+              <Dialog open={monthlyDialogOpen} onOpenChange={setMonthlyDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="secondary">Generate Monthly Paystubs</Button>
+                </DialogTrigger>
+                <DialogContent className="max-w-xl">
+                  <DialogHeader>
+                    <DialogTitle>Generate Monthly Paystubs</DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Input
+                      type="number"
+                      placeholder="Year"
+                      value={monthlyForm.year}
+                      onChange={(e) =>
+                        setMonthlyForm((prev) => ({ ...prev, year: e.target.value }))
+                      }
+                    />
+                    <Select
+                      value={monthlyForm.month}
+                      onValueChange={(value) =>
+                        setMonthlyForm((prev) => ({ ...prev, month: value }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Month" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.from({ length: 12 }, (_, i) => {
+                          const month = (i + 1).toString();
+                          return (
+                            <SelectItem key={month} value={month}>
+                              {month}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      type="number"
+                      placeholder="Bonus (flat)"
+                      value={monthlyForm.bonus}
+                      onChange={(e) =>
+                        setMonthlyForm((prev) => ({ ...prev, bonus: e.target.value }))
+                      }
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Tax and SSNIT follow your Ghana payroll policy in HR Settings.
+                  </p>
+                  <div className="rounded-md border p-3 text-xs text-muted-foreground space-y-1">
+                    <div className="font-medium text-foreground">Current policy from HR Settings</div>
+                    <div>Auto statutory calculation: {policyAutoCalculation ? "On" : "Off"}</div>
+                    <div>Collect PAYE: {policyEnablePaye ? "On" : "Off"}</div>
+                    <div>Collect SSNIT (employee): {policyEnableSsnitEmployee ? "On" : "Off"}</div>
+                    <div>Track SSNIT (employer): {policyEnableSsnitEmployer ? "On" : "Off"}</div>
+                    {!policyAutoCalculation ? (
+                      <div className="text-amber-700">
+                        Turn on automatic statutory calculation in HR Settings before generating paystubs.
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Bonus here is a default add-on. Per-employee bonus in compensation overrides it.
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Month is required and must be between 1 and 12.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={handlePreviewMonthly}>
+                      Preview
+                    </Button>
+                    <Button onClick={handleGenerateMonthly}>Generate</Button>
+                  </div>
+                  {previewResult ? (
+                    <div className="rounded-md border p-3 text-xs text-muted-foreground">
+                      Preview employees: {Array.isArray(previewResult.previewRows) ? previewResult.previewRows.length : 0}
+                      {" | "}Skipped: {Number(previewResult.skipped || 0)}
+                      {Array.isArray(previewResult.previewRows) && previewResult.previewRows.length > 0 ? (
+                        <div className="mt-2 space-y-1">
+                          {previewResult.previewRows.slice(0, 5).map((row) => (
+                            <div key={row.employeeId}>
+                              {row.employeeId.slice(0, 8)}... Gross {formatCurrency(Number(row.grossPay || 0))} Net{" "}
+                              {formatCurrency(Number(row.netPay || 0))}
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      ) : null}
                     </div>
                   ) : null}
-                </div>
-              ) : null}
-            </DialogContent>
-          </Dialog>
-          <Button
-            variant="ghost"
-            onClick={() => setAdvancedOpen((open) => !open)}
-            aria-expanded={advancedOpen}
-          >
-            {advancedOpen ? "Hide advanced" : "Show advanced"}
-            <ChevronDown className={`ml-2 h-4 w-4 ${advancedOpen ? "rotate-180" : ""}`} />
-          </Button>
-        </div>
-      </header>
+                </DialogContent>
+              </Dialog>
+              <Button
+                variant="ghost"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                aria-expanded={advancedOpen}
+              >
+                {advancedOpen ? "Hide advanced" : "Show advanced"}
+                <ChevronDown className={`ml-2 h-4 w-4 ${advancedOpen ? "rotate-180" : ""}`} />
+              </Button>
+            </div>
+          </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Pending Approvals</CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-semibold">{pendingCompensationCount}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Open Draft Runs</CardTitle>
-          </CardHeader>
-          <CardContent className="text-2xl font-semibold">{draftRunCount}</CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Latest Run</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {latestRun ? (
-              <>
-                <div className="text-sm">{formatPeriod(latestRun)}</div>
-                <div className="text-xs text-muted-foreground">{latestRun.status}</div>
-              </>
-            ) : (
-              <div className="text-sm text-muted-foreground">No payroll runs yet.</div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Pending Approvals</p>
+                <p className="text-2xl font-semibold">{pendingCompensationCount}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Open Draft Runs</p>
+                <p className="text-2xl font-semibold">{draftRunCount}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Compensation Records</p>
+                <p className="text-2xl font-semibold">{Number(compensationData?.total || 0)}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Payroll Runs</p>
+                <p className="text-2xl font-semibold">{payrollRuns.length}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Risky Drafts</p>
+                <p className="text-2xl font-semibold">{riskyDraftRuns.length}</p>
+              </CardContent>
+            </Card>
+            <Card className="border-border/60 bg-background/80 shadow-none">
+              <CardContent className="py-4">
+                <p className="text-xs text-muted-foreground">Latest Run</p>
+                {latestRun ? (
+                  <div className="space-y-1">
+                    <p className="text-sm font-semibold">{formatPeriod(latestRun)}</p>
+                    <p className="text-xs text-muted-foreground">{latestRun.status}</p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No payroll runs yet.</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </CardContent>
+      </Card>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">

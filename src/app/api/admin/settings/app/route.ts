@@ -105,9 +105,24 @@ const SETTING_POLICIES: Record<string, SettingPolicy> = {
       if (!obj) return { ok: false, error: "Integrity thresholds must be an object." };
       const arDifference = normalizeNumber(obj.arDifference, 0);
       const inventoryDifference = normalizeNumber(obj.inventoryDifference, 0);
+      const apDifference = normalizeNumber(obj.apDifference, 0);
+      const trialBalance = normalizeNumber(obj.trialBalance, 0);
+      const revenueDifference = normalizeNumber(obj.revenueDifference, 0);
+      const vatDifference = normalizeNumber(obj.vatDifference, 0);
+      const cogsDifference = normalizeNumber(obj.cogsDifference, 0);
+      const storeCreditDifference = normalizeNumber(obj.storeCreditDifference, 0);
       const draftEntries = normalizeBoolean(obj.draftEntries);
       const negativeStock = normalizeBoolean(obj.negativeStock);
-      if (arDifference === null || inventoryDifference === null) {
+      if (
+        arDifference === null ||
+        inventoryDifference === null ||
+        apDifference === null ||
+        trialBalance === null ||
+        revenueDifference === null ||
+        vatDifference === null ||
+        cogsDifference === null ||
+        storeCreditDifference === null
+      ) {
         return { ok: false, error: "Threshold values must be numeric and zero or greater." };
       }
       if (draftEntries === null || negativeStock === null) {
@@ -115,7 +130,18 @@ const SETTING_POLICIES: Record<string, SettingPolicy> = {
       }
       return {
         ok: true,
-        value: { arDifference, inventoryDifference, draftEntries, negativeStock },
+        value: {
+          arDifference,
+          inventoryDifference,
+          apDifference,
+          trialBalance,
+          revenueDifference,
+          vatDifference,
+          cogsDifference,
+          storeCreditDifference,
+          draftEntries,
+          negativeStock,
+        },
       };
     },
   },
@@ -250,7 +276,8 @@ const SETTING_POLICIES: Record<string, SettingPolicy> = {
       const manualEntryAllowPnl = normalizeBoolean(obj.manualEntryAllowPnl);
       const archiveAfterMonths = normalizeInteger(obj.archiveAfterMonths, 1, 120);
       const archiveCronDryRun = normalizeBoolean(obj.archiveCronDryRun);
-      if (recentWindowDays === null || archiveAfterMonths === null) {
+      const largeAmountAnomalyThreshold = normalizeInteger(obj.largeAmountAnomalyThreshold, 0, 1_000_000_000);
+      if (recentWindowDays === null || archiveAfterMonths === null || largeAmountAnomalyThreshold === null) {
         return { ok: false, error: "Journal policy day/month limits are out of range." };
       }
       if (manualEntryAllowPnl === null || archiveCronDryRun === null) {
@@ -263,6 +290,7 @@ const SETTING_POLICIES: Record<string, SettingPolicy> = {
           manualEntryAllowPnl,
           archiveAfterMonths,
           archiveCronDryRun,
+          largeAmountAnomalyThreshold,
         },
       };
     },

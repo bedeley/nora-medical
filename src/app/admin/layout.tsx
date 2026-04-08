@@ -19,7 +19,7 @@ export default function AdminLayout({
   return (
     <>
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 print:hidden">
-        <nav className="container mx-auto flex flex-wrap items-center gap-2 py-2 text-sm">
+        <nav className="container mx-auto flex flex-wrap items-center gap-2 py-2 text-sm min-w-0">
           <Link
             href="/admin/dashboard"
             className={`px-2 py-1 rounded whitespace-nowrap ${
@@ -62,7 +62,7 @@ export default function AdminLayout({
           </Link>
           <Link
             href="/admin/payments/momo"
-            className={`ml-auto px-2 py-1 rounded whitespace-nowrap ${
+            className={`sm:ml-auto px-2 py-1 rounded whitespace-nowrap ${
               pathname.startsWith("/admin/payments/momo") ? "bg-primary text-primary-foreground" : "border"
             }`}
           >

@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBalanceSheetAsOf } from "@/lib/balance-sheet-report-utils";
+import { RETAINED_EARNINGS_ACCOUNT_CODE } from "@/lib/opening-retained-earnings";
 import { loadAccountTotals, parseDateRange, toNet } from "../utils";
 
 const DEFAULT_ROW_LIMIT = 500;
@@ -76,13 +77,19 @@ export async function GET(req: Request) {
 
   const assetsAll = totals.filter((row) => row.type === "ASSET");
   const liabilitiesAll = totals.filter((row) => row.type === "LIABILITY");
-  const equityAll = totals.filter((row) => row.type === "EQUITY");
+  const openingRetainedEarningsRows = totals.filter(
+    (row) => row.type === "EQUITY" && row.code === RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
+  const equityAll = totals.filter(
+    (row) => row.type === "EQUITY" && row.code !== RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
   const income = totals.filter((row) => row.type === "INCOME");
   const expenses = totals.filter((row) => row.type === "EXPENSE");
 
   const assetTotal = assetsAll.reduce((sum, row) => sum + toNet(row), 0);
   const liabilityTotal = liabilitiesAll.reduce((sum, row) => sum + toNet(row), 0);
   const equityTotal = equityAll.reduce((sum, row) => sum + toNet(row), 0);
+  const openingRetainedEarningsTotal = openingRetainedEarningsRows.reduce((sum, row) => sum + toNet(row), 0);
   const incomeTotal = income.reduce((sum, row) => sum + toNet(row), 0);
   const expenseTotal = expenses.reduce((sum, row) => sum + toNet(row), 0);
   const netIncomeToDate = incomeTotal - expenseTotal;
@@ -97,7 +104,7 @@ export async function GET(req: Request) {
     const periodExpenseTotal = periodExpenses.reduce((sum, row) => sum + toNet(row), 0);
     currentPeriodNetIncome = periodIncomeTotal - periodExpenseTotal;
   }
-  const retainedEarnings = netIncomeToDate - currentPeriodNetIncome;
+  const retainedEarnings = openingRetainedEarningsTotal + netIncomeToDate - currentPeriodNetIncome;
   const equityWithEarningsAll = [
     ...equityAll,
     {
@@ -127,7 +134,7 @@ export async function GET(req: Request) {
     assetsAll.length > assets.length ||
     liabilitiesAll.length > liabilities.length ||
     equityWithEarningsAll.length > equityWithEarnings.length;
-  const equityWithEarningsTotal = equityTotal + netIncomeToDate;
+  const equityWithEarningsTotal = equityTotal + openingRetainedEarningsTotal + netIncomeToDate;
 
   return NextResponse.json(
     {

@@ -5,6 +5,7 @@ export type AccountingJournalPolicy = {
   manualEntryAllowPnl: boolean;
   archiveAfterMonths: number;
   archiveCronDryRun: boolean;
+  largeAmountAnomalyThreshold: number;
 };
 
 const DEFAULTS: AccountingJournalPolicy = {
@@ -12,6 +13,7 @@ const DEFAULTS: AccountingJournalPolicy = {
   manualEntryAllowPnl: false,
   archiveAfterMonths: 18,
   archiveCronDryRun: false,
+  largeAmountAnomalyThreshold: 25000,
 };
 
 function parseBoolean(value: unknown, fallback: boolean) {
@@ -34,6 +36,7 @@ function envDefaults(): AccountingJournalPolicy {
     manualEntryAllowPnl: parseBoolean(process.env.ACCOUNTING_MANUAL_ENTRY_ALLOW_PNL, DEFAULTS.manualEntryAllowPnl),
     archiveAfterMonths: clampInt(process.env.JOURNAL_ARCHIVE_AFTER_MONTHS, DEFAULTS.archiveAfterMonths, 1, 120),
     archiveCronDryRun: parseBoolean(process.env.JOURNAL_ARCHIVE_CRON_DRY_RUN, DEFAULTS.archiveCronDryRun),
+    largeAmountAnomalyThreshold: clampInt(process.env.JOURNAL_LARGE_AMOUNT_ANOMALY_THRESHOLD, DEFAULTS.largeAmountAnomalyThreshold, 0, 1_000_000_000),
   };
 }
 
@@ -50,6 +53,6 @@ export async function loadAccountingJournalPolicy(): Promise<AccountingJournalPo
     manualEntryAllowPnl: parseBoolean(raw.manualEntryAllowPnl, fallback.manualEntryAllowPnl),
     archiveAfterMonths: clampInt(raw.archiveAfterMonths, fallback.archiveAfterMonths, 1, 120),
     archiveCronDryRun: parseBoolean(raw.archiveCronDryRun, fallback.archiveCronDryRun),
+    largeAmountAnomalyThreshold: clampInt(raw.largeAmountAnomalyThreshold, fallback.largeAmountAnomalyThreshold, 0, 1_000_000_000),
   };
 }
-

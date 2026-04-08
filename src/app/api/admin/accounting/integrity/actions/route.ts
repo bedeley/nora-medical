@@ -335,6 +335,7 @@ export async function POST(req: Request) {
       entityType: "ACCOUNTING_INTEGRITY",
       entityId: asOf,
       meta: {
+        sourcePage: "admin/accounting/integrity",
         warningCount: warningKeys.length,
         warningKeys,
         note,
@@ -362,6 +363,7 @@ export async function POST(req: Request) {
       entityType: "ACCOUNTING_INTEGRITY",
       entityId: asOf || "all",
       meta: {
+        sourcePage: "admin/accounting/integrity",
         clearedAsOf: asOf || null,
         previousCount: rows.length,
         newCount: next.length,
@@ -384,6 +386,7 @@ export async function POST(req: Request) {
       entityType: "ACCOUNTING_INTEGRITY",
       entityId: `precheck:${new Date().toISOString()}`,
       meta: {
+        sourcePage: "admin/accounting/integrity",
         total: rows.length,
         ready,
         blocked,
@@ -459,6 +462,7 @@ export async function POST(req: Request) {
       entityType: "ACCOUNTING_INTEGRITY",
       entityId: `bulk_retry:${new Date().toISOString()}`,
       meta: {
+        sourcePage: "admin/accounting/integrity",
         total: results.length,
         posted,
         skipped,
@@ -496,6 +500,7 @@ export async function POST(req: Request) {
         entityType,
         entityId,
         meta: {
+          sourcePage: "admin/accounting/integrity",
           source: body.source || "",
           posted,
           journalEntryId: entry?.id || null,
@@ -510,6 +515,7 @@ export async function POST(req: Request) {
         entityType,
         entityId,
         meta: {
+          sourcePage: "admin/accounting/integrity",
           source: body.source || "",
           reason: message,
         },

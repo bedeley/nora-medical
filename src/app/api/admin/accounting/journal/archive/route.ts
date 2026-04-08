@@ -7,6 +7,7 @@ import { loadAccountingJournalPolicy } from "@/lib/accounting-journal-policy";
 import { recordAuditLog } from "@/lib/audit-log";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,13 +25,7 @@ function isAdmin(user?: AuthenticatedUser | null) {
 }
 
 function hasCronAccess(req: Request) {
-  const configuredSecret = (process.env.JOURNAL_ARCHIVE_CRON_SECRET || process.env.CRON_SECRET || "").trim();
-  const authHeader = req.headers.get("authorization") || "";
-  const headerSecret = req.headers.get("x-cron-secret") || "";
-  const providedSecret = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : headerSecret.trim();
-  return Boolean(configuredSecret && providedSecret && configuredSecret === providedSecret);
+  return verifyCronSecret(req, "JOURNAL_ARCHIVE_CRON_SECRET");
 }
 
 async function executeArchiveRun({

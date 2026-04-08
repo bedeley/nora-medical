@@ -6,6 +6,11 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { normalizeAuditText } from "@/lib/hr-hiring-utils";
+import {
+  getEmployeeOnboardingState,
+  HIRING_PIPELINE_PENDING_NOTE,
+} from "@/lib/hr-onboarding-status";
 
 const employeeSchema = z.object({
   firstName: z.string().min(1),
@@ -23,6 +28,10 @@ const employeeSchema = z.object({
   bankAccountNumber: z.string().optional().or(z.literal("")),
   bankCode: z.string().optional().or(z.literal("")),
   bankBranch: z.string().optional().or(z.literal("")),
+  sourcePage: z.string().optional().or(z.literal("")),
+  section: z.string().optional().or(z.literal("")),
+  operation: z.string().optional().or(z.literal("")),
+  resultSummary: z.string().optional().or(z.literal("")),
 });
 
 function normalizeOptional(value?: string) {
@@ -103,6 +112,12 @@ function buildMissingBankWhere(): Prisma.EmployeeWhereInput {
   };
 }
 
+function buildPendingOnboardingWhere(): Prisma.EmployeeWhereInput {
+  return {
+    OR: [buildMissingProfileWhere(), { notes: HIRING_PIPELINE_PENDING_NOTE }],
+  };
+}
+
 export async function GET(req: Request) {
   const user = await requireAdmin();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -114,6 +129,7 @@ export async function GET(req: Request) {
   const roleRaw = searchParams.get("role")?.trim().toUpperCase() || "";
   const accountLinkRaw = searchParams.get("accountLink")?.trim().toLowerCase() || "";
   const completenessRaw = searchParams.get("completeness")?.trim().toLowerCase() || "";
+  const onboardingRaw = searchParams.get("onboarding")?.trim().toLowerCase() || "";
   const sortRaw = searchParams.get("sort")?.trim().toLowerCase() || "recent";
   const pageRaw = Number(searchParams.get("page") || "1");
   const pageSizeRaw = Number(searchParams.get("pageSize") || "25");
@@ -129,6 +145,7 @@ export async function GET(req: Request) {
   const role = allowedRoles.has(roleRaw) ? roleRaw : "";
   const accountLink = accountLinkRaw === "linked" || accountLinkRaw === "unlinked" ? accountLinkRaw : "";
   const completeness = completenessRaw === "complete" || completenessRaw === "missing" ? completenessRaw : "";
+  const onboarding = onboardingRaw === "pending" || onboardingRaw === "complete" ? onboardingRaw : "";
 
   const baseClauses: Prisma.EmployeeWhereInput[] = [];
   const departmentFilter = buildDepartmentClause(departmentRaw);
@@ -148,6 +165,7 @@ export async function GET(req: Request) {
 
   const missingProfileWhere = buildMissingProfileWhere();
   const missingBankWhere = buildMissingBankWhere();
+  const pendingOnboardingWhere = buildPendingOnboardingWhere();
   const whereClauses: Prisma.EmployeeWhereInput[] = [...baseClauses];
   if (status) {
     whereClauses.push({
@@ -156,6 +174,8 @@ export async function GET(req: Request) {
   }
   if (completeness === "missing") whereClauses.push(missingProfileWhere);
   if (completeness === "complete") whereClauses.push({ NOT: missingProfileWhere });
+  if (onboarding === "pending") whereClauses.push(pendingOnboardingWhere);
+  if (onboarding === "complete") whereClauses.push({ NOT: pendingOnboardingWhere });
   const where: Prisma.EmployeeWhereInput = whereClauses.length > 0 ? { AND: whereClauses } : {};
 
   const orderBy =
@@ -165,7 +185,7 @@ export async function GET(req: Request) {
         ? [{ firstName: "desc" as const }, { lastName: "desc" as const }]
         : [{ createdAt: "desc" as const }];
 
-  const [employees, total, departmentRows, totalAll, activeCount, onLeaveCount, suspendedCount, terminatedCount, missingCount, linkedCount, missingBankCount] =
+  const [employees, total, departmentRows, totalAll, activeCount, onLeaveCount, suspendedCount, terminatedCount, missingCount, linkedCount, missingBankCount, pendingOnboardingCount] =
     await Promise.all([
       prisma.employee.findMany({
         where,
@@ -210,10 +230,28 @@ export async function GET(req: Request) {
       prisma.employee.count({
         where: { AND: [...baseClauses, missingBankWhere] },
       }),
+      prisma.employee.count({
+        where: { AND: [...baseClauses, pendingOnboardingWhere] },
+      }),
     ]);
 
+  const rows = employees.map((employee) => {
+    const onboardingState = getEmployeeOnboardingState({
+      email: employee.email,
+      phone: employee.phone,
+      department: employee.department,
+      position: employee.position,
+      hireDate: employee.hireDate,
+      notes: employee.notes,
+    });
+    return {
+      ...employee,
+      onboarding: onboardingState,
+    };
+  });
+
   return NextResponse.json({
-    rows: employees,
+    rows,
     page,
     pageSize,
     total,
@@ -229,6 +267,7 @@ export async function GET(req: Request) {
       terminated: terminatedCount,
       missingProfile: missingCount,
       missingBankDetails: missingBankCount,
+      pendingOnboarding: pendingOnboardingCount,
       linkedAccount: linkedCount,
       unlinkedAccount: Math.max(0, totalAll - linkedCount),
     },
@@ -282,9 +321,9 @@ export async function POST(req: Request) {
         entityId: employee.id,
         meta: {
           actor: { id: user.id, role: user.role },
-          sourcePage: "admin/hr/staff",
-          section: "employee-create",
-          operation: "create_employee",
+          sourcePage: normalizeAuditText(parsed.data.sourcePage, "admin/hr/onboarding"),
+          section: normalizeAuditText(parsed.data.section, "employee-create"),
+          operation: normalizeAuditText(parsed.data.operation, "create_employee"),
           before: null,
           after: {
             firstName: employee.firstName,
@@ -298,7 +337,7 @@ export async function POST(req: Request) {
           status: employee.status,
           department: employee.department,
           position: employee.position,
-          resultSummary: "Employee created successfully.",
+          resultSummary: normalizeAuditText(parsed.data.resultSummary, "Employee created successfully."),
         },
       });
     } catch {

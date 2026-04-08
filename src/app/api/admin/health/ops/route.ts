@@ -837,15 +837,8 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const configuredSecret = String(process.env.CRON_SECRET || "").trim();
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const hasCronAccess =
-    Boolean(configuredSecret) &&
-    (bearer === configuredSecret || headerSecret === configuredSecret);
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  const hasCronAccess = verifyCronSecret(req);
 
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;

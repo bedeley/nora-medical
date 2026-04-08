@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
@@ -10,11 +10,12 @@ import {
   recordOtpFailure,
 } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import { passwordSchema } from "@/lib/validation";
 
 const acceptSchema = z.object({
   userId: z.string().min(1),
   code: z.string().min(4),
-  password: z.string().min(10),
+  password: passwordSchema,
 });
 
 export async function POST(req: Request) {

@@ -89,6 +89,11 @@ type Application = {
   id: string;
   stage: "APPLIED" | "SCREENING" | "INTERVIEW" | "OFFER" | "HIRED" | "REJECTED" | "WITHDRAWN";
   notes?: string | null;
+  employeeId?: string | null;
+  onboarding?: {
+    status: "pending" | "complete";
+    summary: string;
+  } | null;
   applicant: Applicant;
   jobPosting: JobPosting;
   createdAt: string;
@@ -173,6 +178,10 @@ function getStageBadgeVariant(stage: Application["stage"]): "default" | "seconda
   if (stage === "REJECTED" || stage === "WITHDRAWN") return "destructive";
   if (stage === "INTERVIEW" || stage === "OFFER") return "secondary";
   return "outline";
+}
+
+function getOnboardingBadgeVariant(status?: "pending" | "complete" | null) {
+  return status === "pending" ? "outline" : "secondary";
 }
 
 function SectionCardsSkeleton() {
@@ -326,6 +335,18 @@ export default function AdminHrHiringPage() {
     note: "",
   });
   const sourcePage = "admin/hr/hiring";
+  const openOnboardingForEmployee = (input: { employeeId?: string | null; applicationId?: string | null }) => {
+    const targetEmployeeId = String(input.employeeId || "").trim();
+    if (!targetEmployeeId) return false;
+    const params = new URLSearchParams({
+      employeeId: targetEmployeeId,
+      source: "hiring",
+    });
+    const applicationId = String(input.applicationId || "").trim();
+    if (applicationId) params.set("applicationId", applicationId);
+    router.push(`/admin/hr/onboarding?${params.toString()}`);
+    return true;
+  };
   const savePresetButtonRef = useRef<HTMLButtonElement | null>(null);
   const applyBulkButtonRef = useRef<HTMLButtonElement | null>(null);
   const tableDensityClass = compactTables
@@ -1108,9 +1129,15 @@ export default function AdminHrHiringPage() {
       } else if (body.employeeAction === "reactivated") {
         toast.success("Employee reactivated from hire.");
       }
+      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applications"] });
+      if (body.employeeAction && openOnboardingForEmployee({ employeeId: body.employeeId, applicationId: body.id })) {
+        toast.success("Opening centralized employee onboarding.");
+        setApplicationDialogOpen(false);
+        setApplicationForm({ applicantId: "", jobPostingId: "", stage: "APPLIED", notes: "" });
+        return;
+      }
       setApplicationDialogOpen(false);
       setApplicationForm({ applicantId: "", jobPostingId: "", stage: "APPLIED", notes: "" });
-      queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applications"] });
     } catch (err) {
       console.error(err);
       toast.error("Failed to create application.");
@@ -1186,6 +1213,9 @@ export default function AdminHrHiringPage() {
         toast.success("Employee reactivated from hire.");
       }
       queryClient.invalidateQueries({ queryKey: ["admin", "hr", "applications"] });
+      if (body.employeeAction && openOnboardingForEmployee({ employeeId: body.employeeId, applicationId })) {
+        toast.success("Opening centralized employee onboarding.");
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to update stage.");
@@ -2624,6 +2654,13 @@ export default function AdminHrHiringPage() {
                           : "Interview not scheduled";
                       })()}
                     </div>
+                    {application.stage === "HIRED" && application.onboarding ? (
+                      <div>
+                        <Badge variant={getOnboardingBadgeVariant(application.onboarding.status)}>
+                          {application.onboarding.status === "pending" ? "Onboarding pending" : "Onboarding complete"}
+                        </Badge>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="mt-4 flex items-center gap-2">
                     <Button
@@ -2634,6 +2671,15 @@ export default function AdminHrHiringPage() {
                     >
                       Review
                     </Button>
+                    {application.stage === "HIRED" && application.employeeId ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => openOnboardingForEmployee({ employeeId: application.employeeId, applicationId: application.id })}
+                      >
+                        Resume onboarding
+                      </Button>
+                    ) : null}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button type="button" size="icon" variant="outline" className="h-8 w-8">
@@ -2644,6 +2690,11 @@ export default function AdminHrHiringPage() {
                         <DropdownMenuItem onClick={() => openInterviewPlanner(application)}>
                           Plan interview
                         </DropdownMenuItem>
+                        {application.stage === "HIRED" && application.employeeId ? (
+                          <DropdownMenuItem onClick={() => openOnboardingForEmployee({ employeeId: application.employeeId, applicationId: application.id })}>
+                            Resume onboarding
+                          </DropdownMenuItem>
+                        ) : null}
                         {getApplicationActionOptions(application).map((stage) => (
                           <DropdownMenuItem
                             key={stage.value}
@@ -2712,9 +2763,18 @@ export default function AdminHrHiringPage() {
                       </TableCell>
                       <TableCell>{application.jobPosting.title}</TableCell>
                       <TableCell>
-                        <Badge variant={getStageBadgeVariant(application.stage)}>
-                          {formatStageLabel(application.stage)}
-                        </Badge>
+                        <div className="space-y-1">
+                          <Badge variant={getStageBadgeVariant(application.stage)}>
+                            {formatStageLabel(application.stage)}
+                          </Badge>
+                          {application.stage === "HIRED" && application.onboarding ? (
+                            <div>
+                              <Badge variant={getOnboardingBadgeVariant(application.onboarding.status)}>
+                                {application.onboarding.status === "pending" ? "Onboarding pending" : "Onboarding complete"}
+                              </Badge>
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="text-xs text-muted-foreground">
@@ -2729,6 +2789,15 @@ export default function AdminHrHiringPage() {
                       <TableCell>{formatDateLabel(application.createdAt)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
+                          {application.stage === "HIRED" && application.employeeId ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              onClick={() => openOnboardingForEmployee({ employeeId: application.employeeId, applicationId: application.id })}
+                            >
+                              Resume onboarding
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             size="sm"
@@ -2747,6 +2816,11 @@ export default function AdminHrHiringPage() {
                               <DropdownMenuItem onClick={() => openInterviewPlanner(application)}>
                                 Plan interview
                               </DropdownMenuItem>
+                              {application.stage === "HIRED" && application.employeeId ? (
+                                <DropdownMenuItem onClick={() => openOnboardingForEmployee({ employeeId: application.employeeId, applicationId: application.id })}>
+                                  Resume onboarding
+                                </DropdownMenuItem>
+                              ) : null}
                               {getApplicationActionOptions(application).map((stage) => (
                                 <DropdownMenuItem
                                   key={stage.value}
@@ -3094,6 +3168,19 @@ export default function AdminHrHiringPage() {
                     <Button type="button" variant="outline" onClick={() => openInterviewPlanner(selectedApplicationDetail)}>
                       Plan interview
                     </Button>
+                    {selectedApplicationDetail.stage === "HIRED" && selectedApplicationDetail.employeeId ? (
+                      <Button
+                        type="button"
+                        onClick={() =>
+                          openOnboardingForEmployee({
+                            employeeId: selectedApplicationDetail.employeeId,
+                            applicationId: selectedApplicationDetail.id,
+                          })
+                        }
+                      >
+                        Resume onboarding
+                      </Button>
+                    ) : null}
                     <Button asChild variant="outline">
                       <Link
                         href={`/admin/audit?sourcePage=admin/hr/hiring&entityType=APPLICATION&entityId=${encodeURIComponent(selectedApplicationDetail.id)}`}
@@ -3122,7 +3209,10 @@ export default function AdminHrHiringPage() {
                     </div>
                   </div>
                   <div className="rounded-2xl border border-border/70 bg-background/85 p-4 text-sm text-muted-foreground shadow-sm">
-                    Last saved {formatDateLabel(selectedApplicationDetail.updatedAt || selectedApplicationDetail.createdAt, true)}.
+                    <div>Last saved {formatDateLabel(selectedApplicationDetail.updatedAt || selectedApplicationDetail.createdAt, true)}.</div>
+                    {selectedApplicationDetail.stage === "HIRED" && selectedApplicationDetail.onboarding ? (
+                      <div className="mt-2">{selectedApplicationDetail.onboarding.summary}</div>
+                    ) : null}
                   </div>
                 </div>
               </div>

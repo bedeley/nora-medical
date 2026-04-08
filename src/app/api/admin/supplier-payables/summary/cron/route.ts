@@ -5,18 +5,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
-  const configuredSecret = (
-    process.env.SUPPLIER_PAYABLES_CRON_SECRET ||
-    process.env.CRON_SECRET ||
-    ""
-  ).trim();
-  const authHeader = req.headers.get("authorization") || "";
-  const headerSecret = req.headers.get("x-cron-secret") || "";
-  const providedSecret = authHeader.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : headerSecret.trim();
-
-  if (!configuredSecret || providedSecret !== configuredSecret) {
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  if (!verifyCronSecret(req, "SUPPLIER_PAYABLES_CRON_SECRET")) {
     return NextResponse.json({ enabled: false }, { status: 200 });
   }
 

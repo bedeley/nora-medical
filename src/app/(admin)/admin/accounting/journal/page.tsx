@@ -20,7 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tooltip } from "@/components/ui/tooltip";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatCurrency } from "@/lib/currency";
 import { hasPermission } from "@/lib/permissions";
 import { toast } from "sonner";
@@ -63,6 +63,45 @@ type JournalListResponse = {
   totalPages: number;
 };
 
+type BalanceScopeLine = {
+  debit: number | string;
+  credit: number | string;
+  account: {
+    code: string;
+  };
+};
+
+type BalanceScopeEntry = {
+  id: string;
+  entryDate: string;
+  sourceType: string;
+  sourceId?: string | null;
+  sourceLabel?: string | null;
+  apBalanceAfter?: number | null;
+  lines: BalanceScopeLine[];
+};
+
+type JournalScopeSummary = {
+  total: number;
+  posted: number;
+  draft: number;
+  void: number;
+  debit: number;
+  credit: number;
+  outOfBalanceCount: number;
+  exceptionCounts: {
+    missingRef: number;
+    largeAmount: number;
+    staleDraft: number;
+  };
+  sourceCounts: Record<string, number>;
+  draftQueue: {
+    count: number;
+    oldest: JournalEntry | null;
+    oldestAgeDays: number;
+  };
+};
+
 type TaxCode = {
   id: string;
   name: string;
@@ -82,6 +121,7 @@ type JournalPolicy = {
   manualEntryAllowPnl: boolean;
   archiveAfterMonths: number;
   archiveCronDryRun: boolean;
+  largeAmountAnomalyThreshold: number;
 };
 
 type JournalSavedView = {
@@ -112,6 +152,8 @@ type JournalSavedView = {
   };
 };
 
+type JournalSortBy = "date" | "status" | "amount";
+
 type ManualCategory =
   | "PERIOD_END_ADJUSTMENT"
   | "CORRECTION"
@@ -133,6 +175,73 @@ function getEntryImbalance(entry: JournalEntry) {
   return debitTotal - creditTotal;
 }
 
+function buildScopeSummaryFromEntries(entries: JournalEntry[], largeAmountThreshold: number): JournalScopeSummary {
+  const summary: JournalScopeSummary = {
+    total: 0,
+    posted: 0,
+    draft: 0,
+    void: 0,
+    debit: 0,
+    credit: 0,
+    outOfBalanceCount: 0,
+    exceptionCounts: {
+      missingRef: 0,
+      largeAmount: 0,
+      staleDraft: 0,
+    },
+    sourceCounts: {},
+    draftQueue: {
+      count: 0,
+      oldest: null,
+      oldestAgeDays: 0,
+    },
+  };
+
+  const drafts: JournalEntry[] = [];
+  for (const entry of entries) {
+    const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
+    const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
+    const sourceType = String(entry.sourceType || "").toUpperCase();
+    const missingReferenceRisk =
+      entry.status === "POSTED" &&
+      entry.sourceType !== "MANUAL" &&
+      !String(entry.sourceId || "").trim() &&
+      !String(entry.sourceLabel || "").trim();
+    const unusualAmountRisk =
+      Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= largeAmountThreshold;
+    const staleDraftRisk =
+      entry.status === "DRAFT" &&
+      (Date.now() - new Date(entry.entryDate).getTime()) / (1000 * 60 * 60 * 24) >= 7;
+
+    summary.total += 1;
+    if (entry.status === "POSTED") summary.posted += 1;
+    if (entry.status === "DRAFT") {
+      summary.draft += 1;
+      drafts.push(entry);
+    }
+    if (entry.status === "VOID") summary.void += 1;
+    summary.debit += debitTotal;
+    summary.credit += creditTotal;
+    summary.sourceCounts[sourceType] = (summary.sourceCounts[sourceType] || 0) + 1;
+    if (Math.abs(debitTotal - creditTotal) > 0.01) summary.outOfBalanceCount += 1;
+    if (missingReferenceRisk) summary.exceptionCounts.missingRef += 1;
+    if (unusualAmountRisk) summary.exceptionCounts.largeAmount += 1;
+    if (staleDraftRisk) summary.exceptionCounts.staleDraft += 1;
+  }
+
+  drafts.sort((a, b) => new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime());
+  const oldest = drafts[0] || null;
+  summary.draftQueue = {
+    count: drafts.length,
+    oldest: oldest || null,
+    oldestAgeDays: oldest
+      ? Math.floor((Date.now() - new Date(oldest.entryDate).getTime()) / (1000 * 60 * 60 * 24))
+      : 0,
+  };
+
+  return summary;
+}
+
 function useDebouncedValue<T>(value: T, delayMs: number) {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -147,7 +256,7 @@ export default function JournalPage() {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
   const role = (session?.user as { role?: string } | undefined)?.role || "";
-  const canApprove = hasPermission(role, "journal.approve");
+  const canApprove = hasPermission(role, "journal.post");
   const canArchive = role === "ADMIN";
   const { data: accountsData } = useClientQuery<LedgerAccount[]>({
     queryKey: ["accounting", "accounts"],
@@ -165,6 +274,8 @@ export default function JournalPage() {
     queryKey: ["accounting", "journal", "policy"],
     queryFn: () => fetch("/api/admin/accounting/journal/policy").then((r) => r.json()),
   });
+  const effectiveJournalPolicy = journalPolicyData?.policy || null;
+  const largeAmountAnomalyThreshold = effectiveJournalPolicy?.largeAmountAnomalyThreshold ?? 25000;
   const periods = useMemo(() => (Array.isArray(periodsData) ? periodsData : []), [periodsData]);
   const taxCodes = useMemo(() => (Array.isArray(taxCodesData) ? taxCodesData : []), [taxCodesData]);
 
@@ -189,6 +300,8 @@ export default function JournalPage() {
   const debouncedSearchQuery = useDebouncedValue(searchQuery, 400);
   const [linkQuery, setLinkQuery] = useState(() => String(searchParams.get("link") || ""));
   const [accountQuery, setAccountQuery] = useState(() => String(searchParams.get("account") || ""));
+  const debouncedLinkQuery = useDebouncedValue(linkQuery, 400);
+  const debouncedAccountQuery = useDebouncedValue(accountQuery, 400);
   const [entryDirectionFilter, setEntryDirectionFilter] = useState(() => {
     const raw = String(searchParams.get("entryDir") || "").toLowerCase();
     return raw === "debit" || raw === "credit" ? raw : "";
@@ -230,7 +343,9 @@ export default function JournalPage() {
     () => String(searchParams.get("reviewMode") || "") === "1",
   );
   const [showAdvancedJournalFilters, setShowAdvancedJournalFilters] = useState(false);
-  const [sortBy, setSortBy] = useState<"date" | "status" | "amount">(() => {
+  const [savedViewDialogMode, setSavedViewDialogMode] = useState<"save" | "rename" | null>(null);
+  const [savedViewName, setSavedViewName] = useState("");
+  const [sortBy, setSortBy] = useState<JournalSortBy>(() => {
     const raw = String(searchParams.get("sortBy") || "date").toLowerCase();
     return raw === "status" || raw === "amount" ? raw : "date";
   });
@@ -245,7 +360,6 @@ export default function JournalPage() {
   const [lastArchiveRunAt, setLastArchiveRunAt] = useState<string | null>(null);
   const [undoArchiveUntilMs, setUndoArchiveUntilMs] = useState<number | null>(null);
   const [undoClockMs, setUndoClockMs] = useState<number>(Date.now());
-  const mobileFiltersAutoCollapsed = useRef(false);
   useEffect(() => {
     if (hasUserSelected.current) return;
     setPeriodFilter("recent");
@@ -261,19 +375,6 @@ export default function JournalPage() {
     const timer = window.setInterval(() => setUndoClockMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [undoArchiveUntilMs]);
-  useEffect(() => {
-    const onScroll = () => {
-      if (typeof window === "undefined") return;
-      if (window.innerWidth >= 640) return;
-      if (mobileFiltersAutoCollapsed.current) return;
-      if (!showAdvancedJournalFilters) return;
-      if (window.scrollY < 120) return;
-      setShowAdvancedJournalFilters(false);
-      mobileFiltersAutoCollapsed.current = true;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [showAdvancedJournalFilters]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -310,7 +411,7 @@ export default function JournalPage() {
         lastUsedViewId?: string;
         rowsPerPage?: number;
         lastPage?: number;
-        sortBy?: "date" | "status" | "amount";
+    sortBy?: JournalSortBy;
         sortDir?: "asc" | "desc";
       };
       setDefaultViewId(parsed.defaultViewId || "");
@@ -406,13 +507,102 @@ export default function JournalPage() {
   }, [periodFilter, periods, currentOpenPeriod]);
   const scopeLabel = useMemo(() => {
     if (dateStart || dateEnd) return "Custom date range";
-    if (periodFilter === "recent") return "Recent 90 days";
+    if (periodFilter === "recent") {
+      return `Recent ${journalPolicyData?.policy?.recentWindowDays ?? 90} days`;
+    }
     if (periodFilter === "all_non_archived") return "All non-archived";
     if (periodFilter === "current") return "Current open period";
     if (periodFilter === "all") return "All time";
     if (selectedPeriod?.name) return selectedPeriod.name;
-    return "Recent 90 days";
-  }, [dateStart, dateEnd, periodFilter, selectedPeriod]);
+    return `Recent ${journalPolicyData?.policy?.recentWindowDays ?? 90} days`;
+  }, [dateStart, dateEnd, journalPolicyData?.policy?.recentWindowDays, periodFilter, selectedPeriod]);
+
+  const buildJournalParams = useCallback(
+    ({
+      paginate = false,
+      idsOnly = false,
+      aggregate = false,
+      balanceScope = false,
+      includeReviewFilters = true,
+      pageValue = page,
+      pageSizeValue = rowsPerPage,
+    }: {
+      paginate?: boolean;
+      idsOnly?: boolean;
+      aggregate?: boolean;
+      balanceScope?: boolean;
+      includeReviewFilters?: boolean;
+      pageValue?: number;
+      pageSizeValue?: number;
+    } = {}) => {
+      const params = new URLSearchParams();
+      if (paginate) {
+        params.set("paginate", "1");
+        params.set("page", String(pageValue));
+        params.set("pageSize", String(pageSizeValue));
+      }
+      if (idsOnly) {
+        params.set("idsOnly", "1");
+      }
+      if (aggregate) {
+        params.set("aggregate", "1");
+      }
+      if (balanceScope) {
+        params.set("balanceScope", "1");
+      }
+      const hasCustomDates = dateStart || dateEnd;
+      if (hasCustomDates) {
+        if (dateStart) params.set("start", dateStart);
+        if (dateEnd) params.set("end", dateEnd);
+      } else if (selectedPeriod) {
+        params.set("start", selectedPeriod.startDate.slice(0, 10));
+        params.set("end", selectedPeriod.endDate.slice(0, 10));
+      } else {
+        params.set("scopeMode", periodFilter);
+      }
+      if (includeArchive) params.set("includeArchive", "1");
+      if (includeReviewFilters) {
+        if (statusFilter) params.set("status", statusFilter);
+        if (sourceFilter) params.set("sourceType", sourceFilter);
+        if (debouncedSearchQuery.trim()) params.set("q", debouncedSearchQuery.trim());
+        if (debouncedLinkQuery.trim()) params.set("link", debouncedLinkQuery.trim());
+        if (debouncedAccountQuery.trim()) params.set("account", debouncedAccountQuery.trim());
+        if (accountFilterId) params.set("accountId", accountFilterId);
+        if (entryDirectionFilter) params.set("entryDir", entryDirectionFilter);
+        if (outOfBalanceOnly) params.set("outOfBalance", "1");
+        if (exceptionMissingRefOnly) params.set("missingRef", "1");
+        if (exceptionLargeAmountOnly) params.set("largeAmount", "1");
+        if (exceptionStaleDraftOnly) params.set("staleDraft", "1");
+        if (largestVarianceFirst) params.set("largestVariance", "1");
+        params.set("sortBy", sortBy);
+        params.set("sortDir", sortDir);
+      }
+      return params;
+    },
+    [
+      accountFilterId,
+      debouncedAccountQuery,
+      dateEnd,
+      dateStart,
+      debouncedSearchQuery,
+      entryDirectionFilter,
+      exceptionLargeAmountOnly,
+      exceptionMissingRefOnly,
+      exceptionStaleDraftOnly,
+      includeArchive,
+      largestVarianceFirst,
+      debouncedLinkQuery,
+      outOfBalanceOnly,
+      page,
+      periodFilter,
+      rowsPerPage,
+      selectedPeriod,
+      sortBy,
+      sortDir,
+      sourceFilter,
+      statusFilter,
+    ],
+  );
 
   const { data: entriesData, isLoading, isFetching, error: entriesError, refetch: refetchEntries } = useClientQuery<JournalListResponse>({
     queryKey: [
@@ -425,30 +615,22 @@ export default function JournalPage() {
       dateEnd,
       includeArchive,
       debouncedSearchQuery,
+      debouncedLinkQuery,
+      debouncedAccountQuery,
+      accountFilterId,
+      entryDirectionFilter,
+      outOfBalanceOnly,
+      exceptionMissingRefOnly,
+      exceptionLargeAmountOnly,
+      exceptionStaleDraftOnly,
+      largestVarianceFirst,
       page,
       rowsPerPage,
       sortBy,
       sortDir,
     ],
     queryFn: () => {
-      const params = new URLSearchParams();
-      params.set("paginate", "1");
-      params.set("page", String(page));
-      params.set("pageSize", String(rowsPerPage));
-      const hasCustomDates = dateStart || dateEnd;
-      if (hasCustomDates) {
-        if (dateStart) params.set("start", dateStart);
-        if (dateEnd) params.set("end", dateEnd);
-      } else if (selectedPeriod) {
-        params.set("start", selectedPeriod.startDate.slice(0, 10));
-        params.set("end", selectedPeriod.endDate.slice(0, 10));
-      }
-      if (statusFilter) params.set("status", statusFilter);
-      if (sourceFilter) params.set("sourceType", sourceFilter);
-      if (includeArchive) params.set("includeArchive", "1");
-      if (debouncedSearchQuery.trim()) params.set("q", debouncedSearchQuery.trim());
-      params.set("sortBy", sortBy);
-      params.set("sortDir", sortDir);
+      const params = buildJournalParams({ paginate: true });
       const suffix = params.toString();
       return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then(async (r) => {
         const payload = await r.json().catch(() => ({}));
@@ -460,19 +642,71 @@ export default function JournalPage() {
       });
     },
   });
-  const { data: balanceEntriesData } = useClientQuery<JournalEntry[]>({
+  const {
+    data: scopeSummaryData,
+    error: scopeSummaryError,
+    refetch: refetchScopeSummary,
+  } = useClientQuery<JournalScopeSummary>({
     queryKey: [
       "accounting",
-      "journal-balance",
+      "journal",
+      "summary",
+      selectedPeriod?.id || periodFilter || "recent",
       statusFilter,
+      sourceFilter,
+      dateStart,
+      dateEnd,
+      includeArchive,
+      debouncedSearchQuery,
+      debouncedLinkQuery,
+      debouncedAccountQuery,
+      accountFilterId,
+      entryDirectionFilter,
+      outOfBalanceOnly,
+      exceptionMissingRefOnly,
+      exceptionLargeAmountOnly,
+      exceptionStaleDraftOnly,
+    ],
+    queryFn: () => {
+      const params = buildJournalParams({ aggregate: true });
+      const suffix = params.toString();
+      return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then(async (r) => {
+        const payload = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error(
+            String((payload as { error?: unknown })?.error || "Failed to load journal summary."),
+          );
+        }
+        return payload as JournalScopeSummary;
+      });
+    },
+  });
+  const {
+    data: balanceEntriesData,
+    error: balanceEntriesError,
+    refetch: refetchBalanceEntries,
+  } = useClientQuery<BalanceScopeEntry[]>({
+    queryKey: [
+      "accounting",
+      "journal",
+      "balance-scope",
+      selectedPeriod?.id || periodFilter || "recent",
+      dateStart,
+      dateEnd,
       includeArchive,
     ],
     queryFn: () => {
-      const params = new URLSearchParams();
-      if (statusFilter) params.set("status", statusFilter);
-      if (includeArchive) params.set("includeArchive", "1");
+      const params = buildJournalParams({ balanceScope: true, includeReviewFilters: false });
       const suffix = params.toString();
-      return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then((r) => r.json());
+      return fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`).then(async (r) => {
+        const payload = await r.json().catch(() => []);
+        if (!r.ok) {
+          throw new Error(
+            String((payload as { error?: unknown })?.error || "Failed to load journal balance scope."),
+          );
+        }
+        return payload as BalanceScopeEntry[];
+      });
     },
   });
   const accounts = useMemo(() => (Array.isArray(accountsData) ? accountsData : []), [accountsData]);
@@ -482,9 +716,53 @@ export default function JournalPage() {
   );
   const searchQueryPending = debouncedSearchQuery !== searchQuery;
   const queryError = entriesError instanceof Error ? entriesError.message : "";
+  const scopeSummaryErrorMessage = scopeSummaryError instanceof Error ? scopeSummaryError.message : "";
+  const balanceEntriesErrorMessage = balanceEntriesError instanceof Error ? balanceEntriesError.message : "";
   const totalEntries = Number(entriesData?.total || 0);
   const totalPages = Math.max(1, Number(entriesData?.totalPages || 1));
-  const balanceEntries = Array.isArray(balanceEntriesData) ? balanceEntriesData : entries;
+  const scopeSummaryFallback = useMemo(
+    () => buildScopeSummaryFromEntries(entries, largeAmountAnomalyThreshold),
+    [entries, largeAmountAnomalyThreshold],
+  );
+  const scopeSummary = scopeSummaryData || scopeSummaryFallback;
+  const balanceEntries = useMemo<BalanceScopeEntry[]>(
+    () =>
+      Array.isArray(balanceEntriesData)
+        ? balanceEntriesData
+        : entries.map((entry) => ({
+            id: entry.id,
+            entryDate: entry.entryDate,
+            sourceType: entry.sourceType,
+            sourceId: entry.sourceId ?? null,
+            sourceLabel: entry.sourceLabel ?? null,
+            apBalanceAfter: entry.apBalanceAfter ?? null,
+            lines: entry.lines.map((line) => ({
+              debit: line.debit,
+              credit: line.credit,
+              account: {
+                code: line.account.code,
+              },
+            })),
+          })),
+    [balanceEntriesData, entries],
+  );
+  const fetchJournalPayload = useCallback(
+    async <T,>(params: URLSearchParams, fallbackMessage: string): Promise<T> => {
+      const suffix = params.toString();
+      const response = await fetch(`/api/admin/accounting/journal${suffix ? `?${suffix}` : ""}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const message = String((payload as { error?: unknown })?.error || fallbackMessage);
+        throw new Error(message);
+      }
+      return payload as T;
+    },
+    [],
+  );
+  const fetchFullScopeEntriesForExport = useCallback(async () => {
+    const params = buildJournalParams();
+    return fetchJournalPayload<JournalEntry[]>(params, "Failed to load full filtered journal export.");
+  }, [buildJournalParams, fetchJournalPayload]);
   const { data: archiveAuditRaw } = useClientQuery<
     Array<{ action?: string; createdAt?: string; actor?: { name?: string | null; email?: string | null } | null; meta?: Record<string, unknown> | null }>
   >({
@@ -532,169 +810,22 @@ export default function JournalPage() {
       return `${when}: ${actor} recorded ${action}.`;
     });
   }, [archiveAuditRows]);
-  const filteredEntries = useMemo(() => {
-    const raw = "";
-    const linkRaw = linkQuery.trim().toLowerCase();
-    const accountRaw = accountQuery.trim().toLowerCase();
-    if (
-      !raw &&
-      !linkRaw &&
-      !accountRaw &&
-      !accountFilterId &&
-      !entryDirectionFilter &&
-      !outOfBalanceOnly &&
-      !exceptionMissingRefOnly &&
-      !exceptionLargeAmountOnly &&
-      !exceptionStaleDraftOnly
-    ) {
-      return entries;
-    }
-    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
-    const normalizedQuery = normalize(raw);
-    const normalizedLinkQuery = normalize(linkRaw);
-    const normalizedAccountQuery = normalize(accountRaw);
-    const matchesAccount = (line: JournalLine) => {
-      const code = line.account?.code || "";
-      const name = line.account?.name || "";
-      const composite = `${code} ${name}`;
-      return (
-        code.toLowerCase().includes(accountRaw) ||
-        name.toLowerCase().includes(accountRaw) ||
-        composite.toLowerCase().includes(accountRaw) ||
-        (normalizedAccountQuery && normalize(composite).includes(normalizedAccountQuery))
-      );
-    };
-    return entries.filter((entry) => {
-      const isBalanced = Math.abs(getEntryImbalance(entry)) <= 0.01;
-      const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
-      const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-      const missingReferenceRisk =
-        entry.status === "POSTED" &&
-        entry.sourceType !== "MANUAL" &&
-        !String(entry.sourceId || "").trim() &&
-        !String(entry.sourceLabel || "").trim();
-      const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= 25000;
-      const staleDraftRisk =
-        entry.status === "DRAFT" &&
-        (Date.now() - new Date(entry.entryDate).getTime()) / (1000 * 60 * 60 * 24) >= 7;
-      if (outOfBalanceOnly && isBalanced) return false;
-      if (exceptionMissingRefOnly && !missingReferenceRisk) return false;
-      if (exceptionLargeAmountOnly && !unusualAmountRisk) return false;
-      if (exceptionStaleDraftOnly && !staleDraftRisk) return false;
-
-      if (accountFilterId) {
-        const hasSelectedAccount = entry.lines?.some((line) => line.account?.id === accountFilterId);
-        if (!hasSelectedAccount) return false;
-      }
-      if (accountRaw) {
-        const accountMatches = entry.lines?.some((line) => matchesAccount(line));
-        if (!accountMatches) return false;
-      }
-      if (entryDirectionFilter) {
-        const relevantLines = (entry.lines || []).filter((line) => {
-          if (accountFilterId && line.account?.id !== accountFilterId) return false;
-          if (accountRaw && !matchesAccount(line)) return false;
-          return true;
-        });
-        if (relevantLines.length === 0) return false;
-        const hasDirectionMatch = relevantLines.some((line) => {
-          const debit = Number(line.debit || 0);
-          const credit = Number(line.credit || 0);
-          return entryDirectionFilter === "debit" ? debit > credit : credit > debit;
-        });
-        if (!hasDirectionMatch) return false;
-      }
-      if (linkRaw) {
-        const linkCandidates = [
-          entry.sourceId || "",
-          entry.sourceLabel || "",
-          entry.memo || "",
-          ...((entry.lines || []).map((line) => line.description || "")),
-        ];
-        const linkMatch = linkCandidates.some(
-          (value) =>
-            value.toLowerCase().includes(linkRaw) ||
-            (normalizedLinkQuery && normalize(value).includes(normalizedLinkQuery)),
-        );
-        if (!linkMatch) return false;
-      }
-      if (!raw) return true;
-      const memo = entry.memo || "";
-      const sourceType = entry.sourceType || "";
-      const sourceId = entry.sourceId || "";
-      const sourceLabel = entry.sourceLabel || "";
-      const candidates = [memo, sourceType, sourceId, sourceLabel];
-      if (
-        candidates.some(
-          (value) =>
-            value.toLowerCase().includes(raw) ||
-            (normalizedQuery && normalize(value).includes(normalizedQuery)),
-        )
-      ) {
-        return true;
-      }
-      return entry.lines?.some((line) => {
-        const description = line.description || "";
-        return (
-          description.toLowerCase().includes(raw) ||
-          (normalizedQuery && normalize(description).includes(normalizedQuery))
-        );
-      });
-    });
-  }, [
-    entries,
-    linkQuery,
-    accountQuery,
-    accountFilterId,
-    outOfBalanceOnly,
-    entryDirectionFilter,
-    exceptionMissingRefOnly,
-    exceptionLargeAmountOnly,
-    exceptionStaleDraftOnly,
-  ]);
   const sourceChipOptions = ["ORDER", "PAYMENT", "PURCHASE", "EXPENSE", "MANUAL", "PAYROLL"] as const;
   const sourceCounts = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const entry of entries) {
-      const src = String(entry.sourceType || "").toUpperCase();
-      map.set(src, (map.get(src) || 0) + 1);
-    }
-    return map;
-  }, [entries]);
+    return new Map(Object.entries(scopeSummary.sourceCounts || {}));
+  }, [scopeSummary.sourceCounts]);
   const periodSummary = useMemo(() => {
-    return filteredEntries.reduce(
-      (acc, entry) => {
-        const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
-        const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-        acc.total += 1;
-        if (entry.status === "POSTED") acc.posted += 1;
-        if (entry.status === "DRAFT") acc.draft += 1;
-        if (entry.status === "VOID") acc.void += 1;
-        acc.debit += debitTotal;
-        acc.credit += creditTotal;
-        return acc;
-      },
-      { total: 0, posted: 0, draft: 0, void: 0, debit: 0, credit: 0 },
-    );
-  }, [filteredEntries]);
-  const draftQueue = useMemo(() => {
-    const drafts = entries
-      .filter((entry) => entry.status === "DRAFT")
-      .sort((a, b) => new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime());
-    const oldest = drafts[0] || null;
-    const oldestAgeDays = oldest
-      ? Math.floor((Date.now() - new Date(oldest.entryDate).getTime()) / (1000 * 60 * 60 * 24))
-      : 0;
     return {
-      count: drafts.length,
-      oldest,
-      oldestAgeDays,
+      total: scopeSummary.total,
+      posted: scopeSummary.posted,
+      draft: scopeSummary.draft,
+      void: scopeSummary.void,
+      debit: scopeSummary.debit,
+      credit: scopeSummary.credit,
     };
-  }, [entries]);
-  const saveCurrentView = () => {
-    if (typeof window === "undefined") return;
-    const name = window.prompt("Name this saved journal view");
-    if (!name) return;
+  }, [scopeSummary.credit, scopeSummary.debit, scopeSummary.draft, scopeSummary.posted, scopeSummary.total, scopeSummary.void]);
+  const draftQueue = scopeSummary.draftQueue;
+  const persistCurrentView = (name: string) => {
     const entry: JournalSavedView = {
       id: String(Date.now()),
       name,
@@ -725,6 +856,10 @@ export default function JournalPage() {
     setSavedViews((prev) => [entry, ...prev]);
     setSelectedViewId(entry.id);
     toast.success("Saved journal view.");
+  };
+  const openSaveCurrentViewDialog = () => {
+    setSavedViewName("");
+    setSavedViewDialogMode("save");
   };
   const applySavedView = useCallback((id: string) => {
     const view = savedViews.find((v) => v.id === id);
@@ -757,6 +892,10 @@ export default function JournalPage() {
     setLastUsedViewId(view.id);
     toast.success(`Applied "${view.name}".`);
   }, [savedViews]);
+  const selectedSavedView = useMemo(
+    () => savedViews.find((view) => view.id === selectedViewId) || null,
+    [savedViews, selectedViewId],
+  );
   const removeSavedView = (id: string) => {
     setSavedViews((prev) => prev.filter((view) => view.id !== id));
     if (selectedViewId === id) setSelectedViewId("");
@@ -767,10 +906,24 @@ export default function JournalPage() {
     if (!selectedViewId) return;
     const current = savedViews.find((v) => v.id === selectedViewId);
     if (!current) return;
-    const name = window.prompt("Rename saved journal view", current.name)?.trim();
+    setSavedViewName(current.name);
+    setSavedViewDialogMode("rename");
+  };
+  const submitSavedViewDialog = () => {
+    const name = savedViewName.trim();
     if (!name) return;
-    setSavedViews((prev) => prev.map((v) => (v.id === selectedViewId ? { ...v, name } : v)));
-    toast.success("Saved view renamed.");
+    if (savedViewDialogMode === "save") {
+      persistCurrentView(name);
+      setSavedViewDialogMode(null);
+      setSavedViewName("");
+      return;
+    }
+    if (savedViewDialogMode === "rename" && selectedViewId) {
+      setSavedViews((prev) => prev.map((v) => (v.id === selectedViewId ? { ...v, name } : v)));
+      toast.success("Saved view renamed.");
+      setSavedViewDialogMode(null);
+      setSavedViewName("");
+    }
   };
   const applyQuickPreset = (preset: "today_posted" | "draft_only" | "payments_today") => {
     const today = new Date().toISOString().slice(0, 10);
@@ -960,12 +1113,12 @@ export default function JournalPage() {
       await postEntryById(currentEntryId);
       toast.success("Entry approved and posted.");
       if (nextDraftId) {
-        const nextEntry = filteredEntries.find((entry) => entry.id === nextDraftId) || null;
+        const nextEntry = entries.find((entry) => entry.id === nextDraftId) || null;
         if (nextEntry) {
           setSingleApproveEntry(nextEntry);
           setActiveEntryId(nextEntry.id);
           setExpandedEntryId(nextEntry.id);
-          const idx = filteredEntries.findIndex((entry) => entry.id === nextEntry.id);
+          const idx = entries.findIndex((entry) => entry.id === nextEntry.id);
           if (idx >= 0) {
             const targetPage = Math.floor(idx / rowsPerPage) + 1;
             setPage(targetPage);
@@ -1029,22 +1182,29 @@ export default function JournalPage() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
-  const exportFilteredCsv = () => {
-    if (!filteredEntries.length) {
-      toast.error("No entries to export for current filters.");
-      return;
+  const exportFilteredCsv = async () => {
+    try {
+      const exportEntries = await fetchFullScopeEntriesForExport();
+      if (!exportEntries.length) {
+        toast.error("No entries to export for current filters.");
+        return;
+      }
+      const csv = toCsv(exportEntries);
+      const today = new Date().toISOString().slice(0, 10);
+      downloadTextFile(`journal_filtered_${today}.csv`, csv, "text/csv;charset=utf-8;");
+      toast.success("Journal CSV exported.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to export journal CSV.");
     }
-    const csv = toCsv(filteredEntries);
-    const today = new Date().toISOString().slice(0, 10);
-    downloadTextFile(`journal_filtered_${today}.csv`, csv, "text/csv;charset=utf-8;");
-    toast.success("Journal CSV exported.");
   };
   const exportFilteredPdf = async () => {
-    if (!filteredEntries.length) {
-      toast.error("No entries to export for current filters.");
-      return;
-    }
     try {
+      const exportEntries = await fetchFullScopeEntriesForExport();
+      if (!exportEntries.length) {
+        toast.error("No entries to export for current filters.");
+        return;
+      }
       const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
       const pdf = await PDFDocument.create();
       const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -1114,7 +1274,7 @@ export default function JournalPage() {
 
       drawHeader();
 
-      for (const entry of filteredEntries) {
+      for (const entry of exportEntries) {
         const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
         const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
         const row = [
@@ -1155,94 +1315,102 @@ export default function JournalPage() {
       toast.success("Journal PDF exported.");
     } catch (error) {
       console.error(error);
-      toast.error("Failed to generate PDF.");
+      toast.error(error instanceof Error ? error.message : "Failed to generate PDF.");
     }
   };
-  const exportAuditPack = () => {
-    if (!filteredEntries.length) {
-      toast.error("No entries to export for current filters.");
-      return;
+  const exportAuditPack = async () => {
+    try {
+      const exportEntries = await fetchFullScopeEntriesForExport();
+      if (!exportEntries.length) {
+        toast.error("No entries to export for current filters.");
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const csv = toCsv(exportEntries);
+      const exceptionRows = exportEntries
+        .map((entry) => {
+          const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
+          const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
+          const missingReferenceRisk =
+            entry.status === "POSTED" &&
+            entry.sourceType !== "MANUAL" &&
+            !String(entry.sourceId || "").trim() &&
+            !String(entry.sourceLabel || "").trim();
+          const unusualAmountRisk =
+            Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= largeAmountAnomalyThreshold;
+          const outOfBalanceRisk = Math.abs(debitTotal - creditTotal) > 0.01;
+          const staleDraftRisk =
+            entry.status === "DRAFT" &&
+            (Date.now() - new Date(entry.entryDate).getTime()) / (1000 * 60 * 60 * 24) >= 7;
+          const flags = [
+            missingReferenceRisk ? "missing_source_ref" : "",
+            unusualAmountRisk ? "large_amount" : "",
+            outOfBalanceRisk ? "out_of_balance" : "",
+            staleDraftRisk ? "stale_draft" : "",
+          ].filter(Boolean);
+          return { entry, flags, debitTotal, creditTotal };
+        })
+        .filter((row) => row.flags.length > 0);
+      const toExceptionsCsv = () => {
+        const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+        const header = [
+          "Date",
+          "Memo",
+          "Source",
+          "Status",
+          "Exceptions",
+          "Debit Total",
+          "Credit Total",
+          "Source ID",
+        ];
+        const rows = exceptionRows.map(({ entry, flags, debitTotal, creditTotal }) => [
+          new Date(entry.entryDate).toISOString().slice(0, 10),
+          entry.memo || "",
+          entry.sourceType || "",
+          entry.status || "",
+          flags.join("|"),
+          debitTotal.toFixed(2),
+          creditTotal.toFixed(2),
+          entry.sourceId || "",
+        ]);
+        return [header, ...rows].map((r) => r.map(esc).join(",")).join("\n");
+      };
+      const summary = [
+        "Journal audit pack summary",
+        `Generated: ${new Date().toLocaleString()}`,
+        `Scope: ${scopeLabel}`,
+        `Include archive: ${includeArchive ? "yes" : "no"}`,
+        `Period filter: ${periodFilter || "recent"}`,
+        `Status filter: ${statusFilter || "all"}`,
+        `Source filter: ${sourceFilter || "all"}`,
+        `Date range: ${dateStart || "-"} to ${dateEnd || "-"}`,
+        `Search query: ${searchQuery || "-"}`,
+        `Link query: ${linkQuery || "-"}`,
+        `Account query: ${accountQuery || "-"}`,
+        `Entries: ${periodSummary.total}`,
+        `Posted: ${periodSummary.posted}`,
+        `Draft: ${periodSummary.draft}`,
+        `Void: ${periodSummary.void}`,
+        `Debits: ${formatCurrency(periodSummary.debit)}`,
+        `Credits: ${formatCurrency(periodSummary.credit)}`,
+        `Exceptions: ${exceptionRows.length}`,
+      ].join("\n");
+      downloadTextFile(`journal_filtered_${today}.csv`, csv, "text/csv;charset=utf-8;");
+      downloadTextFile(`journal_summary_${today}.txt`, summary, "text/plain;charset=utf-8;");
+      downloadTextFile(`journal_exceptions_${today}.csv`, toExceptionsCsv(), "text/csv;charset=utf-8;");
+      toast.success("Audit pack exported (CSV + summary TXT + exceptions CSV).");
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : "Failed to export audit pack.");
     }
-    const today = new Date().toISOString().slice(0, 10);
-    const csv = toCsv(filteredEntries);
-    const exceptionRows = filteredEntries
-      .map((entry) => {
-        const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
-        const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-        const missingReferenceRisk =
-          entry.status === "POSTED" &&
-          entry.sourceType !== "MANUAL" &&
-          !String(entry.sourceId || "").trim() &&
-          !String(entry.sourceLabel || "").trim();
-        const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= 25000;
-        const outOfBalanceRisk = Math.abs(debitTotal - creditTotal) > 0.01;
-        const staleDraftRisk =
-          entry.status === "DRAFT" &&
-          (Date.now() - new Date(entry.entryDate).getTime()) / (1000 * 60 * 60 * 24) >= 7;
-        const flags = [
-          missingReferenceRisk ? "missing_source_ref" : "",
-          unusualAmountRisk ? "large_amount" : "",
-          outOfBalanceRisk ? "out_of_balance" : "",
-          staleDraftRisk ? "stale_draft" : "",
-        ].filter(Boolean);
-        return { entry, flags, debitTotal, creditTotal };
-      })
-      .filter((row) => row.flags.length > 0);
-    const toExceptionsCsv = () => {
-      const esc = (v: string | number) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-      const header = [
-        "Date",
-        "Memo",
-        "Source",
-        "Status",
-        "Exceptions",
-        "Debit Total",
-        "Credit Total",
-        "Source ID",
-      ];
-      const rows = exceptionRows.map(({ entry, flags, debitTotal, creditTotal }) => [
-        new Date(entry.entryDate).toISOString().slice(0, 10),
-        entry.memo || "",
-        entry.sourceType || "",
-        entry.status || "",
-        flags.join("|"),
-        debitTotal.toFixed(2),
-        creditTotal.toFixed(2),
-        entry.sourceId || "",
-      ]);
-      return [header, ...rows].map((r) => r.map(esc).join(",")).join("\n");
-    };
-    const summary = [
-      "Journal audit pack summary",
-      `Generated: ${new Date().toLocaleString()}`,
-      `Scope: ${scopeLabel}`,
-      `Include archive: ${includeArchive ? "yes" : "no"}`,
-      `Period filter: ${periodFilter || "recent"}`,
-      `Status filter: ${statusFilter || "all"}`,
-      `Source filter: ${sourceFilter || "all"}`,
-      `Date range: ${dateStart || "-"} to ${dateEnd || "-"}`,
-      `Search query: ${searchQuery || "-"}`,
-      `Link query: ${linkQuery || "-"}`,
-      `Account query: ${accountQuery || "-"}`,
-      `Entries: ${periodSummary.total}`,
-      `Posted: ${periodSummary.posted}`,
-      `Draft: ${periodSummary.draft}`,
-      `Void: ${periodSummary.void}`,
-      `Debits: ${formatCurrency(periodSummary.debit)}`,
-      `Credits: ${formatCurrency(periodSummary.credit)}`,
-      `Exceptions: ${exceptionRows.length}`,
-    ].join("\n");
-    downloadTextFile(`journal_filtered_${today}.csv`, csv, "text/csv;charset=utf-8;");
-    downloadTextFile(`journal_summary_${today}.txt`, summary, "text/plain;charset=utf-8;");
-    downloadTextFile(`journal_exceptions_${today}.csv`, toExceptionsCsv(), "text/csv;charset=utf-8;");
-    toast.success("Audit pack exported (CSV + summary TXT + exceptions CSV).");
   };
   const exportAuditPackPdf = async () => {
-    if (!filteredEntries.length) {
-      toast.error("No entries to export for current filters.");
-      return;
-    }
     try {
+      const exportEntries = await fetchFullScopeEntriesForExport();
+      if (!exportEntries.length) {
+        toast.error("No entries to export for current filters.");
+        return;
+      }
       const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
       const pdf = await PDFDocument.create();
       const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -1273,7 +1441,7 @@ export default function JournalPage() {
         y -= lh;
       };
 
-      const exceptionRows = filteredEntries
+      const exceptionRows = exportEntries
         .map((entry) => {
           const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
           const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
@@ -1282,7 +1450,7 @@ export default function JournalPage() {
             entry.sourceType !== "MANUAL" &&
             !String(entry.sourceId || "").trim() &&
             !String(entry.sourceLabel || "").trim();
-          const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= 25000;
+          const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= largeAmountAnomalyThreshold;
           const outOfBalanceRisk = Math.abs(debitTotal - creditTotal) > 0.01;
           const staleDraftRisk =
             entry.status === "DRAFT" &&
@@ -1333,7 +1501,7 @@ export default function JournalPage() {
       toast.success("Audit pack PDF exported.");
     } catch (error) {
       console.error(error);
-      toast.error("Failed to generate audit pack PDF.");
+      toast.error(error instanceof Error ? error.message : "Failed to generate audit pack PDF.");
     }
   };
   const runJournalArchive = async (dryRun: boolean) => {
@@ -1373,7 +1541,6 @@ export default function JournalPage() {
         );
       }
       await queryClient.invalidateQueries({ queryKey: ["accounting", "journal"] });
-      await queryClient.invalidateQueries({ queryKey: ["accounting", "journal-balance"] });
       await queryClient.invalidateQueries({ queryKey: ["admin", "audit", "journal-archive-runs"] });
     } catch (error) {
       console.error(error);
@@ -1402,7 +1569,6 @@ export default function JournalPage() {
       setLastArchiveRunAt(null);
       setUndoArchiveUntilMs(null);
       await queryClient.invalidateQueries({ queryKey: ["accounting", "journal"] });
-      await queryClient.invalidateQueries({ queryKey: ["accounting", "journal-balance"] });
       await queryClient.invalidateQueries({ queryKey: ["admin", "audit", "journal-archive-runs"] });
     } catch (error) {
       console.error(error);
@@ -1490,32 +1656,8 @@ export default function JournalPage() {
     return map;
   }, [balanceEntries]);
   const draftEntries = entries.filter((entry) => entry.status === "DRAFT");
-  const exceptionCounts = useMemo(() => {
-    let missingRef = 0;
-    let largeAmount = 0;
-    let staleDraft = 0;
-    for (const entry of entries) {
-      const debitTotal = entry.lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
-      const creditTotal = entry.lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
-      const missingReferenceRisk =
-        entry.status === "POSTED" &&
-        entry.sourceType !== "MANUAL" &&
-        !String(entry.sourceId || "").trim() &&
-        !String(entry.sourceLabel || "").trim();
-      const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= 25000;
-      const staleDraftRisk =
-        entry.status === "DRAFT" &&
-        (Date.now() - new Date(entry.entryDate).getTime()) / (1000 * 60 * 60 * 24) >= 7;
-      if (missingReferenceRisk) missingRef += 1;
-      if (unusualAmountRisk) largeAmount += 1;
-      if (staleDraftRisk) staleDraft += 1;
-    }
-    return { missingRef, largeAmount, staleDraft };
-  }, [entries]);
-  const outOfBalanceCount = useMemo(
-    () => entries.filter((entry) => Math.abs(getEntryImbalance(entry)) > 0.01).length,
-    [entries],
-  );
+  const exceptionCounts = scopeSummary.exceptionCounts;
+  const outOfBalanceCount = scopeSummary.outOfBalanceCount;
   const [selectedEntryIds, setSelectedEntryIds] = useState<string[]>([]);
   const [selectDraftsAcrossPages, setSelectDraftsAcrossPages] = useState(false);
   const [lineSearchByEntryId, setLineSearchByEntryId] = useState<Record<string, string>>({});
@@ -1532,27 +1674,21 @@ export default function JournalPage() {
       dateEnd,
       includeArchive,
       debouncedSearchQuery,
+      debouncedLinkQuery,
+      debouncedAccountQuery,
+      accountFilterId,
+      entryDirectionFilter,
+      outOfBalanceOnly,
+      exceptionMissingRefOnly,
+      exceptionLargeAmountOnly,
+      exceptionStaleDraftOnly,
       sortBy,
       sortDir,
     ],
     enabled: canApprove && selectDraftsAcrossPages,
     queryFn: () => {
-      const params = new URLSearchParams();
-      params.set("idsOnly", "1");
+      const params = buildJournalParams({ idsOnly: true });
       params.set("status", "DRAFT");
-      const hasCustomDates = dateStart || dateEnd;
-      if (hasCustomDates) {
-        if (dateStart) params.set("start", dateStart);
-        if (dateEnd) params.set("end", dateEnd);
-      } else if (selectedPeriod) {
-        params.set("start", selectedPeriod.startDate.slice(0, 10));
-        params.set("end", selectedPeriod.endDate.slice(0, 10));
-      }
-      if (sourceFilter) params.set("sourceType", sourceFilter);
-      if (includeArchive) params.set("includeArchive", "1");
-      if (debouncedSearchQuery.trim()) params.set("q", debouncedSearchQuery.trim());
-      params.set("sortBy", sortBy);
-      params.set("sortDir", sortDir);
       return fetch(`/api/admin/accounting/journal?${params.toString()}`).then((r) => r.json());
     },
   });
@@ -1564,11 +1700,11 @@ export default function JournalPage() {
   const [singleApproveEntry, setSingleApproveEntry] = useState<JournalEntry | null>(null);
   const nextDraftFromSingleApprove = useMemo(() => {
     if (!singleApproveEntry) return null;
-    const draftEntriesInView = filteredEntries.filter((entry) => entry.status === "DRAFT");
+    const draftEntriesInView = entries.filter((entry) => entry.status === "DRAFT");
     const idx = draftEntriesInView.findIndex((entry) => entry.id === singleApproveEntry.id);
     if (idx < 0) return null;
     return draftEntriesInView[idx + 1] || draftEntriesInView[idx - 1] || null;
-  }, [singleApproveEntry, filteredEntries]);
+  }, [singleApproveEntry, entries]);
   const allDraftSelected =
     draftEntries.length > 0 && selectedEntryIds.length === draftEntries.length;
   const approveDisabledReason = !canApprove
@@ -1590,12 +1726,7 @@ export default function JournalPage() {
       { debit: 0, credit: 0 },
     );
   }, [selectedDraftEntries]);
-  const tableEntries = useMemo(() => {
-    if (!largestVarianceFirst) return filteredEntries;
-    return [...filteredEntries].sort(
-      (a, b) => Math.abs(getEntryImbalance(b)) - Math.abs(getEntryImbalance(a)),
-    );
-  }, [filteredEntries, largestVarianceFirst]);
+  const tableEntries = entries;
   const pagedEntries = tableEntries;
   const activeEntry = useMemo(
     () => pagedEntries.find((entry) => entry.id === activeEntryId) || null,
@@ -1809,11 +1940,15 @@ export default function JournalPage() {
     [periods],
   );
   const manualAccountOptions = useMemo(
-    () =>
-      accountOptions.filter(
+    () => {
+      if (journalPolicyData?.policy?.manualEntryAllowPnl) {
+        return accountOptions;
+      }
+      return accountOptions.filter(
         (acc) => acc.type === "ASSET" || acc.type === "LIABILITY" || acc.type === "EQUITY",
-      ),
-    [accountOptions],
+      );
+    },
+    [accountOptions, journalPolicyData?.policy?.manualEntryAllowPnl],
   );
   const accountIdByCode = useMemo(() => {
     const map = new Map<string, string>();
@@ -2213,8 +2348,6 @@ export default function JournalPage() {
       setFullSaving(false);
     }
   };
-  const effectiveJournalPolicy = journalPolicyData?.policy || null;
-
   return (
     <section className="container mx-auto py-8 space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2238,7 +2371,7 @@ export default function JournalPage() {
             size="sm"
             variant="outline"
             onClick={exportFilteredCsv}
-            disabled={filteredEntries.length === 0}
+            disabled={entries.length === 0}
           >
             Export CSV (filtered)
           </Button>
@@ -2246,7 +2379,7 @@ export default function JournalPage() {
             size="sm"
             variant="outline"
             onClick={exportFilteredPdf}
-            disabled={filteredEntries.length === 0}
+            disabled={entries.length === 0}
           >
             Export PDF (filtered)
           </Button>
@@ -2254,7 +2387,7 @@ export default function JournalPage() {
             size="sm"
             variant="outline"
             onClick={exportAuditPack}
-            disabled={filteredEntries.length === 0}
+            disabled={entries.length === 0}
           >
             Export audit pack
           </Button>
@@ -2262,7 +2395,7 @@ export default function JournalPage() {
             size="sm"
             variant="outline"
             onClick={exportAuditPackPdf}
-            disabled={filteredEntries.length === 0}
+            disabled={entries.length === 0}
           >
             Export audit pack PDF
           </Button>
@@ -2295,6 +2428,10 @@ export default function JournalPage() {
           <div className="rounded-md border bg-muted/30 px-3 py-2">
             Scheduled archive runs default to{" "}
             <span className="font-medium">{effectiveJournalPolicy?.archiveCronDryRun ? "dry run mode" : "live run mode"}</span>.
+          </div>
+          <div className="rounded-md border bg-muted/30 px-3 py-2">
+            Large-amount anomalies start at{" "}
+            <span className="font-medium">{formatCurrency(effectiveJournalPolicy?.largeAmountAnomalyThreshold ?? 25000)}</span>.
           </div>
         </CardContent>
       </Card>
@@ -2420,9 +2557,11 @@ export default function JournalPage() {
               ))}
             </select>
           </label>
-          <div className="sm:col-span-2 lg:col-span-3 text-xs text-muted-foreground">
-            Manual entries are limited to balance sheet accounts (assets, liabilities, equity).
-          </div>
+          {!journalPolicyData?.policy?.manualEntryAllowPnl ? (
+            <div className="sm:col-span-2 lg:col-span-3 text-xs text-muted-foreground">
+              Manual entries are limited to balance sheet accounts (assets, liabilities, equity).
+            </div>
+          ) : null}
           {sameAccountSelected ? (
             <div className="sm:col-span-2 lg:col-span-3 text-xs text-amber-600">
               Debit and credit accounts are the same. Use different accounts to record a
@@ -2609,7 +2748,7 @@ export default function JournalPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent entries</CardTitle>
+          <CardTitle>{`Journal entries - ${scopeLabel}`}</CardTitle>
         </CardHeader>
         <CardContent>
           {showOnboardingTip ? (
@@ -2704,9 +2843,9 @@ export default function JournalPage() {
               <Button
                 size="sm"
                 variant={showAdvancedJournalFilters ? "default" : "outline"}
-                onClick={() => setShowAdvancedJournalFilters((v) => !v)}
+                onClick={() => setShowAdvancedJournalFilters(true)}
               >
-                {showAdvancedJournalFilters ? "Hide advanced filters" : "Show advanced filters"}
+                Advanced filters
               </Button>
               <Button size="sm" variant="ghost" onClick={clearJournalFilters}>
                 Reset
@@ -2715,49 +2854,11 @@ export default function JournalPage() {
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
             <Input
-              className="h-9 w-full sm:w-64"
+              className="h-9 w-full sm:w-72"
               placeholder="Search memo/source"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
-            <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-              <option value="">All statuses</option>
-              <option value="DRAFT">Draft</option>
-              <option value="POSTED">Posted</option>
-              <option value="VOID">Void</option>
-            </select>
-            <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-            >
-              <option value="">All sources</option>
-              <option value="ORDER">Order</option>
-              <option value="PAYMENT">Payment</option>
-              <option value="EXPENSE">Expense</option>
-              <option value="PURCHASE">Purchase</option>
-              <option value="PAYROLL">Payroll</option>
-              <option value="MANUAL">Manual</option>
-            </select>
-            <Button
-              size="sm"
-              variant={outOfBalanceOnly ? "default" : "outline"}
-              onClick={() => setOutOfBalanceOnly((v) => !v)}
-            >
-              Out-of-balance only ({outOfBalanceCount})
-            </Button>
-            <Button
-              size="sm"
-              variant={includeArchive ? "default" : "outline"}
-              onClick={() => setIncludeArchive((v) => !v)}
-              title="Include older historical journal entries."
-            >
-              Include archive
-            </Button>
             <div className="inline-flex items-center gap-1 rounded-md border px-1 py-1">
               <Button
                 size="sm"
@@ -2796,405 +2897,402 @@ export default function JournalPage() {
               </Button>
             </div>
           ) : null}
-          {showAdvancedJournalFilters ? (
-          <div className="mt-2 space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <Input
-              className="h-9 w-full sm:w-56"
-              placeholder="Search memo/source"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            <Input
-              className="h-9 w-full sm:w-56"
-              placeholder="Batch/Link ID"
-              value={linkQuery}
-              onChange={(e) => setLinkQuery(e.target.value)}
-            />
-            <Input
-              className="h-9 w-full sm:w-56"
-              placeholder="Account code/name (e.g., 1000)"
-              value={accountQuery}
-              onChange={(e) => setAccountQuery(e.target.value)}
-            />
-            <Tooltip content="Filter entries by a specific account.">
-              <span className="text-muted-foreground cursor-help">Account</span>
-            </Tooltip>
-            <select
-              className="h-9 w-full sm:w-auto rounded-md border bg-background px-3 text-sm"
-              value={accountFilterId}
-              onChange={(e) => setAccountFilterId(e.target.value)}
-            >
-              <option value="">All accounts</option>
-              {accountOptions.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.code} - {account.name}
-                </option>
-              ))}
-            </select>
-            <div className="flex flex-wrap items-center gap-1">
-              {accountDrillCodes.map((code) => {
-                const id = accountIdByCode.get(code) || "";
-                if (!id) return null;
-                return (
-                  <Button
-                    key={code}
-                    size="sm"
-                    variant={accountFilterId === id ? "default" : "outline"}
-                    className="h-7 px-2 text-[11px]"
-                    onClick={() =>
-                      accountFilterId === id ? setAccountFilterId("") : applyAccountDrill(code, id)
-                    }
-                  >
-                    {code}
-                  </Button>
-                );
-              })}
-            </div>
-            <Tooltip content="Filter entries by source type.">
-              <span className="text-muted-foreground cursor-help">Source</span>
-            </Tooltip>
-            <select
-              className="h-9 w-full sm:w-auto rounded-md border bg-background px-3 text-sm"
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-            >
-              <option value="">All</option>
-              <option value="ORDER">Order</option>
-              <option value="PAYMENT">Payment</option>
-              <option value="EXPENSE">Expense</option>
-              <option value="PURCHASE">Purchase</option>
-              <option value="PAYROLL">Payroll</option>
-              <option value="MANUAL">Manual</option>
-            </select>
-            <div className="flex flex-wrap items-center gap-1">
-              {sourceChipOptions.map((src) => (
-                <Button
-                  key={src}
-                  size="sm"
-                  variant={sourceFilter === src ? "default" : "outline"}
-                  className="h-7 px-2 text-[11px]"
-                  onClick={() => setSourceFilter((prev) => (prev === src ? "" : src))}
-                >
-                  {src} ({sourceCounts.get(src) || 0})
-                </Button>
-              ))}
-            </div>
-            <Tooltip content="Filter entries by fiscal period.">
-              <span className="text-muted-foreground cursor-help">Period filter</span>
-            </Tooltip>
-            <Tooltip content="All non-archived = full active history only. All time = lifetime history (includes archived).">
-              <span className="text-xs text-muted-foreground cursor-help rounded border px-1 py-0.5">?</span>
-            </Tooltip>
-            <select
-              className="h-9 w-full sm:w-auto rounded-md border bg-background px-3 text-sm"
-              value={periodFilter}
-              onChange={(e) => {
-                hasUserSelected.current = true;
-                const next = e.target.value;
-                setPeriodFilter(next);
-                if (next === "all") setIncludeArchive(true);
-                if (next === "recent" || next === "all_non_archived") setIncludeArchive(false);
-              }}
-            >
-                <option value="recent">Recent 90 days (default)</option>
-                <option value="all_non_archived">All non-archived entries</option>
-                <option value="all">All time</option>
-                {currentOpenPeriod ? (
-                  <option value="current">Current open period</option>
+          {scopeSummaryErrorMessage || balanceEntriesErrorMessage ? (
+            <div className="sticky top-[calc(var(--admin-nav-height,4rem)+8px)] z-20 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div className="space-y-1">
+                {scopeSummaryErrorMessage ? (
+                  <div>
+                    Scoped summary unavailable. Summary tiles and exception counts are temporarily using only the current page.
+                  </div>
                 ) : null}
-                {periods.map((period) => (
-                  <option key={period.id} value={period.id}>
-                    {period.name} ({period.status})
-                  </option>
-                ))}
-              </select>
-            {selectedPeriod ? (
-              <span className="text-xs text-muted-foreground">
-                {new Date(selectedPeriod.startDate).toLocaleDateString()} -{" "}
-                {new Date(selectedPeriod.endDate).toLocaleDateString()}
-              </span>
-            ) : null}
-            <Tooltip content="Filter entries by date range (overrides period).">
-              <span className="text-muted-foreground cursor-help">Date range</span>
-            </Tooltip>
-            <Input
-              className="h-9 w-full sm:w-[140px]"
-              type="date"
-              value={dateStart}
-              onChange={(e) => setDateStart(e.target.value)}
-            />
-            <Input
-              className="h-9 w-full sm:w-[140px]"
-              type="date"
-              value={dateEnd}
-              onChange={(e) => setDateEnd(e.target.value)}
-            />
-            {dateStart || dateEnd ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setDateStart("");
-                  setDateEnd("");
+                {balanceEntriesErrorMessage ? (
+                  <div>
+                    Balance runners unavailable. “Balance after” values are temporarily using only the current page, not the full scope.
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {scopeSummaryErrorMessage ? (
+                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => refetchScopeSummary()}>
+                    Retry summary
+                  </Button>
+                ) : null}
+                {balanceEntriesErrorMessage ? (
+                  <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => refetchBalanceEntries()}>
+                    Retry balances
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          <Dialog open={showAdvancedJournalFilters} onOpenChange={setShowAdvancedJournalFilters}>
+            <DialogContent className="inset-y-0 left-auto right-0 top-0 h-[100dvh] max-h-[100dvh] w-full max-w-[min(100vw,42rem)] translate-x-0 translate-y-0 overflow-hidden rounded-none border-b-0 border-l border-r-0 border-t-0 p-0 sm:max-w-[42rem]">
+              <div className="flex h-full min-h-0 flex-col">
+                <DialogHeader className="border-b px-6 py-4">
+                  <DialogTitle>Advanced filters</DialogTitle>
+                  <DialogDescription>
+                    Review filters, saved views, posting tools, and archive controls without moving the table.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4 pb-6">
+                  <section className="space-y-3">
+                    <div>
+                      <div className="text-sm font-medium">Scope</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Period, status, source, account, and exception filters apply across all pages.
+                      </div>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Status</span>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                          value={statusFilter}
+                          onChange={(e) => setStatusFilter(e.target.value)}
+                        >
+                          <option value="">All statuses</option>
+                          <option value="DRAFT">Draft</option>
+                          <option value="POSTED">Posted</option>
+                          <option value="VOID">Void</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Source</span>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                          value={sourceFilter}
+                          onChange={(e) => setSourceFilter(e.target.value)}
+                        >
+                          <option value="">All sources</option>
+                          <option value="ORDER">Order</option>
+                          <option value="PAYMENT">Payment</option>
+                          <option value="EXPENSE">Expense</option>
+                          <option value="PURCHASE">Purchase</option>
+                          <option value="PAYROLL">Payroll</option>
+                          <option value="MANUAL">Manual</option>
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Period</span>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                          value={periodFilter}
+                          onChange={(e) => {
+                            hasUserSelected.current = true;
+                            const next = e.target.value;
+                            setPeriodFilter(next);
+                            if (next === "all") setIncludeArchive(true);
+                            if (next === "recent" || next === "all_non_archived") setIncludeArchive(false);
+                          }}
+                        >
+                          <option value="recent">{`Recent ${journalPolicyData?.policy?.recentWindowDays ?? 90} days (default)`}</option>
+                          <option value="all_non_archived">All non-archived entries</option>
+                          <option value="all">All time</option>
+                          {currentOpenPeriod ? <option value="current">Current open period</option> : null}
+                          {periods.map((period) => (
+                            <option key={period.id} value={period.id}>
+                              {period.name} ({period.status})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Line direction</span>
+                        <select
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                          value={entryDirectionFilter}
+                          onChange={(e) => setEntryDirectionFilter(e.target.value as "" | "debit" | "credit")}
+                        >
+                          <option value="">All directions</option>
+                          <option value="debit">Debit-heavy lines</option>
+                          <option value="credit">Credit-heavy lines</option>
+                        </select>
+                      </label>
+                    </div>
+                    {selectedPeriod ? (
+                      <div className="text-xs text-muted-foreground">
+                        {new Date(selectedPeriod.startDate).toLocaleDateString()} - {new Date(selectedPeriod.endDate).toLocaleDateString()}
+                      </div>
+                    ) : null}
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">From</span>
+                        <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} />
+                      </label>
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">To</span>
+                        <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} />
+                      </label>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Batch / link ID</span>
+                        <Input placeholder="Batch/Link ID" value={linkQuery} onChange={(e) => setLinkQuery(e.target.value)} />
+                      </label>
+                      <label className="space-y-1 text-sm">
+                        <span className="text-muted-foreground">Account code / name</span>
+                        <Input
+                          placeholder="Account code/name (e.g., 1000)"
+                          value={accountQuery}
+                          onChange={(e) => setAccountQuery(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <label className="space-y-1 text-sm">
+                      <span className="text-muted-foreground">Account</span>
+                      <select
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                        value={accountFilterId}
+                        onChange={(e) => setAccountFilterId(e.target.value)}
+                      >
+                        <option value="">All accounts</option>
+                        {accountOptions.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.code} - {account.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      {accountDrillCodes.map((code) => {
+                        const id = accountIdByCode.get(code) || "";
+                        if (!id) return null;
+                        return (
+                          <Button
+                            key={code}
+                            size="sm"
+                            variant={accountFilterId === id ? "default" : "outline"}
+                            className="h-7 px-2 text-[11px]"
+                            onClick={() => (accountFilterId === id ? setAccountFilterId("") : applyAccountDrill(code, id))}
+                          >
+                            {code}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {sourceChipOptions.map((src) => (
+                        <Button
+                          key={src}
+                          size="sm"
+                          variant={sourceFilter === src ? "default" : "outline"}
+                          className="h-7 px-2 text-[11px]"
+                          onClick={() => setSourceFilter((prev) => (prev === src ? "" : src))}
+                        >
+                          {src} ({sourceCounts.get(src) || 0})
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button size="sm" variant={outOfBalanceOnly ? "default" : "outline"} onClick={() => setOutOfBalanceOnly((v) => !v)}>
+                        Out-of-balance only ({outOfBalanceCount})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={largestVarianceFirst ? "default" : "outline"}
+                        onClick={() => {
+                          setOutOfBalanceOnly(true);
+                          setLargestVarianceFirst((v) => !v);
+                        }}
+                      >
+                        Largest variance first
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={exceptionMissingRefOnly ? "default" : "outline"}
+                        onClick={() => setExceptionMissingRefOnly((v) => !v)}
+                      >
+                        Missing source ref ({exceptionCounts.missingRef})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={exceptionLargeAmountOnly ? "default" : "outline"}
+                        onClick={() => setExceptionLargeAmountOnly((v) => !v)}
+                      >
+                        Large amount ({exceptionCounts.largeAmount})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={exceptionStaleDraftOnly ? "default" : "outline"}
+                        onClick={() => setExceptionStaleDraftOnly((v) => !v)}
+                      >
+                        Stale drafts 7d+ ({exceptionCounts.staleDraft})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={includeArchive ? "default" : "outline"}
+                        onClick={() => setIncludeArchive((v) => !v)}
+                      >
+                        Include archive
+                      </Button>
+                    </div>
+                  </section>
+                  <section className="space-y-3 border-t pt-4">
+                    <div className="text-sm font-medium">Saved views</div>
+                    <select className="h-9 w-full rounded-md border bg-background px-3 text-sm" value={selectedViewId} onChange={(e) => {
+                      const id = e.target.value;
+                      if (!id) {
+                        setSelectedViewId("");
+                        return;
+                      }
+                      applySavedView(id);
+                    }}>
+                      <option value="">Saved journal views</option>
+                      {savedViews.map((view) => (
+                        <option key={view.id} value={view.id}>
+                          {view.state.includeArchive ? "[Archive] " : ""}{view.name}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedSavedView?.state.includeArchive ? (
+                      <span className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground">
+                        <Lock className="h-3 w-3" />
+                        Archive view
+                      </span>
+                    ) : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button size="sm" variant="outline" onClick={openSaveCurrentViewDialog}>Save view</Button>
+                      {selectedViewId ? <Button size="sm" variant="outline" onClick={renameSelectedView}>Rename view</Button> : null}
+                      {selectedViewId ? (
+                        <Button size="sm" variant={defaultViewId === selectedViewId ? "default" : "outline"} onClick={() => setDefaultViewId((prev) => (prev === selectedViewId ? "" : selectedViewId))}>
+                          {defaultViewId === selectedViewId ? "Default view" : "Set as default"}
+                        </Button>
+                      ) : null}
+                      <Button size="sm" variant={autoRestoreLastView ? "default" : "outline"} onClick={() => setAutoRestoreLastView((v) => !v)}>
+                        Auto-restore last view
+                      </Button>
+                      {selectedViewId ? <Button size="sm" variant="ghost" onClick={() => removeSavedView(selectedViewId)}>Remove view</Button> : null}
+                    </div>
+                  </section>
+                  <section className="space-y-3 border-t pt-4">
+                    <div className="text-sm font-medium">Review options</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="inline-flex items-center gap-1 rounded-md border px-1 py-1">
+                        <Button size="sm" variant={rowDensity === "comfortable" ? "default" : "ghost"} className="h-7 px-2 text-[11px]" onClick={() => setRowDensity("comfortable")}>Comfortable</Button>
+                        <Button size="sm" variant={rowDensity === "compact" ? "default" : "ghost"} className="h-7 px-2 text-[11px]" onClick={() => setRowDensity("compact")}>Compact</Button>
+                      </div>
+                      <Button size="sm" variant={reviewMode ? "default" : "outline"} onClick={() => setReviewMode((v) => !v)}>Review mode</Button>
+                    </div>
+                  </section>
+                  <section className="space-y-3 border-t pt-4">
+                    <div className="text-sm font-medium">Draft posting</div>
+                    {!canApprove ? <div className="text-xs text-muted-foreground">Posting actions are limited to roles with journal posting rights.</div> : null}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {draftEntries.length > 0 && canApprove ? (
+                        <Tooltip content="Approve selected draft entries.">
+                          <span>
+                            <Button size="sm" variant="outline" disabled={Boolean(approveDisabledReason) || bulkApproving} onClick={() => setShowBulkApproveDialog(true)} title={approveDisabledReason || ""}>
+                              {bulkApproving ? "Approving..." : "Approve selected"}
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      ) : null}
+                      {canApprove ? (
+                        <Button size="sm" variant={selectDraftsAcrossPages ? "default" : "outline"} className="h-7 px-2 text-[11px]" disabled={draftIdsFetching} onClick={() => {
+                          setSelectDraftsAcrossPages((prev) => {
+                            const next = !prev;
+                            if (!next) setSelectedEntryIds([]);
+                            return next;
+                          });
+                        }}>
+                          {draftIdsFetching ? "Loading drafts..." : selectDraftsAcrossPages ? `Across pages selected (${selectedEntryIds.length})` : "Select drafts across pages"}
+                        </Button>
+                      ) : null}
+                    </div>
+                    {selectDraftsAcrossPages && Boolean((draftIdsData as { truncated?: boolean } | undefined)?.truncated) ? (
+                      <div className="text-[11px] text-amber-700">
+                        Large result set: selection capped to first {Number((draftIdsData as { max?: number } | undefined)?.max || 0)} draft IDs.
+                      </div>
+                    ) : null}
+                  </section>
+                  {canArchive ? (
+                    <section className="space-y-3 border-t pt-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-medium">Archive</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Eligible now: {archiveEligibleCount ?? "-"} · Undo window: {undoArchiveUntilMs && undoClockMs <= undoArchiveUntilMs ? `${Math.max(0, Math.ceil(((undoArchiveUntilMs ?? 0) - undoClockMs) / 1000))}s` : "-"}
+                          </div>
+                        </div>
+                        <Link href="/admin/audit?entityType=JournalEntry&sourcePage=admin/accounting/journal" className="text-xs text-muted-foreground underline hover:text-foreground">
+                          Open archive logs
+                        </Link>
+                      </div>
+                      {latestCronArchiveRun ? (
+                        <div className="text-xs text-muted-foreground">
+                          Last cron archive: {new Date(String(latestCronArchiveRun.createdAt || "")).toLocaleString()} ({latestCronArchiveRun.action === "journal.archive.cron.dry_run" ? "dry run" : "run"})
+                        </div>
+                      ) : null}
+                      <div className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2">
+                        <span className="text-xs text-muted-foreground">Archive posted/void older than</span>
+                        <Input className="h-8 w-16" type="number" min={1} max={120} value={String(archiveMonths)} onChange={(e) => {
+                          archiveMonthsTouched.current = true;
+                          setArchiveMonths(Math.max(1, Math.min(120, Number(e.target.value || 18))));
+                        }} />
+                        <span className="text-xs text-muted-foreground">months</span>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={archiveRunning} onClick={() => runJournalArchive(true)}>{archiveRunning ? "Working..." : "Dry run archive"}</Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={archiveRunning} onClick={() => runJournalArchive(false)}>{archiveRunning ? "Working..." : "Run archive"}</Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" disabled={archiveRunning || !lastArchiveRunAt || !undoArchiveUntilMs || undoClockMs > (undoArchiveUntilMs ?? 0)} onClick={undoLastArchiveRun} title="Undo last archive batch (5-minute window).">Undo last batch</Button>
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={exportArchiveRunsCsv}>Export archive runs CSV</Button>
+                      </div>
+                      <div className="rounded-md border bg-muted/20 p-3 text-xs">
+                        <div className="mb-2 font-medium text-foreground">Archive activity timeline</div>
+                        {archiveTimelineRows.length === 0 ? (
+                          <div className="text-muted-foreground">No archive activity has been recorded yet.</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {archiveTimelineRows.map((line, idx) => (
+                              <div key={`${idx}-${line}`} className="text-muted-foreground">
+                                {line}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  ) : null}
+                </div>
+                <DialogFooter className="shrink-0 border-t px-6 py-4">
+                  <Button size="sm" variant="ghost" onClick={clearJournalFilters}>Clear filters</Button>
+                  <Button size="sm" onClick={() => setShowAdvancedJournalFilters(false)}>Close</Button>
+                </DialogFooter>
+              </div>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={savedViewDialogMode !== null} onOpenChange={(open) => !open && setSavedViewDialogMode(null)}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>{savedViewDialogMode === "rename" ? "Rename saved view" : "Save current view"}</DialogTitle>
+                <DialogDescription>
+                  {savedViewDialogMode === "rename"
+                    ? "Update the label used for this saved journal view."
+                    : "Save the current journal filters so you can restore them later."}
+                </DialogDescription>
+              </DialogHeader>
+              <Input
+                autoFocus
+                placeholder="View name"
+                value={savedViewName}
+                onChange={(e) => setSavedViewName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitSavedViewDialog();
+                  }
                 }}
-              >
-                Clear dates
-              </Button>
-            ) : null}
-            <Tooltip content="Draft entries require approval to post.">
-              <span className="text-muted-foreground cursor-help">Status</span>
-            </Tooltip>
-            <select
-              className="h-9 rounded-md border bg-background px-3 text-sm"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-            >
-                <option value="">All</option>
-                <option value="DRAFT">Draft</option>
-                <option value="POSTED">Posted</option>
-                <option value="VOID">Void</option>
-              </select>
-            <Button
-              size="sm"
-              variant={outOfBalanceOnly ? "default" : "outline"}
-              onClick={() => setOutOfBalanceOnly((v) => !v)}
-            >
-              Out-of-balance only ({outOfBalanceCount})
-            </Button>
-            <Button
-              size="sm"
-              variant={largestVarianceFirst ? "default" : "outline"}
-              onClick={() => {
-                setOutOfBalanceOnly(true);
-                setLargestVarianceFirst((v) => !v);
-              }}
-            >
-              Largest variance first
-            </Button>
-            <Button
-              size="sm"
-              variant={exceptionMissingRefOnly ? "default" : "outline"}
-              onClick={() => setExceptionMissingRefOnly((v) => !v)}
-            >
-              Missing source ref ({exceptionCounts.missingRef})
-            </Button>
-            <Button
-              size="sm"
-              variant={exceptionLargeAmountOnly ? "default" : "outline"}
-              onClick={() => setExceptionLargeAmountOnly((v) => !v)}
-            >
-              Large amount ({exceptionCounts.largeAmount})
-            </Button>
-            <Button
-              size="sm"
-              variant={exceptionStaleDraftOnly ? "default" : "outline"}
-              onClick={() => setExceptionStaleDraftOnly((v) => !v)}
-            >
-              Stale drafts 7d+ ({exceptionCounts.staleDraft})
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={clearJournalFilters}
-            >
-              Clear filters
-            </Button>
-            <select
-              className="h-9 w-full sm:w-auto rounded-md border bg-background px-3 text-sm"
-              value={selectedViewId}
-              onChange={(e) => {
-                const id = e.target.value;
-                if (!id) {
-                  setSelectedViewId("");
-                  return;
-                }
-                applySavedView(id);
-              }}
-            >
-              <option value="">Saved journal views</option>
-              {savedViews.map((view) => (
-                <option key={view.id} value={view.id}>
-                  {view.state.includeArchive ? "[Archive] " : ""}{view.name}
-                </option>
-              ))}
-            </select>
-            {selectedViewId && savedViews.find((view) => view.id === selectedViewId)?.state.includeArchive ? (
-              <span className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground">
-                <Lock className="h-3 w-3" />
-                Archive view
-              </span>
-            ) : null}
-            <Button size="sm" variant="outline" onClick={saveCurrentView}>
-              Save view
-            </Button>
-            {selectedViewId ? (
-              <Button size="sm" variant="outline" onClick={renameSelectedView}>
-                Rename view
-              </Button>
-            ) : null}
-            {selectedViewId ? (
-              <Button
-                size="sm"
-                variant={defaultViewId === selectedViewId ? "default" : "outline"}
-                onClick={() =>
-                  setDefaultViewId((prev) => (prev === selectedViewId ? "" : selectedViewId))
-                }
-              >
-                {defaultViewId === selectedViewId ? "Default view" : "Set as default"}
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant={autoRestoreLastView ? "default" : "outline"}
-              onClick={() => setAutoRestoreLastView((v) => !v)}
-            >
-              Auto-restore last view
-            </Button>
-            {selectedViewId ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => removeSavedView(selectedViewId)}
-              >
-                Remove view
-              </Button>
-            ) : null}
-            <div className="inline-flex items-center gap-1 rounded-md border px-1 py-1">
-              <Button
-                size="sm"
-                variant={rowDensity === "comfortable" ? "default" : "ghost"}
-                className="h-7 px-2 text-[11px]"
-                onClick={() => setRowDensity("comfortable")}
-              >
-                Comfortable
-              </Button>
-              <Button
-                size="sm"
-                variant={rowDensity === "compact" ? "default" : "ghost"}
-                className="h-7 px-2 text-[11px]"
-                onClick={() => setRowDensity("compact")}
-              >
-                Compact
-              </Button>
-            </div>
-            <Button
-              size="sm"
-              variant={reviewMode ? "default" : "outline"}
-              onClick={() => setReviewMode((v) => !v)}
-            >
-              Review mode
-            </Button>
-            {canArchive ? (
-              <div className="inline-flex flex-wrap items-center gap-2 rounded-md border px-2 py-1">
-                <span className="text-xs text-muted-foreground">Archive posted/void older than</span>
-                <Input
-                  className="h-8 w-16"
-                  type="number"
-                  min={1}
-                  max={120}
-                  value={String(archiveMonths)}
-                  onChange={(e) => {
-                    archiveMonthsTouched.current = true;
-                    setArchiveMonths(Math.max(1, Math.min(120, Number(e.target.value || 18))));
-                  }}
-                />
-                <span className="text-xs text-muted-foreground">months</span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={archiveRunning}
-                  onClick={() => runJournalArchive(true)}
-                >
-                  {archiveRunning ? "Working..." : "Dry run archive"}
+              />
+              <DialogFooter>
+                <Button size="sm" variant="ghost" onClick={() => setSavedViewDialogMode(null)}>Cancel</Button>
+                <Button size="sm" onClick={submitSavedViewDialog} disabled={!savedViewName.trim()}>
+                  {savedViewDialogMode === "rename" ? "Rename view" : "Save view"}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={archiveRunning}
-                  onClick={() => runJournalArchive(false)}
-                >
-                  {archiveRunning ? "Working..." : "Run archive"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-[11px]"
-                  disabled={archiveRunning || !lastArchiveRunAt || !undoArchiveUntilMs || undoClockMs > undoArchiveUntilMs}
-                  onClick={undoLastArchiveRun}
-                  title="Undo last archive batch (5-minute window)."
-                >
-                  Undo last batch
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-[11px]"
-                  onClick={exportArchiveRunsCsv}
-                >
-                  Export archive runs CSV
-                </Button>
-              </div>
-            ) : null}
-            {entryDirectionFilter ? (
-              <span className="text-xs text-muted-foreground">
-                Direction filter: {entryDirectionFilter === "debit" ? "Debit-heavy lines" : "Credit-heavy lines"}
-              </span>
-            ) : null}
-            {!canApprove ? (
-              <span className="text-xs text-muted-foreground">
-                Approval actions are limited to admin/accountant roles.
-              </span>
-            ) : null}
-            {draftEntries.length > 0 && canApprove ? (
-              <Tooltip content="Approve selected draft entries.">
-                <span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={Boolean(approveDisabledReason) || bulkApproving}
-                    onClick={() => setShowBulkApproveDialog(true)}
-                    title={approveDisabledReason || ""}
-                  >
-                    {bulkApproving ? "Approving..." : "Approve selected"}
-                  </Button>
-                </span>
-              </Tooltip>
-            ) : null}
-            {canApprove ? (
-              <div className="flex flex-col gap-1">
-                <Button
-                  size="sm"
-                  variant={selectDraftsAcrossPages ? "default" : "outline"}
-                  className="h-7 px-2 text-[11px]"
-                  disabled={draftIdsFetching}
-                  onClick={() => {
-                    setSelectDraftsAcrossPages((prev) => {
-                      const next = !prev;
-                      if (!next) setSelectedEntryIds([]);
-                      return next;
-                    });
-                  }}
-                >
-                  {draftIdsFetching
-                    ? "Loading drafts..."
-                    : selectDraftsAcrossPages
-                      ? `Across pages selected (${selectedEntryIds.length})`
-                      : "Select drafts across pages"}
-                </Button>
-                {selectDraftsAcrossPages && Boolean((draftIdsData as { truncated?: boolean } | undefined)?.truncated) ? (
-                  <span className="text-[11px] text-amber-700">
-                    Large result set: selection capped to first {Number((draftIdsData as { max?: number } | undefined)?.max || 0)} draft IDs.
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
           </div>
           {selectedEntryIds.length > 0 && canApprove ? (
             <div
-              className="sticky z-10 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/95 px-2 py-2 text-xs shadow-sm"
+              className="sticky z-10 mb-3 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/95 px-2 py-2 text-xs shadow-sm"
               style={{ top: "calc(var(--admin-nav-height, 4rem) + 52px)" }}
             >
               <span>
@@ -3222,7 +3320,7 @@ export default function JournalPage() {
               </div>
             </div>
           ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">Quick presets:</span>
             <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyQuickPreset("today_posted")}>
               Today posted
@@ -3233,46 +3331,6 @@ export default function JournalPage() {
             <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => applyQuickPreset("payments_today")}>
               Payments today
             </Button>
-            {canArchive ? (
-              <span className="text-xs text-muted-foreground">
-                Eligible now: {archiveEligibleCount ?? "-"} | Undo window:{" "}
-                {undoArchiveUntilMs && undoClockMs <= undoArchiveUntilMs
-                  ? `${Math.max(0, Math.ceil((undoArchiveUntilMs - undoClockMs) / 1000))}s`
-                  : "-"}
-              </span>
-            ) : null}
-            {latestCronArchiveRun ? (
-              <span className="text-xs text-muted-foreground">
-                Last cron archive: {new Date(String(latestCronArchiveRun.createdAt || "")).toLocaleString()} ({latestCronArchiveRun.action === "journal.archive.cron.dry_run" ? "dry run" : "run"})
-              </span>
-            ) : null}
-          </div>
-          {canArchive ? (
-            <div className="mt-2 rounded-md border bg-muted/20 p-3 text-xs">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="font-medium text-foreground">Archive activity timeline</span>
-                <Link
-                  href="/admin/audit?entityType=JournalEntry&sourcePage=admin/accounting/journal"
-                  className="underline text-muted-foreground hover:text-foreground"
-                >
-                  Open archive logs
-                </Link>
-              </div>
-              {archiveTimelineRows.length === 0 ? (
-                <div className="text-muted-foreground">No archive activity has been recorded yet.</div>
-              ) : (
-                <div className="space-y-1">
-                  {archiveTimelineRows.map((line, idx) => (
-                    <div key={`${idx}-${line}`} className="text-muted-foreground">
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : null}
-          </div>
-          ) : null}
           </div>
             <div className="mb-3 grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
               <div className="rounded-md border bg-muted/40 px-2 py-1">Entries: {periodSummary.total}</div>
@@ -3423,7 +3481,7 @@ export default function JournalPage() {
                         ) : (
                           <span className="text-xs text-muted-foreground">
                             {!canApprove
-                              ? "No approval permission"
+                              ? "No posting permission"
                               : entry.archivedAt
                                 ? "Archived entry"
                                 : entry.status !== "DRAFT"
@@ -3704,7 +3762,7 @@ export default function JournalPage() {
                       entry.sourceType !== "MANUAL" &&
                       !String(entry.sourceId || "").trim() &&
                       !String(entry.sourceLabel || "").trim();
-                    const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= 25000;
+                    const unusualAmountRisk = Math.max(Math.abs(debitTotal), Math.abs(creditTotal)) >= largeAmountAnomalyThreshold;
                     const hasRisk = missingReferenceRisk || unusualAmountRisk;
                     const anomalyScore: "HIGH" | "MEDIUM" | null = missingReferenceRisk
                       ? "HIGH"
@@ -3837,7 +3895,7 @@ export default function JournalPage() {
                             ) : (
                               <span className="text-xs text-muted-foreground">
                                 {!canApprove
-                                  ? "No approval permission"
+                                  ? "No posting permission"
                                   : entry.archivedAt
                                     ? "Archived entry"
                                     : entry.status !== "DRAFT"
@@ -3975,8 +4033,7 @@ export default function JournalPage() {
                                       </div>
                                     </div>
                                     <div className="text-xs text-muted-foreground">
-                                      {line.account.code === "1100" ||
-                                      (entry.sourceType === "PAYMENT" && Boolean(entry.sourceLabel))
+                                      {line.account.code === "1100"
                                         ? "AR balance after"
                                         : line.account.code === "2000"
                                         ? "AP balance after"
@@ -3984,8 +4041,7 @@ export default function JournalPage() {
                                         ? "Accrued balance after"
                                         : "Balance after"}
                                       <div className="text-sm text-foreground">
-                                        {line.account.code === "1100" ||
-                                        (entry.sourceType === "PAYMENT" && Boolean(entry.sourceLabel))
+                                        {line.account.code === "1100"
                                           ? formatCurrency(
                                               arBalanceByEntryId.get(entry.id) || 0,
                                             )

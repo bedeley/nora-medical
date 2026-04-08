@@ -113,6 +113,7 @@ export async function POST(req: Request) {
           expectedAmount,
           actualAmount: expectedAmount,
           variance: 0,
+          reconcileMode: "operational",
           notes: `[AUTO_CATCHUP_ZERO_VARIANCE] ${note}`,
           createdById: user.id,
           journalEntryId: null,

@@ -91,3 +91,95 @@ export const ADMIN_NAV_ESSENTIAL_HREFS = [
   "/admin/settings/homepage",
   "/admin/settings/features",
 ];
+
+export const ADMIN_NAV_GROUPS: Array<{ label: string; hrefs: string[] }> = [
+  {
+    label: "Dashboard",
+    hrefs: ["/admin/dashboard"],
+  },
+  {
+    label: "Sales",
+    hrefs: [
+      "/admin/orders",
+      "/admin/orders/otc",
+      "/admin/b2b/procurement",
+      "/admin/b2b/tenders",
+      "/admin/b2b/procurement/analytics",
+      "/admin/otc/shift-close",
+    ],
+  },
+  {
+    label: "Delivery",
+    hrefs: [
+      "/admin/delivery/dispatch",
+      "/admin/delivery/collection-review",
+      "/admin/delivery/reconciliation/settlements",
+      "/admin/delivery/pod-report",
+    ],
+  },
+  {
+    label: "Inventory",
+    hrefs: [
+      "/admin/products",
+      "/admin/inventory",
+      "/admin/movements",
+      "/admin/returns",
+      "/admin/inventory-planning",
+      "/admin/inventory-lots",
+      "/admin/stock-adjustments",
+    ],
+  },
+  {
+    label: "Customers",
+    hrefs: [
+      "/admin/customers",
+      "/admin/balances",
+      "/admin/customer-accounts",
+    ],
+  },
+  {
+    label: "Finance",
+    hrefs: [
+      "/admin/accounting",
+      "/admin/accounting/aging",
+      "/admin/accounting/reconcile",
+      "/admin/accounting/reconciliations",
+      "/admin/accounting/banks",
+      "/admin/profit-loss",
+      "/admin/expenses",
+      "/admin/purchases",
+      "/admin/supplier-payments",
+      "/admin/payments/momo",
+    ],
+  },
+  {
+    label: "People",
+    hrefs: [
+      "/admin/users",
+      "/admin/hr",
+      "/admin/hr/settings",
+      "/admin/suppliers",
+      "/admin/suppliers/performance",
+    ],
+  },
+  {
+    label: "Analytics",
+    hrefs: ["/admin/analytics/stockout-impact"],
+  },
+  {
+    label: "System",
+    hrefs: [
+      "/admin/health",
+      "/admin/health/incidents",
+      "/admin/resilience",
+      "/admin/audit",
+      "/admin/audit/retention",
+      "/admin/audit/settings",
+      "/admin/import-export",
+      "/admin/settings/communications",
+      "/admin/settings/homepage",
+      "/admin/settings/features",
+      "/admin/guide",
+    ],
+  },
+];

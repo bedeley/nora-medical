@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
 import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
@@ -293,6 +293,11 @@ export async function GET(req: Request) {
       }
     }
 
+    const protectedEmails = String(process.env.PROTECTED_ADMIN_EMAILS || "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+
     return NextResponse.json({
       rows: users.map((u) => ({
         user: {
@@ -302,6 +307,10 @@ export async function GET(req: Request) {
           phone: u.phone,
           role: u.role,
           archived: u.archived,
+          isProtected:
+            u.role === "ADMIN" &&
+            !!u.email &&
+            protectedEmails.includes(u.email.toLowerCase()),
           lastLoginAt: u.lastLoginAt ? u.lastLoginAt.toISOString() : null,
           createdAt: u.createdAt.toISOString(),
           employeeId: u.employeeProfile?.id ?? null,

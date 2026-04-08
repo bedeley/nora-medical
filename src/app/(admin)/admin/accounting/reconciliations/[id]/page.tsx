@@ -241,6 +241,7 @@ export default function ReconciliationMatchPage() {
   const [lastAutoMatchBatchTxnIds, setLastAutoMatchBatchTxnIds] = useState<string[]>([]);
   const [undoingAutoMatch, setUndoingAutoMatch] = useState(false);
   const [forceCloseReason, setForceCloseReason] = useState("");
+  const [autoMatchExpanded, setAutoMatchExpanded] = useState(false);
 
   const isAdmin = authSession?.user?.role === "ADMIN";
 
@@ -1082,30 +1083,47 @@ export default function ReconciliationMatchPage() {
           ) : null}
         </div>
       </div>
-      {!isClosed ? (
-        <Card>
-          <CardContent className="py-3 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className={readyToClose ? "text-emerald-700" : "text-amber-700"}>
-                {readyToClose
-                  ? "Close readiness: all bank transactions are matched."
-                  : `Close readiness: ${unmatchedTxnCount} unmatched transaction(s) and ${Math.max(0, unmatchedLineCount)} unmatched journal line(s).`}
+      {/* Progress / readiness strip */}
+      {(() => {
+        const totalTxns = scopedBankTxns.length;
+        const matchedTxns = totalTxns - unmatchedTxnCount;
+        const pct = totalTxns > 0 ? Math.round((matchedTxns / totalTxns) * 100) : 0;
+        const barColor = pct === 100 ? "bg-emerald-500" : pct >= 50 ? "bg-amber-400" : "bg-destructive";
+        return (
+          <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-2.5 text-sm ${isClosed ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20" : readyToClose ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20" : "border-amber-300 bg-amber-50 dark:bg-amber-950/20"}`}>
+            <div className="flex flex-wrap items-center gap-4">
+              {[
+                { label: "Total txns", value: String(totalTxns) },
+                { label: "Matched", value: String(matchedTxns), green: matchedTxns === totalTxns && totalTxns > 0 },
+                { label: "Unmatched txns", value: String(unmatchedTxnCount), warn: unmatchedTxnCount > 0 },
+                { label: "Unmatched lines", value: String(Math.max(0, unmatchedLineCount)), warn: unmatchedLineCount > 0 },
+              ].map((stat) => (
+                <div key={stat.label} className="text-center">
+                  <p className="text-[10px] text-muted-foreground leading-none">{stat.label}</p>
+                  <p className={`mt-0.5 text-base font-semibold leading-none ${stat.green ? "text-emerald-600" : stat.warn ? "text-amber-700" : ""}`}>
+                    {stat.value}
+                  </p>
+                </div>
+              ))}
+              <div className="flex items-center gap-2">
+                <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+                </div>
+                <span className={`text-xs font-medium ${pct === 100 ? "text-emerald-600" : "text-muted-foreground"}`}>{pct}%</span>
               </div>
-              <Button size="sm" variant={readyToClose ? "default" : "outline"} onClick={() => handleCloseOpen(true)}>
-                Review close checklist
-              </Button>
             </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {isClosed ? (
-        <Card>
-          <CardContent className="text-sm text-muted-foreground py-4">
-            This reconciliation is closed. Matching is locked.
-          </CardContent>
-        </Card>
-      ) : null}
+            <div className="flex items-center gap-2">
+              {isClosed ? (
+                <span className="text-xs font-semibold text-emerald-700 border border-emerald-300 rounded-full px-2 py-0.5">Closed</span>
+              ) : (
+                <Button size="sm" variant={readyToClose ? "default" : "outline"} onClick={() => handleCloseOpen(true)}>
+                  {readyToClose ? "Close reconciliation" : "Review checklist"}
+                </Button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <Dialog open={closeOpen} onOpenChange={handleCloseOpen}>
         <DialogContent className="max-w-md">
@@ -1220,6 +1238,7 @@ export default function ReconciliationMatchPage() {
         </DialogContent>
       </Dialog>
 
+      <div className="grid gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>Bank transactions</CardTitle>
@@ -1253,30 +1272,50 @@ export default function ReconciliationMatchPage() {
           {filteredTxns.length === 0 ? (
             <p className="text-muted-foreground">No bank transactions found.</p>
           ) : (
-            filteredTxns.map((txn) => (
-              <button
-                type="button"
-                key={txn.id}
-                className={`w-full text-left flex justify-between border-b py-1 ${
-                  selectedTxnId === txn.id ? "font-semibold" : ""
-                } ${isClosed ? "cursor-not-allowed opacity-60" : ""}`}
-                onClick={() => setSelectedTxnId(txn.id)}
-                disabled={isClosed}
-              >
-                <span>
-                  {new Date(txn.postedAt).toLocaleDateString()} · {txn.description || "Transaction"}
-                  {!txn.matched && unmatchedTxnHints.get(txn.id) ? (
-                    <span className="block text-[11px] text-muted-foreground">
-                      {unmatchedTxnHints.get(txn.id)}
-                    </span>
-                  ) : null}
-                </span>
-                <span>
-                  {txn.type === "CREDIT" ? "+" : "-"}
-                  {Number(txn.amount).toFixed(2)} {txn.matched ? "✓" : ""}
-                </span>
-              </button>
-            ))
+            filteredTxns.map((txn) => {
+              const isSelected = selectedTxnId === txn.id;
+              const hint = !txn.matched ? unmatchedTxnHints.get(txn.id) : undefined;
+              return (
+                <button
+                  type="button"
+                  key={txn.id}
+                  className={`w-full text-left rounded-md px-2 py-1.5 transition-colors border-l-4 ${
+                    isSelected
+                      ? "border-l-primary bg-primary/5"
+                      : txn.matched
+                        ? "border-l-emerald-400 bg-transparent"
+                        : "border-l-transparent hover:bg-muted/40"
+                  } ${isClosed ? "cursor-not-allowed opacity-60" : ""}`}
+                  onClick={() => setSelectedTxnId(txn.id)}
+                  disabled={isClosed}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded leading-none ${txn.type === "CREDIT" ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                          {txn.type}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{new Date(txn.postedAt).toLocaleDateString()}</span>
+                        <span className="text-sm truncate">{txn.description || "Transaction"}</span>
+                      </div>
+                      {hint ? (
+                        <span className="mt-0.5 inline-block text-[10px] font-medium text-amber-700 bg-amber-100 rounded px-1.5 py-0.5 leading-none">
+                          {hint}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <span className={`text-sm font-medium ${txn.type === "CREDIT" ? "text-emerald-600" : "text-red-600"}`}>
+                        {txn.type === "CREDIT" ? "+" : "-"}{Number(txn.amount).toFixed(2)}
+                      </span>
+                      {txn.matched ? (
+                        <span className="ml-1.5 text-[10px] font-semibold text-emerald-600">✓</span>
+                      ) : null}
+                    </div>
+                  </div>
+                </button>
+              );
+            })
           )}
         </CardContent>
       </Card>
@@ -1318,27 +1357,44 @@ export default function ReconciliationMatchPage() {
             <p className="text-muted-foreground">No journal lines found.</p>
           ) : (
             filteredLines.map((line) => {
+              const isSelected = selectedLineId === line.id;
+              const isDebit = Number(line.debit || 0) > 0;
               const amount = Number(line.debit || 0) || Number(line.credit || 0);
               return (
                 <button
                   type="button"
                   key={line.id}
-                  className={`w-full text-left flex justify-between border-b py-1 ${
-                    selectedLineId === line.id ? "font-semibold" : ""
+                  className={`w-full text-left rounded-md px-2 py-1.5 transition-colors border-l-4 ${
+                    isSelected
+                      ? "border-l-primary bg-primary/5"
+                      : "border-l-transparent hover:bg-muted/40"
                   } ${isClosed ? "cursor-not-allowed opacity-60" : ""}`}
                   onClick={() => setSelectedLineId(line.id)}
                   disabled={isClosed}
                 >
-                  <span>
-                    {new Date(line.entry.entryDate).toLocaleDateString()} · {line.account.code} {line.account.name}
-                  </span>
-                  <span>{amount.toFixed(2)}</span>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded leading-none ${isDebit ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {isDebit ? "DR" : "CR"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{new Date(line.entry.entryDate).toLocaleDateString()}</span>
+                        <span className="text-xs text-muted-foreground">{line.account.code}</span>
+                        <span className="text-sm truncate">{line.account.name}</span>
+                      </div>
+                      {line.description || line.entry.memo ? (
+                        <p className="mt-0.5 text-[11px] text-muted-foreground truncate">{line.description || line.entry.memo}</p>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-sm font-medium">{amount.toFixed(2)}</span>
+                  </div>
                 </button>
               );
             })
           )}
         </CardContent>
       </Card>
+      </div>{/* end side-by-side grid */}
 
       {selectedTxn ? (
         <Card>
@@ -1354,113 +1410,138 @@ export default function ReconciliationMatchPage() {
             {suggestedLines.length === 0 ? (
               <p className="text-muted-foreground">No close matches found.</p>
             ) : (
-              suggestedLines.map((row) => (
-                <button
-                  key={row.line.id}
-                  type="button"
-                  className={`w-full text-left flex justify-between border-b py-1 ${
-                    selectedLineId === row.line.id ? "font-semibold" : ""
-                  } ${isClosed ? "cursor-not-allowed opacity-60" : ""}`}
-                  onClick={() => setSelectedLineId(row.line.id)}
-                  disabled={isClosed}
-                >
-                  <span>
-                    {new Date(row.line.entry.entryDate).toLocaleDateString()} · {row.line.account.code} {row.line.account.name}
-                  </span>
-                  <span>{row.amount.toFixed(2)}</span>
-                </button>
-              ))
+              suggestedLines.map((row) => {
+                const isSelected = selectedLineId === row.line.id;
+                const isDebit = Number(row.line.debit || 0) > 0;
+                return (
+                  <button
+                    key={row.line.id}
+                    type="button"
+                    className={`w-full text-left rounded-md px-2 py-1.5 transition-colors border-l-4 ${isSelected ? "border-l-primary bg-primary/5" : "border-l-transparent hover:bg-muted/40"} ${isClosed ? "cursor-not-allowed opacity-60" : ""}`}
+                    onClick={() => setSelectedLineId(row.line.id)}
+                    disabled={isClosed}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                        <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded leading-none ${isDebit ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}`}>
+                          {isDebit ? "DR" : "CR"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{new Date(row.line.entry.entryDate).toLocaleDateString()}</span>
+                        <span className="text-sm truncate">{row.line.account.code} {row.line.account.name}</span>
+                      </div>
+                      <span className="shrink-0 text-sm font-medium">{row.amount.toFixed(2)}</span>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </CardContent>
         </Card>
       ) : null}
 
-      {hasAmountSignMismatch ? (
-        <Card>
-          <CardContent className="py-3 text-sm text-amber-700">
-            Warning: selected transaction direction and selected journal line sign may not align. Review before saving match.
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {lastAutoMatchResult ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Last auto-match result</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <p>
-              Mode: <span className="font-medium">{lastAutoMatchResult.mode}</span> | Matched{" "}
-              <span className="font-medium">{lastAutoMatchResult.matchedCount}</span> of{" "}
-              <span className="font-medium">{lastAutoMatchResult.attemptedCount}</span> attempted.
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Run time: {new Date(lastAutoMatchResult.at).toLocaleString()}
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={downloadAutoMatchSkipReport}
-                disabled={lastAutoMatchResult.skipped.length === 0}
-              >
-                Download skip report
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void undoLastAutoMatch()}
-                disabled={undoingAutoMatch || lastAutoMatchBatchTxnIds.length === 0 || isClosed}
-              >
-                {undoingAutoMatch ? "Undoing..." : "Undo last auto-match batch"}
-              </Button>
+      {/* Auto-match tools — collapsible */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CardTitle>Auto-match tools</CardTitle>
+              {lastAutoMatchResult ? (
+                <span className="text-xs text-muted-foreground">
+                  Last: <span className="font-medium">{lastAutoMatchResult.mode}</span> — {lastAutoMatchResult.matchedCount}/{lastAutoMatchResult.attemptedCount} matched
+                  {lastAutoMatchResult.skipped.length > 0 ? (
+                    <span className="ml-1 text-amber-600">{lastAutoMatchResult.skipped.length} skipped</span>
+                  ) : null}
+                </span>
+              ) : null}
             </div>
-            {lastAutoMatchResult.skipped.length > 0 ? (
-              <div className="rounded-md border p-2 text-xs text-muted-foreground">
-                <p className="mb-1 font-medium text-foreground">Top skip reasons</p>
-                {lastAutoMatchResult.skipped.slice(0, 5).map((row) => (
-                  <p key={`${row.txnId}:${row.reason}`}>{row.txnId}: {row.reason}</p>
-                ))}
-                {lastAutoMatchResult.skipped.length > 5 ? (
-                  <p>+{lastAutoMatchResult.skipped.length - 5} more...</p>
-                ) : null}
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setAutoMatchExpanded((v) => !v)}
+              aria-expanded={autoMatchExpanded}
+            >
+              {autoMatchExpanded ? "Collapse" : "Expand"}
+              <svg className={`h-3 w-3 transition-transform ${autoMatchExpanded ? "rotate-180" : ""}`} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M2 4l4 4 4-4" />
+              </svg>
+            </button>
+          </div>
+        </CardHeader>
+        {autoMatchExpanded ? (
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => openAutoMatchConfirm("exact")} disabled={autoMatching || isClosed}>
+                {autoMatching ? "Running…" : "Exact amounts"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => openAutoMatchConfirm("tolerance")} disabled={autoMatching || isClosed}>
+                {autoMatching ? "Running…" : `Within tolerance (±${Number(lineTolerance || 0).toFixed(2)})`}
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => openAutoMatchConfirm("rules")} disabled={autoMatching || isClosed}>
+                {autoMatching ? "Running…" : "By bank rules"}
+              </Button>
+              {lastAutoMatchBatchTxnIds.length > 0 ? (
+                <Button size="sm" variant="outline" onClick={() => void undoLastAutoMatch()} disabled={undoingAutoMatch || isClosed}>
+                  {undoingAutoMatch ? "Undoing…" : `Undo last batch (${lastAutoMatchBatchTxnIds.length})`}
+                </Button>
+              ) : null}
+              {lastAutoMatchResult?.skipped.length ? (
+                <Button size="sm" variant="ghost" onClick={downloadAutoMatchSkipReport}>
+                  Download skip report ({lastAutoMatchResult.skipped.length})
+                </Button>
+              ) : null}
+            </div>
+            {lastAutoMatchResult ? (
+              <div className="rounded-md border bg-muted/20 p-3 text-xs space-y-1">
+                <p><span className="font-medium">Mode:</span> {lastAutoMatchResult.mode} · <span className="font-medium">Matched:</span> {lastAutoMatchResult.matchedCount}/{lastAutoMatchResult.attemptedCount} · <span className="font-medium">Run:</span> {new Date(lastAutoMatchResult.at).toLocaleTimeString()}</p>
+                {lastAutoMatchResult.skipped.length > 0 ? (
+                  <div className="text-muted-foreground">
+                    <p className="font-medium text-foreground mb-0.5">Top skip reasons</p>
+                    {lastAutoMatchResult.skipped.slice(0, 5).map((row) => (
+                      <p key={`${row.txnId}:${row.reason}`}>{row.txnId.slice(-6)}: {row.reason}</p>
+                    ))}
+                    {lastAutoMatchResult.skipped.length > 5 ? <p>+{lastAutoMatchResult.skipped.length - 5} more…</p> : null}
+                  </div>
+                ) : <p className="text-emerald-600">No skips — all unmatched transactions were processed.</p>}
               </div>
             ) : null}
           </CardContent>
-        </Card>
-      ) : null}
+        ) : null}
+      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Apply match</CardTitle>
-        </CardHeader>
-        <CardContent className="sticky bottom-4 z-10 rounded-md border bg-background/95 backdrop-blur">
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={matchSelected} disabled={saving || isClosed}>
-              {saving ? "Saving..." : "Save match"}
+      {/* Slim sticky match action bar */}
+      <div className="sticky bottom-4 z-10 rounded-lg border bg-background/95 backdrop-blur shadow-md px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Selected pair summary */}
+          <div className="flex items-center gap-2 text-sm min-w-0 flex-1">
+            <div className={`rounded px-2 py-1 text-xs font-medium border ${selectedTxn ? "border-primary/30 bg-primary/5" : "border-muted text-muted-foreground"}`}>
+              {selectedTxn
+                ? <>{selectedTxn.type === "CREDIT" ? "+" : "-"}{Number(selectedTxn.amount).toFixed(2)} <span className="text-muted-foreground">{selectedTxn.description || "txn"}</span></>
+                : "No transaction selected"}
+            </div>
+            <span className="text-muted-foreground text-xs">↔</span>
+            <div className={`rounded px-2 py-1 text-xs font-medium border ${selectedLine ? "border-primary/30 bg-primary/5" : "border-muted text-muted-foreground"}`}>
+              {selectedLine
+                ? <>{(Number(selectedLine.debit || 0) || Number(selectedLine.credit || 0)).toFixed(2)} <span className="text-muted-foreground">{selectedLine.account.name}</span></>
+                : "No line selected"}
+            </div>
+            {hasAmountSignMismatch ? (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">Sign mismatch</span>
+            ) : null}
+          </div>
+          {/* Actions */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <Button size="sm" onClick={matchSelected} disabled={saving || isClosed || !selectedTxnId}>
+              {saving ? "Saving…" : "Save match"}
             </Button>
-            <Button
-              variant="outline"
-              onClick={applyTopSuggestion}
-              disabled={!selectedTxn || suggestedLines.length === 0 || isClosed}
-            >
+            <Button size="sm" variant="outline" onClick={applyTopSuggestion} disabled={!selectedTxn || suggestedLines.length === 0 || isClosed}>
               Use top suggestion
             </Button>
-            <Button variant="outline" onClick={() => openAutoMatchConfirm("exact")} disabled={autoMatching || isClosed}>
-              {autoMatching ? "Auto-matching..." : "Auto-match exact amounts"}
-            </Button>
-            <Button variant="outline" onClick={() => openAutoMatchConfirm("tolerance")} disabled={autoMatching || isClosed}>
-              {autoMatching ? "Auto-matching..." : "Auto-match within tolerance"}
-            </Button>
-            <Button variant="outline" onClick={() => openAutoMatchConfirm("rules")} disabled={autoMatching || isClosed}>
-              {autoMatching ? "Auto-matching..." : "Auto-match by rules"}
-            </Button>
-            <Button variant="ghost" onClick={clearSelection} disabled={!selectedTxnId && !selectedLineId}>
-              Clear selection
+            <Button size="sm" variant="ghost" onClick={clearSelection} disabled={!selectedTxnId && !selectedLineId}>
+              Clear
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       <Card>
         <CardHeader>

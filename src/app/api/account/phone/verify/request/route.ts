@@ -6,7 +6,7 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { sendSms } from "@/lib/sms";
 import { sendWhatsApp } from "@/lib/whatsapp";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { PHONE_VERIFICATION_ENABLED } from "@/lib/config";
 
 export async function POST(req: Request) {

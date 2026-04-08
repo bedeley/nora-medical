@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { parseISO, isValid, startOfDay, endOfDay } from "date-fns";
 
 type ProductSummary = {
   id: string;
@@ -24,31 +25,44 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const mode = searchParams.get("mode") || "quantity";
+    const start = searchParams.get("start");
+    const end = searchParams.get("end");
 
-    // Aggregate quantities and fetch product data
+    const dateFilter: { gte?: Date; lte?: Date } = {};
+    if (start && isValid(parseISO(start))) dateFilter.gte = startOfDay(parseISO(start));
+    if (end && isValid(parseISO(end))) dateFilter.lte = endOfDay(parseISO(end));
+
+    const orderWhere = {
+      NOT: { status: { in: ["CANCELLED", "CANCELED"] } },
+      ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {}),
+    };
+
     const grouped = await prisma.orderItem.groupBy({
       by: ["productId"],
+      where: { order: orderWhere },
       _sum: { quantity: true },
       orderBy: { _sum: { quantity: "desc" } },
       take: 10,
     });
 
-    const products: ProductSummary[] = await Promise.all(
-      grouped.map(async (g: { productId: string; _sum: { quantity: number | null } }) => {
-        const product = await prisma.product.findUnique({
-          where: { id: g.productId },
-          select: { name: true, price: true },
-        });
-        const totalSold = g._sum.quantity ?? 0;
-        const revenue = totalSold * Number(product?.price ?? 0);
-        return {
-          id: g.productId,
-          name: product?.name || "Unknown",
-          totalSold,
-          revenue,
-        };
-      })
-    );
+    const productIds = grouped.map((g) => g.productId);
+    const productRows = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, price: true },
+    });
+    const productMap = new Map(productRows.map((p) => [p.id, p]));
+
+    const products: ProductSummary[] = grouped.map((g: { productId: string; _sum: { quantity: number | null } }) => {
+      const product = productMap.get(g.productId);
+      const totalSold = g._sum.quantity ?? 0;
+      const revenue = totalSold * Number(product?.price ?? 0);
+      return {
+        id: g.productId,
+        name: product?.name || "Unknown",
+        totalSold,
+        revenue,
+      };
+    });
 
     const sorted =
       mode === "revenue"

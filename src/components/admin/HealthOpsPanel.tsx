@@ -335,21 +335,24 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
       id: string;
       label: string;
       count: number;
+      countLabel?: string;
       severity: "critical" | "warning";
       queue: "critical" | "posting" | "operational" | "pod";
       hint: string;
       link?: string;
     }>;
     const posting = summary.missingPostings || {};
+    const ledgerCount = Number(summary.ledgerMismatches || 0);
     const items = [
       {
         id: "ledger",
         label: "Ledger mismatches",
-        count: Number(summary.ledgerMismatches || 0),
+        count: ledgerCount,
+        countLabel: `${ledgerCount} check${ledgerCount === 1 ? "" : "s"}`,
         severity: "critical" as const,
         queue: "critical" as const,
-        hint: "Finance-impacting mismatch. Same-day response expected.",
-        link: "/admin/accounting/integrity",
+        hint: "Failing ledger checks across AR, inventory, AP, and trial balance. Same-day response expected.",
+        link: "/admin/health#ledger-integrity",
       },
       {
         id: "posting",
@@ -358,7 +361,7 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
         severity: "critical" as const,
         queue: "posting" as const,
         hint: "Operational events without journal postings.",
-        link: "/admin/accounting/integrity",
+        link: "/admin/health#ledger-readiness",
       },
       {
         id: "stock",
@@ -385,7 +388,7 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
         severity: "warning" as const,
         queue: "operational" as const,
         hint: "Recorded payment allocations need investigation.",
-        link: "/admin/health#order-payment-mismatches",
+        link: "/admin/health#payment-mismatches",
       },
       {
         id: "legacy",
@@ -403,7 +406,7 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
         severity: "warning" as const,
         queue: "pod" as const,
         hint: "Missing POD ratio exceeded configured threshold.",
-        link: "/admin/delivery/pod-report",
+        link: "/admin/health#pod-compliance",
       },
     ];
     return items.filter((item) => item.count > 0);
@@ -594,7 +597,7 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
   );
   const signalRunbook = useMemo(() => {
     const summary = summaryQuery.data;
-    if (!summary) return [] as Array<{ id: string; label: string; count: number; done: boolean; link?: string }>;
+    if (!summary) return [] as Array<{ id: string; label: string; count: number; countLabel?: string; detail?: string; done: boolean; link?: string }>;
     const posting = summary.missingPostings || {};
     const postingCount =
       Number(summary.ledgerMismatches || 0) +
@@ -610,10 +613,42 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
       Number(summary.orderBalanceMismatches || 0) + Number(summary.paymentMismatches || 0) + Number(summary.legacyAutoApply || 0);
     const podCount = summary.podCompliance7d?.alert ? 1 : 0;
     return [
-      { id: "posting", label: "Posting + ledger", count: postingCount, done: postingCount === 0, link: "/admin/accounting/integrity" },
-      { id: "stock", label: "Stock integrity", count: stockCount, done: stockCount === 0, link: "/admin/health#stock-movement-mismatches" },
-      { id: "payments", label: "Payments + balances", count: paymentOpsCount, done: paymentOpsCount === 0, link: "/admin/health#order-payment-mismatches" },
-      { id: "pod", label: "POD compliance", count: podCount, done: podCount === 0, link: "/admin/delivery/pod-report" },
+      {
+        id: "posting",
+        label: "Posting + ledger",
+        count: postingCount,
+        countLabel: `${postingCount} issue${postingCount === 1 ? "" : "s"} open`,
+        detail: "Combined total of failing ledger checks and missing-posting buckets.",
+        done: postingCount === 0,
+        link: "/admin/health#ledger-integrity",
+      },
+      {
+        id: "stock",
+        label: "Stock integrity",
+        count: stockCount,
+        countLabel: `${stockCount} issue${stockCount === 1 ? "" : "s"} open`,
+        detail: "Includes stock-field mismatches and negative-stock findings.",
+        done: stockCount === 0,
+        link: "/admin/health#stock-movement-mismatches",
+      },
+      {
+        id: "payments",
+        label: "Payments + balances",
+        count: paymentOpsCount,
+        countLabel: `${paymentOpsCount} issue${paymentOpsCount === 1 ? "" : "s"} open`,
+        detail: "Includes payment mismatches, order-balance mismatches, and legacy auto-apply records.",
+        done: paymentOpsCount === 0,
+        link: "/admin/health#data-quality",
+      },
+      {
+        id: "pod",
+        label: "POD compliance",
+        count: podCount,
+        countLabel: `${podCount} alert${podCount === 1 ? "" : "s"} open`,
+        detail: "Shows whether the 7-day POD missing-rate alert is active.",
+        done: podCount === 0,
+        link: "/admin/health#pod-compliance",
+      },
     ];
   }, [summaryQuery.data]);
 
@@ -778,7 +813,7 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium">{item.label}</span>
                     <Badge variant={item.severity === "critical" ? "destructive" : "secondary"}>
-                      {item.count}
+                      {item.countLabel ?? item.count}
                     </Badge>
                   </div>
                   <p className="text-muted-foreground">{item.hint}</p>
@@ -806,8 +841,9 @@ export default function HealthOpsPanel({ currentUserName }: { currentUserName: s
                 <div key={item.id} className="rounded border p-2 text-xs space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{item.label}</span>
-                    <Badge variant={item.done ? "default" : "secondary"}>{item.done ? "Done" : `${item.count} open`}</Badge>
+                    <Badge variant={item.done ? "default" : "secondary"}>{item.done ? "Done" : (item.countLabel ?? `${item.count} open`)}</Badge>
                   </div>
+                  {item.detail ? <p className="text-muted-foreground">{item.detail}</p> : null}
                   <div className="flex flex-wrap gap-2">
                     {item.link ? <Link href={item.link} className="underline">Open signal view</Link> : null}
                     {!item.done && opsQuery.data?.activeIncidentLink ? (

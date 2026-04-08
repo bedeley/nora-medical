@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Users,
   Briefcase,
@@ -23,6 +22,7 @@ import {
   SlidersHorizontal,
   RefreshCw,
   Plus,
+  UserRoundPlus,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -192,20 +192,8 @@ type RecentHrActivityItem = {
 };
 
 export default function AdminHrPage() {
-  const [employeeDialogOpen, setEmployeeDialogOpen] = useState(false);
   const [payrollDialogOpen, setPayrollDialogOpen] = useState(false);
-  const [savingEmployee, setSavingEmployee] = useState(false);
   const [savingPayrollRun, setSavingPayrollRun] = useState(false);
-  const [employeeForm, setEmployeeForm] = useState({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    department: "",
-    position: "",
-    status: "ACTIVE",
-    hireDate: "",
-  });
   const [payrollForm, setPayrollForm] = useState({
     periodStart: "",
     periodEnd: "",
@@ -265,38 +253,6 @@ export default function AdminHrPage() {
       settingsQuery.refetch(),
       summaryQuery.refetch(),
     ]);
-  }
-
-  async function handleCreateEmployee() {
-    setSavingEmployee(true);
-    try {
-      const response = await fetch("/api/admin/hr/employees", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(employeeForm),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(typeof body?.error === "string" ? body.error : "Failed to create employee.");
-      }
-      toast.success("Employee created successfully.");
-      setEmployeeDialogOpen(false);
-      setEmployeeForm({
-        firstName: "",
-        lastName: "",
-        email: "",
-        phone: "",
-        department: "",
-        position: "",
-        status: "ACTIVE",
-        hireDate: "",
-      });
-      await summaryQuery.refetch();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to create employee.");
-    } finally {
-      setSavingEmployee(false);
-    }
   }
 
   async function handleCreatePayrollRun() {
@@ -366,78 +322,12 @@ export default function AdminHrPage() {
               <span className="rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-xs text-muted-foreground">
                 Default workweek: {settingsQuery.isError ? "Unavailable" : `${workweekDays} day(s)`}
               </span>
-              <Dialog open={employeeDialogOpen} onOpenChange={setEmployeeDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm">
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add employee
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Add employee</DialogTitle>
-                  </DialogHeader>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Input
-                      placeholder="First name"
-                      value={employeeForm.firstName}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, firstName: e.target.value }))}
-                    />
-                    <Input
-                      placeholder="Last name"
-                      value={employeeForm.lastName}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, lastName: e.target.value }))}
-                    />
-                    <Input
-                      placeholder="Email"
-                      value={employeeForm.email}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, email: e.target.value }))}
-                    />
-                    <Input
-                      placeholder="Phone"
-                      value={employeeForm.phone}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, phone: e.target.value }))}
-                    />
-                    <Input
-                      placeholder="Department"
-                      value={employeeForm.department}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, department: e.target.value }))}
-                    />
-                    <Input
-                      placeholder="Position"
-                      value={employeeForm.position}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, position: e.target.value }))}
-                    />
-                    <Select
-                      value={employeeForm.status}
-                      onValueChange={(value) => setEmployeeForm((prev) => ({ ...prev, status: value }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ACTIVE">Active</SelectItem>
-                        <SelectItem value="ON_LEAVE">On leave</SelectItem>
-                        <SelectItem value="SUSPENDED">Suspended</SelectItem>
-                        <SelectItem value="TERMINATED">Terminated</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input
-                      type="date"
-                      value={employeeForm.hireDate}
-                      onChange={(e) => setEmployeeForm((prev) => ({ ...prev, hireDate: e.target.value }))}
-                    />
-                  </div>
-                  <DialogFooter>
-                    <Button type="button" variant="outline" onClick={() => setEmployeeDialogOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button type="button" onClick={() => void handleCreateEmployee()} disabled={savingEmployee}>
-                      {savingEmployee ? "Saving..." : "Create employee"}
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+              <Button asChild size="sm">
+                <Link href="/admin/hr/onboarding?source=hr">
+                  <UserRoundPlus className="mr-2 h-4 w-4" />
+                  Add employee
+                </Link>
+              </Button>
               <Dialog open={payrollDialogOpen} onOpenChange={setPayrollDialogOpen}>
                 <DialogTrigger asChild>
                   <Button size="sm" variant="outline">
@@ -555,7 +445,14 @@ export default function AdminHrPage() {
                 Manage employee records, active hiring work, and staff issues from one area.
               </p>
             </div>
-            <div className="grid gap-4 lg:grid-cols-3">
+            <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              <HrActionCard
+                icon={UserRoundPlus}
+                title="Employee Onboarding"
+                description="Start one centralized employee record flow, then continue into the staff profile for payroll, documents, and access handoff."
+                href="/admin/hr/onboarding?source=hr"
+                actionLabel="Start Onboarding"
+              />
               <HrActionCard
                 icon={Users}
                 title="Staff Directory"

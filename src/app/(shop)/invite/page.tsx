@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import InviteClient from "./InviteClient";
 
 export default function InvitePage() {
@@ -12,15 +12,15 @@ export default function InvitePage() {
 
 function InviteFallback() {
   return (
-    <main className="min-h-screen bg-muted/40 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-muted/40 flex items-center justify-center p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle className="text-lg">Employee invite</CardTitle>
+          <h1 className="text-lg font-semibold">Employee invite</h1>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">Loading invite details...</p>
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }

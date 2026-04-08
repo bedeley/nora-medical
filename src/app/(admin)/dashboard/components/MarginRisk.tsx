@@ -76,14 +76,14 @@ export default function MarginRisk() {
   }
 
   return (
-    <Card>
-      <CardHeader className="flex items-center justify-between gap-2">
+    <Card className="min-w-0">
+      <CardHeader className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle>Margin risk</CardTitle>
-        <Button asChild variant="outline" size="sm">
+        <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
           <Link href="/admin/products">Review pricing</Link>
         </Button>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-2 min-w-0">
         <Table>
           <TableHeader>
             <TableRow>

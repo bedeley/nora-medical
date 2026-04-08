@@ -1,16 +1,8 @@
 import { NextResponse } from "next/server";
+import { verifyCronSecret } from "@/lib/cron-auth";
 
 function isAuthorizedCron(req: Request) {
-  const configuredSecret = String(
-    process.env.HEALTH_INCIDENT_ESCALATION_CRON_SECRET || process.env.CRON_SECRET || "",
-  ).trim();
-  if (!configuredSecret) return false;
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const headerSecret = String((req.headers.get("x-cron-secret") || "").trim());
-  const bearer = authHeader.toLowerCase().startsWith("bearer ")
-    ? authHeader.slice(7).trim()
-    : authHeader;
-  return bearer === configuredSecret || headerSecret === configuredSecret;
+  return verifyCronSecret(req, "HEALTH_INCIDENT_ESCALATION_CRON_SECRET");
 }
 
 export async function GET(req: Request) {
@@ -41,4 +33,3 @@ export async function GET(req: Request) {
   }
   return NextResponse.json({ ok: true, result: body });
 }
-

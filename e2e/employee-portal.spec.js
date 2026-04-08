@@ -1,30 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-async function signInAccount(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for portal login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/account");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/account");
-    if (page.url().includes("/account")) break;
-    await page.waitForTimeout(1000);
-  }
-
-  await page.goto("/account");
-  await expect(page).toHaveURL(/\/account/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 test.describe("Employee portal", () => {
   test("opens the portal from account and shows the main employee self-service sections", async ({ page }) => {
-    await signInAccount(page);
+    await page.goto("/account");
+    await page.waitForLoadState("networkidle");
+    await expect(page).toHaveURL(/\/account/);
 
     const openPortal = page.getByRole("link", { name: /open employee portal/i }).first();
     await expect(openPortal).toBeVisible();
@@ -45,8 +27,9 @@ test.describe("Employee portal", () => {
   });
 
   test("opens the dedicated employee portal history pages and self-service dialogs", async ({ page }) => {
-    await signInAccount(page);
     await page.goto("/account/employee");
+    await page.waitForLoadState("networkidle");
+    await expect(page).toHaveURL(/\/account\/employee/);
 
     await page.getByRole("button", { name: /request update/i }).click();
     await expect(page.getByRole("dialog", { name: /request contact update/i })).toBeVisible();

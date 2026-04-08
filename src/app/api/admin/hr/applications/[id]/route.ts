@@ -133,7 +133,7 @@ async function ensureEmployeeForHire(
     } catch {
       // best-effort
     }
-    return "reactivated";
+    return { action: "reactivated" as const, employeeId: updated.id };
   }
 
   const employee = await tx.employee.create({
@@ -181,7 +181,7 @@ async function ensureEmployeeForHire(
     // best-effort
   }
 
-  return "created";
+  return { action: "created" as const, employeeId: employee.id };
 }
 
 export async function PATCH(
@@ -240,15 +240,15 @@ export async function PATCH(
         data,
       });
 
-      let employeeAction: string | null = null;
+      let employeeResult: Awaited<ReturnType<typeof ensureEmployeeForHire>> | null = null;
       if (application.stage === "HIRED" && existing.stage !== "HIRED") {
-        employeeAction = await ensureEmployeeForHire(tx, application, {
+        employeeResult = await ensureEmployeeForHire(tx, application, {
           id: user.id,
           role: user.role,
         });
       }
 
-      return { application, employeeAction, existing } as const;
+      return { application, employeeResult, existing } as const;
     });
     if (!result) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -297,13 +297,18 @@ export async function PATCH(
           },
           status: "SUCCESS",
           resultSummary: normalizeAuditText(parsed.data.resultSummary, "Application stage updated successfully."),
-          employeeAction: result.employeeAction || null,
+          employeeAction: result.employeeResult?.action || null,
+          employeeId: result.employeeResult?.employeeId || null,
         },
       });
     } catch {
       // best-effort
     }
-    return NextResponse.json({ ...application, employeeAction: result.employeeAction });
+    return NextResponse.json({
+      ...application,
+      employeeAction: result.employeeResult?.action || null,
+      employeeId: result.employeeResult?.employeeId || null,
+    });
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("Ambiguous applicant match")) {
       return NextResponse.json({ error: err.message }, { status: 409 });

@@ -1,25 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockHiringApis(page, trackers) {
   const jobs = [
@@ -70,6 +51,27 @@ async function mockHiringApis(page, trackers) {
       applicant: applicants[1],
       jobPosting: jobs[0],
     },
+    {
+      id: "application-3",
+      stage: "HIRED",
+      notes: "",
+      employeeId: "emp-ama-hired",
+      onboarding: {
+        status: "pending",
+        summary: "Imported from hiring pipeline and waiting for HR completion.",
+      },
+      createdAt: "2026-03-13T11:00:00.000Z",
+      updatedAt: "2026-03-13T11:00:00.000Z",
+      applicant: {
+        id: "applicant-3",
+        firstName: "Esi",
+        lastName: "Addo",
+        email: "esi@example.com",
+        phone: "0240000003",
+        updatedAt: "2026-03-13T10:00:00.000Z",
+      },
+      jobPosting: jobs[0],
+    },
   ];
 
   await page.route("**/api/admin/hr/jobs?**", async (route) => {
@@ -89,12 +91,15 @@ async function mockHiringApis(page, trackers) {
   });
 
   await page.route("**/api/admin/hr/applications**", async (route) => {
+    const url = new URL(route.request().url());
+    const showHired = url.searchParams.get("showHired") === "1";
+    const rows = showHired ? applications : applications.filter((row) => row.stage !== "HIRED");
     await route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        rows: applications,
-        total: applications.length,
+        rows,
+        total: rows.length,
         lastUpdatedAt: "2026-03-12T11:00:00.000Z",
         summary: {
           total: applications.length,
@@ -103,7 +108,7 @@ async function mockHiringApis(page, trackers) {
           screening: 1,
           interview: 0,
           offer: 0,
-          hired: 0,
+          hired: 1,
           rejected: 0,
           withdrawn: 0,
         },
@@ -134,7 +139,6 @@ async function mockHiringApis(page, trackers) {
 test.describe("HR hiring page", () => {
   test("loads hiring controls and summary cards", async ({ page }) => {
     const trackers = { bulkPayloads: [] };
-    await signIn(page);
     await mockHiringApis(page, trackers);
     await page.goto("/admin/hr/hiring");
 
@@ -151,7 +155,6 @@ test.describe("HR hiring page", () => {
 
   test("sends conflict-safe bulk payload and renders skipped details", async ({ page }) => {
     const trackers = { bulkPayloads: [] };
-    await signIn(page);
     await mockHiringApis(page, trackers);
     await page.goto("/admin/hr/hiring");
 
@@ -178,5 +181,17 @@ test.describe("HR hiring page", () => {
 
     await expect(page.getByText(/skipped applications/i)).toBeVisible();
     await expect(page.getByText(/Kofi Owusu: Move to Screening before Interview./i)).toBeVisible();
+  });
+
+  test("shows resume onboarding for hired applications", async ({ page }) => {
+    const trackers = { bulkPayloads: [] };
+    await mockHiringApis(page, trackers);
+    await page.goto("/admin/hr/hiring");
+
+    await page.getByLabel(/Show hired applications/i).check();
+    const applicationsSection = page.locator("#applications");
+    await expect(applicationsSection).toContainText("Esi Addo");
+    await expect(applicationsSection).toContainText("Onboarding pending");
+    await expect(applicationsSection.getByRole("button", { name: /Resume onboarding/i }).first()).toBeVisible();
   });
 });

@@ -276,6 +276,20 @@ async function buildSourceBreakdown(lines: CashLineWithEntry[]) {
   return Array.from(bucket.values()).sort((a, b) => b.net - a.net);
 }
 
+/**
+ * Derives the operational expected amount for a day by computing the GL balance
+ * delta: balance(end_of_day) − balance(just before start_of_day).
+ * This aligns Operational with Ledger — both derive from the same authoritative GL,
+ * Operational is simply the daily slice while Ledger is the cumulative total.
+ */
+async function loadCashLedgerDelta(accountId: string, dayRange: { from: Date; to: Date }) {
+  const [endBalance, startBalance] = await Promise.all([
+    loadCashBalance(accountId, dayRange.to),
+    loadCashBalance(accountId, new Date(dayRange.from.getTime() - 1)),
+  ]);
+  return Number((endBalance - startBalance).toFixed(2));
+}
+
 async function getOperationalDaySummary(accountId: string, dayYmd: string, scope: "all" | "otc") {
   const dayRange = buildUtcDayRange(dayYmd);
   const dayLinesRaw = await loadCashLines(accountId, dayRange.from, dayRange.to);
@@ -427,15 +441,11 @@ export async function GET(req: Request) {
     },
     orderBy: { createdAt: "desc" },
     take: 5,
-    select: {
-      id: true,
-      countedAt: true,
-      createdAt: true,
-      expectedAmount: true,
-      actualAmount: true,
-      variance: true,
-      notes: true,
-      journalEntryId: true,
+    // Use include (not select) so the query engine doesn't need to enumerate
+    // the new reconcileMode / isOpeningBalance fields explicitly — those are
+    // picked up automatically once the Prisma client is regenerated after
+    // the dev server is restarted.
+    include: {
       createdBy: { select: { id: true, name: true, email: true } },
     },
   });
@@ -528,38 +538,8 @@ export async function GET(req: Request) {
     }),
   ]);
   const historyTotalPages = Math.max(1, Math.ceil(historyTotal / historyPageSize));
-  const reconciliationIds = reconciliations.map((row) => row.id);
-  const auditRows = reconciliationIds.length
-    ? await prisma.auditLog.findMany({
-        where: {
-          action: "CASH_RECONCILIATION_RECORDED",
-          entityType: "CASH_RECONCILIATION",
-          entityId: { in: reconciliationIds },
-        },
-        orderBy: { createdAt: "desc" },
-        select: {
-          entityId: true,
-          meta: true,
-        },
-      })
-    : [];
-  const modeByRecId = new Map<string, "ledger" | "operational">();
-  for (const row of auditRows) {
-    if (modeByRecId.has(row.entityId)) continue;
-    try {
-      const meta = JSON.parse(row.meta || "{}") as { mode?: string };
-      const parsedMode = String(meta?.mode || "").toLowerCase();
-      if (parsedMode === "ledger" || parsedMode === "operational") {
-        modeByRecId.set(row.entityId, parsedMode);
-      }
-    } catch {
-      // ignore malformed audit meta
-    }
-  }
-  const reconciliationsWithMode = reconciliations.map((row) => ({
-    ...row,
-    reconcileMode: modeByRecId.get(row.id) || null,
-  }));
+  // reconcileMode is now stored directly on each record; no audit log join needed.
+  const reconciliationsWithMode = reconciliations;
 
   return NextResponse.json({
     asOf: asOfDate.toISOString(),
@@ -605,6 +585,10 @@ export async function GET(req: Request) {
         expectedAmount: Number(row.expectedAmount || 0),
         actualAmount: Number(row.actualAmount || 0),
         variance: Number(row.variance || 0),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        reconcileMode: (row as any).reconcileMode || "operational",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        isOpeningBalance: (row as any).isOpeningBalance || false,
         notes: row.notes || null,
         journalEntryId: row.journalEntryId || null,
         createdBy: row.createdBy
@@ -703,12 +687,15 @@ export async function POST(req: Request) {
       );
     }
 
+    // Option 1: Derive operational (scope=all) from the GL balance delta so both
+    // modes draw from the same authoritative source, structurally eliminating
+    // Operational vs Ledger divergence for fully-posted days.
     const expectedAmount =
-      mode === "operational"
-        ? (
-            await getOperationalDaySummary(cashAccount.id, dayYmd, operationalScope)
-          ).daySummary.net
-        : await loadCashBalance(cashAccount.id, countedAt);
+      mode === "ledger"
+        ? await loadCashBalance(cashAccount.id, countedAt)
+        : operationalScope === "otc"
+          ? (await getOperationalDaySummary(cashAccount.id, dayYmd, operationalScope)).daySummary.net
+          : await loadCashLedgerDelta(cashAccount.id, dayRange);
     const actualAmount = parsed.data.actualAmount;
     const variance = Number((actualAmount - expectedAmount).toFixed(2));
     const varianceReason = parsed.data.varianceReason || null;
@@ -785,6 +772,7 @@ export async function POST(req: Request) {
         expectedAmount,
         actualAmount,
         variance,
+        reconcileMode: mode === "ledger" ? "ledger" : operationalScope === "otc" ? "operational_otc" : "operational",
         notes: composedNotes,
         createdById: session.user?.id,
         journalEntryId,

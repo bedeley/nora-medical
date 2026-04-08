@@ -12,7 +12,8 @@ import { allocateLotsForSale } from "@/lib/inventory-lots";
 import { postOrderEntry, postPaymentEntry } from "@/lib/accounting-posting";
 import { isCreditLimitExceeded } from "@/lib/credit";
 import { getOtcShiftDayStatus } from "@/lib/otc-shift-close";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
+import { roundCurrency } from "@/lib/currency";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -409,22 +410,24 @@ export async function POST(req: Request) {
       }
     }
 
-    const subtotal = items.reduce(
-      (sum: number, it: { productId: string; quantity: number }) => {
-        const p = productMap.get(it.productId)!;
-        return sum + Number(p.price) * it.quantity;
-      },
-      0
+    const subtotal = roundCurrency(
+      items.reduce(
+        (sum: number, it: { productId: string; quantity: number }) => {
+          const p = productMap.get(it.productId)!;
+          return sum + Number(p.price) * it.quantity;
+        },
+        0
+      )
     );
     const normalizedTaxRate = Number.isFinite(taxRate) ? Math.max(0, taxRate) : 0;
-    const taxAmount = subtotal * (normalizedTaxRate / 100);
+    const taxAmount = roundCurrency(subtotal * (normalizedTaxRate / 100));
     const normalizedDiscount = Number.isFinite(discountAmount)
       ? Math.max(0, Math.min(Number(discountAmount), subtotal + taxAmount))
       : 0;
-    const total = Math.max(0, subtotal + taxAmount - normalizedDiscount);
+    const total = roundCurrency(Math.max(0, subtotal + taxAmount - normalizedDiscount));
 
-    const amountPaid = Math.min(initialPayment, total);
-    const balance = Math.max(0, total - amountPaid);
+    const amountPaid = roundCurrency(Math.min(initialPayment, total));
+    const balance = roundCurrency(Math.max(0, total - amountPaid));
     if (isWalkIn && !walkInName?.trim() && allowAnonymousWalkIn && balance > 0) {
       return NextResponse.json(
         { error: "Anonymous OTC sale must be paid in full." },

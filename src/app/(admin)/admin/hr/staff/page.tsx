@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { MoreHorizontal } from "lucide-react";
+import { MoreHorizontal, UserRoundPlus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +16,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 
 type EmployeeStatus = "ACTIVE" | "ON_LEAVE" | "SUSPENDED" | "TERMINATED";
 type UserRole = "ADMIN" | "STAFF" | "ACCOUNTANT" | "DISPATCHER";
@@ -39,6 +38,12 @@ type Employee = {
   hireDate?: string | null;
   terminationDate?: string | null;
   updatedAt?: string | null;
+  onboarding?: {
+    status: "pending" | "complete";
+    summary: string;
+    missingFields: string[];
+    hasPendingMarker: boolean;
+  };
   user?: { id?: string | null; role?: UserRole | null } | null;
 };
 
@@ -52,6 +57,7 @@ type SavedView = {
     role: string;
     accountLink: AccountLinkFilter;
     completeness: CompletenessFilter;
+    onboarding: OnboardingFilter;
     sort: SortOrder;
     pageSize: number;
   };
@@ -72,10 +78,13 @@ type StaffListResponse = {
     terminated: number;
     missingProfile: number;
     missingBankDetails: number;
+    pendingOnboarding: number;
     linkedAccount: number;
     unlinkedAccount: number;
   };
 };
+
+type OnboardingFilter = "all" | "pending" | "complete";
 
 type StaffActivityItem = {
   id: string;
@@ -124,12 +133,27 @@ function getMissingProfileFields(row: Employee) {
   return missing;
 }
 
+function getOnboardingWorkflowSummary(row: Employee) {
+  if (!row.onboarding) return "Onboarding status unavailable.";
+  if (row.onboarding.status === "complete") return "Onboarding complete.";
+  if (row.onboarding.hasPendingMarker) return "From hiring pipeline. Resume HR completion.";
+  return "Resume onboarding to finish required HR details.";
+}
+
 function formatEmployeeStatusLabel(status: EmployeeStatus) {
   return status.replace("_", " ");
 }
 
 function getAccountLinkLabel(row: Employee) {
   return row.user?.id ? "Linked account" : "No linked account";
+}
+
+function getAccessRoleBadgeClass(role?: UserRole | null) {
+  if (role === "ADMIN") return "border-0 bg-rose-100 text-rose-700 hover:bg-rose-100";
+  if (role === "ACCOUNTANT") return "border-0 bg-amber-100 text-amber-800 hover:bg-amber-100";
+  if (role === "DISPATCHER") return "border-0 bg-sky-100 text-sky-700 hover:bg-sky-100";
+  if (role === "STAFF") return "border-0 bg-emerald-100 text-emerald-700 hover:bg-emerald-100";
+  return "border-0 bg-slate-100 text-slate-700 hover:bg-slate-100";
 }
 
 function getStatusChangePrompt(nextStatus: EmployeeStatus) {
@@ -202,6 +226,7 @@ export default function AdminHrStaffPage() {
   const initialRole = searchParams.get("role") || "all";
   const initialAccountLink = (searchParams.get("accountLink") || "all") as AccountLinkFilter;
   const initialCompleteness = (searchParams.get("completeness") || "all") as CompletenessFilter;
+  const initialOnboarding = (searchParams.get("onboarding") || "all") as OnboardingFilter;
   const initialSort = (searchParams.get("sort") || "recent") as SortOrder;
   const initialPage = Math.max(1, Number(searchParams.get("page") || "1") || 1);
   const initialPageSize = normalizePageSize(searchParams.get("pageSize"));
@@ -217,11 +242,13 @@ export default function AdminHrStaffPage() {
   const [completeness, setCompleteness] = useState<CompletenessFilter>(
     ["all", "complete", "missing"].includes(initialCompleteness) ? initialCompleteness : "all",
   );
+  const [onboarding, setOnboarding] = useState<OnboardingFilter>(
+    ["all", "pending", "complete"].includes(initialOnboarding) ? initialOnboarding : "all",
+  );
   const [sort, setSort] = useState<SortOrder>(["recent", "name_asc", "name_desc"].includes(initialSort) ? initialSort : "recent");
   const [page, setPage] = useState(initialPage);
   const [pageSize, setPageSize] = useState(initialPageSize);
 
-  const [dialogOpen, setDialogOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importRows, setImportRows] = useState<Record<string, string>[]>([]);
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -254,23 +281,6 @@ export default function AdminHrStaffPage() {
     role: "STAFF" as LinkedUserRole,
   });
 
-  const [form, setForm] = useState({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    department: "",
-    position: "",
-    status: "ACTIVE",
-    hireDate: "",
-    bankName: "",
-    bankAccountName: "",
-    bankAccountNumber: "",
-    bankCode: "",
-    bankBranch: "",
-    notes: "",
-  });
-
   useEffect(() => {
     const timer = window.setTimeout(() => setSearchDebounced(search), 250);
     return () => window.clearTimeout(timer);
@@ -284,6 +294,7 @@ export default function AdminHrStaffPage() {
     if (role !== "all") params.set("role", role);
     if (accountLink !== "all") params.set("accountLink", accountLink);
     if (completeness !== "all") params.set("completeness", completeness);
+    if (onboarding !== "all") params.set("onboarding", onboarding);
     if (sort !== "recent") params.set("sort", sort);
     if (page !== 1) params.set("page", String(page));
     if (pageSize !== 25) params.set("pageSize", String(pageSize));
@@ -292,7 +303,7 @@ export default function AdminHrStaffPage() {
     if (next !== current) {
       router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
     }
-  }, [searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize, pathname, router, searchParams]);
+  }, [searchDebounced, status, department, role, accountLink, completeness, onboarding, sort, page, pageSize, pathname, router, searchParams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -326,14 +337,15 @@ export default function AdminHrStaffPage() {
     if (role !== "all") params.set("role", role);
     if (accountLink !== "all") params.set("accountLink", accountLink);
     if (completeness !== "all") params.set("completeness", completeness);
+    if (onboarding !== "all") params.set("onboarding", onboarding);
     if (sort !== "recent") params.set("sort", sort);
     params.set("page", String(page));
     params.set("pageSize", String(pageSize));
     return `/api/admin/hr/employees?${params.toString()}`;
-  }, [searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize]);
+  }, [searchDebounced, status, department, role, accountLink, completeness, onboarding, sort, page, pageSize]);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["admin", "hr", "employees", searchDebounced, status, department, role, accountLink, completeness, sort, page, pageSize],
+    queryKey: ["admin", "hr", "employees", searchDebounced, status, department, role, accountLink, completeness, onboarding, sort, page, pageSize],
     queryFn: () => fetcher<StaffListResponse>(query),
   });
 
@@ -365,6 +377,7 @@ export default function AdminHrStaffPage() {
         terminated: 0,
         missingProfile: 0,
         missingBankDetails: 0,
+        pendingOnboarding: 0,
         linkedAccount: 0,
         unlinkedAccount: 0,
       }
@@ -447,6 +460,25 @@ export default function AdminHrStaffPage() {
     window.setTimeout(() => {
       employeesCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 40);
+  };
+
+  const applyDirectoryShortcut = ({
+    nextStatus = "all",
+    nextAccountLink = "all",
+    nextCompleteness = "all",
+    nextOnboarding = "all",
+  }: {
+    nextStatus?: string;
+    nextAccountLink?: AccountLinkFilter;
+    nextCompleteness?: CompletenessFilter;
+    nextOnboarding?: OnboardingFilter;
+  }) => {
+    setStatus(nextStatus);
+    setAccountLink(nextAccountLink);
+    setCompleteness(nextCompleteness);
+    setOnboarding(nextOnboarding);
+    setPage(1);
+    scrollToEmployeesTable();
   };
 
   const refreshDirectoryData = async () => {
@@ -633,42 +665,6 @@ export default function AdminHrStaffPage() {
     }
   };
 
-  const handleCreate = async () => {
-    try {
-      const res = await fetch("/api/admin/hr/employees", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(body.error || "Failed to create employee.");
-        return;
-      }
-      toast.success("Employee added.");
-      setDialogOpen(false);
-        setForm({
-        firstName: "",
-        lastName: "",
-        email: "",
-        phone: "",
-        department: "",
-        position: "",
-        status: "ACTIVE",
-        hireDate: "",
-        bankName: "",
-        bankAccountName: "",
-        bankAccountNumber: "",
-        bankCode: "",
-          bankBranch: "",
-          notes: "",
-        });
-        await refreshDirectoryData();
-    } catch {
-      toast.error("Failed to create employee.");
-    }
-  };
-
   const openLinkedUserDialog = (employee: Employee) => {
     if (employee.user?.id) {
       toast.error("This employee already has a linked user account.");
@@ -804,6 +800,7 @@ export default function AdminHrStaffPage() {
               role,
               accountLink,
               completeness,
+              onboarding,
               sort,
               pageSize,
             },
@@ -836,6 +833,7 @@ export default function AdminHrStaffPage() {
     setRole(view.filters.role);
     setAccountLink(view.filters.accountLink || "all");
     setCompleteness(view.filters.completeness);
+    setOnboarding(view.filters.onboarding || "all");
     setSort(view.filters.sort);
     setPageSize(view.filters.pageSize);
     setPage(1);
@@ -875,6 +873,7 @@ export default function AdminHrStaffPage() {
     role !== "all" ? { key: "role", label: `Role: ${role}` } : null,
     accountLink !== "all" ? { key: "accountLink", label: `Account: ${accountLink === "linked" ? "Linked" : "Unlinked"}` } : null,
     completeness !== "all" ? { key: "completeness", label: `Profile: ${getCompletenessFilterLabel(completeness)}` } : null,
+    onboarding !== "all" ? { key: "onboarding", label: `Onboarding: ${onboarding === "pending" ? "Needs onboarding" : "Complete"}` } : null,
     sort !== "recent" ? { key: "sort", label: `Sort: ${getSortLabel(sort)}` } : null,
   ].filter((chip): chip is { key: string; label: string } => Boolean(chip));
 
@@ -888,6 +887,7 @@ export default function AdminHrStaffPage() {
     if (key === "role") setRole("all");
     if (key === "accountLink") setAccountLink("all");
     if (key === "completeness") setCompleteness("all");
+    if (key === "onboarding") setOnboarding("all");
     if (key === "sort") setSort("recent");
     setPage(1);
   };
@@ -978,52 +978,12 @@ export default function AdminHrStaffPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2 xl:max-w-md xl:justify-end">
-              <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                <DialogTrigger asChild>
-                  <Button>+ Add employee</Button>
-                </DialogTrigger>
-                <DialogContent className="max-w-xl">
-                  <DialogHeader>
-                    <DialogTitle>Add Employee</DialogTitle>
-                  </DialogHeader>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <Input placeholder="First name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} />
-                    <Input placeholder="Last name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} />
-                    <Input placeholder="Email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} />
-                    <Input placeholder="Phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} />
-                    <Input placeholder="Department" value={form.department} onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))} />
-                    <Input placeholder="Position" value={form.position} onChange={(e) => setForm((p) => ({ ...p, position: e.target.value }))} />
-                    <Select value={form.status} onValueChange={(value) => setForm((p) => ({ ...p, status: value }))}>
-                      <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="ACTIVE">Active</SelectItem>
-                        <SelectItem value="ON_LEAVE">On leave</SelectItem>
-                        <SelectItem value="SUSPENDED">Suspended</SelectItem>
-                        <SelectItem value="TERMINATED">Terminated</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Input type="date" value={form.hireDate} onChange={(e) => setForm((p) => ({ ...p, hireDate: e.target.value }))} />
-                    <Input placeholder="Bank name" value={form.bankName} onChange={(e) => setForm((p) => ({ ...p, bankName: e.target.value }))} />
-                    <Input placeholder="Bank code" value={form.bankCode} onChange={(e) => setForm((p) => ({ ...p, bankCode: e.target.value }))} />
-                    <Input placeholder="Account name" value={form.bankAccountName} onChange={(e) => setForm((p) => ({ ...p, bankAccountName: e.target.value }))} />
-                    <Input placeholder="Account number" value={form.bankAccountNumber} onChange={(e) => setForm((p) => ({ ...p, bankAccountNumber: e.target.value }))} />
-                    <Input placeholder="Bank branch" value={form.bankBranch} onChange={(e) => setForm((p) => ({ ...p, bankBranch: e.target.value }))} />
-                    <div className="space-y-2 sm:col-span-2">
-                      <Textarea
-                        placeholder="Optional staff note"
-                        value={form.notes}
-                        onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Employee portal access can be linked later from Users & Roles if the user account is created afterward.
-                      </p>
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button onClick={handleCreate}>Save employee</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
+              <Button asChild>
+                <Link href="/admin/hr/onboarding?source=staff">
+                  <UserRoundPlus className="mr-2 h-4 w-4" />
+                  Start onboarding
+                </Link>
+              </Button>
               <Dialog open={importOpen} onOpenChange={setImportOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline">Import CSV</Button>
@@ -1133,11 +1093,12 @@ export default function AdminHrStaffPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Total staff</p><p className="text-2xl font-semibold">{stats.total}</p></CardContent></Card>
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Active now</p><p className="text-2xl font-semibold">{stats.active}</p></CardContent></Card>
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">On leave</p><p className="text-2xl font-semibold">{stats.onLeave}</p></CardContent></Card>
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Missing profile fields</p><p className="text-2xl font-semibold">{stats.missingProfile}</p></CardContent></Card>
+            <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Needs onboarding</p><p className="text-2xl font-semibold">{stats.pendingOnboarding}</p></CardContent></Card>
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Linked accounts</p><p className="text-2xl font-semibold">{stats.linkedAccount}</p></CardContent></Card>
             <Card className="border-border/60 bg-background/80 shadow-none"><CardContent className="py-4"><p className="text-xs text-muted-foreground">Missing bank details</p><p className="text-2xl font-semibold">{stats.missingBankDetails}</p></CardContent></Card>
           </div>
@@ -1168,10 +1129,7 @@ export default function AdminHrStaffPage() {
               type="button"
               className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
               onClick={() => {
-                setCompleteness("missing");
-                setAccountLink("all");
-                setPage(1);
-                scrollToEmployeesTable();
+                applyDirectoryShortcut({ nextCompleteness: "missing" });
               }}
             >
               <div className="text-sm font-medium">Profiles missing key fields</div>
@@ -1184,9 +1142,7 @@ export default function AdminHrStaffPage() {
               type="button"
               className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
               onClick={() => {
-                setAccountLink("unlinked");
-                setPage(1);
-                scrollToEmployeesTable();
+                applyDirectoryShortcut({ nextAccountLink: "unlinked" });
               }}
             >
               <div className="text-sm font-medium">No linked user account</div>
@@ -1199,15 +1155,26 @@ export default function AdminHrStaffPage() {
               type="button"
               className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
               onClick={() => {
-                setStatus("ON_LEAVE");
-                setPage(1);
-                scrollToEmployeesTable();
+                applyDirectoryShortcut({ nextStatus: "ON_LEAVE" });
               }}
             >
               <div className="text-sm font-medium">Employees currently on leave</div>
               <div className="mt-1 text-2xl font-semibold">{stats.onLeave}</div>
               <p className="mt-2 text-xs text-muted-foreground">
                 Narrow the directory to current on-leave staff for handover or coverage review.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left transition hover:bg-muted/50"
+              onClick={() => {
+                applyDirectoryShortcut({ nextOnboarding: "pending" });
+              }}
+            >
+              <div className="text-sm font-medium">Onboarding still pending</div>
+              <div className="mt-1 text-2xl font-semibold">{stats.pendingOnboarding}</div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Resume onboarding for hires or employee records still waiting on required HR completion.
               </p>
             </button>
             <div className="rounded-lg border p-4">
@@ -1228,13 +1195,16 @@ export default function AdminHrStaffPage() {
             <div className="grid gap-2">
               <p className="text-sm font-medium">Quick filters</p>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => { setCompleteness("missing"); setPage(1); scrollToEmployeesTable(); }}>
+                <Button variant="outline" size="sm" onClick={() => applyDirectoryShortcut({ nextCompleteness: "missing" })}>
                   Missing profile fields
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => { setAccountLink("unlinked"); setPage(1); scrollToEmployeesTable(); }}>
+                <Button variant="outline" size="sm" onClick={() => applyDirectoryShortcut({ nextOnboarding: "pending" })}>
+                  Needs onboarding
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => applyDirectoryShortcut({ nextAccountLink: "unlinked" })}>
                   No linked account
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => { setStatus("ON_LEAVE"); setPage(1); scrollToEmployeesTable(); }}>
+                <Button variant="outline" size="sm" onClick={() => applyDirectoryShortcut({ nextStatus: "ON_LEAVE" })}>
                   On leave today
                 </Button>
                 <Button
@@ -1245,6 +1215,7 @@ export default function AdminHrStaffPage() {
                     setSearch("");
                     setSearchDebounced("");
                     setCompleteness("all");
+                    setOnboarding("all");
                     setRole("all");
                     setAccountLink("all");
                     setStatus("all");
@@ -1420,6 +1391,14 @@ export default function AdminHrStaffPage() {
                 <SelectItem value="missing">Missing key fields</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={onboarding} onValueChange={(value) => { setOnboarding(value as OnboardingFilter); setPage(1); }}>
+              <SelectTrigger className="w-full md:w-[190px]"><SelectValue placeholder="Onboarding" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All onboarding states</SelectItem>
+                <SelectItem value="pending">Needs onboarding</SelectItem>
+                <SelectItem value="complete">Onboarding complete</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={sort} onValueChange={(value) => setSort(value as SortOrder)}>
               <SelectTrigger className="w-full md:w-[170px]"><SelectValue placeholder="Sort" /></SelectTrigger>
               <SelectContent>
@@ -1515,10 +1494,22 @@ export default function AdminHrStaffPage() {
                           </div>
                           <div className={mobileDensity === "compact" ? "grid grid-cols-2 gap-1 text-[11px]" : "grid grid-cols-2 gap-2 text-xs"}>
                             <div><span className="text-muted-foreground">Department:</span> {row.department || "-"}</div>
-                            <div><span className="text-muted-foreground">Position:</span> {row.position || "-"}</div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-muted-foreground">Position:</span>
+                              {row.position ? <Badge variant="outline">{row.position}</Badge> : "-"}
+                            </div>
                             <div><span className="text-muted-foreground">Email:</span> {row.email || "-"}</div>
                             <div><span className="text-muted-foreground">Phone:</span> {row.phone || "-"}</div>
-                            <div><span className="text-muted-foreground">Role:</span> {row.user?.role || "-"}</div>
+                            <div className="flex items-center gap-1">
+                              <span className="text-muted-foreground">Access:</span>
+                              {row.user?.role ? (
+                                <Badge className={`px-2 py-0.5 text-[10px] font-medium shadow-none ${getAccessRoleBadgeClass(row.user.role)}`}>
+                                  {row.user.role}
+                                </Badge>
+                              ) : (
+                                "-"
+                              )}
+                            </div>
                             <div><span className="text-muted-foreground">Updated:</span> {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "-"}</div>
                           </div>
                           <div className={mobileDensity === "compact" ? "space-y-1.5" : "space-y-2"}>
@@ -1536,7 +1527,9 @@ export default function AdminHrStaffPage() {
                             <div className="space-y-1">
                               <Badge variant={row.user?.id ? "secondary" : "outline"}>{getAccountLinkLabel(row)}</Badge>
                               <div className="text-xs text-muted-foreground">
-                                {row.user?.id ? `Portal ready${row.user?.role ? ` - ${row.user.role}` : ""}` : "Employee portal unavailable until linked in Users & Roles."}
+                                {row.user?.id
+                                  ? `Portal ready${row.user?.role ? ` - ${row.user.role}` : ""}`
+                                  : "Employee portal access can be linked later from Users & Roles."}
                               </div>
                               {!row.user?.id ? (
                                 <Button
@@ -1551,19 +1544,36 @@ export default function AdminHrStaffPage() {
                               ) : null}
                             </div>
                           <div>
-                            {missing.length === 0 ? (
-                              <Badge variant="secondary">Complete profile</Badge>
-                            ) : (
-                              <div className="space-y-1">
-                                <Badge variant="destructive">Missing {missing.length}</Badge>
-                                <div className="text-xs text-muted-foreground">{missing.join(", ")}</div>
-                              </div>
-                            )}
+                            <div className="space-y-1">
+                              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Profile</div>
+                              {missing.length === 0 ? (
+                                <Badge variant="secondary">Complete profile</Badge>
+                              ) : (
+                                <div className="space-y-1">
+                                  <Badge variant="destructive">Missing {missing.length}</Badge>
+                                  <div className="text-xs text-muted-foreground">{missing.join(", ")}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Onboarding</div>
+                            <Badge variant={row.onboarding?.status === "pending" ? "outline" : "secondary"}>
+                              {row.onboarding?.status === "pending" ? "Needs onboarding" : "Onboarding complete"}
+                            </Badge>
+                            <div className="text-xs text-muted-foreground">
+                              {getOnboardingWorkflowSummary(row)}
+                            </div>
                           </div>
                           <div className={mobileDensity === "compact" ? "flex flex-wrap items-center gap-1.5" : "flex flex-wrap items-center gap-2"}>
                             <Button asChild size="sm" variant="outline">
                               <Link href={`/admin/hr/staff/${row.id}`}>Open profile</Link>
                             </Button>
+                            {row.onboarding?.status === "pending" ? (
+                              <Button asChild size="sm">
+                                <Link href={`/admin/hr/onboarding?source=staff&employeeId=${row.id}`}>Resume onboarding</Link>
+                              </Button>
+                            ) : null}
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button size="sm" variant="outline" className="gap-1">
@@ -1624,7 +1634,7 @@ export default function AdminHrStaffPage() {
               </div>
 
               <div className="hidden md:block">
-                <Table>
+                <Table className="table-fixed">
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[36px]">
@@ -1635,27 +1645,26 @@ export default function AdminHrStaffPage() {
                           aria-label="Select all visible"
                         />
                       </TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Department</TableHead>
-                      <TableHead>Position</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Account</TableHead>
-                      <TableHead>Contact</TableHead>
-                      <TableHead>Profile</TableHead>
-                      <TableHead>Last updated</TableHead>
-                      <TableHead>Actions</TableHead>
+                      <TableHead className="w-[210px]">Name</TableHead>
+                      <TableHead className="w-[170px]">Work</TableHead>
+                      <TableHead className="w-[160px]">Status</TableHead>
+                      <TableHead className="w-[220px]">Access</TableHead>
+                      <TableHead className="w-[250px]">Readiness</TableHead>
+                      <TableHead className="w-[130px]">Last updated</TableHead>
+                      <TableHead className="w-[72px] text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {pagedRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={10} className="text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={8} className="text-center text-sm text-muted-foreground">
                           No staff found.
                         </TableCell>
                       </TableRow>
                     ) : (
                       pagedRows.map((row) => {
                         const missing = getMissingProfileFields(row);
+                        const updatedAt = row.updatedAt ? new Date(row.updatedAt) : null;
                         return (
                           <TableRow key={row.id}>
                             <TableCell>
@@ -1671,7 +1680,7 @@ export default function AdminHrStaffPage() {
                                 aria-label={`Select ${row.firstName} ${row.lastName}`}
                               />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="whitespace-normal align-top">
                               <Link href={`/admin/hr/staff/${row.id}`} className="font-medium underline-offset-2 hover:underline">
                                 {row.firstName} {row.lastName}
                               </Link>
@@ -1679,13 +1688,23 @@ export default function AdminHrStaffPage() {
                                 {row.hireDate ? `Hired ${new Date(row.hireDate).toLocaleDateString()}` : "Hire date not set"}
                               </div>
                             </TableCell>
-                            <TableCell>{row.department || "-"}</TableCell>
-                            <TableCell>{row.position || "-"}</TableCell>
-                            <TableCell>
-                              <div className="flex min-w-[170px] flex-col gap-1">
+                            <TableCell className="whitespace-normal align-top">
+                              <div className="space-y-1">
+                                <div className="text-sm">{row.department || "Department pending"}</div>
+                                {row.position ? (
+                                  <Badge variant="outline" className="w-fit">
+                                    {row.position}
+                                  </Badge>
+                                ) : (
+                                  <div className="text-xs text-muted-foreground">Position pending</div>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="whitespace-normal align-top">
+                              <div className="flex min-w-[140px] flex-col gap-1">
                                 <Badge variant={statusTone[row.status]}>{formatEmployeeStatusLabel(row.status)}</Badge>
                                 <Select value={row.status} onValueChange={(value) => openStatusChangeDialog(row, value as EmployeeStatus)}>
-                                  <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Update status" /></SelectTrigger>
+                                  <SelectTrigger className="h-7 w-full text-xs"><SelectValue placeholder="Update status" /></SelectTrigger>
                                   <SelectContent>
                                     <SelectItem value="ACTIVE">Active</SelectItem>
                                     <SelectItem value="ON_LEAVE">On leave</SelectItem>
@@ -1695,48 +1714,69 @@ export default function AdminHrStaffPage() {
                                 </Select>
                               </div>
                             </TableCell>
-                            <TableCell>
-                                <div className="space-y-1">
+                            <TableCell className="whitespace-normal align-top">
+                              <div className="max-w-[220px] space-y-1">
+                                <div className="flex flex-col items-start gap-1">
                                   <Badge variant={row.user?.id ? "secondary" : "outline"}>{getAccountLinkLabel(row)}</Badge>
-                                  <div className="text-xs text-muted-foreground">
-                                    {row.user?.id ? `Portal ready${row.user?.role ? ` - ${row.user.role}` : ""}` : "Link in Users & Roles"}
-                                  </div>
-                                  {!row.user?.id ? (
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="h-auto px-0 text-xs text-primary hover:bg-transparent"
-                                      onClick={() => openLinkedUserDialog(row)}
-                                    >
-                                      Create linked user
-                                    </Button>
+                                  {row.user?.role ? (
+                                    <Badge className={`px-2 py-0.5 text-[10px] font-medium shadow-none ${getAccessRoleBadgeClass(row.user.role)}`}>
+                                      {row.user.role}
+                                    </Badge>
                                   ) : null}
                                 </div>
-                              </TableCell>
-                            <TableCell>
-                              <div className="text-sm">{row.email || "-"}</div>
-                              <div className="text-xs text-muted-foreground">{row.phone || "-"}</div>
-                              <div className="text-xs text-muted-foreground">Role: {row.user?.role || "-"}</div>
+                                <Link
+                                  href={`/admin/hr/staff/${row.id}`}
+                                  className="inline-flex text-xs font-medium text-primary underline-offset-2 hover:underline"
+                                >
+                                  Open employee profile
+                                </Link>
+                                {!row.user?.id ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-auto px-0 text-xs text-primary hover:bg-transparent"
+                                    onClick={() => openLinkedUserDialog(row)}
+                                  >
+                                    Create linked user
+                                  </Button>
+                                ) : null}
+                              </div>
                             </TableCell>
-                            <TableCell>
-                              {missing.length === 0 ? (
-                                <Badge variant="secondary">Complete</Badge>
-                              ) : (
-                                <div className="space-y-1">
-                                  <Badge variant="destructive">Missing {missing.length}</Badge>
-                                  <div className="text-xs text-muted-foreground">{missing.join(", ")}</div>
+                            <TableCell className="whitespace-normal align-top">
+                              <div className="max-w-[250px] space-y-2">
+                                <div className="flex flex-wrap gap-2">
+                                  {missing.length === 0 ? (
+                                    <Badge variant="secondary">Profile complete</Badge>
+                                  ) : (
+                                    <Badge variant="destructive">Profile missing {missing.length}</Badge>
+                                  )}
+                                  {row.onboarding?.status === "complete" ? (
+                                    <Badge variant="secondary">Onboarding complete</Badge>
+                                  ) : null}
                                 </div>
+                                {row.onboarding?.status === "pending" ? (
+                                  <Link
+                                    href={`/admin/hr/onboarding?source=staff&employeeId=${row.id}`}
+                                    className="inline-flex text-xs font-medium text-primary underline-offset-2 hover:underline"
+                                  >
+                                    Resume onboarding
+                                  </Link>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell className="whitespace-normal align-top text-xs text-muted-foreground">
+                              {updatedAt ? (
+                                <>
+                                  <div>{updatedAt.toLocaleDateString()}</div>
+                                  <div>{updatedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</div>
+                                </>
+                              ) : (
+                                "-"
                               )}
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
-                              {row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "-"}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                <Button asChild size="sm" variant="outline">
-                                  <Link href={`/admin/hr/staff/${row.id}`}>Open profile</Link>
-                                </Button>
+                            <TableCell className="align-top">
+                              <div className="flex justify-end">
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild>
                                     <Button size="icon" variant="outline" aria-label={`More actions for ${row.firstName} ${row.lastName}`}>
@@ -1744,6 +1784,9 @@ export default function AdminHrStaffPage() {
                                     </Button>
                                   </DropdownMenuTrigger>
                                   <DropdownMenuContent align="end">
+                                    <DropdownMenuItem asChild>
+                                      <Link href={`/admin/hr/staff/${row.id}`}>Open profile</Link>
+                                    </DropdownMenuItem>
                                     <DropdownMenuItem asChild>
                                       <Link href={`/admin/hr/staff/${row.id}/paystubs`}>Open payslips</Link>
                                     </DropdownMenuItem>
@@ -1753,6 +1796,11 @@ export default function AdminHrStaffPage() {
                                     <DropdownMenuItem asChild>
                                       <Link href={`/admin/hr/compensation?employeeId=${row.id}`}>Open compensation</Link>
                                     </DropdownMenuItem>
+                                    {row.onboarding?.status === "pending" ? (
+                                      <DropdownMenuItem asChild>
+                                        <Link href={`/admin/hr/onboarding?source=staff&employeeId=${row.id}`}>Resume onboarding</Link>
+                                      </DropdownMenuItem>
+                                    ) : null}
                                     {!row.user?.id ? (
                                       <DropdownMenuItem onClick={() => openLinkedUserDialog(row)}>
                                         Create linked user
@@ -1953,7 +2001,7 @@ export default function AdminHrStaffPage() {
                 </label>
                 <Input
                   id="status-change-reason"
-                  placeholder={statusChangeRequiresReason ? "Add a short reason" : "Add a short note for audit history"}
+                  placeholder={statusChangeRequiresReason ? "Add a short reason" : "Optional staff note for audit history"}
                   value={statusChangeReason}
                   onChange={(e) => setStatusChangeReason(e.target.value)}
                 />

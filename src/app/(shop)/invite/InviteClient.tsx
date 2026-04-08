@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { toast } from "sonner";
 
 export default function InviteClient() {
@@ -70,10 +70,10 @@ export default function InviteClient() {
   };
 
   return (
-    <main className="min-h-screen bg-muted/40 flex items-center justify-center p-6">
+    <div className="min-h-screen bg-muted/40 flex items-center justify-center p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle className="text-lg">Employee invite</CardTitle>
+          <h1 className="text-lg font-semibold">Employee invite</h1>
         </CardHeader>
         <CardContent>
           {!userId ? (
@@ -156,6 +156,6 @@ export default function InviteClient() {
           )}
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }

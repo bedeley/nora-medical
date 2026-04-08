@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
 import { buildBalanceSheetExportAuditMeta, resolveBalanceSheetAsOf } from "@/lib/balance-sheet-report-utils";
+import { RETAINED_EARNINGS_ACCOUNT_CODE } from "@/lib/opening-retained-earnings";
 import { type AccountTotals, loadAccountTotals, parseDateRange, toNet } from "../../../utils";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
@@ -83,7 +84,12 @@ export async function GET(req: Request) {
 
   const assets = totals.filter((row) => row.type === "ASSET");
   const liabilities = totals.filter((row) => row.type === "LIABILITY");
-  const equity = totals.filter((row) => row.type === "EQUITY");
+  const openingRetainedEarningsRows = totals.filter(
+    (row) => row.type === "EQUITY" && row.code === RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
+  const equity = totals.filter(
+    (row) => row.type === "EQUITY" && row.code !== RETAINED_EARNINGS_ACCOUNT_CODE,
+  );
   const income = totals.filter((row) => row.type === "INCOME");
   const expenses = totals.filter((row) => row.type === "EXPENSE");
 
@@ -101,7 +107,8 @@ export async function GET(req: Request) {
     const periodExpenseTotal = periodExpenses.reduce((sum, row) => sum + toNet(row), 0);
     currentPeriodNetIncome = periodIncomeTotal - periodExpenseTotal;
   }
-  const retainedEarnings = netIncomeToDate - currentPeriodNetIncome;
+  const openingRetainedEarningsTotal = openingRetainedEarningsRows.reduce((sum, row) => sum + toNet(row), 0);
+  const retainedEarnings = openingRetainedEarningsTotal + netIncomeToDate - currentPeriodNetIncome;
   const equityWithEarnings: AccountTotals[] = [
     ...equity,
     {

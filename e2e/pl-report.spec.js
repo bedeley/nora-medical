@@ -1,29 +1,9 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 test.describe("P&L report page", () => {
   test("loads core controls and accessibility labels", async ({ page }) => {
-    await signIn(page);
     await page.goto("/admin/accounting/reports/pl");
 
     await expect(page.getByRole("heading", { name: /profit & loss/i })).toBeVisible();
@@ -35,8 +15,6 @@ test.describe("P&L report page", () => {
   });
 
   test("warns before internal navigation with unsaved variance note", async ({ page }) => {
-    await signIn(page);
-
     let plCall = 0;
     await page.route("**/api/admin/accounting/periods", async (route) => {
       await route.fulfill({
@@ -82,8 +60,6 @@ test.describe("P&L report page", () => {
   });
 
   test("shows conflict guidance when variance note save is stale", async ({ page }) => {
-    await signIn(page);
-
     let plCall = 0;
     await page.route("**/api/admin/accounting/periods", async (route) => {
       await route.fulfill({
@@ -136,7 +112,6 @@ test.describe("P&L report page", () => {
   });
 
   test("hydrates filters from URL and supports copy report link", async ({ page }) => {
-    await signIn(page);
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
@@ -152,8 +127,6 @@ test.describe("P&L report page", () => {
   });
 
   test("shows export history metadata and details panel", async ({ page }) => {
-    await signIn(page);
-
     await page.route("**/api/admin/accounting/reports/pl/export/jobs?**", async (route) => {
       await route.fulfill({
         status: 200,

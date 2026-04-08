@@ -4,7 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 type TxClient = Omit<typeof prisma, "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends">;
 

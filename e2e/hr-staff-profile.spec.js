@@ -1,25 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockStaffApis(page, trackers) {
   const employee = {
@@ -130,7 +111,6 @@ async function mockStaffApis(page, trackers) {
 test.describe("HR staff profile page", () => {
   test("enforces save guards and sends conflict-safe contact payload", async ({ page }) => {
     const trackers = { employeePatchPayloads: [], taskPatchPayloads: [], leavePatchPayloads: [] };
-    await signIn(page);
     await mockStaffApis(page, trackers);
     await page.goto("/admin/hr/staff/emp-1");
 
@@ -156,7 +136,6 @@ test.describe("HR staff profile page", () => {
 
   test("supports onboarding toggle and leave decision flow from profile", async ({ page }) => {
     const trackers = { employeePatchPayloads: [], taskPatchPayloads: [], leavePatchPayloads: [] };
-    await signIn(page);
     await mockStaffApis(page, trackers);
     await page.goto("/admin/hr/staff/emp-1");
 

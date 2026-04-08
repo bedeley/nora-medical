@@ -14,7 +14,9 @@ export default defineConfig({
   test: {
     environment: "node",
     // Keep Vitest opt-in during migration; legacy node:test files stay untouched.
-    include: ["src/**/*.vitest.test.ts", "src/**/*.vitest.spec.ts"],
+    // Files with @vitest-environment jsdom override to browser-like environment.
+    include: ["src/**/*.vitest.test.ts", "src/**/*.vitest.spec.ts", "src/**/*.vitest.spec.tsx"],
+    setupFiles: ["src/test/setup.ts"],
     globals: false,
     restoreMocks: true,
     clearMocks: true,
@@ -23,7 +25,7 @@ export default defineConfig({
       reporter: ["text", "lcov"],
       reportsDirectory: "./coverage/vitest",
       include: ["src/lib/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/**/*.vitest.spec.ts", "src/**/*.vitest.test.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/*.vitest.spec.ts", "src/**/*.vitest.spec.tsx", "src/**/*.vitest.test.ts", "src/test/**"],
     },
   },
 });

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { registerSchema } from "@/lib/validation";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { Role } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { clearOtpFailures, rateLimit } from "@/lib/rate-limit";

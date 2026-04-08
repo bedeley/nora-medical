@@ -1241,19 +1241,21 @@ model ReconciliationLine {
 }
 
 model CashReconciliation {
-  id             String        @id @default(cuid())
-  cashAccount    LedgerAccount @relation(fields: [cashAccountId], references: [id])
-  cashAccountId  String
-  countedAt      DateTime
-  expectedAmount Decimal       @db.Decimal(12, 2)
-  actualAmount   Decimal       @db.Decimal(12, 2)
-  variance       Decimal       @db.Decimal(12, 2)
-  notes          String?
-  createdBy      User?         @relation("CashReconciliationCreatedBy", fields: [createdById], references: [id])
-  createdById    String?
-  journalEntry   JournalEntry? @relation(fields: [journalEntryId], references: [id])
-  journalEntryId String?       @unique
-  createdAt      DateTime      @default(now())
+  id               String        @id @default(cuid())
+  cashAccount      LedgerAccount @relation(fields: [cashAccountId], references: [id])
+  cashAccountId    String
+  countedAt        DateTime
+  expectedAmount   Decimal       @db.Decimal(12, 2)
+  actualAmount     Decimal       @db.Decimal(12, 2)
+  variance         Decimal       @db.Decimal(12, 2)
+  reconcileMode    String        @default("operational")
+  isOpeningBalance Boolean       @default(false)
+  notes            String?
+  createdBy        User?         @relation("CashReconciliationCreatedBy", fields: [createdById], references: [id])
+  createdById      String?
+  journalEntry     JournalEntry? @relation(fields: [journalEntryId], references: [id])
+  journalEntryId   String?       @unique
+  createdAt        DateTime      @default(now())
 
   @@index([cashAccountId, countedAt])
   @@index([createdAt])
@@ -1290,6 +1292,12 @@ model PostingRule {
   @@index([isActive])
 }
 
+enum AuditOutcome {
+  SUCCESS
+  FAILED
+  PARTIAL
+}
+
 model AuditLog {
   id         String   @id @default(cuid())
   actor      User?    @relation(fields: [actorId], references: [id])
@@ -1298,6 +1306,10 @@ model AuditLog {
   entityType String
   entityId   String
   meta       String?
+  ipAddress  String?
+  userAgent  String?
+  requestId  String?
+  outcome    AuditOutcome?
   deletedAt  DateTime?
   createdAt  DateTime @default(now())
 
@@ -1305,6 +1317,8 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([createdAt])
   @@index([deletedAt])
+  @@index([requestId])
+  @@index([outcome])
 }
 
 model AuditSavedFilter {

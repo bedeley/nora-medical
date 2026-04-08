@@ -32,12 +32,7 @@ function weekKey() {
 }
 
 export async function POST(req: Request) {
-  const cronSecret = process.env.CRON_SECRET || "";
-  const authHeader = String((req.headers.get("authorization") || "").trim());
-  const bearer = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length)
-    : "";
-  const hasCronAccess = cronSecret && bearer === cronSecret;
+  const hasCronAccess = (await import("@/lib/cron-auth")).verifyCronSecret(req);
 
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -162,10 +157,10 @@ export async function POST(req: Request) {
     });
   }
 
-  // Keep alert behavior aligned with /admin/health and /api/admin/health/summary:
-  // order balance and payment mismatch checks are derived from AR/ledger consistency
-  // and posting checks, not from stale order.amountPaid snapshots.
-  const orderBalanceMismatches = 0;
+  const orders = await prisma.order.findMany({
+    where: { status: { not: "CANCELLED" } },
+    select: { id: true, total: true, amountPaid: true, balance: true },
+  });
 
   const orderPayments = await prisma.payment.groupBy({
     by: ["orderId", "status"],
@@ -183,7 +178,15 @@ export async function POST(req: Request) {
       (orderPaymentsMap.get(row.orderId) ?? 0) + signed
     );
   }
-  const paymentMismatches = 0;
+  const paymentMismatches = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    return Math.abs(num(order.amountPaid) - projectedPaid) > 0.01;
+  }).length;
+  const orderBalanceMismatches = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    const projectedBalance = Math.max(0, num(order.total) - projectedPaid);
+    return Math.abs(num(order.balance) - projectedBalance) > 0.01;
+  }).length;
 
   const products = await prisma.product.findMany({
     select: { id: true, stock: true },

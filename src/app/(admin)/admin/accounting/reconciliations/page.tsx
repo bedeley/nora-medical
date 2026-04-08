@@ -175,6 +175,8 @@ export default function ReconciliationsPage() {
     unmatchedJournal: 0,
   });
   const [bulkClosing, setBulkClosing] = useState(false);
+  const [autoCreating, setAutoCreating] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const initializedFromPrefsRef = useRef(false);
 
   const listParams = useMemo(
@@ -544,6 +546,30 @@ export default function ReconciliationsPage() {
     }
   };
 
+  const autoCreateForCurrentPeriod = async () => {
+    try {
+      setAutoCreating(true);
+      const res = await fetch("/api/admin/accounting/reconciliations/auto-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409) {
+          toast.info(j?.message || "Reconciliation for current period already exists.");
+          return;
+        }
+        throw new Error(j?.error || "Auto-create failed.");
+      }
+      toast.success(j?.message || "Reconciliation created for current period.");
+      queryClient.invalidateQueries({ queryKey: ["accounting", "reconciliations"] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Auto-create failed.");
+    } finally {
+      setAutoCreating(false);
+    }
+  };
+
   const triggerExport = (rec: Reconciliation) => {
     void logAdminExportDownload({
       area: "accounting.reconciliations",
@@ -889,10 +915,21 @@ export default function ReconciliationsPage() {
 
   const renderHistoryRow = (rec: Reconciliation) => {
     const openAgeDays = getOpenAgeDays(rec);
+    const ageBorderClass =
+      openAgeDays !== null && openAgeDays > 14
+        ? "border-l-4 border-l-destructive"
+        : openAgeDays !== null && openAgeDays > 7
+          ? "border-l-4 border-l-amber-400"
+          : "";
+    const matchPct = Number(rec.matchStats?.matchedPercent || 0);
+    const matchedCount = Number(rec.matchStats?.matchedBankTxns || 0);
+    const totalCount = Number(rec.matchStats?.totalBankTxns || 0);
+    const progressColor =
+      matchPct >= 100 ? "bg-emerald-500" : matchPct >= 50 ? "bg-amber-400" : "bg-destructive";
     return (
       <div
         key={rec.id}
-        className={`w-full rounded-md border px-3 py-2 ${selectedId === rec.id ? "border-primary bg-muted/40" : ""}`}
+        className={`w-full rounded-md border px-3 py-2 ${ageBorderClass} ${selectedId === rec.id ? "border-primary bg-muted/40" : ""}`}
       >
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="flex items-start gap-2">
@@ -912,25 +949,41 @@ export default function ReconciliationsPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-medium">{rec.bankAccount?.name || rec.bankAccountId}</span>
                 {visibleColumns.status ? <Badge variant={statusVariant(rec.status)}>{rec.status}</Badge> : null}
+                {openAgeDays !== null && openAgeDays > 14 ? (
+                  <span className="text-[10px] font-semibold text-destructive">{openAgeDays}d open</span>
+                ) : openAgeDays !== null && openAgeDays > 7 ? (
+                  <span className="text-[10px] font-semibold text-amber-600">{openAgeDays}d open</span>
+                ) : null}
               </div>
               <div className="text-xs text-muted-foreground">
                 {new Date(rec.periodStart).toLocaleDateString("en-GH", { timeZone: "Africa/Accra" })} to{" "}
                 {new Date(rec.periodEnd).toLocaleDateString("en-GH", { timeZone: "Africa/Accra" })}
               </div>
-              <div className="text-xs text-muted-foreground">
-                {visibleColumns.assignee
-                  ? `Assignee ${rec.assignedTo?.name || rec.assignedTo?.email || "Unassigned"} | `
-                  : ""}
-                {visibleColumns.balance ? `${formatCurrency(Number(rec.statementBalance || 0))} | ` : ""}
-                {visibleColumns.lastActivity
-                  ? `Last activity ${formatDateGH(rec.updatedAt)}${openAgeDays !== null && visibleColumns.age ? " | " : ""}`
-                  : ""}
-                {openAgeDays !== null && visibleColumns.age ? `Open age ${openAgeDays}d` : ""}
-                {visibleColumns.progress
-                  ? ` | Matched ${Number(rec.matchStats?.matchedPercent || 0)}% (${Number(
-                      rec.matchStats?.matchedBankTxns || 0,
-                    )}/${Number(rec.matchStats?.totalBankTxns || 0)})`
-                  : ""}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                {visibleColumns.assignee ? (
+                  <span>Assignee {rec.assignedTo?.name || rec.assignedTo?.email || "Unassigned"}</span>
+                ) : null}
+                {visibleColumns.balance ? (
+                  <span>{formatCurrency(Number(rec.statementBalance || 0))}</span>
+                ) : null}
+                {visibleColumns.lastActivity ? (
+                  <span>Updated {formatDateGH(rec.updatedAt)}</span>
+                ) : null}
+                {openAgeDays !== null && visibleColumns.age ? (
+                  <span>Age {openAgeDays}d</span>
+                ) : null}
+                {visibleColumns.progress && totalCount > 0 ? (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-20 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <span
+                        className={`block h-full rounded-full ${progressColor}`}
+                        style={{ width: `${Math.min(100, matchPct)}%` }}
+                      />
+                    </span>
+                    <span>{matchPct}%</span>
+                    <span className="text-muted-foreground/70">({matchedCount}/{totalCount})</span>
+                  </span>
+                ) : null}
               </div>
             </button>
           </div>
@@ -1025,99 +1078,44 @@ export default function ReconciliationsPage() {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {listLoading ? (
-          Array.from({ length: 4 }).map((_, idx) => (
-            <Card key={idx}>
-              <CardHeader className="pb-2">
-                <Skeleton className="h-5 w-24" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-8 w-20" />
-              </CardContent>
-            </Card>
-          ))
-        ) : (
-          <>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Total</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{summary.total}</p>
-                <p className="mt-1 text-muted-foreground">Reconciliations in filtered scope.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">In Progress</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{summary.inProgress}</p>
-                <p className="mt-1 text-muted-foreground">Still being matched.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Closed</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{summary.closed}</p>
-                <p className="mt-1 text-muted-foreground">Ready for close evidence.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Statement Total</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{formatCurrency(Number(summary.totalBalance || 0))}</p>
-                <p className="mt-1 text-muted-foreground">Across filtered bank/period scope.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Open &gt; 7 Days</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{Number(summary.sla?.openOver7 || 0)}</p>
-                <p className="mt-1 text-muted-foreground">Aging open reconciliations.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Open &gt; 14 Days</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{Number(summary.sla?.openOver14 || 0)}</p>
-                <p className="mt-1 text-muted-foreground">Escalation threshold.</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Oldest Open Age</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm">
-                <p className="text-2xl font-semibold leading-none">{Number(summary.sla?.oldestOpenDays || 0)}d</p>
-                <p className="mt-1 text-muted-foreground">Longest unresolved item.</p>
-              </CardContent>
-            </Card>
-          </>
-        )}
-      </div>
+      {/* Compact stat strip */}
+      {listLoading ? (
+        <div className="flex flex-wrap gap-2">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <Skeleton key={i} className="h-14 w-28 rounded-md" />
+          ))}
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-stretch divide-x rounded-lg border overflow-hidden text-sm">
+          {[
+            { label: "Total", value: String(summary.total), sub: "in scope", warn: false, alert: false },
+            { label: "Draft", value: String(summary.draft), sub: "not started", warn: false, alert: false },
+            { label: "In progress", value: String(summary.inProgress), sub: "matching", warn: false, alert: false },
+            { label: "Closed", value: String(summary.closed), sub: "done", warn: false, alert: false },
+            { label: "Statement total", value: formatCurrency(Number(summary.totalBalance || 0)), sub: "filtered", warn: false, alert: false },
+            { label: "Open >7d", value: String(Number(summary.sla?.openOver7 || 0)), sub: "aging", warn: Number(summary.sla?.openOver7 || 0) > 0, alert: false },
+            { label: "Open >14d", value: String(Number(summary.sla?.openOver14 || 0)), sub: `oldest ${Number(summary.sla?.oldestOpenDays || 0)}d`, warn: false, alert: Number(summary.sla?.openOver14 || 0) > 0 },
+          ].map((stat) => (
+            <div
+              key={stat.label}
+              className={`flex-1 min-w-[90px] px-4 py-2.5 bg-background ${stat.alert ? "bg-destructive/5" : stat.warn ? "bg-amber-500/5" : ""}`}
+            >
+              <p className="text-[11px] text-muted-foreground leading-none">{stat.label}</p>
+              <p className={`mt-1 text-lg font-semibold leading-none ${stat.alert ? "text-destructive" : stat.warn ? "text-amber-600" : ""}`}>
+                {stat.value}
+              </p>
+              <p className="text-[10px] text-muted-foreground/70 leading-none mt-0.5">{stat.sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <Card className={Number(summary.sla?.openOver14 || 0) > 0 ? "border-destructive/40 bg-destructive/5" : ""}>
-        <CardHeader>
-          <CardTitle>SLA Notifications</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          {Number(summary.sla?.openOver14 || 0) > 0 ? (
-            <p className="text-destructive">
-              Alert: {Number(summary.sla?.openOver14 || 0)} reconciliation(s) are older than 14 days and still open.
-            </p>
-          ) : (
-            <p className="text-muted-foreground">No current SLA breach for 14-day open reconciliations.</p>
-          )}
+      {/* SLA breach banner — only when there are >14d open items */}
+      {!listLoading && Number(summary.sla?.openOver14 || 0) > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-2.5 text-sm">
+          <p className="font-medium text-destructive">
+            SLA breach: {Number(summary.sla?.openOver14)} reconciliation(s) open &gt;14 days
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => applyPreset("needs_attention")}>
               View needs attention
@@ -1135,12 +1133,21 @@ export default function ReconciliationsPage() {
               Show &gt;14d only
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      ) : null}
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle>Create reconciliation</CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void autoCreateForCurrentPeriod()}
+            disabled={autoCreating || banksLoading}
+            title="Auto-create a reconciliation for every bank account in the current open fiscal period"
+          >
+            {autoCreating ? "Creating…" : "Auto-create for current period"}
+          </Button>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div className="space-y-1">
@@ -1195,172 +1202,98 @@ export default function ReconciliationsPage() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>History filters</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="space-y-1">
-            <Label htmlFor="history-bank">Bank</Label>
-            <select
-              id="history-bank"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={historyBankId}
-              onChange={(e) => {
-                setHistoryBankId(e.target.value);
-                resetPaginationState();
-              }}
-            >
-              <option value="">All banks</option>
-              {banks.map((bank) => (
-                <option key={bank.id} value={bank.id}>
-                  {bank.name} ({bank.currency})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-assignee">Assignee</Label>
-            <select
-              id="history-assignee"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={assignedToId}
-              onChange={(e) => {
-                setAssignedToId(e.target.value);
-                resetPaginationState();
-              }}
-            >
-              <option value="">All assignees</option>
-              <option value="unassigned">Unassigned</option>
-              {assignees.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {person.name || person.email || person.id}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-status">Status</Label>
-            <select
-              id="history-status"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as ReconciliationStatusFilter);
-                resetPaginationState();
-              }}
-            >
-              <option value="all">All statuses</option>
-              <option value="DRAFT">Draft</option>
-              <option value="IN_PROGRESS">In progress</option>
-              <option value="CLOSED">Closed</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-search">Search</Label>
-            <Input
-              ref={searchInputRef}
-              id="history-search"
-              placeholder="Search bank/status/id"
-              value={searchText}
-              onChange={(e) => {
-                setSearchText(e.target.value);
-                resetPaginationState();
-              }}
-            />
-            <p className="text-[11px] text-muted-foreground">Debounced by 350ms to reduce query churn.</p>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-sort">Sort</Label>
-            <select
-              id="history-sort"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value as ReconciliationSortOption);
-                resetPaginationState();
-              }}
-            >
-              <option value="periodEnd_desc">Newest period first</option>
-              <option value="periodEnd_asc">Oldest period first</option>
-              <option value="createdAt_asc">Oldest open first</option>
-              <option value="statementBalance_desc">Largest statement balance</option>
-              <option value="updatedAt_desc">Recently updated</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-page-size">Rows per page</Label>
-            <select
-              id="history-page-size"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={String(pageSize)}
-              onChange={(e) => {
-                setPageSize(clampPageSize(parsePositiveInt(e.target.value, DEFAULT_RECON_PAGE_SIZE)));
-                resetPaginationState();
-              }}
-            >
-              <option value="10">10</option>
-              <option value="20">20</option>
-              <option value="50">50</option>
-              <option value="100">100</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-page-mode">Pagination mode</Label>
-            <select
-              id="history-page-mode"
-              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
-              value={pageMode}
-              onChange={(e) => {
-                setPageMode(e.target.value === "cursor" ? "cursor" : "offset");
-                resetPaginationState();
-              }}
-            >
-              <option value="offset">Offset (page numbers)</option>
-              <option value="cursor">Cursor (large lists)</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-period-from">Period start from</Label>
-            <Input
-              id="history-period-from"
-              type="date"
-              value={periodStartFrom}
-              onChange={(e) => {
-                setPeriodStartFrom(e.target.value);
-                resetPaginationState();
-              }}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-period-to">Period end to</Label>
-            <Input
-              id="history-period-to"
-              type="date"
-              value={periodEndTo}
-              onChange={(e) => {
-                setPeriodEndTo(e.target.value);
-                resetPaginationState();
-              }}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="history-open-age">Min open age (days)</Label>
-            <Input
-              id="history-open-age"
-              type="number"
-              min={0}
-              step={1}
-              value={String(minOpenAgeDays || 0)}
-              onChange={(e) => {
-                setMinOpenAgeDays(Math.max(0, parsePositiveInt(e.target.value, 0)));
-                resetPaginationState();
-              }}
-            />
-          </div>
-          <div className="flex items-end">
-            <Button
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle>Filters</CardTitle>
+            <button
               type="button"
-              variant="outline"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setFiltersExpanded((v) => !v)}
+              aria-expanded={filtersExpanded}
+            >
+              {filtersExpanded ? "Fewer filters" : "More filters"}
+              <svg
+                className={`h-3 w-3 transition-transform ${filtersExpanded ? "rotate-180" : ""}`}
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              >
+                <path d="M2 4l4 4 4-4" />
+              </svg>
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Always-visible: bank, status, search */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1">
+              <Label htmlFor="history-bank">Bank</Label>
+              <select
+                id="history-bank"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={historyBankId}
+                onChange={(e) => {
+                  setHistoryBankId(e.target.value);
+                  resetPaginationState();
+                }}
+              >
+                <option value="">All banks</option>
+                {banks.map((bank) => (
+                  <option key={bank.id} value={bank.id}>
+                    {bank.name} ({bank.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="history-status">Status</Label>
+              <select
+                id="history-status"
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as ReconciliationStatusFilter);
+                  resetPaginationState();
+                }}
+              >
+                <option value="all">All statuses</option>
+                <option value="DRAFT">Draft</option>
+                <option value="IN_PROGRESS">In progress</option>
+                <option value="CLOSED">Closed</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="history-search">Search</Label>
+              <Input
+                ref={searchInputRef}
+                id="history-search"
+                placeholder="Bank / ID…"
+                value={searchText}
+                onChange={(e) => {
+                  setSearchText(e.target.value);
+                  resetPaginationState();
+                }}
+              />
+            </div>
+          </div>
+
+          {/* Always-visible: quick presets + clear */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">Quick:</span>
+            <Button size="sm" variant="outline" onClick={() => applyPreset("open_only")}>
+              Open only
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyPreset("closing_month")}>
+              Closing this month
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => applyPreset("needs_attention")}>
+              Needs attention (&gt;7d)
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => {
                 setHistoryBankId("");
                 setAssignedToId("");
@@ -1375,28 +1308,126 @@ export default function ReconciliationsPage() {
                 setPageMode("offset");
               }}
             >
-            Clear filters
-          </Button>
-          </div>
-          <div className="flex items-end">
-            <Button type="button" variant="outline" onClick={() => void refreshNow()}>
-              Refresh list
+              Clear filters
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => void refreshNow()}>
+              Refresh
             </Button>
           </div>
-          <div className="space-y-1 sm:col-span-2 lg:col-span-4">
-            <Label>Quick presets</Label>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="outline" onClick={() => applyPreset("open_only")}>
-                Open only
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => applyPreset("closing_month")}>
-                Closing this month
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => applyPreset("needs_attention")}>
-                Needs attention (&gt;7d open)
-              </Button>
+
+          {/* Collapsible advanced filters */}
+          {filtersExpanded ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 border-t pt-3">
+              <div className="space-y-1">
+                <Label htmlFor="history-assignee">Assignee</Label>
+                <select
+                  id="history-assignee"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={assignedToId}
+                  onChange={(e) => {
+                    setAssignedToId(e.target.value);
+                    resetPaginationState();
+                  }}
+                >
+                  <option value="">All assignees</option>
+                  <option value="unassigned">Unassigned</option>
+                  {assignees.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {person.name || person.email || person.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-sort">Sort</Label>
+                <select
+                  id="history-sort"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={sort}
+                  onChange={(e) => {
+                    setSort(e.target.value as ReconciliationSortOption);
+                    resetPaginationState();
+                  }}
+                >
+                  <option value="periodEnd_desc">Newest period first</option>
+                  <option value="periodEnd_asc">Oldest period first</option>
+                  <option value="createdAt_asc">Oldest open first</option>
+                  <option value="statementBalance_desc">Largest statement balance</option>
+                  <option value="updatedAt_desc">Recently updated</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-period-from">Period start from</Label>
+                <Input
+                  id="history-period-from"
+                  type="date"
+                  value={periodStartFrom}
+                  onChange={(e) => {
+                    setPeriodStartFrom(e.target.value);
+                    resetPaginationState();
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-period-to">Period end to</Label>
+                <Input
+                  id="history-period-to"
+                  type="date"
+                  value={periodEndTo}
+                  onChange={(e) => {
+                    setPeriodEndTo(e.target.value);
+                    resetPaginationState();
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-open-age">Min open age (days)</Label>
+                <Input
+                  id="history-open-age"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={String(minOpenAgeDays || 0)}
+                  onChange={(e) => {
+                    setMinOpenAgeDays(Math.max(0, parsePositiveInt(e.target.value, 0)));
+                    resetPaginationState();
+                  }}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-page-size">Rows per page</Label>
+                <select
+                  id="history-page-size"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={String(pageSize)}
+                  onChange={(e) => {
+                    setPageSize(clampPageSize(parsePositiveInt(e.target.value, DEFAULT_RECON_PAGE_SIZE)));
+                    resetPaginationState();
+                  }}
+                >
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="history-page-mode">Pagination mode</Label>
+                <select
+                  id="history-page-mode"
+                  className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                  value={pageMode}
+                  onChange={(e) => {
+                    setPageMode(e.target.value === "cursor" ? "cursor" : "offset");
+                    resetPaginationState();
+                  }}
+                >
+                  <option value="offset">Offset (page numbers)</option>
+                  <option value="cursor">Cursor (large lists)</option>
+                </select>
+              </div>
             </div>
-          </div>
+          ) : null}
         </CardContent>
       </Card>
 

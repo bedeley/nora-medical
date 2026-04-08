@@ -1,25 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-async function signIn(page) {
-  const email = process.env.E2E_ADMIN_EMAIL || "";
-  const password = process.env.E2E_ADMIN_PASSWORD || "";
-  test.skip(!email || !password, "Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD for admin login.");
-
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    await page.goto("/login?callbackUrl=/admin");
-    if (!page.url().includes("/login")) break;
-    await page.getByPlaceholder(/email or username/i).waitFor({ state: "visible", timeout: 10000 });
-    await page.getByPlaceholder(/email or username/i).fill(email);
-    await page.getByPlaceholder(/^password$/i).fill(password);
-    await page.getByRole("button", { name: /sign in|login/i }).click();
-    await page.waitForLoadState("networkidle");
-    await page.goto("/admin");
-    if (page.url().includes("/admin")) break;
-    await page.waitForTimeout(1000);
-  }
-  await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/);
-}
+test.use({ storageState: "e2e/.auth/admin.json" });
 
 async function mockBalanceSheetSettings(page, toleranceValue = 0.01) {
   await page.route("**/api/admin/settings/app?key=accounting.reports.balanceSheet.balanceTolerance", async (route) => {
@@ -48,8 +29,6 @@ async function mockBalanceSheetSettings(page, toleranceValue = 0.01) {
 
 test.describe("Balance sheet report page", () => {
   test("shows report error state when API fails", async ({ page }) => {
-    await signIn(page);
-
     await page.route("**/api/admin/accounting/periods", async (route) => {
       await route.fulfill({
         status: 200,
@@ -80,8 +59,6 @@ test.describe("Balance sheet report page", () => {
   });
 
   test("shows imbalance state and correlation ID", async ({ page }) => {
-    await signIn(page);
-
     await page.route("**/api/admin/accounting/periods", async (route) => {
       await route.fulfill({
         status: 200,
@@ -115,8 +92,6 @@ test.describe("Balance sheet report page", () => {
   });
 
   test("saves balance tolerance and shows audit confirmation", async ({ page }) => {
-    await signIn(page);
-
     let toleranceUpdatedAt = "2026-03-25T10:00:00.000Z";
     let toleranceValue = 0.01;
     await page.route("**/api/admin/accounting/periods", async (route) => {

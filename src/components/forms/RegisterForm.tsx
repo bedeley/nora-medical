@@ -118,6 +118,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
             : "We sent a verification code via WhatsApp to your phone. Enter it below to complete your registration."}
         </p>
         <Input
+          aria-label="Verification code"
           placeholder="Verification code"
           value={otp}
           onChange={(e) => setOtp(e.target.value.replace(/\s+/g, "").slice(0, 6))}
@@ -180,6 +181,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
       <div className="grid gap-1">
         <Input
           name="name"
+          aria-label="Full name"
           placeholder="Full name"
           required
           aria-invalid={!!fieldErrors.name}
@@ -191,6 +193,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
         <Input
           name="email"
           type="email"
+          aria-label="Email address"
           placeholder="Email (optional if using username)"
           aria-invalid={!!fieldErrors.email}
           className={fieldErrors.email ? "border-red-500" : undefined}
@@ -200,6 +203,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
       <div className="grid gap-1">
         <Input
           name="username"
+          aria-label="Username"
           placeholder="Username (optional if using email)"
           autoComplete="username"
           aria-invalid={!!fieldErrors.username}
@@ -219,6 +223,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
       <div className="grid gap-1">
         <Input
           name="phone"
+          aria-label="Phone number"
           placeholder="Phone (for WhatsApp/SMS verification)"
           inputMode="tel"
           required
@@ -232,6 +237,7 @@ export default function RegisterForm({ onSuccess }: { onSuccess?: () => void }) 
         <Input
           name="password"
           type="password"
+          aria-label="Password"
           placeholder="Password (min 6)"
           required
           aria-invalid={!!fieldErrors.password}

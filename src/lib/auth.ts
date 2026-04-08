@@ -2,13 +2,14 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import Credentials from "next-auth/providers/credentials";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import type { AuthOptions } from "next-auth";
 import type { JWT } from "next-auth/jwt";
 import type { Role } from "@/lib/prisma-enums";
 import { ADMIN_SESSION_MAX_AGE_SECONDS, isLiveStage } from "@/lib/env";
 import { decode as defaultJwtDecode, encode as defaultJwtEncode } from "next-auth/jwt";
 import { rateLimit, checkLoginLockout, recordLoginFailure, clearLoginFailures } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 export type AuthenticatedUser = {
   id: string;
@@ -66,28 +67,94 @@ export const authOptions: AuthOptions = {
       async authorize(credentials, req) {
         const schema = z.object({
           identifier: z.string().min(3),
-          password: z.string().min(6),
+          password: z.string().min(10),
         });
+        const describeValidationIssue = (issue: z.ZodIssue) => {
+          const field = issue.path.length > 0 ? issue.path.join(".") : "credentials";
+          if (field === "password" && issue.code === "too_small") {
+            return "Password was shorter than the 10-character minimum.";
+          }
+          if (field === "identifier" && issue.code === "too_small") {
+            return "Identifier was shorter than the 3-character minimum.";
+          }
+          if (issue.code === "invalid_type") {
+            return `${field === "credentials" ? "Credentials" : humanizeField(field)} was missing or invalid.`;
+          }
+          return `${field === "credentials" ? "Credentials" : humanizeField(field)} failed validation.`;
+        };
+        const humanizeField = (value: string) =>
+          value
+            .replace(/[_-]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/\b\w/g, (char) => char.toUpperCase());
+
+        const rawIdentifier =
+          typeof credentials?.identifier === "string" ? credentials.identifier.trim() : "";
+        const isEmail = rawIdentifier.includes("@");
+        const normalizedIdentifier = rawIdentifier.toLowerCase();
+        const auditEntityId = normalizedIdentifier || "invalid_identifier";
+        const logFailedLogin = async (details: {
+          entityType: string;
+          entityId: string;
+          actorId?: string | null;
+          reason: string;
+          email?: string | null;
+          role?: string | null;
+          validationErrors?: string[];
+        }) => {
+          try {
+            await recordAuditLog({
+              actorId: details.actorId || null,
+              action: "USER_LOGIN_FAILED",
+              entityType: details.entityType,
+              entityId: details.entityId,
+              request: req,
+              outcome: "FAILED",
+              meta: {
+                identifier: normalizedIdentifier || null,
+                email: details.email ?? (isEmail ? normalizedIdentifier : null),
+                role: details.role ?? null,
+                reason: details.reason,
+                validationErrors: details.validationErrors ?? null,
+              },
+            });
+          } catch (error) {
+            console.warn("[auth] failed to record failed login audit event", error);
+          }
+        };
 
         const parsed = schema.safeParse(credentials);
-        if (!parsed.success) return null;
+        if (!parsed.success) {
+          await logFailedLogin({
+            entityType: "AUTH",
+            entityId: auditEntityId,
+            reason: "Login request failed validation.",
+            validationErrors: parsed.error.issues.map(describeValidationIssue),
+          });
+          return null;
+        }
 
         const { identifier, password } = parsed.data;
         const raw = identifier.trim();
-        const isEmail = raw.includes("@");
 
         // Basic login rate limiting: IP + identifier bucket
         if (req) {
           try {
             const limited = await rateLimit(
               req as unknown as Request,
-              `login:${raw.toLowerCase()}`,
+              `login:${normalizedIdentifier}`,
               60_000,
               5,
             );
             if (!limited.ok) {
               console.warn("[auth] login rate limit exceeded", {
-                identifier: raw.toLowerCase(),
+                identifier: normalizedIdentifier,
+              });
+              await logFailedLogin({
+                entityType: "AUTH",
+                entityId: normalizedIdentifier,
+                reason: "rate_limited",
               });
               return null;
             }
@@ -97,11 +164,16 @@ export const authOptions: AuthOptions = {
         }
 
         if (req) {
-          const lockout = await checkLoginLockout(req as unknown as Request, raw.toLowerCase());
+          const lockout = await checkLoginLockout(req as unknown as Request, normalizedIdentifier);
           if (lockout.locked) {
             console.warn("[auth] login locked out", {
-              identifier: raw.toLowerCase(),
+              identifier: normalizedIdentifier,
               retryInMs: lockout.retryIn,
+            });
+            await logFailedLogin({
+              entityType: "AUTH",
+              entityId: normalizedIdentifier,
+              reason: "locked_out",
             });
             return null;
           }
@@ -127,12 +199,25 @@ export const authOptions: AuthOptions = {
         if (!user) {
           console.warn("[auth] login failed: user not found", { identifier: raw });
           if (req) {
-            await recordLoginFailure(req as unknown as Request, raw.toLowerCase());
+            await recordLoginFailure(req as unknown as Request, normalizedIdentifier);
           }
+          await logFailedLogin({
+            entityType: "AUTH",
+            entityId: normalizedIdentifier,
+            reason: "user_not_found",
+          });
           return null;
         }
         if (user.archived) {
           console.warn("[auth] login blocked: user archived", { userId: user.id });
+          await logFailedLogin({
+            actorId: user.id,
+            entityType: "USER",
+            entityId: user.id,
+            reason: "user_archived",
+            email: user.email,
+            role: user.role,
+          });
           return null;
         }
 
@@ -140,13 +225,48 @@ export const authOptions: AuthOptions = {
         if (!isValid) {
           console.warn("[auth] login failed: bad password", { userId: user.id });
           if (req) {
-            await recordLoginFailure(req as unknown as Request, raw.toLowerCase());
+            await recordLoginFailure(req as unknown as Request, normalizedIdentifier);
           }
+          await logFailedLogin({
+            actorId: user.id,
+            entityType: "USER",
+            entityId: user.id,
+            reason: "bad_password",
+            email: user.email,
+            role: user.role,
+          });
           return null;
         }
 
         if (req) {
-          await clearLoginFailures(req as unknown as Request, raw.toLowerCase());
+          await clearLoginFailures(req as unknown as Request, normalizedIdentifier);
+        }
+
+        try {
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { lastLoginAt: new Date() },
+          });
+        } catch (e) {
+          console.warn("[auth] failed to update lastLoginAt", e);
+        }
+
+        try {
+          await recordAuditLog({
+            actorId: user.id,
+            action: "USER_LOGIN",
+            entityType: "USER",
+            entityId: user.id,
+            request: req,
+            outcome: "SUCCESS",
+            meta: {
+              email: user.email,
+              role: user.role,
+              provider: "credentials",
+            },
+          });
+        } catch (e) {
+          console.warn("[auth] failed to record login audit event", e);
         }
 
         return {
@@ -300,8 +420,10 @@ export const authOptions: AuthOptions = {
   },
 
   events: {
-    async signIn({ user }) {
+    async signIn({ user, account }) {
       if (!user?.id) return;
+      if (account?.provider === "credentials") return;
+      const authUser = user as AuthenticatedUser;
       try {
         await prisma.user.update({
           where: { id: user.id as string },
@@ -309,6 +431,22 @@ export const authOptions: AuthOptions = {
         });
       } catch (e) {
         console.warn("[auth] failed to update lastLoginAt", e);
+      }
+      try {
+        await recordAuditLog({
+          actorId: authUser.id,
+          action: "USER_LOGIN",
+          entityType: "USER",
+          entityId: authUser.id,
+          outcome: "SUCCESS",
+          meta: {
+            email: authUser.email,
+            role: authUser.role,
+            provider: account?.provider || "unknown",
+          },
+        });
+      } catch (e) {
+        console.warn("[auth] failed to record login audit event", e);
       }
     },
   },

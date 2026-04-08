@@ -345,7 +345,7 @@ function LeaveTrackingPageContent() {
             </DialogHeader>
             <div className="grid gap-3 sm:grid-cols-2">
               <Select value={form.employeeId} onValueChange={(value) => setForm((prev) => ({ ...prev, employeeId: value }))}>
-                <SelectTrigger>
+                <SelectTrigger aria-label="Employee">
                   <SelectValue placeholder="Employee" />
                 </SelectTrigger>
                 <SelectContent>
@@ -357,7 +357,7 @@ function LeaveTrackingPageContent() {
                 </SelectContent>
               </Select>
               <Select value={form.type} onValueChange={(value) => setForm((prev) => ({ ...prev, type: value }))}>
-                <SelectTrigger>
+                <SelectTrigger aria-label="Leave type">
                   <SelectValue placeholder="Leave type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -369,15 +369,18 @@ function LeaveTrackingPageContent() {
               </Select>
               <Input
                 type="date"
+                aria-label="Leave start date"
                 value={form.startDate}
                 onChange={(e) => setForm((prev) => ({ ...prev, startDate: e.target.value }))}
               />
               <Input
                 type="date"
+                aria-label="Leave end date"
                 value={form.endDate}
                 onChange={(e) => setForm((prev) => ({ ...prev, endDate: e.target.value }))}
               />
               <Input
+                aria-label="Leave reason"
                 placeholder="Reason (optional)"
                 value={form.reason}
                 onChange={(e) => setForm((prev) => ({ ...prev, reason: e.target.value }))}
@@ -453,7 +456,7 @@ function LeaveTrackingPageContent() {
               </Button>
             </div>
             <Select value={employeeFilter} onValueChange={setEmployeeFilter}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Filter leave by employee">
                 <SelectValue placeholder="Employee" />
               </SelectTrigger>
               <SelectContent>
@@ -466,7 +469,7 @@ function LeaveTrackingPageContent() {
               </SelectContent>
             </Select>
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Filter leave by status">
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
@@ -478,7 +481,7 @@ function LeaveTrackingPageContent() {
               </SelectContent>
             </Select>
             <Select value={type} onValueChange={setType}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Filter leave by type">
                 <SelectValue placeholder="Type" />
               </SelectTrigger>
               <SelectContent>
@@ -490,7 +493,7 @@ function LeaveTrackingPageContent() {
               </SelectContent>
             </Select>
             <Select value={String(pageSize)} onValueChange={(value) => setPageSize(Number(value))}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Leave rows per page">
                 <SelectValue placeholder="Rows per page" />
               </SelectTrigger>
               <SelectContent>
@@ -622,6 +625,7 @@ function LeaveTrackingPageContent() {
           </Button>
           <Input
             type="number"
+            aria-label="Go to leave page"
             min={1}
             max={Math.max(1, totalPages)}
             className="w-24"
@@ -665,6 +669,7 @@ function LeaveTrackingPageContent() {
               Add a short note for the audit log (minimum 3 characters).
             </p>
             <Input
+              aria-label="Decision note"
               placeholder="Enter note"
               value={decisionDialog.note}
               onChange={(e) => setDecisionDialog((prev) => ({ ...prev, note: e.target.value }))}

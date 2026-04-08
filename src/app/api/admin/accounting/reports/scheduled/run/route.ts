@@ -134,9 +134,8 @@ const buildIntegritySummary = async () => {
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  const cronSecret = process.env.CRON_SECRET || "";
-  const bearer = req.headers.get("authorization") || "";
-  const hasCronAccess = cronSecret && bearer === `Bearer ${cronSecret}`;
+  const { verifyCronSecret } = await import("@/lib/cron-auth");
+  const hasCronAccess = verifyCronSecret(req);
   if (!hasCronAccess && (!session || !isAuthorized(session.user as AuthenticatedUser))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

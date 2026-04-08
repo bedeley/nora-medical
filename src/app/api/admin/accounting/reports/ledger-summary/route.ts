@@ -17,6 +17,7 @@ const DEFAULT_ACCOUNT_CODES = {
   AP: "2000",
   VAT_PAYABLE: "2100",
   SALES: "4000",
+  SALES_DISCOUNTS: "4010",
   COGS: "5000",
   OPERATING_EXPENSE: "6000",
   PAYROLL_EXPENSE: "6100",
@@ -38,7 +39,7 @@ const formatKey = (groupBy: string, d: Date) => {
   if (groupBy === "month") return format(d, "yyyy-MM");
   if (groupBy === "week") {
     const wk = startOfWeek(d, { weekStartsOn: 1 });
-    return format(wk, "yyyy-ww");
+    return format(wk, "RRRR-'W'II");
   }
   return format(d, "yyyy-MM-dd");
 };
@@ -62,7 +63,9 @@ export async function GET(req: Request) {
 
   const accountCodes = await getAccountCodes();
   const salesCode = accountCodes.SALES;
+  const salesDiscountsCode = accountCodes.SALES_DISCOUNTS || "4010";
   const cogsCode = accountCodes.COGS;
+  const vatPayableCode = accountCodes.VAT_PAYABLE;
   const payrollCode = accountCodes.PAYROLL_EXPENSE;
   const cashCode = accountCodes.CASH;
   const bankCode = accountCodes.BANK;
@@ -126,11 +129,14 @@ export async function GET(req: Request) {
     },
     include: {
       account: true,
-      entry: { select: { entryDate: true, sourceType: true, id: true } },
+      entry: { select: { entryDate: true, sourceType: true, id: true, sourceId: true } },
     },
   });
 
   let totalRevenue = 0;
+  let totalDiscounts = 0;
+  let totalRefunds = 0;
+  let totalTaxCollected = 0;
   let totalCOGS = 0;
   let totalExpense = 0;
   let totalCashIn = 0;
@@ -140,73 +146,110 @@ export async function GET(req: Request) {
   const expenseBreakdownMap: Record<string, number> = {};
   const trendMap: Record<string, {
     revenue: number;
+    discounts: number;
+    refunds: number;
     cogs: number;
     expense: number;
     payrollExpense: number;
     cashIn: number;
     cashOut: number;
+    taxCollected: number;
     orderValue: number;
     orderCount: number;
   }> = {};
-  const orderRevenueByEntry = new Map<string, number>();
-  const entryDateById = new Map<string, Date>();
-
-  const useSalesCode = Boolean(salesCode);
+  const orderSourceStats = new Map<string, { grossRevenue: number; discounts: number; entryDate: Date }>();
   for (const line of lines) {
     const account = line.account;
     const debit = Number(line.debit || 0);
     const credit = Number(line.credit || 0);
     const entryDate = line.entry.entryDate;
+    const sourceType = line.entry.sourceType;
+    const sourceKey = String(line.entry.sourceId || line.entry.id);
     const key = formatKey(groupBy, entryDate);
     if (!trendMap[key]) {
       trendMap[key] = {
         revenue: 0,
+        discounts: 0,
+        refunds: 0,
         cogs: 0,
         expense: 0,
         payrollExpense: 0,
         cashIn: 0,
         cashOut: 0,
+        taxCollected: 0,
         orderValue: 0,
         orderCount: 0,
       };
     }
 
-    if (!entryDateById.has(line.entry.id)) {
-      entryDateById.set(line.entry.id, line.entry.entryDate);
-    }
-
-    if ((account.code === cashCode || account.code === bankCode) && line.entry.sourceType === "PAYMENT") {
+    if ((account.code === cashCode || account.code === bankCode) && sourceType === "PAYMENT") {
       totalCashIn += debit;
       totalCashOut += credit;
       trendMap[key].cashIn += debit;
       trendMap[key].cashOut += credit;
     }
 
-    if (account.type === "INCOME") {
-      const amount = credit - debit;
-      if (
-        (line.entry.sourceType === "ORDER" || line.entry.sourceType === "PAYMENT") &&
-        (!useSalesCode || account.code === salesCode)
-      ) {
-        totalRevenue += amount;
-        trendMap[key].revenue += amount;
-        if (line.entry.sourceType === "ORDER") {
-          const existing = orderRevenueByEntry.get(line.entry.id) || 0;
-          orderRevenueByEntry.set(line.entry.id, existing + amount);
+    if ((sourceType === "ORDER" || sourceType === "PAYMENT") && account.code === salesCode) {
+      const revenueAmount = Math.max(0, credit - debit);
+      const refundAmount = Math.max(0, debit - credit);
+      if (revenueAmount > 0) {
+        totalRevenue += revenueAmount;
+        trendMap[key].revenue += revenueAmount;
+        if (sourceType === "ORDER") {
+          const current = orderSourceStats.get(sourceKey) || {
+            grossRevenue: 0,
+            discounts: 0,
+            entryDate,
+          };
+          current.grossRevenue += revenueAmount;
+          if (entryDate < current.entryDate) current.entryDate = entryDate;
+          orderSourceStats.set(sourceKey, current);
         }
       }
+      if (refundAmount > 0) {
+        totalRefunds += refundAmount;
+        trendMap[key].refunds += refundAmount;
+      }
+      continue;
+    }
+
+    if ((sourceType === "ORDER" || sourceType === "PAYMENT") && account.code === salesDiscountsCode) {
+      const discountAmount = debit - credit;
+      totalDiscounts += discountAmount;
+      trendMap[key].discounts += discountAmount;
+      if (sourceType === "ORDER") {
+        const current = orderSourceStats.get(sourceKey) || {
+          grossRevenue: 0,
+          discounts: 0,
+          entryDate,
+        };
+        current.discounts += discountAmount;
+        if (entryDate < current.entryDate) current.entryDate = entryDate;
+        orderSourceStats.set(sourceKey, current);
+      }
+      continue;
+    }
+
+    if ((sourceType === "ORDER" || sourceType === "PAYMENT") && account.code === vatPayableCode) {
+      const taxAmount = credit - debit;
+      totalTaxCollected += taxAmount;
+      trendMap[key].taxCollected += taxAmount;
+      continue;
+    }
+
+    if (account.type === "INCOME") {
       continue;
     }
 
     if (account.type === "EXPENSE") {
       const amount = debit - credit;
       if (
-        (line.entry.sourceType === "ORDER" || line.entry.sourceType === "PAYMENT") &&
+        (sourceType === "ORDER" || sourceType === "PAYMENT") &&
         account.code === cogsCode
       ) {
         totalCOGS += amount;
         trendMap[key].cogs += amount;
-      } else if (line.entry.sourceType === "EXPENSE") {
+      } else if (sourceType === "EXPENSE") {
         totalExpense += amount;
         trendMap[key].expense += amount;
         expenseBreakdownMap[account.name] =
@@ -218,41 +261,47 @@ export async function GET(req: Request) {
     }
   }
 
-  for (const [entryId, value] of orderRevenueByEntry.entries()) {
-    totalOrderValue += value;
+  let discountedOrders = 0;
+  for (const stats of orderSourceStats.values()) {
+    if (stats.grossRevenue <= 0) continue;
+    const orderValue = Math.max(0, stats.grossRevenue - Math.max(0, stats.discounts));
+    totalOrderValue += orderValue;
     orderCount += 1;
-    const entryDate = entryDateById.get(entryId);
-    if (entryDate) {
-      const periodKey = formatKey(groupBy, entryDate);
-      if (!trendMap[periodKey]) {
-        trendMap[periodKey] = {
-          revenue: 0,
-          cogs: 0,
-          expense: 0,
-          payrollExpense: 0,
-          cashIn: 0,
-          cashOut: 0,
-          orderValue: 0,
-          orderCount: 0,
-        };
-      }
-      trendMap[periodKey].orderValue += value;
-      trendMap[periodKey].orderCount += 1;
+    if (stats.discounts > 0.005) discountedOrders += 1;
+    const periodKey = formatKey(groupBy, stats.entryDate);
+    if (!trendMap[periodKey]) {
+      trendMap[periodKey] = {
+        revenue: 0,
+        discounts: 0,
+        refunds: 0,
+        cogs: 0,
+        expense: 0,
+        payrollExpense: 0,
+        cashIn: 0,
+        cashOut: 0,
+        taxCollected: 0,
+        orderValue: 0,
+        orderCount: 0,
+      };
     }
+    trendMap[periodKey].orderValue += orderValue;
+    trendMap[periodKey].orderCount += 1;
   }
 
   const trend = Object.entries(trendMap)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([period, row]) => {
-      const profit = row.revenue - row.cogs - row.expense;
-      const margin = row.revenue > 0 ? (profit / row.revenue) * 100 : 0;
+      const netRevenue = row.revenue - row.discounts - row.refunds;
+      const profit = netRevenue - row.cogs - row.expense;
+      const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
       const averageOrderValue =
         row.orderCount > 0 ? row.orderValue / row.orderCount : 0;
       return {
         date: period,
         period,
         revenue: row.revenue,
-        netRevenue: row.revenue,
+        refunds: Math.max(0, row.refunds),
+        netRevenue,
         cogs: row.cogs,
         expense: row.expense,
         payrollExpense: row.payrollExpense,
@@ -266,8 +315,11 @@ export async function GET(req: Request) {
       };
     });
 
-  const profit = totalRevenue - totalCOGS - totalExpense;
-  const margin = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
+  const normalizedDiscounts = Math.max(0, totalDiscounts);
+  const normalizedRefunds = Math.max(0, totalRefunds);
+  const netRevenue = totalRevenue - normalizedDiscounts - normalizedRefunds;
+  const profit = netRevenue - totalCOGS - totalExpense;
+  const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
   const averageOrderValue = orderCount > 0 ? totalOrderValue / orderCount : 0;
   const expenseBreakdown = Object.entries(expenseBreakdownMap)
     .map(([category, amount]) => ({ category, amount }))
@@ -276,6 +328,10 @@ export async function GET(req: Request) {
   return NextResponse.json({
     summary: {
       totalRevenue,
+      totalDiscounts: normalizedDiscounts,
+      discountedOrders,
+      totalRefunds: normalizedRefunds,
+      netRevenue,
       totalCOGS,
       totalExpense,
       totalCashIn,
@@ -283,6 +339,7 @@ export async function GET(req: Request) {
       netCash: totalCashIn - totalCashOut,
       orderCount,
       averageOrderValue,
+      totalTaxCollected: Math.max(0, totalTaxCollected),
       profit,
       margin,
       expenseBreakdown,

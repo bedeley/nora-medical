@@ -7,7 +7,7 @@ import { sendWhatsApp } from "@/lib/whatsapp";
 import { sendSms } from "@/lib/sms";
 import { PHONE_VERIFICATION_ENABLED } from "@/lib/config";
 import { z } from "zod";
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 
 const schema = z.object({
   identifier: z.string().min(3).optional(),

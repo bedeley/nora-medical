@@ -98,6 +98,7 @@ type HiringMatchCandidate = {
   department?: string | null;
   position?: string | null;
   hireDate?: Date | null;
+  notes?: string | null;
 };
 
 function normalizeLookup(value: string | null | undefined) {

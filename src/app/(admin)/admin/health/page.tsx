@@ -5,11 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/currency";
 import { Tooltip } from "@/components/ui/tooltip";
 import Link from "next/link";
-import { Info } from "lucide-react";
-import { BackfillAutoApplyButton, BackfillStockMovementsButton, FixActionsMenu } from "@/components/admin/CopySqlButton";
-import ReconcileOrdersButton from "@/components/admin/ReconcileOrdersButton";
+import { Info, AlertTriangle, CheckCircle, ExternalLink } from "lucide-react";
+import { BackfillAutoApplyButton, BackfillStockMovementsButton } from "@/components/admin/CopySqlButton";
 import HealthOpsPanel from "@/components/admin/HealthOpsPanel";
 import { loadAccountTotals, toNet } from "@/app/api/admin/accounting/reports/utils";
+import { getPodComplianceSnapshot } from "@/lib/pod-compliance";
 
 function num(v: unknown) {
   return Number(v || 0);
@@ -46,6 +46,7 @@ export default async function AdminHealthPage() {
     );
   }
 
+  // ── Inventory ────────────────────────────────────────────────────────────────
   const products = await prisma.product.findMany({
     select: { id: true, name: true, stock: true, cost: true, archived: true, deletedAt: true },
     orderBy: { name: "asc" },
@@ -55,8 +56,10 @@ export default async function AdminHealthPage() {
     _sum: { delta: true },
   });
   const movementMap = new Map(movements.map((m) => [m.productId, num(m._sum.delta)]));
-  const inStock = products.filter((p) => num(p.stock) > 0);
-  const negativeStock = products.filter((p) => num(p.stock) < 0);
+  const inStockCount = products.filter((p) => (movementMap.get(p.id) ?? 0) > 0).length;
+  const negativeStockItems = products
+    .map((p) => ({ id: p.id, name: p.name, movementSum: movementMap.get(p.id) ?? 0 }))
+    .filter((p) => p.movementSum < 0);
   const stockMismatches = products
     .map((p) => ({
       id: p.id,
@@ -67,108 +70,50 @@ export default async function AdminHealthPage() {
       deletedAt: p.deletedAt,
     }))
     .filter((p) => {
-      if (p.deletedAt) {
-        return p.stock !== 0 || p.movementSum !== 0;
-      }
+      if (p.deletedAt) return p.stock !== 0 || p.movementSum !== 0;
       return p.stock !== p.movementSum;
     });
 
-  const [orders, totals, payments, expenses, purchases] = await Promise.all([
+  // ── Core data (parallelised) ─────────────────────────────────────────────────
+  const [
+    orders,
+    totals,
+    payments,
+    expenses,
+    purchases,
+    orderPosts,
+    paymentPosts,
+    expensePosts,
+    purchasePosts,
+    paymentTotals,
+    expensesAggregate,
+    orderItems,
+    supplierPayments,
+    creditPayouts,
+    settlementLogs,
+    legacyAutoApply,
+    draftCount,
+    draftSamples,
+    recentPostFailures,
+    orderAggregates,
+  ] = await Promise.all([
+    // Non-cancelled only — fixes missing-orders over-count
     prisma.order.findMany({
       select: { id: true, total: true, amountPaid: true, balance: true, status: true },
+      where: { status: { not: "CANCELLED" } },
     }),
     loadAccountTotals(undefined),
+    // orderId needed for duplicate-payment detection
     prisma.payment.findMany({
-      select: { id: true, amount: true, status: true, refundDisposition: true, note: true, createdAt: true },
+      select: { id: true, amount: true, status: true, refundDisposition: true, note: true, createdAt: true, orderId: true },
       where: { deletedAt: null },
     }),
     prisma.expense.findMany({ select: { id: true }, where: { deletedAt: null } }),
+    // unitCost + quantity needed for AP reconciliation and supplier overpayments
     prisma.purchase.findMany({
-      select: { id: true },
+      select: { id: true, unitCost: true, quantity: true },
       where: { deletedAt: null, status: "RECEIVED" },
     }),
-  ]);
-  const activeOrders = orders.filter((o) => o.status !== "CANCELLED");
-  const orderBalanceIssues: typeof orders = []; // trust recomputed balances
-
-  const orderPayments = await prisma.payment.groupBy({
-    by: ["orderId", "status"],
-    where: { orderId: { not: null } },
-    _sum: { amount: true },
-  });
-  const orderPaymentsMap = new Map<string, number>();
-  for (const row of orderPayments) {
-    if (!row.orderId) continue;
-    if (row.status === "VOID") continue;
-    const raw = num(row._sum.amount);
-    const signed = row.status === "REFUND" ? -Math.abs(raw) : raw;
-    orderPaymentsMap.set(row.orderId, (orderPaymentsMap.get(row.orderId) ?? 0) + signed);
-  }
-  const paymentMismatches: Array<{
-    id: string;
-    invoiceNumber?: string | null;
-    paid: number;
-    paidFromPayments: number;
-    delta: number;
-    likelyCause: string;
-    status: string;
-  }> = []; // handled via AR difference instead of stale amountPaid
-
-  const totalsByCode = new Map(totals.map((row) => [row.code, row]));
-  const arRow = totalsByCode.get("1100");
-  const inventoryRow = totalsByCode.get("1200");
-  const arLedger = arRow ? toNet(arRow) : 0;
-  const inventoryLedger = inventoryRow ? toNet(inventoryRow) : 0;
-  const arAccount = await prisma.ledgerAccount.findUnique({
-    where: { code: "1100" },
-    select: { id: true },
-  });
-  const orderArLines = arAccount
-    ? await prisma.journalLine.findMany({
-        where: {
-          accountId: arAccount.id,
-          entry: {
-            status: "POSTED",
-            sourceType: "ORDER",
-            entryDate: undefined,
-          },
-        },
-        select: { debit: true, credit: true },
-      })
-    : [];
-  const eligiblePayments = payments.filter((row) => {
-    const amount = Number(row.amount || 0);
-    if (amount <= 0) return false;
-    const status = String(row.status || "").toUpperCase();
-    if (status === "REFUND" || status === "VOID") return false;
-    const disposition = String(row.refundDisposition || "").toUpperCase();
-    if (disposition === "CREDIT") return false;
-    if (row.note) {
-      try {
-        const meta = JSON.parse(row.note) as {
-          reference?: string;
-          balanceAdjustment?: boolean;
-        };
-        if (meta.reference === "ITEM_RETURN") return false;
-        if (meta.balanceAdjustment) return false;
-      } catch {
-        // ignore malformed notes
-      }
-    }
-    return true;
-  });
-  const paymentsTotalAsOf = eligiblePayments.reduce((sum, row) => sum + Number(row.amount || 0), 0);
-  const orderArTotal = orderArLines.reduce(
-    (sum, line) => sum + Number(line.debit || 0) - Number(line.credit || 0),
-    0,
-  );
-  const customerBalances = Math.max(0, orderArTotal - paymentsTotalAsOf);
-  // Keep valuation aligned with ledger/as-of: use inventory ledger total.
-  const inventoryValuation = inventoryLedger;
-  const arDifference = arLedger - customerBalances;
-  const inventoryDifference = inventoryLedger - inventoryValuation;
-
-  const [orderPosts, paymentPosts, expensePosts, purchasePosts] = await Promise.all([
     prisma.journalEntry.findMany({
       where: { sourceType: "ORDER", status: "POSTED", sourceId: { not: null } },
       select: { sourceId: true },
@@ -185,488 +130,948 @@ export default async function AdminHealthPage() {
       where: { sourceType: "PURCHASE", status: "POSTED", sourceId: { not: null } },
       select: { sourceId: true },
     }),
+    prisma.payment.groupBy({ by: ["status"], _sum: { amount: true } }),
+    prisma.expense.aggregate({ _sum: { amount: true } }),
+    prisma.orderItem.findMany({
+      select: { quantity: true, returnedQuantity: true, costAtSale: true, order: { select: { status: true } } },
+    }),
+    // amount + purchaseId needed for AP reconciliation and supplier overpayments
+    prisma.supplierPayment.findMany({
+      where: { deletedAt: null, status: "NORMAL" },
+      select: { id: true, method: true, reference: true, amount: true, purchaseId: true },
+    }),
+    prisma.payment.findMany({
+      where: {
+        deletedAt: null,
+        status: "REFUND",
+        refundDisposition: "CASH",
+        note: { contains: "\"location\":\"admin/customers:credit-payout\"" },
+      },
+      select: { id: true, amount: true },
+    }),
+    prisma.auditLog.findMany({
+      where: {
+        entityType: "DELIVERY_SETTLEMENT",
+        action: "DELIVERY_COLLECTION_SETTLEMENT_CREATED",
+      },
+      select: { entityId: true, meta: true },
+      orderBy: { createdAt: "desc" },
+      take: 2000,
+    }),
+    prisma.payment.findMany({
+      where: { orderId: null, note: { contains: "\"reference\":\"AUTO_APPLY\"" } },
+      select: { id: true, amount: true, note: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    // Draft journal entries — count + aging sample
+    prisma.journalEntry.count({ where: { status: "DRAFT" } }),
+    prisma.journalEntry.findMany({
+      where: { status: "DRAFT" },
+      select: { createdAt: true },
+      orderBy: { createdAt: "asc" },
+      take: 200,
+    }),
+    // Recent posting failures from audit log
+    prisma.auditLog.findMany({
+      where: {
+        action: {
+          in: [
+            "ACCOUNTING_POST_SKIPPED",
+            "ACCOUNTING_POST_FAILED",
+            "RETURN_POSTING_FAILED",
+            "DELIVERY_COLLECTION_SETTLEMENT_POST_FAILED",
+          ],
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, action: true, entityType: true, entityId: true, createdAt: true },
+    }),
+    // Revenue + VAT operational: sum of non-cancelled order subtotal and taxAmount
+    prisma.order.aggregate({
+      _sum: { subtotal: true, taxAmount: true },
+      where: { status: { not: "CANCELLED" }, deletedAt: null },
+    }),
   ]);
 
+  // ── AR ledger (sequential: needs arAccount.id) ───────────────────────────────
+  const arAccount = await prisma.ledgerAccount.findUnique({
+    where: { code: "1100" },
+    select: { id: true },
+  });
+  const orderArLines = arAccount
+    ? await prisma.journalLine.findMany({
+        where: {
+          accountId: arAccount.id,
+          entry: { status: "POSTED", sourceType: "ORDER" },
+        },
+        select: { debit: true, credit: true },
+      })
+    : [];
+
+  // ── Settlement posting check (sequential: needs settlementIds) ───────────────
+  const settlementIds = settlementLogs
+    .map((log) => {
+      if (!log.meta) return null;
+      try {
+        const meta = JSON.parse(log.meta) as { totalBalance?: number };
+        return Number(meta.totalBalance || 0) > 0 ? log.entityId : null;
+      } catch {
+        return log.entityId;
+      }
+    })
+    .filter(Boolean) as string[];
+  const settlementPosted = settlementIds.length
+    ? await prisma.journalEntry.findMany({
+        where: { sourceType: "MANUAL", sourceId: { in: settlementIds }, status: "POSTED" },
+        select: { sourceId: true },
+      })
+    : [];
+
+  // ── POD compliance (7-day window) ────────────────────────────────────────────
+  const podThresholdPct = Number(process.env.HEALTH_POD_MISSING_ALERT_PCT || 15);
+  const podMinDelivered = Number(process.env.HEALTH_POD_MIN_DELIVERIES || 20);
+  const now = new Date();
+  const last7Days = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const podCompliance7d = await getPodComplianceSnapshot({
+    from: last7Days,
+    to: now,
+    thresholdPct: podThresholdPct,
+    minDelivered: podMinDelivered,
+  });
+
+  // ── Posting completeness ─────────────────────────────────────────────────────
   const orderPostedIds = new Set(orderPosts.map((row) => row.sourceId as string));
   const paymentPostedIds = new Set(paymentPosts.map((row) => toBaseSourceId(row.sourceId as string)));
   const expensePostedIds = new Set(expensePosts.map((row) => row.sourceId as string));
   const purchasePostedIds = new Set(purchasePosts.map((row) => toBaseSourceId(row.sourceId as string)));
+  const settlementPostedIds = new Set(
+    settlementPosted.map((e) => e.sourceId).filter(Boolean) as string[],
+  );
+
+  const eligiblePayments = payments.filter((row) => {
+    const amount = Number(row.amount || 0);
+    if (amount <= 0) return false;
+    const status = String(row.status || "").toUpperCase();
+    if (status === "REFUND" || status === "VOID") return false;
+    const disposition = String(row.refundDisposition || "").toUpperCase();
+    if (disposition === "CREDIT") return false;
+    if (row.note) {
+      try {
+        const meta = JSON.parse(row.note) as { reference?: string; balanceAdjustment?: boolean };
+        if (meta.reference === "ITEM_RETURN") return false;
+        if (meta.balanceAdjustment) return false;
+      } catch { /* ignore */ }
+    }
+    return true;
+  });
+  const eligibleSupplierPayments = supplierPayments.filter((row) => {
+    if (String(row.method || "").toLowerCase() === "credit_memo") return false;
+    if (String(row.reference || "").toUpperCase() === "SUPPLIER_RETURN") return false;
+    return true;
+  });
 
   const missingOrders = orders.filter((row) => !orderPostedIds.has(row.id)).length;
   const missingPayments = eligiblePayments.filter((row) => !paymentPostedIds.has(row.id)).length;
   const missingExpenses = expenses.filter((row) => !expensePostedIds.has(row.id)).length;
   const missingPurchases = purchases.filter((row) => !purchasePostedIds.has(row.id)).length;
-  const missingPostingTotal = missingOrders + missingPayments + missingExpenses + missingPurchases;
+  const missingSupplierPayments = eligibleSupplierPayments.filter((row) => !purchasePostedIds.has(row.id)).length;
+  const missingCreditPayouts = creditPayouts.filter((row) => !paymentPostedIds.has(row.id)).length;
+  const missingSettlements = settlementIds.filter((id) => !settlementPostedIds.has(id)).length;
+  const missingPostingTotal =
+    missingOrders + missingPayments + missingExpenses + missingPurchases +
+    missingSupplierPayments + missingCreditPayouts + missingSettlements;
 
-  const mismatchOrderIds = paymentMismatches.map((o) => o.id);
-  const mismatchPayments = mismatchOrderIds.length
-    ? await prisma.payment.findMany({
-        where: { orderId: { in: mismatchOrderIds } },
-        select: { id: true, orderId: true, amount: true, status: true, note: true, createdAt: true },
-        orderBy: { createdAt: "asc" },
-      })
-    : [];
-  const mismatchNotePayments = mismatchOrderIds.length
-    ? await prisma.payment.findMany({
-        where: {
-          OR: mismatchOrderIds.map((id) => ({
-            note: { contains: `"orderId":"${id}"` },
-          })),
-        },
-        select: { id: true, orderId: true, amount: true, status: true, note: true, createdAt: true },
-        orderBy: { createdAt: "asc" },
-      })
-    : [];
+  // ── GL account balances ──────────────────────────────────────────────────────
+  const totalsByCode = new Map(totals.map((row) => [row.code, row]));
+  const arRow = totalsByCode.get("1100");
+  const inventoryRow = totalsByCode.get("1200");
+  const apRow = totalsByCode.get("2000");
+  const revenueRow = totalsByCode.get("4000");
+  const cogsRow = totalsByCode.get("5000");
+  const vatRow = totalsByCode.get("2100");
+  const storeCreditRow = totalsByCode.get("2200");
+  const cashRow = totalsByCode.get("1000");
+  const bankRow = totalsByCode.get("1010");
 
-  const mismatchPaymentsView = mismatchPayments.map((p) => {
-    const meta = parsePaymentNote(p.note);
-    const appliedTotal =
-      meta?.applied?.reduce((sum, entry) => sum + num(entry.applied), 0) ?? null;
-    return {
-      ...p,
-      meta,
-      appliedTotal,
-    };
-  });
-  const noteMatchedPaymentsView = mismatchNotePayments
-    .map((p) => {
-      const meta = parsePaymentNote(p.note);
-      const appliedTotal =
-        meta?.applied?.reduce((sum, entry) => sum + num(entry.applied), 0) ?? null;
-      return {
-        ...p,
-        meta,
-        appliedTotal,
-      };
-    })
-    .filter((p) => p.meta?.applied?.some((entry) => mismatchOrderIds.includes(entry.orderId || "")));
-  const notePaymentsByOrder = noteMatchedPaymentsView.reduce((acc, p) => {
-    const orders =
-      p.meta?.applied?.map((entry) => entry.orderId).filter(Boolean) ?? [];
-    for (const orderId of orders) {
-      if (!orderId || !mismatchOrderIds.includes(orderId)) continue;
-      const list = acc.get(orderId) ?? [];
-      list.push(p);
-      acc.set(orderId, list);
-    }
-    return acc;
-  }, new Map<string, typeof noteMatchedPaymentsView>());
-  const unlinkedAppliedPayments = noteMatchedPaymentsView
-    .flatMap((p) => {
-      const entries = p.meta?.applied ?? [];
-      return entries.map((entry) => ({
-        paymentId: p.id,
-        linkedOrderId: p.orderId,
-        appliedOrderId: entry.orderId,
-        appliedAmount: entry.applied,
-        status: p.status,
-        createdAt: p.createdAt,
-      }));
-    })
-    .filter(
-      (entry) =>
-        entry.appliedOrderId &&
-        mismatchOrderIds.includes(entry.appliedOrderId) &&
-        entry.linkedOrderId !== entry.appliedOrderId
-    );
-  const linkedPaymentsByOrder = mismatchPaymentsView.reduce((acc, p) => {
-    if (!p.orderId) return acc;
-    const list = acc.get(p.orderId) ?? [];
-    list.push(p);
-    acc.set(p.orderId, list);
-    return acc;
-  }, new Map<string, typeof mismatchPaymentsView>());
-  const legacyAutoApply = await prisma.payment.findMany({
-    where: {
-      orderId: null,
-      note: { contains: "\"reference\":\"AUTO_APPLY\"" },
-    },
-    select: { id: true, amount: true, note: true, createdAt: true },
-    orderBy: { createdAt: "desc" },
-  });
-  const legacyAutoApplyView = legacyAutoApply
-    .map((p) => {
-      const meta = parsePaymentNote(p.note);
-      const applied = meta?.applied ?? [];
-      const appliedOrders = applied
-        .map((entry) => ({
-          orderId: entry.orderId || "",
-          applied: Number(entry.applied || 0),
-        }))
-        .filter((entry) => entry.orderId);
-      return {
-        ...p,
-        appliedOrders,
-        canBackfill: appliedOrders.length === 1,
-      };
-    })
-    .filter((p) => p.appliedOrders.length > 0);
+  const arLedger = arRow ? toNet(arRow) : 0;
+  const inventoryLedger = inventoryRow ? toNet(inventoryRow) : 0;
+  const apLedger = apRow ? toNet(apRow) : 0;
+  const glRevenue = revenueRow ? toNet(revenueRow) : 0;
+  const glCogs = cogsRow ? toNet(cogsRow) : 0;
+  const glVat = vatRow ? toNet(vatRow) : 0;
+  const glStoreCredit = storeCreditRow ? toNet(storeCreditRow) : 0;
+  const glCash = cashRow ? toNet(cashRow) : 0;
+  const glBank = bankRow ? toNet(bankRow) : 0;
 
-  const paymentTotals = await prisma.payment.groupBy({
-    by: ["status"],
-    _sum: { amount: true },
-  });
-  const paymentsByStatus = new Map(paymentTotals.map((p) => [p.status, num(p._sum.amount)]));
-  const paymentsNormal = paymentsByStatus.get("NORMAL") ?? 0;
-  const paymentsRefund = paymentsByStatus.get("REFUND") ?? 0;
-  const paymentsVoid = paymentsByStatus.get("VOID") ?? 0;
-  const paymentsTotal = paymentsNormal + paymentsRefund;
+  // Trial balance: sum(debits) − sum(credits) across all POSTED lines — must be 0.
+  const trialBalance = totals.reduce((sum, row) => sum + row.debit - row.credit, 0);
+  const trialBalanceOk = Math.abs(trialBalance) < 0.01;
 
-  const expensesAggregate = await prisma.expense.aggregate({
-    _sum: { amount: true },
-  });
-  const totalExpenses = num(expensesAggregate._sum.amount);
+  // ── AR reconciliation ────────────────────────────────────────────────────────
+  const paymentsTotalAsOf = eligiblePayments.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const orderArTotal = orderArLines.reduce(
+    (sum, line) => sum + Number(line.debit || 0) - Number(line.credit || 0),
+    0,
+  );
+  const customerBalances = Math.max(0, orderArTotal - paymentsTotalAsOf);
+  const arDifference = arLedger - customerBalances;
+  const arMismatch = Math.abs(arDifference) > 0.01;
 
-  const orderItems = await prisma.orderItem.findMany({
-    select: {
-      quantity: true,
-      returnedQuantity: true,
-      costAtSale: true,
-      order: { select: { status: true } },
-    },
-  });
+  // ── Inventory reconciliation ─────────────────────────────────────────────────
+  const inventoryValuation = products.reduce(
+    (sum, p) => sum + (movementMap.get(p.id) ?? 0) * num(p.cost),
+    0,
+  );
+  const inventoryDifference = inventoryLedger - inventoryValuation;
+  const inventoryMismatch = Math.abs(inventoryDifference) > 0.01;
+
+  // ── AP reconciliation ────────────────────────────────────────────────────────
+  const totalPurchaseCost = purchases.reduce(
+    (sum, p) => sum + Number(p.unitCost || 0) * Number(p.quantity || 0),
+    0,
+  );
+  const totalSupplierPaid = eligibleSupplierPayments.reduce(
+    (sum, p) => sum + Number(p.amount || 0),
+    0,
+  );
+  const apOperational = totalPurchaseCost - totalSupplierPaid;
+  const apDifference = apLedger - apOperational;
+  const apMismatch = Math.abs(apDifference) > 0.01;
+
+  // ── Revenue / COGS / VAT / store-credit reconciliation ───────────────────────
+  const revenueOperational = Number(orderAggregates._sum.subtotal || 0);
+  const vatOperational = Number(orderAggregates._sum.taxAmount || 0);
+  const revenueDifference = glRevenue - revenueOperational;
+  const vatDifference = glVat - vatOperational;
+
   let cogsTotal = 0;
   let cogsMissing = 0;
   for (const item of orderItems) {
     if (item.order.status === "CANCELLED") continue;
     const netQty = Math.max(0, item.quantity - item.returnedQuantity);
-    if (item.costAtSale == null) {
-      if (netQty > 0) cogsMissing += 1;
-      continue;
-    }
+    if (item.costAtSale == null) { if (netQty > 0) cogsMissing += 1; continue; }
     cogsTotal += num(item.costAtSale) * netQty;
   }
+  const cogsDifference = glCogs - cogsTotal; // cogsTotal = cogsOperational
 
-  const totalOrderValue = activeOrders.reduce((s, o) => s + num(o.total), 0);
-  const totalPaid = activeOrders.reduce((s, o) => s + num(o.amountPaid), 0);
-  const totalBalance = activeOrders.reduce((s, o) => s + num(o.balance), 0);
+  const creditRefundTotal = payments
+    .filter((p) =>
+      String(p.status || "").toUpperCase() === "REFUND" &&
+      String(p.refundDisposition || "").toUpperCase() === "CREDIT",
+    )
+    .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const creditPayoutTotal = creditPayouts.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const storeCreditOperational = creditRefundTotal - creditPayoutTotal;
+  const storeCreditDifference = glStoreCredit - storeCreditOperational;
+
+  const glDifferences = [
+    { label: "Revenue (4000)", gl: glRevenue, operational: revenueOperational, diff: revenueDifference },
+    { label: "COGS (5000)", gl: glCogs, operational: cogsTotal, diff: cogsDifference },
+    { label: "VAT (2100)", gl: glVat, operational: vatOperational, diff: vatDifference },
+    { label: "Store credit (2200)", gl: glStoreCredit, operational: storeCreditOperational, diff: storeCreditDifference },
+  ];
+  const extendedGlMismatch = glDifferences.some((r) => Math.abs(r.diff) > 0.01);
+
+  // ── Draft entry aging ────────────────────────────────────────────────────────
+  const nowMs = Date.now();
+  const draftAging = { fresh: 0, warning: 0, old: 0, critical: 0 };
+  for (const entry of draftSamples) {
+    const ageDays = Math.floor((nowMs - entry.createdAt.getTime()) / 86400000);
+    if (ageDays > 30) draftAging.critical++;
+    else if (ageDays > 7) draftAging.old++;
+    else if (ageDays >= 3) draftAging.warning++;
+    else draftAging.fresh++;
+  }
+  const staleDrafts = draftAging.old + draftAging.critical;
+  const hasStaleDrafts = staleDrafts > 0;
+
+  // ── Data quality checks ──────────────────────────────────────────────────────
+  const orderPaymentsMap = new Map<string, number>();
+  for (const payment of payments) {
+    if (!payment.orderId) continue;
+    const status = String(payment.status || "").toUpperCase();
+    if (status === "VOID") continue;
+    const amount = Number(payment.amount || 0);
+    const signedAmount = status === "REFUND" ? -Math.abs(amount) : amount;
+    orderPaymentsMap.set(
+      payment.orderId,
+      (orderPaymentsMap.get(payment.orderId) ?? 0) + signedAmount,
+    );
+  }
+  const paymentMismatchCount = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    return Math.abs(num(order.amountPaid) - projectedPaid) > 0.01;
+  }).length;
+  const orderBalanceMismatchCount = orders.filter((order) => {
+    const projectedPaid = orderPaymentsMap.get(order.id) ?? 0;
+    const projectedBalance = Math.max(0, num(order.total) - projectedPaid);
+    return Math.abs(num(order.balance) - projectedBalance) > 0.01;
+  }).length;
+  const customerOverpaymentCount = orders.filter(
+    (o) => num(o.amountPaid) > num(o.total) + 0.01,
+  ).length;
+  const orderBalanceIssueCount = orders.filter((o) => {
+    if (o.status === "PAID" && num(o.balance) > 0.01) return true;
+    if (num(o.amountPaid) > num(o.total) + 0.01) return true;
+    return false;
+  }).length;
+
+  // Duplicate payments: same orderId + amount within 24 h
+  const normalOrderPayments = payments.filter(
+    (p) => String(p.status || "").toUpperCase() === "NORMAL" && p.orderId,
+  );
+  const dupeMap = new Map<string, typeof normalOrderPayments>();
+  for (const p of normalOrderPayments) {
+    const key = `${p.orderId}:${Number(p.amount || 0).toFixed(2)}`;
+    if (!dupeMap.has(key)) dupeMap.set(key, []);
+    dupeMap.get(key)!.push(p);
+  }
+  const duplicatePaymentCount = Array.from(dupeMap.values()).filter((group) => {
+    if (group.length < 2) return false;
+    const times = group.map((p) => new Date(p.createdAt).getTime()).sort((a, b) => a - b);
+    for (let i = 1; i < times.length; i++) {
+      if (times[i] - times[i - 1] < 86_400_000) return true;
+    }
+    return false;
+  }).length;
+
+  // Supplier overpayments: total paid per purchase > purchase cost
+  const spByPurchase = new Map<string, number>();
+  for (const sp of eligibleSupplierPayments) {
+    if (!sp.purchaseId) continue;
+    spByPurchase.set(sp.purchaseId, (spByPurchase.get(sp.purchaseId) ?? 0) + Number(sp.amount || 0));
+  }
+  const supplierOverpaymentCount = purchases.filter((p) => {
+    const paid = spByPurchase.get(p.id) ?? 0;
+    const cost = Number(p.unitCost || 0) * Number(p.quantity || 0);
+    return paid > cost + 0.01;
+  }).length;
+
+  // ── Legacy AUTO_APPLY ────────────────────────────────────────────────────────
+  const legacyAutoApplyView = legacyAutoApply
+    .map((p) => {
+      const meta = parsePaymentNote(p.note);
+      const applied = meta?.applied ?? [];
+      const appliedOrders = applied
+        .map((entry) => ({ orderId: entry.orderId || "", applied: Number(entry.applied || 0) }))
+        .filter((entry) => entry.orderId);
+      return { ...p, appliedOrders, canBackfill: appliedOrders.length === 1 };
+    })
+    .filter((p) => p.appliedOrders.length > 0);
+
+  // ── Financial summaries ──────────────────────────────────────────────────────
+  const paymentsByStatus = new Map(paymentTotals.map((p) => [p.status, num(p._sum.amount)]));
+  const paymentsNormal = paymentsByStatus.get("NORMAL") ?? 0;
+  const paymentsRefund = paymentsByStatus.get("REFUND") ?? 0;
+  const paymentsVoid = paymentsByStatus.get("VOID") ?? 0;
+  const paymentsTotal = paymentsNormal + paymentsRefund;
+  const totalExpenses = num(expensesAggregate._sum.amount);
+  const totalOrderValue = orders.reduce((s, o) => s + num(o.total), 0);
+  const totalPaid = orders.reduce((s, o) => s + num(o.amountPaid), 0);
+  const totalBalance = orders.reduce((s, o) => s + num(o.balance), 0);
   const grossProfit = paymentsTotal - cogsTotal;
   const netProfit = grossProfit - totalExpenses;
   const accrualGrossProfit = totalOrderValue - cogsTotal;
   const accrualNetProfit = accrualGrossProfit - totalExpenses;
 
+  // ── Derived severity flags ───────────────────────────────────────────────────
+  const hasCriticalIssues =
+    missingPostingTotal > 0 || arMismatch || inventoryMismatch || apMismatch ||
+    !trialBalanceOk || hasStaleDrafts;
+  const hasWarnings =
+    stockMismatches.length > 0 || negativeStockItems.length > 0 ||
+    legacyAutoApplyView.length > 0 || podCompliance7d.alert ||
+    paymentMismatchCount > 0 || orderBalanceMismatchCount > 0 ||
+    customerOverpaymentCount > 0 || orderBalanceIssueCount > 0 ||
+    duplicatePaymentCount > 0 || supplierOverpaymentCount > 0 ||
+    extendedGlMismatch || recentPostFailures.length > 0 ||
+    draftAging.warning > 0 || draftCount > 0;
+
   return (
     <div className="container mx-auto py-8 space-y-6">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div>
         <h1 className="text-2xl font-semibold">Health Check</h1>
         <p className="text-sm text-muted-foreground">
-          Verifies stock totals, order balances, revenue, costs, and expenses.
+          Monitors stock integrity, GL posting completeness, ledger consistency,
+          delivery POD compliance, and data quality.
+          For deep ledger reconciliation and drilldowns see{" "}
+          <Link href="/admin/accounting/integrity" className="underline hover:text-foreground">
+            Accounting → Data Integrity
+          </Link>.
         </p>
       </div>
 
+      {/* ── Ops panel ──────────────────────────────────────────────────────── */}
       <HealthOpsPanel currentUserName={user?.name || user?.email || "Admin"} />
-      {missingPostingTotal > 0 && (
+
+      {/* ── Severity banners ───────────────────────────────────────────────── */}
+      {hasCriticalIssues && (
         <Card className="border-rose-300 bg-rose-50/70 dark:border-rose-900 dark:bg-rose-950/30">
-          <CardContent className="pt-6 text-sm text-rose-700 dark:text-rose-200">
-            Critical: {missingPostingTotal} posting gap(s) detected in ledger readiness. Review the
-            &quot;Accounting checks&quot; section below.
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
+              <div className="space-y-1 text-sm text-rose-700 dark:text-rose-200">
+                {!trialBalanceOk && (
+                  <p><strong>GL is out of balance</strong> — trial balance is {formatCurrency(trialBalance)} (must be 0). All financial reports are unreliable until resolved.</p>
+                )}
+                {missingPostingTotal > 0 && (
+                  <p><strong>{missingPostingTotal}</strong> unposted transaction(s) — ledger is incomplete. Review &ldquo;Ledger readiness&rdquo; below.</p>
+                )}
+                {arMismatch && (
+                  <p>AR ledger differs from customer balance by <strong>{formatCurrency(Math.abs(arDifference))}</strong>.</p>
+                )}
+                {inventoryMismatch && (
+                  <p>Inventory ledger differs from stock valuation by <strong>{formatCurrency(Math.abs(inventoryDifference))}</strong>.</p>
+                )}
+                {apMismatch && (
+                  <p>AP ledger differs from outstanding purchase balance by <strong>{formatCurrency(Math.abs(apDifference))}</strong>.</p>
+                )}
+                {hasStaleDrafts && (
+                  <p><strong>{staleDrafts}</strong> journal {staleDrafts === 1 ? "entry" : "entries"} stuck in DRAFT for &gt;7 days — revenue/costs not yet in the GL.</p>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
 
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Operational checks
-          </h2>
-          <Tooltip content="Integrity checks for inventory movement, order balances, and payment consistency.">
-            <span className="text-muted-foreground hover:text-foreground">
-              <Info className="h-4 w-4" />
-            </span>
-          </Tooltip>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">In-stock products</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{inStock.length}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Stock mismatches</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{stockMismatches.length}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Balance mismatches</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{orderBalanceIssues.length}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Payment mismatches</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{paymentMismatches.length}</CardContent>
-          </Card>
-        </div>
-      </div>
+      {!hasCriticalIssues && hasWarnings && (
+        <Card className="border-amber-300 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/30">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-sm text-amber-700 dark:text-amber-200">No critical issues — warnings require attention below.</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Accounting checks
-          </h2>
-          <Tooltip content="Ledger consistency checks (matches Accounting → Data Integrity).">
-            <span className="text-muted-foreground hover:text-foreground">
-              <Info className="h-4 w-4" />
-            </span>
-          </Tooltip>
+      {!hasCriticalIssues && !hasWarnings && (
+        <Card className="border-green-300 bg-green-50/50 dark:border-green-800 dark:bg-green-950/30">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400 shrink-0" />
+              <p className="text-sm text-green-700 dark:text-green-200 font-medium">All checks passing.</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          SECTION 1 — Ledger integrity
+      ══════════════════════════════════════════════════════════════════════════ */}
+      <div id="ledger-integrity" className="space-y-3 scroll-mt-24">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Ledger integrity</h2>
+            <Tooltip content="Trial balance, AR/AP/Inventory reconciliation, GL vs operational for Revenue/COGS/VAT/Store credit, draft entries and posting completeness.">
+              <span className="text-muted-foreground hover:text-foreground"><Info className="h-4 w-4" /></span>
+            </Tooltip>
+          </div>
+          <Link href="/admin/accounting/integrity" className="flex items-center gap-1 text-xs text-blue-700 underline hover:text-blue-900">
+            Full reconciliation <ExternalLink className="h-3 w-3" />
+          </Link>
         </div>
+
         <Card>
-          <CardContent className="text-sm space-y-2 pt-6">
-            <div className="flex justify-between">
-              <span>AR ledger balance</span>
-              <span>{formatCurrency(arLedger)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Customer balances total</span>
-              <span>{formatCurrency(customerBalances)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>AR difference</span>
-              <span>
-                {formatCurrency(arDifference)}
-                {Math.abs(arDifference) > 0.01 ? " ⚠" : ""}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span>Inventory ledger balance</span>
-              <span>{formatCurrency(inventoryLedger)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Inventory valuation (stock × cost)</span>
-              <span>{formatCurrency(inventoryValuation)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Inventory difference</span>
-              <span>
-                {formatCurrency(inventoryDifference)}
-                {Math.abs(inventoryDifference) > 0.01 ? " ⚠" : ""}
-              </span>
-            </div>
-            <div className="mt-3 border-t pt-3">
-              <div className="text-xs font-semibold text-muted-foreground mb-2">
-                Ledger readiness
-              </div>
-              <div className="flex justify-between">
-                <span>Orders missing postings</span>
-                <span>{missingOrders}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Payments missing postings</span>
-                <span>{missingPayments}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Expenses missing postings</span>
-                <span>{missingExpenses}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Purchases missing postings</span>
-                <span>{missingPurchases}</span>
+          <CardContent className="pt-6 space-y-5 text-sm">
+
+            {/* Trial balance */}
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground mb-1">Trial balance</div>
+              <div className="flex justify-between font-medium">
+                <span>Debits − Credits (must be 0)</span>
+                <span className={`tabular-nums ${trialBalanceOk ? "text-green-700" : "text-rose-600 font-bold"}`}>
+                  {formatCurrency(trialBalance)}{trialBalanceOk ? " ✓" : " ⚠ GL OUT OF BALANCE"}
+                </span>
               </div>
             </div>
+
+            {/* AR / Inventory / AP */}
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Balance sheet reconciliation (GL vs operational)</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left pb-1 font-medium">Account</th>
+                    <th className="text-right pb-1 font-medium">GL ledger</th>
+                    <th className="text-right pb-1 font-medium">Operational</th>
+                    <th className="text-right pb-1 font-medium">Difference</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {[
+                    { label: "AR (1100)", gl: arLedger, op: customerBalances, diff: arDifference, warn: arMismatch },
+                    { label: "Inventory (1200)", gl: inventoryLedger, op: inventoryValuation, diff: inventoryDifference, warn: inventoryMismatch },
+                    { label: "AP (2000)", gl: apLedger, op: apOperational, diff: apDifference, warn: apMismatch },
+                  ].map((row) => (
+                    <tr key={row.label}>
+                      <td className="py-1.5">{row.label}</td>
+                      <td className="py-1.5 text-right tabular-nums">{formatCurrency(row.gl)}</td>
+                      <td className="py-1.5 text-right tabular-nums">{formatCurrency(row.op)}</td>
+                      <td className={`py-1.5 text-right tabular-nums font-medium ${row.warn ? "text-rose-600" : "text-green-700"}`}>
+                        {formatCurrency(row.diff)}{row.warn ? " ⚠" : " ✓"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Revenue / COGS / VAT / Store credit */}
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Income statement reconciliation (GL vs operational)</div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b">
+                    <th className="text-left pb-1 font-medium">Account</th>
+                    <th className="text-right pb-1 font-medium">GL ledger</th>
+                    <th className="text-right pb-1 font-medium">Operational</th>
+                    <th className="text-right pb-1 font-medium">Difference</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {glDifferences.map((row) => {
+                    const warn = Math.abs(row.diff) > 0.01;
+                    return (
+                      <tr key={row.label}>
+                        <td className="py-1.5">{row.label}</td>
+                        <td className="py-1.5 text-right tabular-nums">{formatCurrency(row.gl)}</td>
+                        <td className="py-1.5 text-right tabular-nums">{formatCurrency(row.operational)}</td>
+                        <td className={`py-1.5 text-right tabular-nums font-medium ${warn ? "text-amber-600" : "text-green-700"}`}>
+                          {formatCurrency(row.diff)}{warn ? " ⚠" : " ✓"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Cash & Bank GL balances */}
+            <div>
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Cash & bank GL balances</div>
+              <div className="grid grid-cols-2 gap-x-6 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Cash (1000)</span>
+                  <span className="tabular-nums">{formatCurrency(glCash)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Bank (1010)</span>
+                  <span className="tabular-nums">{formatCurrency(glBank)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Draft entry aging */}
+            <div className="border-t pt-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-muted-foreground">Draft journal entries</div>
+                {draftCount > 0 && (
+                  <Link href="/admin/accounting/journal?status=DRAFT" className="text-xs text-blue-700 underline">
+                    View drafts
+                  </Link>
+                )}
+              </div>
+              {draftCount === 0 ? (
+                <p className="text-xs text-green-700">No draft entries — all journal entries are posted. ✓</p>
+              ) : (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-muted-foreground">Total drafts:</span>
+                    <span className={`font-medium ${hasStaleDrafts ? "text-rose-600" : "text-amber-600"}`}>{draftCount}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-3 text-xs">
+                    {draftAging.fresh > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded bg-green-100 px-2 py-0.5 text-green-800 dark:bg-green-900/40 dark:text-green-300">
+                        {draftAging.fresh} fresh (&lt;3d)
+                      </span>
+                    )}
+                    {draftAging.warning > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                        {draftAging.warning} aging (3-7d)
+                      </span>
+                    )}
+                    {draftAging.old > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded bg-orange-100 px-2 py-0.5 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300">
+                        {draftAging.old} old (&gt;7d)
+                      </span>
+                    )}
+                    {draftAging.critical > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded bg-rose-100 px-2 py-0.5 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300">
+                        {draftAging.critical} critical (&gt;30d)
+                      </span>
+                    )}
+                  </div>
+                  {hasStaleDrafts && (
+                    <p className="text-xs text-rose-600 mt-1">
+                      Entries &gt;7 days in DRAFT are not in the GL — revenue/costs are understated until posted.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Posting completeness */}
+            <div id="ledger-readiness" className="border-t pt-4 scroll-mt-24">
+              <div className="text-xs font-semibold text-muted-foreground mb-2">Ledger readiness — unposted transactions</div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                {[
+                  ["Orders", missingOrders],
+                  ["Payments", missingPayments],
+                  ["Expenses", missingExpenses],
+                  ["Purchases", missingPurchases],
+                  ["Supplier payments", missingSupplierPayments],
+                  ["Store-credit payouts", missingCreditPayouts],
+                  ["Delivery settlements", missingSettlements],
+                ].map(([label, count]) => (
+                  <div key={label as string} className="flex justify-between">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span className={`font-medium tabular-nums ${Number(count) > 0 ? "text-rose-600" : "text-green-700"}`}>
+                      {count}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {missingPostingTotal > 0 && (
+                <div className="mt-2 flex justify-between border-t pt-2 font-semibold text-xs">
+                  <span>Total unposted</span>
+                  <span className="text-rose-600 tabular-nums">{missingPostingTotal}</span>
+                </div>
+              )}
+            </div>
+
           </CardContent>
         </Card>
       </div>
 
+      {/* ── Recent posting failures ─────────────────────────────────────────── */}
+      {recentPostFailures.length > 0 && (
+        <Card className="border-rose-200 dark:border-rose-900">
+          <CardHeader>
+            <CardTitle className="text-base font-semibold flex items-center gap-2">
+              Recent posting failures
+              <span className="text-sm font-normal text-rose-600">({recentPostFailures.length})</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="min-w-full text-xs whitespace-nowrap">
+              <thead className="text-muted-foreground border-b">
+                <tr>
+                  <th className="text-left py-1.5 pr-4">Action</th>
+                  <th className="text-left py-1.5 pr-4">Entity type</th>
+                  <th className="text-left py-1.5 pr-4">Entity ID</th>
+                  <th className="text-right py-1.5">When</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {recentPostFailures.map((row) => (
+                  <tr key={row.id} className="text-rose-700 dark:text-rose-300">
+                    <td className="py-1.5 pr-4 font-mono">{row.action}</td>
+                    <td className="py-1.5 pr-4">{row.entityType}</td>
+                    <td className="py-1.5 pr-4 font-mono">{row.entityId}</td>
+                    <td className="py-1.5 text-right text-muted-foreground">
+                      {new Date(row.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-muted-foreground mt-2">
+              These failures explain why the unposted counts above may not clear automatically. Resolve the underlying issue then use &ldquo;Post now&rdquo; on{" "}
+              <Link href="/admin/accounting/integrity" className="underline">Data Integrity</Link>.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          SECTION 2 — Data quality
+      ══════════════════════════════════════════════════════════════════════════ */}
+      <div id="data-quality" className="space-y-3 scroll-mt-24">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Data quality</h2>
+          <Tooltip content="Operational data consistency checks — overpayments, duplicate payments, balance anomalies.">
+            <span className="text-muted-foreground hover:text-foreground"><Info className="h-4 w-4" /></span>
+          </Tooltip>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+          <Card id="payment-mismatches" className={`${paymentMismatchCount > 0 ? "border-amber-300 dark:border-amber-800" : ""} scroll-mt-24`}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Payment mismatches</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${paymentMismatchCount > 0 ? "text-amber-600" : ""}`}>
+                {paymentMismatchCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {paymentMismatchCount > 0 ? "amountPaid differs from posted payment total" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card id="order-balance-mismatches" className={`${orderBalanceMismatchCount > 0 ? "border-amber-300 dark:border-amber-800" : ""} scroll-mt-24`}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Order balance mismatches</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${orderBalanceMismatchCount > 0 ? "text-amber-600" : ""}`}>
+                {orderBalanceMismatchCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {orderBalanceMismatchCount > 0 ? "balance differs from order total less payments" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className={customerOverpaymentCount > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Customer overpayments</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${customerOverpaymentCount > 0 ? "text-amber-600" : ""}`}>
+                {customerOverpaymentCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {customerOverpaymentCount > 0 ? "amountPaid > total" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className={orderBalanceIssueCount > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Order balance issues</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${orderBalanceIssueCount > 0 ? "text-amber-600" : ""}`}>
+                {orderBalanceIssueCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {orderBalanceIssueCount > 0 ? "PAID status with balance > 0" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className={duplicatePaymentCount > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Duplicate payments</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${duplicatePaymentCount > 0 ? "text-amber-600" : ""}`}>
+                {duplicatePaymentCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {duplicatePaymentCount > 0 ? "Same order + amount within 24 h" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className={supplierOverpaymentCount > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader>
+              <CardTitle className="text-sm font-semibold">Supplier overpayments</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${supplierOverpaymentCount > 0 ? "text-amber-600" : ""}`}>
+                {supplierOverpaymentCount}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {supplierOverpaymentCount > 0 ? "Paid > purchase cost" : "None detected"}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+        {(paymentMismatchCount > 0 || orderBalanceMismatchCount > 0 || customerOverpaymentCount > 0 || orderBalanceIssueCount > 0 || duplicatePaymentCount > 0 || supplierOverpaymentCount > 0) && (
+          <p className="text-xs text-muted-foreground">
+            For detailed drilldowns and CSV export visit{" "}
+            <Link href="/admin/accounting/integrity" className="underline">Accounting → Data Integrity</Link>.
+          </p>
+        )}
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          SECTION 3 — Operational checks
+      ══════════════════════════════════════════════════════════════════════════ */}
       <div className="space-y-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Orders snapshot
-          </h2>
-          <Tooltip content="Totals for active orders only (cancelled orders excluded).">
-            <span className="text-muted-foreground hover:text-foreground">
-              <Info className="h-4 w-4" />
-            </span>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Operational checks</h2>
+          <Tooltip content="Inventory integrity, stock mismatches, legacy payment records, and POD compliance.">
+            <span className="text-muted-foreground hover:text-foreground"><Info className="h-4 w-4" /></span>
           </Tooltip>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Order value (active)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalOrderValue)}</CardContent>
+            <CardHeader><CardTitle className="text-sm font-semibold">In-stock products</CardTitle></CardHeader>
+            <CardContent>
+              <div className="text-2xl font-semibold">{inStockCount}</div>
+              <Link href="/admin/inventory" className="text-xs text-blue-700 underline mt-1 inline-block">View inventory</Link>
+            </CardContent>
           </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Paid (active)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalPaid)}</CardContent>
+          <Card className={stockMismatches.length > 0 ? "border-rose-300 dark:border-rose-800" : ""}>
+            <CardHeader><CardTitle className="text-sm font-semibold">Stock mismatches</CardTitle></CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${stockMismatches.length > 0 ? "text-rose-600" : ""}`}>
+                {stockMismatches.length}
+              </div>
+              {stockMismatches.length > 0 && <p className="text-xs text-muted-foreground mt-1">stock field ≠ movement sum</p>}
+            </CardContent>
           </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Outstanding balance</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalBalance)}</CardContent>
+          <Card className={negativeStockItems.length > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader><CardTitle className="text-sm font-semibold">Negative stock</CardTitle></CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${negativeStockItems.length > 0 ? "text-amber-600" : ""}`}>
+                {negativeStockItems.length}
+              </div>
+              {negativeStockItems.length > 0 && <p className="text-xs text-muted-foreground mt-1">by movement sum</p>}
+            </CardContent>
           </Card>
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Cash basis
-          </h2>
-          <Tooltip content="Recognizes revenue when cash is received; refunds reduce revenue; voids are ignored.">
-            <span className="text-muted-foreground hover:text-foreground">
-              <Info className="h-4 w-4" />
-            </span>
-          </Tooltip>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Revenue (cash)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(paymentsTotal)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">COGS (net)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(cogsTotal)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalExpenses)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Gross profit (cash)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(grossProfit)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Net profit (cash)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(netProfit)}</CardContent>
+          <Card className={legacyAutoApplyView.length > 0 ? "border-amber-300 dark:border-amber-800" : ""}>
+            <CardHeader><CardTitle className="text-sm font-semibold">Legacy AUTO_APPLY</CardTitle></CardHeader>
+            <CardContent>
+              <div className={`text-2xl font-semibold ${legacyAutoApplyView.length > 0 ? "text-amber-600" : ""}`}>
+                {legacyAutoApplyView.length}
+              </div>
+              {legacyAutoApplyView.length > 0 && <p className="text-xs text-muted-foreground mt-1">unlinked payments</p>}
+            </CardContent>
           </Card>
         </div>
       </div>
 
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            Accrual basis
-          </h2>
-          <Tooltip content="Recognizes revenue when orders are placed, regardless of payment timing.">
-            <span className="text-muted-foreground hover:text-foreground">
-              <Info className="h-4 w-4" />
-            </span>
-          </Tooltip>
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Revenue (accrual)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalOrderValue)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">COGS (net)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(cogsTotal)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(totalExpenses)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Gross profit (accrual)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(accrualGrossProfit)}</CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-semibold">Net profit (accrual)</CardTitle>
-            </CardHeader>
-            <CardContent className="text-2xl font-semibold">{formatCurrency(accrualNetProfit)}</CardContent>
-          </Card>
-        </div>
-      </div>
-
-      <Card id="stock-movement-mismatches">
+      {/* ── POD Compliance ─────────────────────────────────────────────────── */}
+      <Card id="pod-compliance" className={`${podCompliance7d.alert ? "border-amber-300 dark:border-amber-800" : ""} scroll-mt-24`}>
         <CardHeader>
-          <CardTitle className="text-base font-semibold">In-stock products</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base font-semibold">POD compliance (last 7 days)</CardTitle>
+            <Link href="/admin/delivery/pod-report" className="flex items-center gap-1 text-xs text-blue-700 underline">
+              Full report <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
         </CardHeader>
-        <CardContent className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-muted-foreground">
-              <tr>
-                <th className="text-left py-2">Product</th>
-                <th className="text-right py-2">Stock</th>
-                <th className="text-right py-2">Avg Cost</th>
-                <th className="text-right py-2">Archived</th>
-              </tr>
-            </thead>
-            <tbody>
-              {inStock.map((p) => (
-                <tr key={p.id} className="border-t">
-                  <td className="py-2">{p.name}</td>
-                  <td className="py-2 text-right">{num(p.stock)}</td>
-                  <td className="py-2 text-right">{formatCurrency(num(p.cost))}</td>
-                  <td className="py-2 text-right">{p.archived ? "Yes" : "No"}</td>
-                </tr>
-              ))}
-              {inStock.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="py-4 text-center text-muted-foreground">
-                    <div className="text-sm text-muted-foreground">
-                      <p>No products currently in stock.</p>
-                      <div className="mt-2 flex flex-wrap justify-center gap-2">
-                        <Link
-                          href="/admin/purchases"
-                          className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                        >
-                          Add purchase
-                        </Link>
-                        <Link
-                          href="/admin/products"
-                          className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                        >
-                          View products
-                        </Link>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        <CardContent className="text-sm space-y-1">
+          <div className="flex justify-between">
+            <span>Delivered orders</span>
+            <span className="tabular-nums">{podCompliance7d.delivered}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>POD captured</span>
+            <span className="tabular-nums">{podCompliance7d.podCaptured}</span>
+          </div>
+          <div className="flex justify-between font-medium">
+            <span>POD missing</span>
+            <span className={`tabular-nums ${podCompliance7d.alert ? "text-amber-600" : "text-green-700"}`}>
+              {podCompliance7d.podMissing} ({podCompliance7d.podMissingRatePct}%){podCompliance7d.alert ? " ⚠" : " ✓"}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground pt-1">
+            Alert threshold: {podCompliance7d.thresholdPct}% missing (min {podCompliance7d.minDelivered} delivered in window).
+            {podCompliance7d.delivered < podCompliance7d.minDelivered && (
+              <> Fewer than {podCompliance7d.minDelivered} delivered — alert suppressed.</>
+            )}
+          </p>
         </CardContent>
       </Card>
 
-      <Card id="order-balance-mismatches">
+      {/* ═══════════════════════════════════════════════════════════════════════
+          SECTION 4 — Orders snapshot & Financial summary
+      ══════════════════════════════════════════════════════════════════════════ */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Orders & financial summary</h2>
+          <Tooltip content="Active orders only (cancelled excluded). Cash basis uses payments received; accrual uses order values.">
+            <span className="text-muted-foreground hover:text-foreground"><Info className="h-4 w-4" /></span>
+          </Tooltip>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Card>
+            <CardHeader><CardTitle className="text-sm font-semibold">Order value (active)</CardTitle></CardHeader>
+            <CardContent className="text-2xl font-semibold">{formatCurrency(totalOrderValue)}</CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-sm font-semibold">Paid (active)</CardTitle></CardHeader>
+            <CardContent className="text-2xl font-semibold">{formatCurrency(totalPaid)}</CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-sm font-semibold">Outstanding balance</CardTitle></CardHeader>
+            <CardContent className="text-2xl font-semibold">{formatCurrency(totalBalance)}</CardContent>
+          </Card>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Card>
+            <CardHeader><CardTitle className="text-sm font-semibold">Cash basis</CardTitle></CardHeader>
+            <CardContent className="text-sm space-y-1">
+              {[["Revenue", paymentsTotal], ["COGS (net)", cogsTotal], ["Gross profit", grossProfit], ["Expenses", totalExpenses], ["Net profit", netProfit]].map(([label, val]) => (
+                <div key={label as string} className="flex justify-between">
+                  <span className={label === "Net profit" ? "font-semibold" : ""}>{label}</span>
+                  <span className={`tabular-nums ${label === "Net profit" ? "font-semibold" : ""}`}>{formatCurrency(val as number)}</span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-sm font-semibold">Accrual basis</CardTitle></CardHeader>
+            <CardContent className="text-sm space-y-1">
+              {[["Revenue", totalOrderValue], ["COGS (net)", cogsTotal], ["Gross profit", accrualGrossProfit], ["Expenses", totalExpenses], ["Net profit", accrualNetProfit]].map(([label, val]) => (
+                <div key={label as string} className="flex justify-between">
+                  <span className={label === "Net profit" ? "font-semibold" : ""}>{label}</span>
+                  <span className={`tabular-nums ${label === "Net profit" ? "font-semibold" : ""}`}>{formatCurrency(val as number)}</span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+        <Card>
+          <CardHeader><CardTitle className="text-base font-semibold">Payment status totals</CardTitle></CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="text-muted-foreground">
+                <tr>
+                  <th className="text-left py-2">Type</th>
+                  <th className="text-right py-2">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[["Normal", paymentsNormal], ["Refunds", paymentsRefund], ["Voids", paymentsVoid]].map(([type, val]) => (
+                  <tr key={type as string} className="border-t">
+                    <td className="py-2">{type}</td>
+                    <td className="py-2 text-right tabular-nums">{formatCurrency(val as number)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t font-semibold">
+                  <td className="py-2">Net</td>
+                  <td className="py-2 text-right tabular-nums">{formatCurrency(paymentsTotal)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base font-semibold">COGS coverage</CardTitle></CardHeader>
+          <CardContent>
+            {cogsMissing === 0
+              ? <p className="text-sm text-muted-foreground">All order items include a recorded cost at sale.</p>
+              : <p className="text-sm text-amber-600">{cogsMissing} order item(s) missing cost-at-sale — COGS may be understated.</p>
+            }
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          SECTION 5 — Detail tables (issues only)
+      ══════════════════════════════════════════════════════════════════════════ */}
+
+      {/* Stock vs movement mismatches */}
+      <Card id="stock-movement-mismatches" className="scroll-mt-24">
         <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base font-semibold">Stock vs movement mismatches</CardTitle>
-          {stockMismatches.length > 0 ? <BackfillStockMovementsButton /> : null}
+          <CardTitle className="text-base font-semibold">
+            Stock vs movement mismatches
+            {stockMismatches.length > 0 && <span className="ml-2 text-sm font-normal text-rose-600">({stockMismatches.length})</span>}
+          </CardTitle>
+          {stockMismatches.length > 0 && <BackfillStockMovementsButton />}
         </CardHeader>
         <CardContent className="overflow-x-auto">
           {stockMismatches.length === 0 ? (
             <div className="text-sm text-muted-foreground">
-              <p>No mismatches found.</p>
+              <p>No mismatches — stock field matches movement sum for all products.</p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <Link
-                  href="/admin/movements"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View movements
-                </Link>
-                <Link
-                  href="/admin/inventory"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View inventory
-                </Link>
+                <Link href="/admin/movements" className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted">View movements</Link>
+                <Link href="/admin/inventory" className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted">View inventory</Link>
               </div>
             </div>
           ) : (
@@ -674,23 +1079,18 @@ export default async function AdminHealthPage() {
               <thead className="text-muted-foreground">
                 <tr>
                   <th className="text-left py-2">Product</th>
-                  <th className="text-right py-2">Stock</th>
-                  <th className="text-right py-2">Movement Sum</th>
+                  <th className="text-right py-2">Stock field</th>
+                  <th className="text-right py-2">Movement sum</th>
                   <th className="text-right py-2">Archived</th>
                 </tr>
               </thead>
               <tbody>
                 {stockMismatches.map((p) => (
-                  <tr
-                    key={p.id}
-                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
-                  >
+                  <tr key={p.id} className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">
                     <td className="py-2">{p.name}</td>
                     <td className="py-2 text-right font-semibold">{p.stock}</td>
                     <td className="py-2 text-right font-semibold">{p.movementSum}</td>
-                    <td className="py-2 text-right">
-                      {p.archived ? "Yes" : "No"}
-                    </td>
+                    <td className="py-2 text-right">{p.archived ? "Yes" : "No"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -699,47 +1099,30 @@ export default async function AdminHealthPage() {
         </CardContent>
       </Card>
 
-      <Card id="order-payment-mismatches">
+      {/* Negative stock */}
+      <Card id="negative-stock" className="scroll-mt-24">
         <CardHeader>
-          <CardTitle className="text-base font-semibold">Order balance mismatches</CardTitle>
+          <CardTitle className="text-base font-semibold">
+            Negative stock
+            {negativeStockItems.length > 0 && <span className="ml-2 text-sm font-normal text-amber-600">({negativeStockItems.length})</span>}
+          </CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          {orderBalanceIssues.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              <p>All orders balance correctly.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Link
-                  href="/admin/orders"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View orders
-                </Link>
-              </div>
-            </div>
+          {negativeStockItems.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No products with negative movement sum.</p>
           ) : (
             <table className="min-w-full text-sm">
               <thead className="text-muted-foreground">
                 <tr>
-                  <th className="text-left py-2">Order ID</th>
-                  <th className="text-right py-2">Total</th>
-                  <th className="text-right py-2">Paid</th>
-                  <th className="text-right py-2">Balance</th>
-                  <th className="text-right py-2">Expected</th>
+                  <th className="text-left py-2">Product</th>
+                  <th className="text-right py-2">Movement sum</th>
                 </tr>
               </thead>
               <tbody>
-                {orderBalanceIssues.map((o) => (
-                  <tr
-                    key={o.id}
-                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
-                  >
-                    <td className="py-2">{o.id}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.total))}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.amountPaid))}</td>
-                    <td className="py-2 text-right font-semibold">{formatCurrency(num(o.balance))}</td>
-                    <td className="py-2 text-right font-semibold">
-                      {formatCurrency(Math.max(0, num(o.total) - num(o.amountPaid)))}
-                    </td>
+                {negativeStockItems.map((p) => (
+                  <tr key={p.id} className="border-t bg-amber-50/60 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                    <td className="py-2">{p.name}</td>
+                    <td className="py-2 text-right font-semibold">{p.movementSum}</td>
                   </tr>
                 ))}
               </tbody>
@@ -748,239 +1131,11 @@ export default async function AdminHealthPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base font-semibold">Order payments mismatches</CardTitle>
-          <ReconcileOrdersButton orderIds={paymentMismatches.map((o) => o.id)} />
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          {paymentMismatches.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              <p>All orders match payment totals.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Link
-                  href="/admin/orders"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View orders
-                </Link>
-                <Link
-                  href="/admin/payments/momo"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View payments
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <table className="min-w-full text-sm whitespace-nowrap">
-              <thead className="text-muted-foreground">
-                <tr>
-                  <th className="text-left py-2 pr-4">Order ID</th>
-                  <th className="text-right py-2 pr-4">Order Paid</th>
-                  <th className="text-right py-2 pr-4">Payments Total</th>
-                  <th className="text-right py-2 pr-4">Difference</th>
-                  <th className="text-left py-2 pr-4">Likely Cause</th>
-                  <th className="text-right py-2 pr-4">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {paymentMismatches.map((o) => (
-                  <tr
-                    key={o.id}
-                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
-                  >
-                    <td className="py-2 pr-4">{o.id}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(o.paid)}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(o.paidFromPayments)}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">
-                      {formatCurrency(o.delta)}
-                    </td>
-                    <td className="py-2 pr-4">{o.likelyCause}</td>
-                    <td className="py-2 pr-4 text-right">{o.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base font-semibold">Payments for mismatched orders</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          {mismatchPaymentsView.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              <p>No payment rows found.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Link
-                  href="/admin/payments/momo"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View payments
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <table className="min-w-full text-sm whitespace-nowrap">
-              <thead className="text-muted-foreground">
-                <tr>
-                  <th className="text-left py-2 pr-4">Order ID</th>
-                  <th className="text-left py-2 pr-4">Payment ID</th>
-                  <th className="text-right py-2 pr-4">Amount</th>
-                  <th className="text-right py-2 pr-4">Status</th>
-                  <th className="text-left py-2 pr-4">Method</th>
-                  <th className="text-left py-2 pr-4">Provider</th>
-                  <th className="text-right py-2 pr-4">Applied</th>
-                  <th className="text-right py-2 pr-4">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mismatchPaymentsView.map((p) => (
-                  <tr
-                    key={p.id}
-                    className="border-t bg-rose-50/60 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300"
-                  >
-                    <td className="py-2 pr-4">{p.orderId}</td>
-                    <td className="py-2 pr-4">{p.id}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">{formatCurrency(num(p.amount))}</td>
-                    <td className="py-2 pr-4 text-right">{p.status}</td>
-                    <td className="py-2 pr-4">{p.meta?.method ?? "-"}</td>
-                    <td className="py-2 pr-4">{p.meta?.provider ?? "-"}</td>
-                    <td className="py-2 pr-4 text-right font-semibold">
-                      {p.appliedTotal == null ? "-" : formatCurrency(p.appliedTotal)}
-                    </td>
-                    <td className="py-2 pr-4 text-right">{p.createdAt.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
-
-      {paymentMismatches.length > 0 && (
-        <Card id="legacy-auto-apply">
-          <CardHeader>
-            <CardTitle className="text-base font-semibold">Mismatch diagnostics</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {paymentMismatches.map((o) => {
-              const linked = linkedPaymentsByOrder.get(o.id) ?? [];
-              const noteLinked = notePaymentsByOrder.get(o.id) ?? [];
-              const linkedTotal = linked.reduce((sum, p) => {
-                if (p.status === "VOID") return sum;
-                const signed = p.status === "REFUND" ? -num(p.amount) : num(p.amount);
-                return sum + signed;
-              }, 0);
-              const appliedTotal = noteLinked.reduce((sum, p) => {
-                const applied = p.meta?.applied?.reduce((inner, entry) => {
-                  if (entry.orderId !== o.id) return inner;
-                  return inner + num(entry.applied);
-                }, 0);
-                return sum + (applied ?? 0);
-              }, 0);
-              return (
-                <details key={o.id} className="rounded-lg border px-4 py-3">
-                  <summary className="cursor-pointer text-sm font-semibold text-foreground">
-                    {o.id} — difference {formatCurrency(o.delta)}
-                  </summary>
-                  <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Order totals
-                      </p>
-                      <p>Paid: {formatCurrency(o.paid)}</p>
-                      <p>Status: {o.status}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Linked payments
-                      </p>
-                      <p>Rows: {linked.length}</p>
-                      <p>Total: {formatCurrency(linkedTotal)}</p>
-                      {linked.length === 0 && (
-                        <p className="text-muted-foreground">
-                          No linked payments.{" "}
-                          <Link href="/admin/payments/momo" className="underline">
-                            View payments
-                          </Link>
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                        Note-applied payments
-                      </p>
-                      <p>Rows: {noteLinked.length}</p>
-                      <p>Applied: {formatCurrency(appliedTotal)}</p>
-                      {noteLinked.length === 0 && (
-                        <p className="text-muted-foreground">
-                          No payment notes reference this order.{" "}
-                          <Link href="/admin/payments/momo" className="underline">
-                            View payments
-                          </Link>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </details>
-              );
-            })}
-          </CardContent>
-        </Card>
-      )}
-
-      {unlinkedAppliedPayments.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base font-semibold">Unlinked applied payments</CardTitle>
-          </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <table className="min-w-full text-sm whitespace-nowrap">
-              <thead className="text-muted-foreground">
-                <tr>
-                  <th className="text-left py-2 pr-4">Applied Order</th>
-                  <th className="text-left py-2 pr-4">Payment ID</th>
-                  <th className="text-left py-2 pr-4">Linked Order</th>
-                  <th className="text-right py-2 pr-4">Applied Amount</th>
-                  <th className="text-right py-2 pr-4">Status</th>
-                  <th className="text-right py-2 pr-4">Actions</th>
-                  <th className="text-right py-2 pr-4">Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {unlinkedAppliedPayments.map((entry) => (
-                  <tr key={`${entry.paymentId}-${entry.appliedOrderId}`} className="border-t">
-                    <td className="py-2 pr-4">{entry.appliedOrderId}</td>
-                    <td className="py-2 pr-4">{entry.paymentId}</td>
-                    <td className="py-2 pr-4">{entry.linkedOrderId || "-"}</td>
-                    <td className="py-2 pr-4 text-right">
-                      {formatCurrency(num(entry.appliedAmount))}
-                    </td>
-                    <td className="py-2 pr-4 text-right">{entry.status}</td>
-                    <td className="py-2 pr-4 text-right">
-                      <FixActionsMenu
-                        sql={`UPDATE "Payment" SET "orderId" = '${entry.appliedOrderId}' WHERE "id" = '${entry.paymentId}';`}
-                        orderId={entry.appliedOrderId || ""}
-                        paymentId={entry.paymentId}
-                      />
-                    </td>
-                    <td className="py-2 pr-4 text-right">{entry.createdAt.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-      )}
-
+      {/* Legacy AUTO_APPLY */}
       {legacyAutoApplyView.length > 0 && (
-        <Card>
+        <Card id="legacy-auto-apply" className="scroll-mt-24">
           <CardHeader>
-          <CardTitle className="text-base font-semibold">Legacy AUTO_APPLY payments</CardTitle>
+            <CardTitle className="text-base font-semibold">Legacy AUTO_APPLY payments ({legacyAutoApplyView.length})</CardTitle>
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <table className="min-w-full text-sm whitespace-nowrap">
@@ -988,7 +1143,7 @@ export default async function AdminHealthPage() {
                 <tr>
                   <th className="text-left py-2 pr-4">Payment ID</th>
                   <th className="text-right py-2 pr-4">Amount</th>
-                  <th className="text-left py-2 pr-4">Applied Orders</th>
+                  <th className="text-left py-2 pr-4">Applied orders</th>
                   <th className="text-right py-2 pr-4">Backfill</th>
                   <th className="text-right py-2 pr-4">Created</th>
                 </tr>
@@ -997,22 +1152,14 @@ export default async function AdminHealthPage() {
                 {legacyAutoApplyView.map((p) => (
                   <tr key={p.id} className="border-t">
                     <td className="py-2 pr-4">{p.id}</td>
-                    <td className="py-2 pr-4 text-right">{formatCurrency(num(p.amount))}</td>
+                    <td className="py-2 pr-4 text-right tabular-nums">{formatCurrency(num(p.amount))}</td>
                     <td className="py-2 pr-4">
-                      {p.appliedOrders
-                        .map((entry) => `${entry.orderId}: ${formatCurrency(entry.applied)}`)
-                        .join(", ")}
+                      {p.appliedOrders.map((e) => `${e.orderId}: ${formatCurrency(e.applied)}`).join(", ")}
                     </td>
                     <td className="py-2 pr-4 text-right">
-                      {p.canBackfill ? (
-                        <BackfillAutoApplyButton paymentId={p.id} />
-                      ) : (
-                        <span className="text-xs text-muted-foreground">Manual</span>
-                      )}
+                      {p.canBackfill ? <BackfillAutoApplyButton paymentId={p.id} /> : <span className="text-xs text-muted-foreground">Manual</span>}
                     </td>
-                    <td className="py-2 pr-4 text-right">
-                      {p.createdAt.toLocaleString()}
-                    </td>
+                    <td className="py-2 pr-4 text-right">{p.createdAt.toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1021,95 +1168,6 @@ export default async function AdminHealthPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base font-semibold">Payment status totals</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-muted-foreground">
-              <tr>
-                <th className="text-left py-2">Type</th>
-                <th className="text-right py-2">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-t">
-                <td className="py-2">Normal</td>
-                <td className="py-2 text-right">{formatCurrency(paymentsNormal)}</td>
-              </tr>
-              <tr className="border-t">
-                <td className="py-2">Refunds</td>
-                <td className="py-2 text-right">{formatCurrency(paymentsRefund)}</td>
-              </tr>
-              <tr className="border-t">
-                <td className="py-2">Voids</td>
-                <td className="py-2 text-right">{formatCurrency(paymentsVoid)}</td>
-              </tr>
-              <tr className="border-t font-semibold">
-                <td className="py-2">Net</td>
-                <td className="py-2 text-right">{formatCurrency(paymentsTotal)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base font-semibold">COGS coverage</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          {cogsMissing === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              All order items include a recorded cost at sale.
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              {cogsMissing} order item(s) are missing cost-at-sale data.
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base font-semibold">Negative stock</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          {negativeStock.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              <p>No products with negative stock.</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Link
-                  href="/admin/inventory"
-                  className="inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-                >
-                  View inventory
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <table className="min-w-full text-sm">
-              <thead className="text-muted-foreground">
-                <tr>
-                  <th className="text-left py-2">Product</th>
-                  <th className="text-right py-2">Stock</th>
-                </tr>
-              </thead>
-              <tbody>
-                {negativeStock.map((p) => (
-                  <tr key={p.id} className="border-t">
-                    <td className="py-2">{p.name}</td>
-                    <td className="py-2 text-right">{num(p.stock)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
-

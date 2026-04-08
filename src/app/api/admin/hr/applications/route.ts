@@ -12,6 +12,7 @@ import {
   selectEmployeeMatchForApplicant,
   type ApplicationStage,
 } from "@/lib/hr-hiring-utils";
+import { getEmployeeOnboardingState } from "@/lib/hr-onboarding-status";
 
 const applicationSchema = z.object({
   applicantId: z.string().min(1),
@@ -131,7 +132,7 @@ async function ensureEmployeeForHire(
     } catch {
       // best-effort
     }
-    return "reactivated";
+    return { action: "reactivated" as const, employeeId: updated.id };
   }
 
   const employee = await tx.employee.create({
@@ -179,7 +180,7 @@ async function ensureEmployeeForHire(
     // best-effort
   }
 
-  return "created";
+  return { action: "created" as const, employeeId: employee.id };
 }
 
 export async function GET(req: Request) {
@@ -242,8 +243,94 @@ export async function GET(req: Request) {
     Number(stageCounts.INTERVIEW || 0) +
     Number(stageCounts.OFFER || 0);
 
+  const hiredApplications = applications.filter((application) => application.stage === "HIRED");
+  const hiredEmails = Array.from(
+    new Set(
+      hiredApplications
+        .map((application) => String(application.applicant.email || "").trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  const hiredPhones = Array.from(
+    new Set(
+      hiredApplications
+        .map((application) => String(application.applicant.phone || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const employeeCandidates =
+    hiredEmails.length || hiredPhones.length
+      ? await prisma.employee.findMany({
+          where: {
+            OR: [
+              ...(hiredEmails.length ? [{ email: { in: hiredEmails } }] : []),
+              ...(hiredPhones.length ? [{ phone: { in: hiredPhones } }] : []),
+            ],
+          },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            department: true,
+            position: true,
+            hireDate: true,
+            notes: true,
+          },
+          take: 200,
+        })
+      : [];
+
+  const rows = applications.map((application) => {
+    if (application.stage !== "HIRED") {
+      return {
+        ...application,
+        employeeId: null,
+        onboarding: null,
+      };
+    }
+
+    const candidateMatches = employeeCandidates.filter((candidate) => {
+      const email = String(application.applicant.email || "").trim().toLowerCase();
+      const phone = String(application.applicant.phone || "").trim();
+      return (
+        (email && String(candidate.email || "").trim().toLowerCase() === email) ||
+        (phone && String(candidate.phone || "").trim() === phone)
+      );
+    });
+    const matchDecision = selectEmployeeMatchForApplicant(
+      candidateMatches,
+      application.applicant.email,
+      application.applicant.phone,
+    );
+    if (!matchDecision.ok || !matchDecision.match) {
+      return {
+        ...application,
+        employeeId: null,
+        onboarding: {
+          status: "pending",
+          summary: "Employee record could not be matched. Review the hire before resuming onboarding.",
+        },
+      };
+    }
+
+    const onboarding = getEmployeeOnboardingState({
+      email: matchDecision.match.email,
+      phone: matchDecision.match.phone,
+      department: matchDecision.match.department,
+      position: matchDecision.match.position,
+      hireDate: matchDecision.match.hireDate,
+      notes: matchDecision.match.notes,
+    });
+
+    return {
+      ...application,
+      employeeId: matchDecision.match.id,
+      onboarding,
+    };
+  });
+
   return NextResponse.json({
-    rows: applications,
+    rows,
     total,
     lastUpdatedAt: latestUpdated?.updatedAt?.toISOString?.() ?? null,
     summary: {
@@ -280,7 +367,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { application, employeeAction } = await prisma.$transaction(async (tx) => {
+    const { application, employeeResult } = await prisma.$transaction(async (tx) => {
       const application = await tx.application.create({
         data: {
           applicantId: parsed.data.applicantId,
@@ -289,14 +376,14 @@ export async function POST(req: Request) {
           notes: normalizeOptional(parsed.data.notes),
         },
       });
-      let employeeAction: string | null = null;
+      let employeeResult: Awaited<ReturnType<typeof ensureEmployeeForHire>> | null = null;
       if (application.stage === "HIRED") {
-        employeeAction = await ensureEmployeeForHire(tx, application, {
+        employeeResult = await ensureEmployeeForHire(tx, application, {
           id: user.id,
           role: user.role,
         });
       }
-      return { application, employeeAction };
+      return { application, employeeResult };
     });
     try {
       await recordAuditLog({
@@ -318,13 +405,18 @@ export async function POST(req: Request) {
           },
           status: "SUCCESS",
           resultSummary: normalizeAuditText(parsed.data.resultSummary, "Application created successfully."),
-          employeeAction: employeeAction || null,
+          employeeAction: employeeResult?.action || null,
+          employeeId: employeeResult?.employeeId || null,
         },
       });
     } catch {
       // best-effort
     }
-    return NextResponse.json({ ...application, employeeAction });
+    return NextResponse.json({
+      ...application,
+      employeeAction: employeeResult?.action || null,
+      employeeId: employeeResult?.employeeId || null,
+    });
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("Ambiguous applicant match")) {
       return NextResponse.json({ error: err.message }, { status: 409 });
