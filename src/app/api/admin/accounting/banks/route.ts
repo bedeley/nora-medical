@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 const bankSchema = z.object({
   name: z.string().min(2).max(120),
@@ -52,19 +53,21 @@ export async function POST(req: Request) {
     }
     const bank = await prisma.bankAccount.create({ data: parsed.data });
     const actor = session.user as AuthenticatedUser;
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_ACCOUNT_CREATED",
-        entityType: "BANK_ACCOUNT",
-        entityId: bank.id,
-        meta: JSON.stringify({
-          name: bank.name,
-          bankName: bank.bankName || null,
-          accountNumberMasked: bank.accountNumberMasked || null,
-          currency: bank.currency,
-          isActive: bank.isActive,
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_ACCOUNT_CREATED",
+      entityType: "BANK_ACCOUNT",
+      entityId: bank.id,
+      section: "bank-profile",
+      operation: "create",
+      resultSummary: `Created bank account ${bank.name}.`,
+      meta: {
+        name: bank.name,
+        bankName: bank.bankName || null,
+        accountNumberMasked: bank.accountNumberMasked || null,
+        currency: bank.currency,
+        isActive: bank.isActive,
       },
     });
     return NextResponse.json(bank);

@@ -64,11 +64,16 @@ export async function POST(
       action: "B2B_TENDER_APPROVED",
       entityType: "B2B_TENDER",
       entityId: params.id,
+      outcome: "SUCCESS",
       meta: JSON.stringify({
+        sourcePage: "admin/b2b/tenders",
+        operation: "approve_for_send",
         approvedVersionNo: latestVersion.versionNo,
         latestVersionCreatedAt: latestVersion.createdAt.toISOString(),
         protectedAdminBypass: makerChecker && isProtectedAdmin ? true : false,
+        makerCheckerApplied: makerChecker && !isProtectedAdmin,
         note: parsed.data.note?.trim() || null,
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
       }),
     },
   });

@@ -999,6 +999,7 @@ model InventoryMovement {
   reason     String
   reasonCode String?
   note       String?
+  unitCost   Decimal?  @db.Decimal(10, 2)
   purchase   Purchase? @relation(fields: [purchaseId], references: [id])
   purchaseId String?
   lot        InventoryLot? @relation(fields: [lotId], references: [id])

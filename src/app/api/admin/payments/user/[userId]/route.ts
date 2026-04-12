@@ -5,17 +5,19 @@ import { prisma } from "@/lib/prisma";
 
 export async function GET(
   _req: Request,
-  { params }: { params: { userId: string } }
+  context: { params: Promise<{ userId: string }> | { userId: string } }
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   const role = user?.role;
   const isAdmin = role === "ADMIN";
+  const isStaff = role === "STAFF";
   const isAccountant = role === "ACCOUNTANT";
-  if (!session || (!isAdmin && !isAccountant)) {
+  if (!session || (!isAdmin && !isStaff && !isAccountant)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const params = await context.params;
   const userId = params.userId;
   try {
     type AppliedMeta = { orderId?: string; applied?: number };

@@ -77,6 +77,27 @@ export async function PATCH(
       if (!order) throw new Error("Order not found");
       if (order.status === "CANCELLED") throw new Error("Cannot record payment for cancelled order");
 
+      if (idempotencyKey) {
+        const existingPayment = await tx.payment.findFirst({
+          where: {
+            orderId: order.id,
+            deletedAt: null,
+            note: { contains: `"idempotencyKey":"${idempotencyKey}"` },
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (existingPayment) {
+          const updated = await recomputeOrderTotalsFromPayments(tx, orderId);
+          return {
+            order: updated,
+            paymentId: existingPayment.id,
+            previousBalance: Number(order.balance || 0),
+            previousOrderStatus: String(order.status || ""),
+            deduped: true,
+          };
+        }
+      }
+
       // Create a payment record linked to the order and user.
       // Store structured metadata so customer/admin views can summarize by method.
       const meta = {
@@ -84,6 +105,9 @@ export async function PATCH(
         reference: "ADMIN_ORDER_PAYMENT" as const,
         location: "admin/orders",
         note: note || "Admin recorded payment",
+        externalReference,
+        idempotencyKey,
+        requestId,
       };
 
       const payment = await tx.payment.create({
@@ -101,10 +125,12 @@ export async function PATCH(
         paymentId: payment.id,
         previousBalance: Number(order.balance || 0),
         previousOrderStatus: String(order.status || ""),
+        deduped: false,
       };
     });
 
-    try {
+    if (!result.deduped) {
+      try {
       if (result.order.userId) {
         await notifyPaymentEvent({
           kind: "payment_recorded",
@@ -114,16 +140,19 @@ export async function PATCH(
           subject: "Payment received — updated receipt",
         });
       }
-    } catch (e) {
-      console.warn("notifyPaymentEvent (admin order payment) error:", e);
+      } catch (e) {
+        console.warn("notifyPaymentEvent (admin order payment) error:", e);
+      }
     }
 
     let postingResultId: string | null = null;
-    try {
-      const postingResult = await postPaymentEntry({ paymentId: result.paymentId });
-      postingResultId = postingResult?.id || null;
-    } catch (e) {
-      console.warn("Accounting payment posting skipped:", e);
+    if (!result.deduped) {
+      try {
+        const postingResult = await postPaymentEntry({ paymentId: result.paymentId });
+        postingResultId = postingResult?.id || null;
+      } catch (e) {
+        console.warn("Accounting payment posting skipped:", e);
+      }
     }
     if (!postingResultId) {
       const posted = await prisma.journalEntry.findFirst({
@@ -148,67 +177,70 @@ export async function PATCH(
         })
       : null;
 
-    try {
-      await recordAuditLog({
-        actorId: user.id,
-        action: "PAYMENT_CREATE",
-        entityType: "PAYMENT",
-        entityId: result.paymentId,
-        meta: {
-          actorType: "ADMIN",
-          channel: "admin_orders",
-          sourceRoute: `/api/orders/${orderId}/payment`,
-          paymentId: result.paymentId,
-          orderId,
-          customerId: result.order.userId || null,
-          customerName: paymentCustomer?.name || null,
-          customerEmail: paymentCustomer?.email || null,
-          customerPhone: paymentCustomer?.phone || null,
-          recordedByName: user.name || user.email || null,
-          recordedByRole: user.role || null,
-          amount,
-          method,
-          paymentMethodLabel: PAYMENT_METHOD_LABELS[method],
-          captureType: "ADMIN_MANUAL",
-          externalReference,
-          status: "NORMAL",
-          invoiceNumber: result.order.invoiceNumber || null,
-          remainingBalanceAfter: Number(result.order.balance || 0),
-          orderStatusBefore: result.previousOrderStatus || null,
-          orderStatusAfter: String(result.order.status || ""),
-          reference: "ADMIN_ORDER_PAYMENT",
-          paymentCount: 1,
-          appliedCount: 1,
-          appliedTotal: Number(amount || 0),
-          orderCount: 1,
-          orderIds: [orderId],
-          appliedAllocations: [
-            {
-              orderId,
-              amount: Number(amount || 0),
-              remainingAfter: Number(result.order.balance || 0),
-            },
-          ],
-          amountMode:
-            Math.abs(Number(result.previousBalance || 0) - Number(amount || 0)) <= 0.0001
-              ? "full"
-              : "custom",
-          operatorNotePresent: Boolean(note && note.trim()),
-          postingStatus: postingResultId ? "POSTED" : "PENDING",
-          journalEntryId: postingResultId,
-          idempotencyKey,
-          requestId,
-          note: note || null,
-        },
-      });
-    } catch {
-      // best-effort
+    if (!result.deduped) {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "PAYMENT_CREATE",
+          entityType: "PAYMENT",
+          entityId: result.paymentId,
+          meta: {
+            actorType: "ADMIN",
+            channel: "admin_orders",
+            sourceRoute: `/api/orders/${orderId}/payment`,
+            paymentId: result.paymentId,
+            orderId,
+            customerId: result.order.userId || null,
+            customerName: paymentCustomer?.name || null,
+            customerEmail: paymentCustomer?.email || null,
+            customerPhone: paymentCustomer?.phone || null,
+            recordedByName: user.name || user.email || null,
+            recordedByRole: user.role || null,
+            amount,
+            method,
+            paymentMethodLabel: PAYMENT_METHOD_LABELS[method],
+            captureType: "ADMIN_MANUAL",
+            externalReference,
+            status: "NORMAL",
+            invoiceNumber: result.order.invoiceNumber || null,
+            remainingBalanceAfter: Number(result.order.balance || 0),
+            orderStatusBefore: result.previousOrderStatus || null,
+            orderStatusAfter: String(result.order.status || ""),
+            reference: "ADMIN_ORDER_PAYMENT",
+            paymentCount: 1,
+            appliedCount: 1,
+            appliedTotal: Number(amount || 0),
+            orderCount: 1,
+            orderIds: [orderId],
+            appliedAllocations: [
+              {
+                orderId,
+                amount: Number(amount || 0),
+                remainingAfter: Number(result.order.balance || 0),
+              },
+            ],
+            amountMode:
+              Math.abs(Number(result.previousBalance || 0) - Number(amount || 0)) <= 0.0001
+                ? "full"
+                : "custom",
+            operatorNotePresent: Boolean(note && note.trim()),
+            postingStatus: postingResultId ? "POSTED" : "PENDING",
+            journalEntryId: postingResultId,
+            idempotencyKey,
+            requestId,
+            note: note || null,
+          },
+        });
+      } catch {
+        // best-effort
+      }
     }
 
     return NextResponse.json({
       success: true,
-      message: "Payment recorded successfully.",
+      message: result.deduped ? "Payment already recorded." : "Payment recorded successfully.",
       order: result.order,
+      duplicate: result.deduped,
     });
   } catch (error: unknown) {
     console.error("Error updating payment:", error);

@@ -202,10 +202,12 @@ export async function PATCH(
         typeof updateData.description !== "undefined" ||
         typeof updateData.imageUrl !== "undefined" ||
         typeof updateData.price !== "undefined" ||
+        typeof updateData.minMarginPct !== "undefined" ||
         typeof updateData.category !== "undefined" ||
         typeof updateData.brand !== "undefined" ||
         typeof updateData.supplier !== "undefined" ||
         typeof updateData.stock !== "undefined" ||
+        typeof updateData.archived !== "undefined" ||
         typeof updateData.requiresLotTracking !== "undefined" ||
         typeof updateData.requiresExpiryDate !== "undefined")
     ) {
@@ -401,6 +403,14 @@ export async function PATCH(
         changes.brand = { from: existing?.brand ?? null, to: updated.brand ?? null };
         nonStockChanges.brand = changes.brand;
       }
+      const oldMinMarginPct =
+        existing?.minMarginPct != null ? Number(existing.minMarginPct) : null;
+      const updatedMinMarginPct =
+        updated.minMarginPct != null ? Number(updated.minMarginPct) : null;
+      if (typeof updateData.minMarginPct !== "undefined" && updatedMinMarginPct !== oldMinMarginPct) {
+        changes.minMarginPct = { from: oldMinMarginPct, to: updatedMinMarginPct };
+        nonStockChanges.minMarginPct = changes.minMarginPct;
+      }
       if (typeof updateData.requiresLotTracking !== "undefined" && Boolean(updateData.requiresLotTracking) !== Boolean(existing?.requiresLotTracking)) {
         changes.requiresLotTracking = { from: Boolean(existing?.requiresLotTracking), to: Boolean(updated.requiresLotTracking) };
         nonStockChanges.requiresLotTracking = changes.requiresLotTracking;
@@ -426,8 +436,10 @@ export async function PATCH(
           action: "PRODUCT_STOCK_UPDATE",
           entityType: "PRODUCT",
           entityId: updated.id,
+          request,
           meta: {
             name: updated.name,
+            sku: updated.sku ?? null,
             from: oldStock,
             to: newStock,
             delta: newStock - oldStock,
@@ -441,8 +453,10 @@ export async function PATCH(
           action: "PRODUCT_UPDATE",
           entityType: "PRODUCT",
           entityId: updated.id,
+          request,
           meta: {
             name: updated.name,
+            sku: updated.sku ?? null,
             changes: nonStockChanges,
             reason: editReason || null,
           },
@@ -455,7 +469,10 @@ export async function PATCH(
           action: "PRICE_MARGIN_OVERRIDE",
           entityType: "PRODUCT",
           entityId: updated.id,
+          request,
           meta: {
+            name: updated.name,
+            sku: updated.sku ?? null,
             reason,
             price: Number(updated.price),
             cost: Number(updated.cost),
@@ -504,6 +521,12 @@ export async function DELETE(
     const params = await context.params;
     const requestBody = (await request.json().catch(() => ({}))) as { reason?: unknown; note?: unknown };
     const deleteReason = String(requestBody.reason || requestBody.note || "").trim().slice(0, 280);
+    if (deleteReason.length < 5) {
+      return NextResponse.json(
+        { error: "Please provide a brief delete reason." },
+        { status: 400 },
+      );
+    }
     const product = await prisma.product.findUnique({
       where: { id: params.id },
       select: {
@@ -585,6 +608,7 @@ export async function DELETE(
         action: "PRODUCT_DELETE",
         entityType: "PRODUCT",
         entityId: product.id,
+        request,
         meta: {
           name: product.name,
           sku: product.sku ?? null,
@@ -642,7 +666,7 @@ export async function POST(
     const params = await context.params;
     const existing = await prisma.product.findUnique({
       where: { id: params.id },
-      select: { id: true, name: true, deletedAt: true, archived: true },
+      select: { id: true, name: true, sku: true, deletedAt: true, archived: true },
     });
     if (!existing) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
@@ -668,7 +692,13 @@ export async function POST(
         action: "PRODUCT_RESTORE",
         entityType: "PRODUCT",
         entityId: existing.id,
-        meta: { name: existing.name },
+        request,
+        meta: {
+          name: existing.name,
+          sku: existing.sku ?? null,
+          previouslyArchived: Boolean(existing.archived),
+          restoreSource: "product-delete-undo",
+        },
       });
     } catch {
       // best-effort

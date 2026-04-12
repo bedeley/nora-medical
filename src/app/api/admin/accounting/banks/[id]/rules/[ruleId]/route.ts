@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 const patchSchema = z.object({
   name: z.string().min(1).max(120).optional(),
@@ -68,37 +69,39 @@ export async function PATCH(
       },
       include: { account: true },
     });
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_RULE_UPDATED",
-        entityType: "BANK_MATCH_RULE",
-        entityId: rule.id,
-        meta: JSON.stringify({
-          bankAccountId: resolvedParams.id,
-          before: {
-            name: existing.name,
-            matchText: existing.matchText,
-            matchMode: existing.matchMode,
-            accountId: existing.accountId ?? null,
-            minAmount: existing.minAmount ?? null,
-            maxAmount: existing.maxAmount ?? null,
-            amountTolerance: existing.amountTolerance ?? 0,
-            priority: existing.priority ?? 0,
-            isActive: existing.isActive,
-          },
-          after: {
-            name: rule.name,
-            matchText: rule.matchText,
-            matchMode: rule.matchMode,
-            accountId: rule.accountId ?? null,
-            minAmount: rule.minAmount ?? null,
-            maxAmount: rule.maxAmount ?? null,
-            amountTolerance: rule.amountTolerance ?? 0,
-            priority: rule.priority ?? 0,
-            isActive: rule.isActive,
-          },
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_RULE_UPDATED",
+      entityType: "BANK_MATCH_RULE",
+      entityId: rule.id,
+      section: "rules",
+      operation: "update",
+      resultSummary: `Updated bank match rule ${rule.name}.`,
+      meta: {
+        bankAccountId: resolvedParams.id,
+        before: {
+          name: existing.name,
+          matchText: existing.matchText,
+          matchMode: existing.matchMode,
+          accountId: existing.accountId ?? null,
+          minAmount: existing.minAmount ?? null,
+          maxAmount: existing.maxAmount ?? null,
+          amountTolerance: existing.amountTolerance ?? 0,
+          priority: existing.priority ?? 0,
+          isActive: existing.isActive,
+        },
+        after: {
+          name: rule.name,
+          matchText: rule.matchText,
+          matchMode: rule.matchMode,
+          accountId: rule.accountId ?? null,
+          minAmount: rule.minAmount ?? null,
+          maxAmount: rule.maxAmount ?? null,
+          amountTolerance: rule.amountTolerance ?? 0,
+          priority: rule.priority ?? 0,
+          isActive: rule.isActive,
+        },
       },
     });
 
@@ -136,20 +139,22 @@ export async function DELETE(
     await prisma.bankMatchRule.delete({
       where: { id: resolvedParams.ruleId },
     });
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_RULE_DELETED",
-        entityType: "BANK_MATCH_RULE",
-        entityId: existing.id,
-        meta: JSON.stringify({
-          bankAccountId: resolvedParams.id,
-          name: existing.name,
-          matchText: existing.matchText,
-          matchMode: existing.matchMode,
-          accountId: existing.accountId ?? null,
-          priority: existing.priority ?? 0,
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_RULE_DELETED",
+      entityType: "BANK_MATCH_RULE",
+      entityId: existing.id,
+      section: "rules",
+      operation: "delete",
+      resultSummary: `Deleted bank match rule ${existing.name}.`,
+      meta: {
+        bankAccountId: resolvedParams.id,
+        name: existing.name,
+        matchText: existing.matchText,
+        matchMode: existing.matchMode,
+        accountId: existing.accountId ?? null,
+        priority: existing.priority ?? 0,
       },
     });
     return NextResponse.json({ ok: true });

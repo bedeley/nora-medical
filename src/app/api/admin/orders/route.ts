@@ -390,12 +390,6 @@ export async function POST(req: Request) {
       if (p.archived) {
         return NextResponse.json({ error: `Product archived: ${p.name}` }, { status: 400 });
       }
-      if (p.stock < it.quantity) {
-        return NextResponse.json(
-          { error: `Not enough stock for ${p.name}. Only ${p.stock} in stock.` },
-          { status: 400 }
-        );
-      }
       if (p.requiresLotTracking || p.requiresExpiryDate) {
         const lotAvailable = Math.max(0, Math.floor(Number(lotAvailableByProduct.get(p.id) || 0)));
         const effectiveAvailable = Math.min(Math.max(0, Math.floor(Number(p.stock || 0))), lotAvailable);
@@ -407,6 +401,11 @@ export async function POST(req: Request) {
             { status: 400 },
           );
         }
+      } else if (p.stock < it.quantity) {
+        return NextResponse.json(
+          { error: `Not enough stock for ${p.name}. Only ${p.stock} in stock.` },
+          { status: 400 }
+        );
       }
     }
 

@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
+import { buildCustomerActorTargetMeta } from "@/lib/customer-account-policy";
 
 const schema = z.object({
   creditLimit: z.number().min(0),
@@ -38,6 +39,15 @@ export async function PUT(
     }
     const creditLimit = Number(parsed.data.creditLimit);
 
+    const [existing, customer] = await Promise.all([
+      prisma.balance.findUnique({ where: { userId }, select: { creditLimit: true } }),
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, name: true, role: true } }),
+    ]);
+    if (!customer) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+    const previousLimit = Number(existing?.creditLimit ?? 0);
+
     const updated = await prisma.balance.upsert({
       where: { userId },
       update: { creditLimit },
@@ -51,7 +61,22 @@ export async function PUT(
         action: "CUSTOMER_CREDIT_LIMIT_UPDATE",
         entityType: "USER",
         entityId: userId,
-        meta: { creditLimit },
+        request: req,
+        outcome: "SUCCESS",
+        meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: user?.id,
+            actorRole: user?.role,
+            targetId: userId,
+            targetRole: customer.role,
+          }),
+          previousLimit,
+          newLimit: creditLimit,
+          delta: creditLimit - previousLimit,
+          customerEmail: customer?.email ?? null,
+          customerName: customer?.name ?? null,
+          sourcePage: "admin/customers",
+        },
       });
     } catch {
       // best-effort

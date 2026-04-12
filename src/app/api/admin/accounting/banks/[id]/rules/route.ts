@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 const ruleSchema = z.object({
   name: z.string().min(1).max(120),
@@ -91,24 +92,26 @@ export async function POST(
       },
       include: { account: true },
     });
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_RULE_CREATED",
-        entityType: "BANK_MATCH_RULE",
-        entityId: rule.id,
-        meta: JSON.stringify({
-          bankAccountId: bankId,
-          name: rule.name,
-          matchMode: rule.matchMode,
-          matchText: rule.matchText,
-          accountId: rule.accountId ?? null,
-          minAmount: rule.minAmount ?? null,
-          maxAmount: rule.maxAmount ?? null,
-          amountTolerance: rule.amountTolerance ?? 0,
-          priority: rule.priority ?? 0,
-          isActive: rule.isActive,
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_RULE_CREATED",
+      entityType: "BANK_MATCH_RULE",
+      entityId: rule.id,
+      section: "rules",
+      operation: "create",
+      resultSummary: `Created bank match rule ${rule.name}.`,
+      meta: {
+        bankAccountId: bankId,
+        name: rule.name,
+        matchMode: rule.matchMode,
+        matchText: rule.matchText,
+        accountId: rule.accountId ?? null,
+        minAmount: rule.minAmount ?? null,
+        maxAmount: rule.maxAmount ?? null,
+        amountTolerance: rule.amountTolerance ?? 0,
+        priority: rule.priority ?? 0,
+        isActive: rule.isActive,
       },
     });
 

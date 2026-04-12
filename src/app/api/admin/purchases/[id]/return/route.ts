@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -138,13 +139,22 @@ export async function POST(
         productName: purchase.product?.name ?? "",
         productSku: purchase.product?.sku ?? "",
         unitCost: Number(purchase.unitCost || 0),
+        previousReceivedQuantity: receivedQty,
+        nextReceivedQuantity: nextReceived,
+        orderedQuantity: orderedQty,
+        stockBefore: currentStock,
+        stockAfter: currentStock - qty,
         nextStatus,
         supplier: purchase.supplier || null,
         supplierId: purchase.supplierId || null,
+        lotCode: lotCode || null,
+        note: note || null,
         creditId: credit.id,
         creditAmount,
       };
     });
+
+    const correlationId = randomUUID();
 
     try {
       await recordAuditLog({
@@ -153,16 +163,27 @@ export async function POST(
         entityType: "PURCHASE",
         entityId: result.purchaseId,
         meta: {
+          correlationId,
           productId: result.productId,
           productName: result.productName,
           productSku: result.productSku,
           quantity: qty,
+          previousReceivedQuantity: result.previousReceivedQuantity,
+          receivedQuantity: result.nextReceivedQuantity,
+          orderedQuantity: result.orderedQuantity,
+          remainingQuantity: Math.max(0, result.orderedQuantity - result.nextReceivedQuantity),
+          stockBefore: result.stockBefore,
+          stockAfter: result.stockAfter,
+          unitCost: Number(result.unitCost || 0),
+          amount: Number(result.unitCost || 0) * Number(qty),
           supplierId: result.supplierId,
           supplierName: result.supplier,
-          note: note || null,
+          note: result.note,
+          lotCode: result.lotCode,
           status: result.nextStatus,
           supplierPaymentId: result.creditId,
           supplierCreditAmount: result.creditAmount,
+          source: "PURCHASE_RETURN_TO_SUPPLIER",
         },
       });
     } catch {
@@ -181,6 +202,30 @@ export async function POST(
       }
     } catch (e) {
       console.warn("Accounting supplier return posting skipped:", e);
+      try {
+        await recordAuditLog({
+          actorId: user?.id ?? null,
+          action: "ACCOUNTING_POST_FAILED",
+          entityType: "PURCHASE",
+          entityId: result.purchaseId,
+          meta: {
+            correlationId,
+            reason: "purchase_return_post_failed",
+            message: e instanceof Error ? e.message : String(e),
+            purchaseId: result.purchaseId,
+            productId: result.productId,
+            productName: result.productName,
+            productSku: result.productSku,
+            supplierId: result.supplierId,
+            supplierName: result.supplier,
+            amount: Number(result.unitCost || 0) * Number(qty),
+            supplierPaymentId: result.creditId,
+            source: "PURCHASE_RETURN_TO_SUPPLIER",
+          },
+        });
+      } catch {
+        // best-effort
+      }
     }
 
     return NextResponse.json({ ok: true });

@@ -6,6 +6,8 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import { postExpenseEntry } from "@/lib/accounting-posting";
+import { getExpenseMutationState } from "@/lib/expense-admin";
 
 const SYSTEM_DRIVEN_EXPENSE_CODES = new Set(["5000", "6100", "6990"]);
 const SYSTEM_DRIVEN_EXPENSE_NAME_PATTERNS = [
@@ -86,12 +88,290 @@ function appendSettlementContext(note: string | undefined, payNow: boolean, paym
   return `${withoutExisting}\n${settlementText}`;
 }
 
-export async function PATCH(_req: Request, { params }: { params: { id: string } }) {
+function parseAuditMeta(meta: string | null) {
+  if (!meta) return null;
+  try {
+    return JSON.parse(meta) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+async function recordBlockedExpenseAction(params: {
+  actorId?: string | null;
+  request: Request;
+  action: "EXPENSE_UPDATE_BLOCKED" | "EXPENSE_DELETE_BLOCKED" | "EXPENSE_SETTLE_BLOCKED";
+  expenseId: string;
+  reason: string;
+  createdAt?: Date | null;
+  category?: string | null;
+  amount?: number | null;
+  payrollRunId?: string | null;
+  settlementCount?: number;
+  reversalCount?: number;
+  lockCode?: string | null;
+}) {
+  try {
+    await recordAuditLog({
+      actorId: params.actorId || null,
+      action: params.action,
+      entityType: "EXPENSE",
+      entityId: params.expenseId,
+      request: params.request,
+      outcome: "FAILED",
+      meta: {
+        sourcePage: "admin/expenses",
+        expenseId: params.expenseId,
+        reason: params.reason,
+        category: params.category ?? null,
+        amount: params.amount ?? null,
+        createdAt: params.createdAt?.toISOString() ?? null,
+        payrollRunId: params.payrollRunId ?? null,
+        settlementCount: params.settlementCount ?? 0,
+        reversalCount: params.reversalCount ?? 0,
+        lockCode: params.lockCode ?? null,
+      },
+    });
+  } catch {
+    // best-effort
+  }
+}
+
+async function getExpenseMutationFacts(expenseId: string) {
+  const expense = await prisma.expense.findUnique({
+    where: { id: expenseId },
+    select: {
+      id: true,
+      createdAt: true,
+      deletedAt: true,
+      isReversal: true,
+      amount: true,
+      category: true,
+      note: true,
+      reason: true,
+      vendor: true,
+      payrollRunId: true,
+      reversalOfId: true,
+    },
+  });
+  if (!expense) return null;
+
+  const [reversalCount, settlementCount] = await Promise.all([
+    prisma.expense.count({
+      where: {
+        reversalOfId: expenseId,
+        isReversal: true,
+        deletedAt: null,
+      },
+    }),
+    prisma.journalEntry.count({
+      where: {
+        sourceType: "EXPENSE",
+        sourceId: { startsWith: `${expenseId}:settlement:` },
+        status: "POSTED",
+      },
+    }),
+  ]);
+
+  const mutationState = getExpenseMutationState({
+    createdAt: expense.createdAt,
+    deletedAt: expense.deletedAt,
+    isReversal: expense.isReversal,
+    payrollRunId: expense.payrollRunId,
+    reversalCount,
+    settlementCount,
+  });
+
+  return {
+    expense,
+    reversalCount,
+    settlementCount,
+    mutationState,
+  };
+}
+
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  let expenseId = params?.id;
+  const user = session.user as AuthenticatedUser;
+  const role = user.role;
+  if (role !== "ADMIN" && role !== "ACCOUNTANT") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await params;
+  const facts = await getExpenseMutationFacts(id);
+  if (!facts || facts.expense.deletedAt) {
+    return NextResponse.json({ error: "Expense not found" }, { status: 404 });
+  }
+
+  const expenseId = facts.expense.id;
+  const [original, reversals, relatedEntries, auditLogs] = await Promise.all([
+    facts.expense.reversalOfId
+      ? prisma.expense.findUnique({
+          where: { id: facts.expense.reversalOfId },
+          select: {
+            id: true,
+            category: true,
+            amount: true,
+            vendor: true,
+            reason: true,
+            note: true,
+            createdAt: true,
+            deletedAt: true,
+          },
+        })
+      : Promise.resolve(null),
+    prisma.expense.findMany({
+      where: {
+        reversalOfId: expenseId,
+        isReversal: true,
+        deletedAt: null,
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        category: true,
+        amount: true,
+        vendor: true,
+        reason: true,
+        note: true,
+        createdAt: true,
+      },
+    }),
+    prisma.journalEntry.findMany({
+      where: {
+        sourceType: "EXPENSE",
+        OR: [
+          { sourceId: expenseId },
+          { sourceId: { startsWith: `${expenseId}:settlement:` } },
+        ],
+      },
+      orderBy: [{ entryDate: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        sourceId: true,
+        memo: true,
+        entryDate: true,
+        createdAt: true,
+        status: true,
+        lines: {
+          select: {
+            debit: true,
+            credit: true,
+            description: true,
+            account: {
+              select: {
+                code: true,
+                name: true,
+              },
+            },
+          },
+        },
+      },
+    }),
+    prisma.auditLog.findMany({
+      where: {
+        entityType: "EXPENSE",
+        entityId: expenseId,
+        deletedAt: null,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        action: true,
+        outcome: true,
+        meta: true,
+        createdAt: true,
+        actor: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  const settlementEntries = relatedEntries.filter((entry) =>
+    String(entry.sourceId || "").startsWith(`${expenseId}:settlement:`)
+  );
+  const settlementPaid = settlementEntries.reduce(
+    (sum, entry) => sum + entry.lines.reduce((lineSum, line) => lineSum + Number(line.debit || 0), 0),
+    0,
+  );
+  const originalAmount = Number(facts.expense.amount || 0);
+  const reversedAmount = Math.abs(reversals.reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  const remainingAfterReversals = Math.max(0, originalAmount - reversedAmount);
+
+  return NextResponse.json({
+    expense: {
+      ...facts.expense,
+      amount: Number(facts.expense.amount),
+      mutationLocked: facts.mutationState.mutationLocked,
+      canEdit: facts.mutationState.canEdit,
+      canDelete: facts.mutationState.canDelete,
+      canReverse: facts.mutationState.canReverse,
+      canSettle: facts.mutationState.canSettle,
+      lockCode: facts.mutationState.lockCode,
+      lockReason: facts.mutationState.lockReason,
+      settlementCount: facts.settlementCount,
+      reversalCount: facts.reversalCount,
+    },
+    original:
+      original && !original.deletedAt
+        ? {
+            ...original,
+            amount: Number(original.amount),
+          }
+        : null,
+    reversals: reversals.map((row) => ({
+      ...row,
+      amount: Number(row.amount),
+    })),
+    journals: relatedEntries.map((entry) => ({
+      ...entry,
+      lines: entry.lines.map((line) => ({
+        ...line,
+        debit: Number(line.debit),
+        credit: Number(line.credit),
+      })),
+    })),
+    audits: auditLogs.map((row) => ({
+      id: row.id,
+      action: row.action,
+      outcome: row.outcome,
+      createdAt: row.createdAt,
+      actor: row.actor,
+      meta: parseAuditMeta(row.meta),
+    })),
+    metrics: {
+      originalAmount,
+      settlementPaid,
+      settlementOutstanding: Math.max(0, originalAmount - settlementPaid),
+      reversedAmount,
+      remainingAfterReversals,
+    },
+  });
+}
+
+export async function PATCH(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { id: paramId } = await params;
+  let expenseId: string | undefined = paramId;
   const user = session.user as AuthenticatedUser;
   const role = user.role;
   const isAdmin = role === "ADMIN";
@@ -140,24 +420,28 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
       }
     }
 
-    const existing = await prisma.expense.findUnique({
-      where: { id: expenseId },
-      select: { createdAt: true, isReversal: true },
-    });
-    if (!existing) {
+    const facts = await getExpenseMutationFacts(expenseId);
+    if (!facts || facts.expense.deletedAt) {
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
-    if (existing.isReversal) {
+    const { expense: existing, mutationState, settlementCount, reversalCount } = facts;
+    if (mutationState.mutationLocked) {
+      await recordBlockedExpenseAction({
+        actorId: user.id,
+        request: _req,
+        action: "EXPENSE_UPDATE_BLOCKED",
+        expenseId,
+        reason: mutationState.lockReason || "Expense is locked.",
+        createdAt: existing.createdAt,
+        category: existing.category,
+        amount: Number(existing.amount),
+        payrollRunId: existing.payrollRunId,
+        settlementCount,
+        reversalCount,
+        lockCode: mutationState.lockCode,
+      });
       return NextResponse.json(
-        { error: "Reversal entries are locked. Please create a new adjustment instead." },
-        { status: 403 }
-      );
-    }
-    const ageMs = Date.now() - new Date(existing.createdAt).getTime();
-    const limitMs = 48 * 60 * 60 * 1000;
-    if (ageMs > limitMs) {
-      return NextResponse.json(
-        { error: "Edits are locked after 48 hours. Please create a reversal instead." },
+        { error: mutationState.lockReason || "Expense is locked." },
         { status: 403 }
       );
     }
@@ -186,7 +470,49 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
         ...updatableFields,
         note: nextNote,
       },
+      select: {
+        id: true,
+        amount: true,
+        category: true,
+        note: true,
+        reason: true,
+        createdAt: true,
+        isReversal: true,
+      },
     });
+
+    // Re-post journal entry if amount or category changed within the edit window.
+    // Void the old POSTED entry so ensureEntry will create a fresh one.
+    const amountChanged =
+      parsed.data.amount !== undefined &&
+      Number(parsed.data.amount) !== Number(existing.amount);
+    const categoryChanged =
+      parsed.data.category !== undefined &&
+      parsed.data.category !== existing.category;
+    if (amountChanged || categoryChanged) {
+      try {
+        const oldEntry = await prisma.journalEntry.findFirst({
+          where: { sourceType: "EXPENSE", sourceId: expenseId, status: "POSTED" },
+          select: { id: true },
+        });
+        if (oldEntry) {
+          await prisma.journalEntry.update({
+            where: { id: oldEntry.id },
+            data: { status: "VOID" },
+          });
+        }
+        await postExpenseEntry({
+          expenseId: updated.id,
+          amount: Number(updated.amount),
+          createdAt: updated.createdAt,
+          category: updated.category,
+          note: updated.note || updated.reason || updated.category,
+          isReversal: updated.isReversal ?? false,
+        });
+      } catch (e) {
+        console.warn("Journal re-post after expense edit failed:", e);
+      }
+    }
 
     try {
       await recordAuditLog({
@@ -194,7 +520,26 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
         action: "EXPENSE_UPDATE",
         entityType: "EXPENSE",
         entityId: expenseId,
-        meta: parsed.data,
+        request: _req,
+        meta: {
+          sourcePage: "admin/expenses",
+          expenseId,
+          previousAmount: Number(existing.amount),
+          previousCategory: existing.category,
+          previousNote: existing.note ?? null,
+          previousVendor: existing.vendor ?? null,
+          settlementCount,
+          reversalCount,
+          newAmount: Number(updated.amount),
+          newCategory: updated.category,
+          newNote: updated.note ?? null,
+          amountChanged,
+          categoryChanged,
+          journalReposted: amountChanged || categoryChanged,
+          reason: parsed.data.reason ?? null,
+          payNow: payNow ?? null,
+          paymentMode: paymentMode ?? null,
+        },
       });
     } catch {
       // best-effort
@@ -211,11 +556,15 @@ export async function PATCH(_req: Request, { params }: { params: { id: string } 
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const { id } = await params;
   const user = session.user as AuthenticatedUser;
   const role = user.role;
   const isAdmin = role === "ADMIN";
@@ -226,29 +575,33 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
   if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
 
   try {
-    const existing = await prisma.expense.findUnique({
-      where: { id: params.id },
-      select: { createdAt: true, isReversal: true },
-    });
-    if (!existing) {
+    const facts = await getExpenseMutationFacts(id);
+    if (!facts || facts.expense.deletedAt) {
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
     }
-    if (existing.isReversal) {
+    const { expense: existing, mutationState, settlementCount, reversalCount } = facts;
+    if (mutationState.mutationLocked) {
+      await recordBlockedExpenseAction({
+        actorId: user.id,
+        request: _req,
+        action: "EXPENSE_DELETE_BLOCKED",
+        expenseId: id,
+        reason: mutationState.lockReason || "Expense is locked.",
+        createdAt: existing.createdAt,
+        category: existing.category,
+        amount: Number(existing.amount),
+        payrollRunId: existing.payrollRunId,
+        settlementCount,
+        reversalCount,
+        lockCode: mutationState.lockCode,
+      });
       return NextResponse.json(
-        { error: "Reversal entries cannot be deleted. Please create a new adjustment instead." },
-        { status: 403 }
-      );
-    }
-    const ageMs = Date.now() - new Date(existing.createdAt).getTime();
-    const limitMs = 48 * 60 * 60 * 1000;
-    if (ageMs > limitMs) {
-      return NextResponse.json(
-        { error: "Deletes are locked after 48 hours. Please create a reversal instead." },
+        { error: mutationState.lockReason || "Expense is locked." },
         { status: 403 }
       );
     }
     await prisma.expense.update({
-      where: { id: params.id },
+      where: { id },
       data: { deletedAt: new Date() },
     });
 
@@ -257,7 +610,17 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
         actorId: user.id,
         action: "EXPENSE_DELETE",
         entityType: "EXPENSE",
-        entityId: params.id,
+        entityId: id,
+        request: _req,
+        meta: {
+          sourcePage: "admin/expenses",
+          expenseId: id,
+          category: existing.category,
+          amount: Number(existing.amount),
+          vendor: existing.vendor ?? null,
+          reason: existing.reason ?? null,
+          createdAt: existing.createdAt.toISOString(),
+        },
       });
     } catch {
       // best-effort
@@ -273,11 +636,15 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
   }
 }
 
-export async function POST(_req: Request, { params }: { params: { id: string } }) {
+export async function POST(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const { id } = await params;
   const user = session.user as AuthenticatedUser;
   const role = user.role;
   const isAdmin = role === "ADMIN";
@@ -291,8 +658,14 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
 
   try {
     const existing = await prisma.expense.findUnique({
-      where: { id: params.id },
-      select: { id: true, deletedAt: true },
+      where: { id },
+      select: {
+        id: true,
+        deletedAt: true,
+        category: true,
+        amount: true,
+        vendor: true,
+      },
     });
     if (!existing) {
       return NextResponse.json({ error: "Expense not found" }, { status: 404 });
@@ -301,7 +674,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       return NextResponse.json({ error: "Expense is not deleted" }, { status: 400 });
     }
     await prisma.expense.update({
-      where: { id: params.id },
+      where: { id },
       data: { deletedAt: null },
     });
 
@@ -310,7 +683,16 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
         actorId: user.id,
         action: "EXPENSE_RESTORE",
         entityType: "EXPENSE",
-        entityId: params.id,
+        entityId: id,
+        request: _req,
+        meta: {
+          sourcePage: "admin/expenses",
+          expenseId: id,
+          category: existing.category,
+          amount: Number(existing.amount),
+          vendor: existing.vendor ?? null,
+          restoredAt: new Date().toISOString(),
+        },
       });
     } catch {
       // best-effort

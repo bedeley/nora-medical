@@ -5,12 +5,13 @@ import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/email";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } },
+  context: { params: Promise<{ id: string }> | { id: string } },
 ) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -31,6 +32,7 @@ export async function POST(
 
   const url = new URL(req.url);
   const queryId = (url.searchParams.get("id") || "").trim();
+  const params = await context.params;
   let customerId = (params?.id || "").trim();
   if (!customerId) customerId = queryId;
   if (!customerId) {
@@ -132,11 +134,52 @@ export async function POST(
 
   const res = await sendEmail(to, subject, text);
   if (!res.ok) {
+    try {
+      await recordAuditLog({
+        actorId: user?.id,
+        action: "CUSTOMER_STATEMENT_EMAIL_FAILED",
+        entityType: "USER",
+        entityId: customerId,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          customerEmail: to,
+          customerName: customer.name ?? null,
+          outstandingBalance: balance,
+          storeCredit: credit,
+          totalOrdersValue: totalDue,
+          totalPaid,
+          error: res.error || "Failed to email statement",
+          sourcePage: "admin/customers",
+        },
+      });
+    } catch { /* best-effort */ }
     return NextResponse.json(
       { error: res.error || "Failed to email statement" },
       { status: 502 },
     );
   }
+
+  try {
+    await recordAuditLog({
+      actorId: user?.id,
+      action: "CUSTOMER_STATEMENT_EMAIL_SENT",
+      entityType: "USER",
+      entityId: customerId,
+      request: req,
+      outcome: "SUCCESS",
+      meta: {
+        customerEmail: to,
+        customerName: customer.name ?? null,
+        outstandingBalance: balance,
+        storeCredit: credit,
+        totalOrdersValue: totalDue,
+        totalPaid,
+        simulated: (res as { simulated?: boolean }).simulated === true,
+        sourcePage: "admin/customers",
+      },
+    });
+  } catch { /* best-effort */ }
 
   return NextResponse.json({
     ok: true,

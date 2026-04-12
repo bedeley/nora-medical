@@ -39,6 +39,8 @@ const schema = z.object({
   ),
 });
 
+const SEND_ELIGIBLE_STATUSES = new Set(["SUBMITTED", "SENT"]);
+
 export async function POST(
   req: Request,
   context: { params: Promise<{ id: string }> | { id: string } },
@@ -78,6 +80,24 @@ export async function POST(
   });
   if (!latestVersion) {
     return NextResponse.json({ error: "No tender version found. Save tender before sending." }, { status: 409 });
+  }
+  const tender = await prisma.tender.findUnique({
+    where: { id: params.id },
+    select: { id: true, status: true, tenderNumber: true, buyerName: true, _count: { select: { versions: true } } },
+  });
+  if (!tender) return NextResponse.json({ error: "Tender not found" }, { status: 404 });
+  if (!SEND_ELIGIBLE_STATUSES.has(tender.status)) {
+    return NextResponse.json(
+      {
+        error:
+          tender.status === "DRAFT"
+            ? "Submit the tender before sending."
+            : `Cannot send tender while status is ${tender.status}.`,
+        currentStatus: tender.status,
+        allowedStatuses: Array.from(SEND_ELIGIBLE_STATUSES),
+      },
+      { status: 409 },
+    );
   }
   if (requireApproval && !isProtectedAdmin) {
     const latestApproval = await prisma.auditLog.findFirst({
@@ -150,8 +170,40 @@ export async function POST(
     ],
   });
   if (!sent.ok) {
+    await prisma.auditLog.create({
+      data: {
+        actorId: user?.id || null,
+        action: "B2B_TENDER_SEND_FAILED",
+        entityType: "B2B_TENDER",
+        entityId: snapshot.id,
+        outcome: "FAILED",
+        meta: JSON.stringify({
+          sourcePage: "admin/b2b/tenders",
+          operation: "send_email",
+          tenderNumber: snapshot.tenderNumber,
+          buyerName: snapshot.buyerName,
+          before: { status: tender.status },
+          after: { status: tender.status },
+          delivery: {
+            to,
+            cc: cc || null,
+            toStatus: "FAILED",
+            ccStatus: cc ? "SKIPPED" : null,
+            error: sent.error || "Failed to send email",
+            channel: "email",
+            latestVersionNo: latestVersion.versionNo,
+            requestedVersionNo: parsed.data.versionNo || latestVersion.versionNo,
+          },
+          actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
+        }),
+      },
+    });
     return NextResponse.json({ error: sent.error || "Failed to send email" }, { status: 500 });
   }
+
+  // BUG-2 FIX: CC failure is a non-blocking warning — primary send already succeeded.
+  // We proceed to update DB state and return ccWarning in the response so the UI can surface it.
+  let ccWarning: string | null = null;
   if (cc) {
     const ccResult = await sendEmail(cc, subject, text, html, {
       attachments: [
@@ -163,7 +215,8 @@ export async function POST(
       ],
     });
     if (!ccResult.ok) {
-      return NextResponse.json({ error: ccResult.error || "Failed to send CC email" }, { status: 500 });
+      ccWarning = ccResult.error || "CC email could not be delivered";
+      console.warn(`[tender-email] CC delivery failed for tender ${snapshot.id}: ${ccWarning}`);
     }
   }
 
@@ -174,12 +227,6 @@ export async function POST(
     sentAt: now,
     updatedAt: now,
   };
-  const tender = await prisma.tender.findUnique({
-    where: { id: snapshot.id },
-    select: { id: true, _count: { select: { versions: true } } },
-  });
-  if (!tender) return NextResponse.json({ error: "Tender not found" }, { status: 404 });
-
   await prisma.tender.update({
     where: { id: snapshot.id },
     data: {
@@ -201,8 +248,9 @@ export async function POST(
                   recipientType: "CC" as const,
                   email: cc,
                   deliveryChannel: "EMAIL" as const,
-                  deliveryStatus: "SENT" as const,
-                  lastSentAt: new Date(now),
+                  deliveryStatus: ccWarning ? ("FAILED" as const) : ("SENT" as const),
+                  lastSentAt: ccWarning ? null : new Date(now),
+                  lastError: ccWarning || null,
                   sentById: user?.id || null,
                 },
               ]
@@ -217,7 +265,7 @@ export async function POST(
       versionNo: (tender._count.versions || 0) + 1,
       status: "SENT",
       snapshot: updatedSnapshot as unknown as object,
-      changeNote: "Tender sent via email",
+      changeNote: tender.status === "SENT" ? "Tender resent via email" : "Tender sent via email",
       createdById: user?.id || null,
     },
   });
@@ -225,21 +273,34 @@ export async function POST(
   await prisma.auditLog.create({
     data: {
       actorId: user?.id || null,
-      action: "B2B_TENDER_SENT",
+      action: tender.status === "SENT" ? "B2B_TENDER_RESENT" : "B2B_TENDER_SENT",
       entityType: "B2B_TENDER",
       entityId: snapshot.id,
       meta: JSON.stringify({
+        sourcePage: "admin/b2b/tenders",
+        operation: tender.status === "SENT" ? "resend_email" : "send_email",
+        before: { status: tender.status },
+        after: { status: "SENT" },
+        tenderNumber: snapshot.tenderNumber,
+        buyerName: snapshot.buyerName,
         snapshot: updatedSnapshot,
         delivery: {
           to,
           cc: cc || null,
+          toStatus: "SENT",
+          ccStatus: cc ? (ccWarning ? "FAILED" : "SENT") : null,
+          ccWarning: ccWarning || null,
           channel: "email",
           at: now,
-          versionNo: parsed.data.versionNo || null,
+          latestVersionNo: latestVersion.versionNo,
+          requestedVersionNo: parsed.data.versionNo || latestVersion.versionNo,
         },
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
+        outcome: ccWarning ? "PARTIAL" : "SUCCESS",
       }),
+      outcome: ccWarning ? "PARTIAL" : "SUCCESS",
     },
   });
 
-  return NextResponse.json({ ok: true, snapshot: updatedSnapshot });
+  return NextResponse.json({ ok: true, snapshot: updatedSnapshot, ccWarning: ccWarning || undefined });
 }

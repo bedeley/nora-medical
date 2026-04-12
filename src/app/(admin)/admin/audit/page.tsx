@@ -187,10 +187,15 @@ const HR_SOURCE_PAGE_OPTIONS = [
   { value: "admin/accounting/reports/trial-balance", label: "Accounting Trial Balance" },
   { value: "admin/accounting/reports/balance-sheet", label: "Accounting Balance Sheet" },
   { value: "admin/accounting/reports/scheduled", label: "Accounting Scheduled Reports" },
+  { value: "admin/b2b/procurement", label: "B2B Procurement" },
+  { value: "admin/b2b/procurement/analytics", label: "B2B Procurement Analytics" },
+  { value: "admin/b2b/tenders", label: "B2B Tenders" },
+  { value: "admin/expenses", label: "Expenses" },
   { value: "admin/orders", label: "Orders" },
   { value: "admin/orders/otc", label: "OTC Orders" },
   { value: "admin/otc/shift-close", label: "OTC Shift Close" },
   { value: "admin/users", label: "Users & Roles" },
+  { value: "admin/movements", label: "Inventory Movements" },
   { value: "admin/health/incidents", label: "Health Incidents" },
   { value: "admin/hr/hiring", label: "HR Hiring" },
   { value: "admin/hr/reviews", label: "HR Reviews" },
@@ -734,7 +739,7 @@ function AdminAuditContent() {
   const { data: session } = useSession();
   const currentRole = String((session?.user as { role?: string } | undefined)?.role || "");
   const isAdmin = currentRole === "ADMIN";
-  const canManageTasks = isAdmin || currentRole === "ACCOUNTANT";
+  const canManageTasks = isAdmin;
   const searchParams = useSearchParams();
   const scopedView = (() => {
     const raw = (searchParams.get("scope") || "").toLowerCase();
@@ -1118,7 +1123,7 @@ function AdminAuditContent() {
   const rows = useMemo(() => data?.items ?? [], [data]);
   const riskSettings = data?.riskSettings;
   const assigneeOptions = useMemo(
-    () => filterActors.filter((actor) => actor.role === "ADMIN" || actor.role === "ACCOUNTANT"),
+    () => filterActors.filter((actor) => actor.role === "ADMIN"),
     [filterActors],
   );
   const parseRowTask = (row: AuditRow) => {
@@ -1911,7 +1916,7 @@ function AdminAuditContent() {
 
   const openTaskDialogForRow = (row: AuditRow) => {
     if (!canManageTasks) {
-      toast.error("Only ADMIN/ACCOUNTANT can manage review tasks.");
+      toast.error("Only ADMIN can manage review tasks.");
       return;
     }
     const task = parseRowTask(row);
@@ -1928,7 +1933,7 @@ function AdminAuditContent() {
   };
   const openBulkTaskDialog = () => {
     if (!canManageTasks) {
-      toast.error("Only ADMIN/ACCOUNTANT can manage review tasks.");
+      toast.error("Only ADMIN can manage review tasks.");
       return;
     }
     const selectedRows = rows.filter((row) => selectedRowIds.has(row.id));
@@ -6852,7 +6857,7 @@ function AdminAuditContent() {
               </select>
             </label>
             <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">Assignee (Admin/Accountant)</span>
+              <span className="text-xs text-muted-foreground">Assignee (Admin)</span>
               <select
                 className="h-9 w-full rounded border bg-background px-2 text-sm"
                 value={taskDraft.assigneeId}
@@ -7045,7 +7050,7 @@ function AdminAuditContent() {
             <DialogTitle>Send escalation notification?</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 text-sm text-muted-foreground">
-            <p>This sends an escalation digest to configured admin/accounting recipients.</p>
+            <p>This sends an escalation digest to configured admin recipients.</p>
             <p>
               Snapshot: Critical {queueSummary.critical || 0}, Needs review {queueSummary.needsReview || 0},
               Overdue tasks {queueSummary.overdueTasks || 0}, Needs assignment {queueSummary.archiveNeedsAssignment || 0}.
@@ -7066,6 +7071,26 @@ function AdminAuditContent() {
 }
 
 export default function AdminAuditPage() {
+  const { data: session, status } = useSession();
+  const currentRole = String((session?.user as { role?: string } | undefined)?.role || "");
+  const isAdmin = currentRole === "ADMIN";
+  if (status === "loading") {
+    return <div className="p-6 text-sm text-muted-foreground">Loading audit log...</div>;
+  }
+  if (!isAdmin) {
+    return (
+      <section className="p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Access Restricted</CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            The audit log is restricted to admin users.
+          </CardContent>
+        </Card>
+      </section>
+    );
+  }
   return (
     <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading audit log…</div>}>
       <AdminAuditContent />

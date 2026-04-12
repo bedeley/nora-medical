@@ -6,6 +6,7 @@ import {
   DialogTrigger,
   DialogContent,
   DialogHeader,
+  DialogDescription,
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
@@ -233,6 +234,13 @@ export default function AddExpenseDialog({
           <DialogTitle>
             {mode === "edit" ? "Edit Expense" : isReversal ? "Reverse Expense" : "Add New Expense"}
           </DialogTitle>
+          <DialogDescription>
+            {mode === "edit"
+              ? "Update the coded expense details. Changes are audit logged and some posted expenses may be locked."
+              : isReversal
+              ? "Create a reversing entry for the selected expense. Reversals require a reason and a negative amount."
+              : "Record a coded operating expense. Leave Pay now off to track it as accrued and settle it later."}
+          </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="grid gap-3 mt-2">
           <div>

@@ -5,11 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
-}
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 export async function DELETE(
   req: Request,
@@ -17,7 +13,7 @@ export async function DELETE(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const currentUser = user as AuthenticatedUser;

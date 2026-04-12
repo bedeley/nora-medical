@@ -11,6 +11,11 @@ const bodySchema = z.object({
   reason: z.string().max(300).optional().nullable(),
 });
 
+function getSourcePage(req: Request, fallback: string) {
+  const value = String(new URL(req.url).searchParams.get("sourcePage") || "").trim();
+  return value || fallback;
+}
+
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
   return role === "ADMIN" || role === "ACCOUNTANT";
@@ -21,6 +26,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const resolvedParams = await params;
+  const sourcePage = getSourcePage(req, "admin/inventory-planning/[id]");
   const session = await getServerSession(authOptions);
   if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -47,7 +53,7 @@ export async function POST(
       where: { id: resolvedParams.id },
       data: {
         status: "dismissed",
-        reason: parsed.data.reason ?? undefined,
+        reason: parsed.data.reason?.trim() ? parsed.data.reason.trim() : null,
       },
     });
 
@@ -57,7 +63,15 @@ export async function POST(
         action: "INVENTORY_SUGGESTION_DISMISS",
         entityType: "RESTOCK_SUGGESTION",
         entityId: suggestion.id,
-        meta: { productId: suggestion.productId },
+        request: req,
+        meta: {
+          productId: suggestion.productId,
+          sourcePage,
+          dismissedReason: parsed.data.reason?.trim() ? parsed.data.reason.trim() : null,
+          suggestedQty: suggestion.suggestedQty,
+          status: suggestion.status,
+          resultSummary: `Dismissed restock suggestion ${suggestion.id}.`,
+        },
       });
     } catch {
       // best-effort

@@ -7,6 +7,7 @@ import { PDFDocument, StandardFonts, rgb, type PDFPage } from "pdf-lib";
 import { evaluateAuditRisk, matchesRiskMode, type AuditRiskMode } from "@/lib/audit-risk";
 import type { AuditRiskSettings } from "@/lib/audit-risk-config";
 import { getEffectiveAuditRiskSettings } from "@/lib/audit-risk-settings.server";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 export const runtime = "nodejs";
 
@@ -426,11 +427,7 @@ function summarizeRisk(logs: RawAuditLog[], settings: AuditRiskSettings): AuditR
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  const role = user?.role;
-  const isAdmin = role === "ADMIN";
-  const isStaff = role === "STAFF";
-  const isAccountant = role === "ACCOUNTANT";
-  if (!session || (!isAdmin && !isStaff && !isAccountant)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -547,15 +544,6 @@ export async function GET(req: Request) {
         OR: [{ actor: { role: actorType as "CUSTOMER" | "ADMIN" | "STAFF" | "ACCOUNTANT" } }, { meta: { contains: `"actorType":"${actorType}"` } }],
       });
     }
-  }
-  if (isStaff) {
-    andWhere.push({
-      NOT: [
-        { entityType: { in: ["PAYROLL_RUN", "PAYSLIP", "COMPENSATION"] } },
-        { action: { startsWith: "PAYROLL_" } },
-        { action: { startsWith: "COMPENSATION_" } },
-      ],
-    });
   }
   if (scope === "accounting_periods") {
     andWhere.push({

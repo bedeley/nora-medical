@@ -2,19 +2,28 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
+import {
+  computeInventoryPlanning,
+  type InventoryPlanningPlanInput,
+} from "@/lib/inventory-planning";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 
+function getSourcePage(req: Request, fallback: string) {
+  const value = String(new URL(req.url).searchParams.get("sourcePage") || "").trim();
+  return value || fallback;
+}
+
 const patchSchema = z.object({
   reorderPoint: z.number().int().min(0).optional(),
-  fallbackReorderPoint: z.number().int().min(0).optional(),
+  fallbackReorderPoint: z.number().int().min(0).optional().nullable(),
   safetyStock: z.number().int().min(0).optional(),
   leadTimeDays: z.number().int().min(1).max(365).optional(),
   reviewPeriodDays: z.number().int().min(1).max(365).optional(),
   minOrderQty: z.number().int().min(1).optional(),
-  approvalThresholdQty: z.number().int().min(1).optional(),
+  approvalThresholdQty: z.number().int().min(1).optional().nullable(),
   targetStock: z.number().int().min(0).optional(),
   notes: z.string().max(500).optional().nullable(),
 });
@@ -26,11 +35,6 @@ function canView(user?: AuthenticatedUser | null) {
 
 function canEdit(user?: AuthenticatedUser | null) {
   return user?.role === "ADMIN";
-}
-
-function roundUpToStep(value: number, step: number) {
-  if (step <= 1) return Math.ceil(value);
-  return Math.ceil(value / step) * step;
 }
 
 async function getDefaultReorderPoint() {
@@ -143,42 +147,21 @@ export async function GET(
     leadTimeMinDays != null && leadTimeMaxDays != null
       ? Math.max(0, (leadTimeMaxDays - leadTimeMinDays) / 2)
       : 0;
-  const fallbackReorderPoint = await getDefaultReorderPoint();
-  const autoSafetyStock =
-    avgDailyDemand > 0 ? Math.ceil(avgDailyDemand * autoLeadTime * 0.5 + avgDailyDemand * variabilityDays) : 0;
-  const autoReorderPoint =
-    avgDailyDemand > 0 ? Math.ceil(avgDailyDemand * autoLeadTime) + autoSafetyStock : fallbackReorderPoint;
   const autoMinOrderQty = primaryLink?.minOrderQty ?? product.supplierRef?.defaultMinOrderQty ?? 1;
   const autoPackSize = primaryLink?.packSize ?? product.supplierRef?.defaultPackSize ?? 1;
-  const available = product.stock - reserved + onOrder;
-  const plan = product.inventoryPlan;
-  const effectivePlan = plan
-    ? {
-        reorderPoint:
-          avgDailyDemand <= 0 && plan.fallbackReorderPoint != null
-            ? plan.fallbackReorderPoint
-            : plan.reorderPoint,
-        safetyStock: plan.safetyStock,
-        leadTimeDays: plan.leadTimeDays,
-        reviewPeriodDays: plan.reviewPeriodDays,
-        minOrderQty: plan.minOrderQty,
-        approvalThresholdQty: plan.approvalThresholdQty ?? null,
-        targetStock: plan.targetStock,
-      }
-    : {
-        reorderPoint: autoReorderPoint,
-        safetyStock: autoSafetyStock,
-        leadTimeDays: autoLeadTime,
-        reviewPeriodDays: 60,
-        minOrderQty: autoMinOrderQty,
-        approvalThresholdQty: null,
-        targetStock: 0,
-      };
-  const roundStep = Math.max(1, autoPackSize);
-  const suggestedQty =
-    suggestion?.suggestedQty != null
-      ? Number(suggestion.suggestedQty)
-      : roundUpToStep(Math.max(0, effectivePlan.reorderPoint - available), roundStep);
+  const plan = product.inventoryPlan as InventoryPlanningPlanInput | null;
+  const computed = computeInventoryPlanning({
+    stock: product.stock,
+    reserved,
+    onOrder,
+    avgDailyDemand,
+    defaultReorderPoint: await getDefaultReorderPoint(),
+    supplierLeadTimeDays: autoLeadTime,
+    leadTimeVariabilityDays: variabilityDays,
+    autoMinOrderQty,
+    autoPackSize,
+    plan,
+  });
 
   return NextResponse.json({
     row: {
@@ -190,7 +173,7 @@ export async function GET(
       stock: product.stock,
       reserved,
       onOrder,
-      available,
+      available: computed.available,
       plan: plan
         ? {
           reorderPoint: plan.reorderPoint,
@@ -203,12 +186,13 @@ export async function GET(
           targetStock: plan.targetStock,
         }
         : null,
-      effectivePlan,
+      effectivePlan: computed.effectivePlan,
       planSource: plan ? "manual" : "auto",
       demand: snapshot
         ? {
             periodStart: snapshot.periodStart.toISOString(),
             periodEnd: snapshot.periodEnd.toISOString(),
+            capturedAt: snapshot.createdAt.toISOString(),
             unitsSold: snapshot.unitsSold,
             avgDailyDemand: snapshot.avgDailyDemand.toString(),
           }
@@ -220,11 +204,11 @@ export async function GET(
             reason: suggestion.reason,
             createdAt: suggestion.createdAt.toISOString(),
           }
-        : suggestedQty > 0
+        : computed.shouldSuggest
         ? {
             id: null,
-            suggestedQty,
-            reason: "Auto-calculated based on demand and lead time.",
+            suggestedQty: computed.suggestedQty,
+            reason: computed.reason,
             createdAt: null,
           }
         : null,
@@ -237,6 +221,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const resolvedParams = await params;
+  const sourcePage = getSourcePage(req, "admin/inventory-planning/[id]");
   const session = await getServerSession(authOptions);
   if (!session || !canEdit(session.user as AuthenticatedUser)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -261,7 +246,23 @@ export async function PATCH(
 
     const product = await prisma.product.findUnique({
       where: { id: resolvedParams.id },
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        inventoryPlan: {
+          select: {
+            reorderPoint: true,
+            fallbackReorderPoint: true,
+            safetyStock: true,
+            leadTimeDays: true,
+            reviewPeriodDays: true,
+            minOrderQty: true,
+            approvalThresholdQty: true,
+            targetStock: true,
+            notes: true,
+          },
+        },
+      },
     });
     if (!product) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
@@ -289,12 +290,49 @@ export async function PATCH(
     });
 
     try {
+      const previousPlan = product.inventoryPlan;
+      const nextPlanSnapshot = {
+        reorderPoint: plan.reorderPoint,
+        fallbackReorderPoint: plan.fallbackReorderPoint,
+        safetyStock: plan.safetyStock,
+        leadTimeDays: plan.leadTimeDays,
+        reviewPeriodDays: plan.reviewPeriodDays,
+        minOrderQty: plan.minOrderQty,
+        approvalThresholdQty: plan.approvalThresholdQty,
+        targetStock: plan.targetStock,
+        notes: plan.notes,
+      };
+      const changedFields = Object.keys(nextPlanSnapshot).filter((key) => {
+        const previousValue = previousPlan ? (previousPlan as Record<string, unknown>)[key] ?? null : null;
+        const nextValue = (nextPlanSnapshot as Record<string, unknown>)[key] ?? null;
+        return JSON.stringify(previousValue) !== JSON.stringify(nextValue);
+      });
       await recordAuditLog({
         actorId: (session.user as AuthenticatedUser).id,
         action: "INVENTORY_PLAN_UPDATE",
         entityType: "PRODUCT",
         entityId: product.id,
-        meta: { planId: plan.id, name: product.name },
+        request: req,
+        meta: {
+          planId: plan.id,
+          name: product.name,
+          sourcePage,
+          changedFields,
+          previousPlan: previousPlan
+            ? {
+                reorderPoint: previousPlan.reorderPoint,
+                fallbackReorderPoint: previousPlan.fallbackReorderPoint,
+                safetyStock: previousPlan.safetyStock,
+                leadTimeDays: previousPlan.leadTimeDays,
+                reviewPeriodDays: previousPlan.reviewPeriodDays,
+                minOrderQty: previousPlan.minOrderQty,
+                approvalThresholdQty: previousPlan.approvalThresholdQty,
+                targetStock: previousPlan.targetStock,
+              }
+            : null,
+          updatedPlan: nextPlanSnapshot,
+          resultSummary: `Updated inventory plan for ${product.name}.`,
+        },
       });
     } catch {
       // best-effort
@@ -304,5 +342,91 @@ export async function PATCH(
   } catch (error) {
     console.error("Inventory plan update error:", error);
     return NextResponse.json({ error: "Failed to update inventory plan" }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const resolvedParams = await params;
+  const sourcePage = getSourcePage(req, "admin/inventory-planning/[id]");
+  const session = await getServerSession(authOptions);
+  if (!session || !canEdit(session.user as AuthenticatedUser)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  }
+  const limited = await rateLimit(req, "admin-inventory-plan-reset", 60_000, 20);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
+  try {
+    const product = await prisma.product.findUnique({
+      where: { id: resolvedParams.id },
+      select: {
+        id: true,
+        name: true,
+        inventoryPlan: {
+          select: {
+            id: true,
+            reorderPoint: true,
+            fallbackReorderPoint: true,
+            safetyStock: true,
+            leadTimeDays: true,
+            reviewPeriodDays: true,
+            minOrderQty: true,
+            approvalThresholdQty: true,
+            targetStock: true,
+            notes: true,
+          },
+        },
+      },
+    });
+    if (!product) {
+      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    }
+    if (!product.inventoryPlan) {
+      return NextResponse.json({ ok: true, reset: false, message: "Plan already uses auto mode." });
+    }
+
+    const previousPlan = product.inventoryPlan;
+    await prisma.inventoryPlan.delete({
+      where: { productId: product.id },
+    });
+
+    try {
+      await recordAuditLog({
+        actorId: (session.user as AuthenticatedUser).id,
+        action: "INVENTORY_PLAN_RESET",
+        entityType: "PRODUCT",
+        entityId: product.id,
+        request: req,
+        meta: {
+          sourcePage,
+          previousPlan: {
+            reorderPoint: previousPlan.reorderPoint,
+            fallbackReorderPoint: previousPlan.fallbackReorderPoint,
+            safetyStock: previousPlan.safetyStock,
+            leadTimeDays: previousPlan.leadTimeDays,
+            reviewPeriodDays: previousPlan.reviewPeriodDays,
+            minOrderQty: previousPlan.minOrderQty,
+            approvalThresholdQty: previousPlan.approvalThresholdQty,
+            targetStock: previousPlan.targetStock,
+            notes: previousPlan.notes,
+          },
+          resultSummary: `Reset inventory plan for ${product.name} to auto mode.`,
+        },
+      });
+    } catch {
+      // best-effort
+    }
+
+    return NextResponse.json({ ok: true, reset: true });
+  } catch (error) {
+    console.error("Inventory plan reset error:", error);
+    return NextResponse.json({ error: "Failed to reset inventory plan" }, { status: 500 });
   }
 }

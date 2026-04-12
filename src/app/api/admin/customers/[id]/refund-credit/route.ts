@@ -10,6 +10,10 @@ import { postStoreCreditPayoutEntry } from "@/lib/accounting-posting";
 import { isFeatureEnabled } from "@/lib/features";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import {
+  buildCustomerActorTargetMeta,
+  canApproveEmployeeCustomerFinancialChange,
+} from "@/lib/customer-account-policy";
 
 const refundSchema = z.object({
   amount: z.number().positive(),
@@ -20,7 +24,7 @@ const refundSchema = z.object({
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> | { id: string } }
 ) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -42,6 +46,7 @@ export async function POST(
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 
+  const params = await context.params;
   const body = await req.json().catch(() => null) as { userId?: string } | null;
   const userId = String(params.id || body?.userId || "").trim();
   if (!userId) {
@@ -62,8 +67,44 @@ export async function POST(
     });
     const customer = await prisma.user.findUnique({
       where: { id: userId },
-      select: { name: true, email: true },
+      select: { id: true, name: true, email: true, role: true },
     });
+    if (!customer) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+
+    if (
+      !canApproveEmployeeCustomerFinancialChange({
+        actorRole: user.role,
+        targetRole: customer.role,
+      })
+    ) {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "STORE_CREDIT_REFUND_DENIED",
+        entityType: "USER",
+        entityId: userId,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: user.id,
+            actorRole: user.role,
+            targetId: userId,
+            targetRole: customer.role,
+          }),
+          sourcePage: "admin/customers",
+          sourceRoute: `/api/admin/customers/${userId}/refund-credit`,
+          amount,
+          method,
+          reason: "ADMIN_APPROVAL_REQUIRED_FOR_EMPLOYEE_CUSTOMER",
+        },
+      });
+      return NextResponse.json(
+        { error: "Admin approval is required to refund store credit on employee-owned accounts." },
+        { status: 403 },
+      );
+    }
 
     // Compute store credit using the same semantics as /api/balance:
     // credit from returns/adjustments, minus AUTO_APPLY applications and
@@ -201,10 +242,20 @@ export async function POST(
         action: "STORE_CREDIT_REFUND",
         entityType: "PAYMENT",
         entityId: payment.id,
+        request: req,
+        outcome: "SUCCESS",
         meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: user.id,
+            actorRole: user.role,
+            targetId: userId,
+            targetRole: customer.role,
+          }),
           customerName: customer?.name ?? null,
           customerEmail: customer?.email ?? null,
           customerId: userId,
+          sourcePage: "admin/customers",
+          sourceRoute: `/api/admin/customers/${userId}/refund-credit`,
           amount,
           method,
           reference,

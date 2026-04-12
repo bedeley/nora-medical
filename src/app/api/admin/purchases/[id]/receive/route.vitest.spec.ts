@@ -7,19 +7,21 @@ const {
   mockRateLimit,
   mockPrismaTransaction,
   mockPrismaProductFindUnique,
+  mockRecordAuditLog,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
   mockAssertSameOrigin: vi.fn(),
   mockRateLimit: vi.fn(),
   mockPrismaTransaction: vi.fn(),
   mockPrismaProductFindUnique: vi.fn(),
+  mockRecordAuditLog: vi.fn(),
 }));
 
 // ── Module mocks ──────────────────────────────────────────────────────────
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/origin", () => ({ assertSameOrigin: mockAssertSameOrigin }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mockRateLimit }));
-vi.mock("@/lib/audit-log", () => ({ recordAuditLog: vi.fn() }));
+vi.mock("@/lib/audit-log", () => ({ recordAuditLog: mockRecordAuditLog }));
 vi.mock("@/lib/stock-alerts", () => ({ notifyBackInStock: vi.fn() }));
 vi.mock("@/lib/accounting-posting", () => ({ postPurchaseReceiptEntry: vi.fn() }));
 vi.mock("@/lib/inventory-lots", () => ({
@@ -63,6 +65,7 @@ const mockSuccessResult = {
   },
   previousStatus: "APPROVED",
   productName: "Sterile Gloves",
+  productSku: "SG-001",
   oldStock: 100,
   newStock: 110,
   newCost: 5.0,
@@ -72,8 +75,9 @@ const mockSuccessResult = {
   nextStatus: "RECEIVED",
   supplier: "MedSupply Ltd",
   lotCode: "LOT-001",
+  lotNotes: null,
   supplierId: "sup-1",
-  receivedAt: new Date().toISOString(),
+  receivedAt: new Date("2026-04-08T12:00:00.000Z"),
   previousUnitCost: null,
 };
 
@@ -236,6 +240,20 @@ describe("POST /api/admin/purchases/[id]/receive – success", () => {
     expect(body.newStock).toBe(110);
     expect(body.delta).toBe(10);
     expect(body.nextStatus).toBe("RECEIVED");
+    expect(mockRecordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "PURCHASE_RECEIVE",
+        entityId: "purchase-1",
+        meta: expect.objectContaining({
+          productId: "prod-1",
+          productName: "Sterile Gloves",
+          productSku: "SG-001",
+          supplierId: "sup-1",
+          lotCode: "LOT-001",
+          source: "PURCHASE_RECEIVE",
+        }),
+      }),
+    );
   });
 
   it("returns 200 for partial receipt (delta < ordered)", async () => {

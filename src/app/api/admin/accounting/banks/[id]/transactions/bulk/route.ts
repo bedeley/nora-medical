@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -58,23 +59,35 @@ export async function PATCH(req: Request) {
     if (!parsed.data.type) {
       return NextResponse.json({ error: "type is required for SET_TYPE." }, { status: 400 });
     }
+    const matchedLocked = rows.filter((row) => row.matched);
+    if (matchedLocked.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot change type of ${matchedLocked.length} matched transaction(s). Unmatch them first.`,
+          matchedCount: matchedLocked.length,
+        },
+        { status: 400 },
+      );
+    }
     const result = await prisma.bankTransaction.updateMany({
       where: { id: { in: rows.map((row) => row.id) }, bankAccountId: bankId },
       data: { type: parsed.data.type },
     });
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_TXN_BULK_SET_TYPE",
-        entityType: "BANK_TRANSACTION",
-        entityId: bankId,
-        meta: JSON.stringify({
-          bankAccountId: bankId,
-          selectedIds: ids,
-          touchedIds: rows.map((row) => row.id),
-          nextType: parsed.data.type,
-          updated: result.count,
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_TXN_BULK_SET_TYPE",
+      entityType: "BANK_TRANSACTION",
+      entityId: bankId,
+      section: "transactions",
+      operation: "bulk_set_type",
+      resultSummary: `Updated type for ${result.count} bank transaction(s).`,
+      meta: {
+        bankAccountId: bankId,
+        selectedIds: ids,
+        touchedIds: rows.map((row) => row.id),
+        nextType: parsed.data.type,
+        updated: result.count,
       },
     });
     return NextResponse.json({ ok: true, updated: result.count });
@@ -94,18 +107,20 @@ export async function PATCH(req: Request) {
   const result = await prisma.bankTransaction.deleteMany({
     where: { id: { in: rows.map((row) => row.id) }, bankAccountId: bankId },
   });
-  await prisma.auditLog.create({
-    data: {
-      actorId: actor?.id || null,
-      action: "BANK_TXN_BULK_DELETE",
-      entityType: "BANK_TRANSACTION",
-      entityId: bankId,
-      meta: JSON.stringify({
-        bankAccountId: bankId,
-        selectedIds: ids,
-        deletedIds: rows.map((row) => row.id),
-        deleted: result.count,
-      }),
+  await recordAccountingBankAudit({
+    req,
+    actor,
+    action: "BANK_TXN_BULK_DELETE",
+    entityType: "BANK_TRANSACTION",
+    entityId: bankId,
+    section: "transactions",
+    operation: "bulk_delete",
+    resultSummary: `Deleted ${result.count} bank transaction(s).`,
+    meta: {
+      bankAccountId: bankId,
+      selectedIds: ids,
+      deletedIds: rows.map((row) => row.id),
+      deleted: result.count,
     },
   });
   return NextResponse.json({ ok: true, deleted: result.count });

@@ -9,6 +9,7 @@ import { formatCurrency, formatDateTimeGH } from "@/lib/currency";
 import { formatIdReadable, formatInvoiceNumber } from "@/lib/utils";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 type OrderItemWithProduct = {
   product: { name: string } | null;
@@ -75,13 +76,13 @@ function formatReceiptText(order: OrderForReceipt) {
 }
 
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: { id: string } }
 ) {
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!assertSameOrigin(_req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
-  const limited = await rateLimit(_req, "order-sms-receipt", 60_000, 4);
+  if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
+  const limited = await rateLimit(req, "order-sms-receipt", 60_000, 4);
   if (!limited.ok) return NextResponse.json({ error: "Too many requests" }, { status: 429 });
 
   const user = session.user as AuthenticatedUser;
@@ -101,6 +102,27 @@ export async function POST(
     }
 
     const body = formatReceiptText(order as unknown as OrderForReceipt);
+    const total = Number(order.total ?? 0);
+    const amountPaid = Number(order.amountPaid ?? 0);
+    const balance = normalizeBalance(Math.max(0, total - amountPaid));
+    const receiptMetaBase = {
+      orderId: order.id,
+      invoiceNumber: order.invoiceNumber ?? null,
+      orderStatus: order.status,
+      customerId: order.userId ?? null,
+      customerName: order.user?.name ?? null,
+      customerEmail: order.user?.email ?? null,
+      recipientPhone: phone,
+      receiptEmailFallback: order.user?.email ?? null,
+      total,
+      amountPaid,
+      balance,
+      requestedByName: user.name || user.email || null,
+      requestedByEmail: user.email || null,
+      requestedByRole: user.role || null,
+      sourcePage: isAdmin ? "/admin/orders/[id]" : "/orders/[id]",
+      sourceRoute: `/api/orders/${order.id}/receipt/sms`,
+    };
     // Try WhatsApp first
     const wa = await sendWhatsApp(
       phone.startsWith("whatsapp:")
@@ -108,18 +130,111 @@ export async function POST(
         : `+${phone.replace(/[^\d]/g, "")}`,
       body,
     ).catch(() => ({ ok: false } as { ok: boolean; error?: string }));
-    if (wa?.ok) return NextResponse.json({ success: true, channel: 'whatsapp' });
+    if (wa?.ok) {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_RECEIPT_SEND",
+        entityType: "ORDER",
+        entityId: order.id,
+        request: req,
+        outcome: "SUCCESS",
+        meta: {
+          ...receiptMetaBase,
+          channel: "whatsapp",
+          attemptedChannels: ["whatsapp"],
+          failedChannels: [],
+        },
+      });
+      return NextResponse.json({ success: true, channel: "whatsapp" });
+    }
     // Fallback to SMS
     const sms = await sendSms(phone, body);
-    if (sms.ok) return NextResponse.json({ success: true, channel: 'sms' });
+    if (sms.ok) {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_RECEIPT_SEND",
+        entityType: "ORDER",
+        entityId: order.id,
+        request: req,
+        outcome: "SUCCESS",
+        meta: {
+          ...receiptMetaBase,
+          channel: "sms",
+          attemptedChannels: ["whatsapp", "sms"],
+          failedChannels: ["whatsapp"],
+          providerErrors: {
+            whatsapp: wa?.error || null,
+          },
+        },
+      });
+      return NextResponse.json({ success: true, channel: "sms" });
+    }
     // Fallback to email if available
     const email = order.user?.email || "";
     if (email) {
       const em = await sendEmail(email, `Receipt for order ${order.id}`, body);
-      if (em.ok) return NextResponse.json({ success: true, channel: 'email' });
+      if (em.ok) {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "ORDER_RECEIPT_SEND",
+          entityType: "ORDER",
+          entityId: order.id,
+          request: req,
+          outcome: "SUCCESS",
+          meta: {
+            ...receiptMetaBase,
+            channel: "email",
+            attemptedChannels: ["whatsapp", "sms", "email"],
+            failedChannels: ["whatsapp", "sms"],
+            providerErrors: {
+              whatsapp: wa?.error || null,
+              sms: sms.error || null,
+            },
+          },
+        });
+        return NextResponse.json({ success: true, channel: "email" });
+      }
     }
+    await recordAuditLog({
+      actorId: user.id,
+      action: "ORDER_RECEIPT_SEND",
+      entityType: "ORDER",
+      entityId: order.id,
+      request: req,
+      outcome: "FAILED",
+      meta: {
+        ...receiptMetaBase,
+        channel: null,
+        attemptedChannels: email ? ["whatsapp", "sms", "email"] : ["whatsapp", "sms"],
+        failedChannels: email ? ["whatsapp", "sms", "email"] : ["whatsapp", "sms"],
+        providerErrors: {
+          whatsapp: wa?.error || null,
+          sms: sms.error || null,
+        },
+      },
+    });
     return NextResponse.json({ error: wa?.error || sms?.error || "Failed to send" }, { status: 502 });
   } catch (err) {
+    try {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_RECEIPT_SEND",
+        entityType: "ORDER",
+        entityId: params.id,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          requestedByName: user.name || user.email || null,
+          requestedByEmail: user.email || null,
+          requestedByRole: user.role || null,
+          sourcePage: isAdmin ? "/admin/orders/[id]" : "/orders/[id]",
+          sourceRoute: `/api/orders/${params.id}/receipt/sms`,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    } catch {
+      // best-effort
+    }
     console.error("send receipt sms error:", err);
     return NextResponse.json({ error: "Failed to send SMS" }, { status: 500 });
   }

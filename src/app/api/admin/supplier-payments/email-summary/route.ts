@@ -51,6 +51,7 @@ const schema = z.object({
       due7Count: z.number().optional(),
     })
     .optional(),
+  sourcePage: z.string().min(3).max(160).optional(),
 });
 
 export async function POST(req: Request) {
@@ -72,7 +73,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const { to, cc, subject, text, scopeSnapshot, summarySnapshot } = parsed.data;
+  const { to, cc, subject, text, scopeSnapshot, summarySnapshot, sourcePage } = parsed.data;
   const html = text.replace(/\n/g, "<br/>");
 
   const sent = await sendEmail(to, subject, text, html);
@@ -91,14 +92,19 @@ export async function POST(req: Request) {
     action: "SUPPLIER_PAYABLES_SUMMARY_EMAIL_SEND",
     entityType: "SUPPLIER_PAYMENT",
     entityId: "SUMMARY",
+    request: req,
     meta: {
       to,
       cc: cc || null,
       subject,
       bodyLength: text.length,
       simulated: !!sent.simulated,
+      sourcePage: sourcePage || "admin/supplier-payments",
+      section: "email-summary",
+      operation: "send_supplier_payables_summary_email",
       scopeSnapshot: scopeSnapshot || null,
       summarySnapshot: summarySnapshot || null,
+      resultSummary: `Sent supplier payables summary email to ${to}.`,
     },
   });
 

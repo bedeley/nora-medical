@@ -2,20 +2,24 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { Prisma } from "@prisma/client";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
+import {
+  computeInventoryPlanning,
+  type InventoryPlanningPlanInput,
+} from "@/lib/inventory-planning";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 import { verifyCronSecret } from "@/lib/cron-auth";
 
+function getSourcePage(req: Request, fallback: string) {
+  const value = String(new URL(req.url).searchParams.get("sourcePage") || "").trim();
+  return value || fallback;
+}
+
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
   return role === "ADMIN" || role === "ACCOUNTANT";
-}
-
-function roundUpToStep(value: number, step: number) {
-  if (step <= 1) return Math.ceil(value);
-  return Math.ceil(value / step) * step;
 }
 
 async function getDefaultReorderPoint() {
@@ -34,6 +38,10 @@ function isCronAuthorized(req: Request) {
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const cronAuth = isCronAuthorized(req);
+  const sourcePage = getSourcePage(
+    req,
+    cronAuth ? "admin/inventory-planning/cron" : "admin/inventory-planning",
+  );
   if (!session && !cronAuth) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -83,7 +91,16 @@ export async function POST(req: Request) {
       stock: true,
       supplier: true,
       supplierId: true,
-      supplierRef: { select: { leadTimeDays: true, leadTimeMinDays: true, leadTimeMaxDays: true, name: true, defaultMinOrderQty: true, defaultPackSize: true } },
+      supplierRef: {
+        select: {
+          leadTimeDays: true,
+          leadTimeMinDays: true,
+          leadTimeMaxDays: true,
+          name: true,
+          defaultMinOrderQty: true,
+          defaultPackSize: true,
+        },
+      },
       supplierLinks: {
         select: {
           supplierId: true,
@@ -105,12 +122,25 @@ export async function POST(req: Request) {
       order: { status: { not: "CANCELLED" } },
       productId: { in: products.map((p) => p.id) },
     },
-    select: { productId: true, quantity: true },
+    select: {
+      productId: true,
+      quantity: true,
+      deliveredQuantity: true,
+      returnedQuantity: true,
+    },
   });
 
   const unitsSoldMap = new Map<string, number>();
   for (const item of orderItems) {
-    unitsSoldMap.set(item.productId, (unitsSoldMap.get(item.productId) ?? 0) + item.quantity);
+    const delivered = Number(item.deliveredQuantity ?? 0);
+    const returned = Number(item.returnedQuantity ?? 0);
+    const deliveredOrOrdered = delivered > 0 ? delivered : Number(item.quantity ?? 0);
+    const netUnitsSold = Math.max(0, deliveredOrOrdered - returned);
+    if (netUnitsSold <= 0) continue;
+    unitsSoldMap.set(
+      item.productId,
+      (unitsSoldMap.get(item.productId) ?? 0) + netUnitsSold,
+    );
   }
 
   const plans = await prisma.inventoryPlan.findMany({
@@ -172,7 +202,7 @@ export async function POST(req: Request) {
       source: "orders",
     });
 
-    const plan = planMap.get(product.id);
+    const plan = (planMap.get(product.id) ?? null) as InventoryPlanningPlanInput | null;
     const primaryLink =
       product.supplierLinks.find((link) => link.isPrimary) ||
       product.supplierLinks.find((link) => link.supplierId === product.supplierId) ||
@@ -180,7 +210,11 @@ export async function POST(req: Request) {
     const nameLeadTime =
       product.supplier && supplierLeadTimeByName.get(product.supplier.toLowerCase());
     const leadTimeDaysRaw =
-      plan?.leadTimeDays ?? primaryLink?.leadTimeDays ?? product.supplierRef?.leadTimeDays ?? nameLeadTime ?? 14;
+      plan?.leadTimeDays ??
+      primaryLink?.leadTimeDays ??
+      product.supplierRef?.leadTimeDays ??
+      nameLeadTime ??
+      14;
     const leadTimeDays = Number(leadTimeDaysRaw);
     const leadTimeMinDaysRaw = product.supplierRef?.leadTimeMinDays ?? null;
     const leadTimeMaxDaysRaw = product.supplierRef?.leadTimeMaxDays ?? null;
@@ -190,45 +224,29 @@ export async function POST(req: Request) {
       leadTimeMinDays != null && leadTimeMaxDays != null
         ? Math.max(0, (leadTimeMaxDays - leadTimeMinDays) / 2)
         : 0;
-    const reviewPeriodDays = plan?.reviewPeriodDays ?? 60;
-    const minOrderQty = plan?.minOrderQty ?? primaryLink?.minOrderQty ?? product.supplierRef?.defaultMinOrderQty ?? 1;
+    const minOrderQty =
+      plan?.minOrderQty ?? primaryLink?.minOrderQty ?? product.supplierRef?.defaultMinOrderQty ?? 1;
     const packSize = primaryLink?.packSize ?? product.supplierRef?.defaultPackSize ?? 1;
-    const fallbackReorderPoint = defaultReorderPoint;
-    const autoSafetyStock =
-      avgDaily > 0 ? Math.ceil(avgDaily * leadTimeDays * 0.5 + avgDaily * variabilityDays) : 0;
-    const autoReorderPoint =
-      avgDaily > 0 ? Math.ceil(avgDaily * leadTimeDays) + autoSafetyStock : fallbackReorderPoint;
-    const safetyStock = plan?.safetyStock ?? autoSafetyStock;
-    const reorderPoint =
-      avgDaily <= 0 && plan?.fallbackReorderPoint != null
-        ? plan.fallbackReorderPoint
-        : plan?.reorderPoint ?? autoReorderPoint;
-    const targetStock = plan?.targetStock ?? 0;
-
-    const demandDuringLeadTime = avgDaily * leadTimeDays;
     const onOrder = onOrderMap.get(product.id) ?? 0;
     const reserved = reservedMap.get(product.id) ?? 0;
-    const available = product.stock - reserved + onOrder;
-    const baseSuggested =
-      avgDaily > 0
-        ? Math.max(0, safetyStock + demandDuringLeadTime - available)
-        : Math.max(0, reorderPoint - available);
-    const targetSuggested = targetStock > 0 ? Math.max(0, targetStock - available) : 0;
-    const rawSuggested = targetStock > 0 ? Math.max(baseSuggested, targetSuggested) : baseSuggested;
-    const packRounded = roundUpToStep(rawSuggested, packSize);
-    const suggestedQty = Math.max(packRounded, minOrderQty);
-    const shouldSuggest = suggestedQty > 0 && available <= reorderPoint;
+    const computed = computeInventoryPlanning({
+      stock: product.stock,
+      reserved,
+      onOrder,
+      avgDailyDemand: avgDaily,
+      defaultReorderPoint,
+      supplierLeadTimeDays: leadTimeDays,
+      leadTimeVariabilityDays: variabilityDays,
+      autoMinOrderQty: minOrderQty,
+      autoPackSize: packSize,
+      plan,
+    });
 
-    if (shouldSuggest) {
-      const reason = [
-        `Available ${available} below reorder ${reorderPoint}`,
-        `Lead time ${leadTimeDays}d demand ${demandDuringLeadTime.toFixed(2)}`,
-        `Review window ${reviewPeriodDays}d`,
-      ].join(" · ");
+    if (computed.shouldSuggest && computed.reason) {
       suggestions.push({
         productId: product.id,
-        suggestedQty,
-        reason,
+        suggestedQty: computed.suggestedQty,
+        reason: computed.reason,
         status: "open",
       });
     }
@@ -250,12 +268,16 @@ export async function POST(req: Request) {
       action: "INVENTORY_PLAN_RECOMPUTE",
       entityType: "INVENTORY_PLANNING",
       entityId: "batch",
+      request: req,
       meta: {
         periodDays,
         productCount: products.length,
         snapshotCount: snapshots.length,
         suggestionCount: suggestions.length,
         mode: cronAuth ? "cron" : "manual",
+        sourcePage,
+        defaultReorderPoint,
+        resultSummary: `Recomputed ${products.length} products and opened ${suggestions.length} suggestion(s).`,
       },
     });
   } catch {
@@ -266,6 +288,11 @@ export async function POST(req: Request) {
     where: { key: "inventoryPlanning.lastRecomputeAt" },
     update: { value: new Date().toISOString() },
     create: { key: "inventoryPlanning.lastRecomputeAt", value: new Date().toISOString() },
+  });
+  await prisma.appSetting.upsert({
+    where: { key: "inventoryPlanning.lastRecomputeMode" },
+    update: { value: cronAuth ? "cron" : "manual" },
+    create: { key: "inventoryPlanning.lastRecomputeMode", value: cronAuth ? "cron" : "manual" },
   });
 
   return NextResponse.json({

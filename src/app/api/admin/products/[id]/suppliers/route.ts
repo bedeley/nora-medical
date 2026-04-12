@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const linkSchema = z.object({
   supplierId: z.string().min(1),
@@ -56,6 +57,33 @@ export async function POST(
     return NextResponse.json({ error: "Invalid input", details: parsed.error.flatten() }, { status: 400 });
   }
 
+  const [product, supplier, existingLink] = await Promise.all([
+    prisma.product.findUnique({
+      where: { id },
+      select: { id: true, name: true, sku: true, supplierId: true },
+    }),
+    prisma.supplier.findUnique({
+      where: { id: parsed.data.supplierId },
+      select: { id: true, name: true },
+    }),
+    prisma.productSupplier.findUnique({
+      where: { productId_supplierId: { productId: id, supplierId: parsed.data.supplierId } },
+      select: {
+        supplierId: true,
+        isPrimary: true,
+        leadTimeDays: true,
+        minOrderQty: true,
+        packSize: true,
+      },
+    }),
+  ]);
+  if (!product) {
+    return NextResponse.json({ error: "Product not found" }, { status: 404 });
+  }
+  if (!supplier) {
+    return NextResponse.json({ error: "Supplier not found" }, { status: 404 });
+  }
+
   const link = await prisma.productSupplier.upsert({
     where: { productId_supplierId: { productId: id, supplierId: parsed.data.supplierId } },
     create: {
@@ -85,6 +113,39 @@ export async function POST(
     });
   }
 
+  try {
+    await recordAuditLog({
+      actorId: user?.id,
+      action: existingLink ? "PRODUCT_SUPPLIER_LINK_UPDATE" : "PRODUCT_SUPPLIER_LINK_CREATE",
+      entityType: "PRODUCT",
+      entityId: id,
+      request: req,
+      meta: {
+        productName: product.name,
+        productSku: product.sku ?? null,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        previousPrimarySupplierId: product.supplierId ?? null,
+        before: existingLink
+          ? {
+              isPrimary: Boolean(existingLink.isPrimary),
+              leadTimeDays: existingLink.leadTimeDays ?? null,
+              minOrderQty: existingLink.minOrderQty ?? null,
+              packSize: existingLink.packSize ?? null,
+            }
+          : null,
+        after: {
+          isPrimary: Boolean(link.isPrimary),
+          leadTimeDays: link.leadTimeDays ?? null,
+          minOrderQty: link.minOrderQty ?? null,
+          packSize: link.packSize ?? null,
+        },
+      },
+    });
+  } catch {
+    // best-effort
+  }
+
   return NextResponse.json({ ok: true, link });
 }
 
@@ -107,8 +168,47 @@ export async function DELETE(
   if (!supplierId) {
     return NextResponse.json({ error: "supplierId is required" }, { status: 400 });
   }
+  const [product, existingLink] = await Promise.all([
+    prisma.product.findUnique({
+      where: { id },
+      select: { id: true, name: true, sku: true, supplierId: true },
+    }),
+    prisma.productSupplier.findUnique({
+      where: { productId_supplierId: { productId: id, supplierId } },
+      include: { supplier: { select: { id: true, name: true } } },
+    }),
+  ]);
+  if (!product) {
+    return NextResponse.json({ error: "Product not found" }, { status: 404 });
+  }
+  if (!existingLink) {
+    return NextResponse.json({ error: "Supplier link not found" }, { status: 404 });
+  }
   await prisma.productSupplier.delete({
     where: { productId_supplierId: { productId: id, supplierId } },
   });
+  try {
+    await recordAuditLog({
+      actorId: user?.id,
+      action: "PRODUCT_SUPPLIER_LINK_DELETE",
+      entityType: "PRODUCT",
+      entityId: id,
+      request: req,
+      meta: {
+        productName: product.name,
+        productSku: product.sku ?? null,
+        supplierId: existingLink.supplier.id,
+        supplierName: existingLink.supplier.name,
+        wasPrimary: Boolean(existingLink.isPrimary),
+        removedLink: {
+          leadTimeDays: existingLink.leadTimeDays ?? null,
+          minOrderQty: existingLink.minOrderQty ?? null,
+          packSize: existingLink.packSize ?? null,
+        },
+      },
+    });
+  } catch {
+    // best-effort
+  }
   return NextResponse.json({ ok: true });
 }

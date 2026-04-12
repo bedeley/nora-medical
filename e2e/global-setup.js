@@ -23,13 +23,18 @@ export default async function globalSetup() {
   const browser = await chromium.launch();
   const context = await browser.newContext({ baseURL });
   const page = await context.newPage();
+  const emailField = () =>
+    page.locator('input[aria-label="Email or username"], input[placeholder="Email or username"]').first();
+  const passwordField = () =>
+    page.locator('input[aria-label="Password"], input[placeholder="Password"]').first();
 
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       await page.goto("/login?callbackUrl=/admin");
       if (!page.url().includes("/login")) break;
-      await page.getByPlaceholder(/email or username/i).fill(email);
-      await page.getByPlaceholder(/^password$/i).fill(password);
+      await emailField().waitFor({ state: "visible", timeout: 30_000 });
+      await emailField().fill(email);
+      await passwordField().fill(password);
       await page.getByRole("button", { name: /sign in|login/i }).click();
       await page.waitForLoadState("networkidle");
       if (!page.url().includes("/login")) break;

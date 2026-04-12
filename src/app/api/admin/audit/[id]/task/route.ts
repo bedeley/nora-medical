@@ -5,14 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 type Meta = Record<string, unknown>;
 type TaskStatus = "OPEN" | "IN_PROGRESS" | "RESOLVED";
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "ACCOUNTANT";
-}
 
 function parseMeta(raw: string | null): Meta {
   if (!raw) return {};
@@ -39,7 +35,7 @@ export async function POST(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) {
@@ -97,9 +93,9 @@ export async function POST(
       where: { id: requestedAssigneeId },
       select: { id: true, name: true, email: true, role: true },
     });
-    if (!assignee || (assignee.role !== "ADMIN" && assignee.role !== "ACCOUNTANT")) {
+    if (!assignee || assignee.role !== "ADMIN") {
       return NextResponse.json(
-        { error: "Assignee must be an ADMIN or ACCOUNTANT user." },
+        { error: "Assignee must be an ADMIN user." },
         { status: 400 },
       );
     }

@@ -6,12 +6,18 @@ import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { getCustomerProfileType, setCustomerProfileType, type CustomerProfileType } from "@/lib/customer-profile";
+import { recordAuditLog } from "@/lib/audit-log";
+import { buildCustomerActorTargetMeta } from "@/lib/customer-account-policy";
 
 const schema = z.object({
   profile: z.enum(["B2B", "B2C"]),
 });
 
 function hasAdminCustomerAccess(role?: string | null) {
+  return role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
+}
+
+function canManageCustomerProfile(role?: string | null) {
   return role === "ADMIN" || role === "STAFF";
 }
 
@@ -28,15 +34,34 @@ export async function GET(
   const params = await context.params;
   const targetUser = await prisma.user.findUnique({
     where: { id: params.id },
-    select: { id: true, role: true, email: true, name: true },
+    select: {
+      id: true,
+      role: true,
+      email: true,
+      name: true,
+      phone: true,
+      archived: true,
+      deletedAt: true,
+      createdAt: true,
+      lastLoginAt: true,
+    },
   });
   if (!targetUser) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
-  if (targetUser.role !== "CUSTOMER") {
-    return NextResponse.json({ error: "Only CUSTOMER accounts can use customer profile type." }, { status: 400 });
-  }
 
   const profile = await getCustomerProfileType(params.id);
-  return NextResponse.json({ userId: params.id, profile });
+  return NextResponse.json({
+    userId: params.id,
+    profile,
+    name: targetUser.name ?? null,
+    email: targetUser.email ?? null,
+    role: targetUser.role,
+    phone: targetUser.phone ?? null,
+    archived: Boolean(targetUser.archived),
+    deletedAt: targetUser.deletedAt ? targetUser.deletedAt.toISOString() : null,
+    createdAt: targetUser.createdAt ? targetUser.createdAt.toISOString() : null,
+    lastLoginAt: targetUser.lastLoginAt ? targetUser.lastLoginAt.toISOString() : null,
+    isEmployeeCustomer: targetUser.role !== "CUSTOMER",
+  });
 }
 
 export async function POST(
@@ -45,7 +70,7 @@ export async function POST(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !hasAdminCustomerAccess(user?.role || null)) {
+  if (!session || !canManageCustomerProfile(user?.role || null)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -58,32 +83,39 @@ export async function POST(
     select: { id: true, role: true, email: true, name: true },
   });
   if (!targetUser) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
-  if (targetUser.role !== "CUSTOMER") {
-    return NextResponse.json({ error: "Only CUSTOMER accounts can use customer profile type." }, { status: 400 });
-  }
 
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
 
   const profile = parsed.data.profile as CustomerProfileType;
   await setCustomerProfileType(params.id, profile);
-  await prisma.auditLog.create({
-    data: {
-      actorId: user?.id || null,
-      action: "CUSTOMER_PROFILE_UPDATED",
-      entityType: "USER",
-      entityId: params.id,
-      meta: JSON.stringify({
-        profile,
-        target: {
-          id: params.id,
-          name: targetUser.name || null,
-          email: targetUser.email || null,
-        },
+  await recordAuditLog({
+    actorId: user?.id || null,
+    action: "CUSTOMER_PROFILE_UPDATED",
+    entityType: "USER",
+    entityId: params.id,
+    request: req,
+    outcome: "SUCCESS",
+    meta: {
+      sourcePage: "admin/customers",
+      sourceRoute: `/api/admin/customers/${params.id}/profile`,
+      ...buildCustomerActorTargetMeta({
+        actorId: user?.id,
+        actorRole: user?.role,
+        targetId: params.id,
+        targetRole: targetUser.role,
       }),
+      changedByName: user?.name || user?.email || null,
+      changedByRole: user?.role || null,
+      target: {
+        id: params.id,
+        name: targetUser.name || null,
+        email: targetUser.email || null,
+        role: targetUser.role || null,
+      },
+      profile,
     },
   });
 
   return NextResponse.json({ ok: true, userId: params.id, profile });
 }
-

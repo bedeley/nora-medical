@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -142,17 +143,20 @@ export async function POST(
       created.push(rule.id);
     }
 
-    await prisma.auditLog.create({
-      data: {
-        actorId: actor?.id || null,
-        action: "BANK_RULE_IMPORT",
-        entityType: "BANK_MATCH_RULE",
-        entityId: params.id,
-        meta: JSON.stringify({
-          bankAccountId: params.id,
-          imported: created.length,
-          sourceRows: Math.max(0, rows.length - 1),
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_RULE_IMPORT",
+      entityType: "BANK_MATCH_RULE",
+      entityId: params.id,
+      section: "rules",
+      operation: "import_csv",
+      resultSummary: `Imported ${created.length} bank match rule(s).`,
+      meta: {
+        bankAccountId: params.id,
+        imported: created.length,
+        importedRuleIds: created,
+        sourceRows: Math.max(0, rows.length - 1),
       },
     });
     return NextResponse.json({ imported: created.length });

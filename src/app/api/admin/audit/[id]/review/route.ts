@@ -8,13 +8,9 @@ import { recordAuditLog } from "@/lib/audit-log";
 import { getMissingTaskRequirement, requiresReviewTask } from "@/lib/audit-review-policy";
 import { getEffectiveAuditRiskSettings } from "@/lib/audit-risk-settings.server";
 import { evaluateAuditRisk } from "@/lib/audit-risk";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 type Meta = Record<string, unknown>;
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
-}
 
 function parseMeta(raw: string | null): Meta {
   if (!raw) return {};
@@ -35,7 +31,7 @@ export async function POST(
 ) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   if (!assertSameOrigin(req)) {

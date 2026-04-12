@@ -10,6 +10,7 @@ import { recordAuditLog } from "@/lib/audit-log";
 import { postPaymentEntry, postReturnEntry } from "@/lib/accounting-posting";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { hasPermission } from "@/lib/permissions";
+import { getOrderDeliveryState } from "@/lib/order-delivery-state";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 
@@ -368,6 +369,29 @@ export async function POST(
         },
       });
 
+      const itemsAfterReturn = await tx.orderItem.findMany({
+        where: { orderId: order.id },
+        select: {
+          quantity: true,
+          deliveredQuantity: true,
+          returnedQuantity: true,
+        },
+      });
+      const deliveryState = getOrderDeliveryState(itemsAfterReturn);
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          deliveryStatus: deliveryState.status,
+          deliveredAt:
+            deliveryState.status === "DELIVERED" || deliveryState.status === "RETURNED"
+              ? order.deliveredAt ?? new Date()
+              : deliveryState.anyDelivered
+              ? order.deliveredAt
+              : null,
+        },
+      });
+
       if (restockToStock) {
         await tx.product.update({
           where: { id: item.productId },
@@ -504,6 +528,29 @@ export async function POST(
         cogsAmount: restockToStock ? unitCost * quantity : 0,
         autoApplyPaymentIds,
         autoAppliedAmount,
+        invoiceNumber: order.invoiceNumber ?? null,
+        customerId: order.userId ?? null,
+        customerType: order.customerType ?? null,
+        customerName:
+          order.customerType === "WALK_IN"
+            ? order.walkInName ?? null
+            : null,
+        previousStatus: order.status,
+        previousDeliveryStatus: order.deliveryStatus ?? "NOT_DELIVERED",
+        previousTotal: orderTotal,
+        previousAmountPaid: paidAfterRecalc,
+        previousBalance: outstandingBefore,
+        newStatus,
+        newDeliveryStatus: deliveryState.status,
+        newTotal,
+        newAmountPaid,
+        newBalance,
+        returnedQuantityBefore: alreadyReturned,
+        returnedQuantityAfter: alreadyReturned + quantity,
+        deliveredQuantity,
+        unitPrice,
+        requestedRefund,
+        refundableRemainder,
       };
     });
     for (const paymentId of result.autoApplyPaymentIds) {
@@ -581,17 +628,47 @@ export async function POST(
         action: "ORDER_ITEM_RETURN",
         entityType: "ORDER",
         entityId: result.order.id,
+        request: req,
         meta: {
+          changedByName: user?.name || user?.email || null,
+          changedByEmail: user?.email || null,
+          changedByRole: user?.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/admin/orders/${result.order.id}/return-item`,
+          invoiceNumber: result.invoiceNumber,
+          customerId: result.customerId,
+          customerType: result.customerType,
+          customerName: result.customerName,
+          previousStatus: result.previousStatus,
+          newStatus: result.newStatus,
+          previousDeliveryStatus: result.previousDeliveryStatus,
+          newDeliveryStatus: result.newDeliveryStatus,
           itemId: parsed.data.itemId,
+          itemName: result.itemName,
           quantity: parsed.data.quantity,
+          deliveredQuantity: result.deliveredQuantity,
+          returnedQuantityBefore: result.returnedQuantityBefore,
+          returnedQuantityAfter: result.returnedQuantityAfter,
+          unitPrice: result.unitPrice,
           refundMode: parsed.data.refundMode,
           disposition: resolvedDisposition,
           reason,
           reasonNote: reasonNote?.trim() || undefined,
+          requestedRefund: result.requestedRefund,
+          refundableRemainder: result.refundableRemainder,
           refundAmount: result.refund,
           appliedToBalance: result.appliedToBalance,
+          restockToStock: result.restockToStock,
+          paymentId: result.paymentId,
+          autoApplyPaymentIds: result.autoApplyPaymentIds,
           autoAppliedAmount: result.autoAppliedAmount,
           skipAutoApplyCredit: Boolean(skipAutoApplyCredit),
+          previousTotal: result.previousTotal,
+          newTotal: result.newTotal,
+          previousAmountPaid: result.previousAmountPaid,
+          newAmountPaid: result.newAmountPaid,
+          previousBalance: result.previousBalance,
+          newBalance: result.newBalance,
         },
       });
       } catch {

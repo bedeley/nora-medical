@@ -5,16 +5,17 @@ export const dynamic = "force-dynamic";
 import { Suspense } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -37,6 +38,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -45,7 +48,19 @@ import { formatCurrency, formatDateGH } from "@/lib/currency";
 import { formatIdReadable, formatInvoiceNumber } from "@/lib/utils";
 import { chipToneClass, deliveryStatusTone, orderStatusTone } from "@/lib/status-chips";
 import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
-import { Download, RefreshCcw, Search, DollarSign, ArrowUpDown, ArrowUp, ArrowDown, HelpCircle } from "lucide-react";
+import {
+  Download,
+  RefreshCcw,
+  Search,
+  DollarSign,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  HelpCircle,
+  Filter,
+  Save,
+  SlidersHorizontal,
+} from "lucide-react";
 import { Tooltip } from "@/components/ui/tooltip";
 import {
   Table,
@@ -95,7 +110,8 @@ type OrdersSavedFilter = {
     userIdFilter: string;
     orderIdFilter: string;
     paymentIdFilter: string;
-    sortKey: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | null;
+    outstandingOnly: boolean;
+    sortKey: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | "delivery" | null;
     sortDir: "asc" | "desc";
     showPaid: boolean;
     showBalance: boolean;
@@ -104,12 +120,120 @@ type OrdersSavedFilter = {
   };
 };
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+type OrdersResponse = {
+  items: AdminOrder[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totals: {
+    total: number;
+    paid: number;
+    balance: number;
+  };
+};
+
+type SavedFiltersSource = "loading" | "server" | "local";
+
+const ORDERS_SAVED_FILTERS_KEY = "orders.savedFilters";
+const LEGACY_ORDERS_SAVED_FILTERS_STORAGE_KEY = "admin-orders-saved-filters";
+
+async function fetchJsonOrThrow<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = text || null;
+  }
+
+  if (!response.ok) {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof (payload as { error?: unknown }).error === "string"
+    ) {
+      throw new Error((payload as { error: string }).error);
+    }
+    if (typeof payload === "string" && payload.trim()) {
+      throw new Error(payload.trim());
+    }
+    throw new Error(`Request failed (${response.status})`);
+  }
+
+  return payload as T;
+}
+
+function mergeSavedFilters(serverFilters: OrdersSavedFilter[], legacyFilters: OrdersSavedFilter[]) {
+  const merged: OrdersSavedFilter[] = [];
+  const seen = new Set<string>();
+  for (const item of [...serverFilters, ...legacyFilters]) {
+    const key = `${item.id}::${item.name.trim().toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function buildOrdersQueryParams(options: {
+  filter: string;
+  deliveryFilter: string;
+  paymentMethod: string;
+  customerType: string;
+  outstandingOnly: boolean;
+  discountOnly: boolean;
+  query: string;
+  start: string;
+  end: string;
+  minTotal: string;
+  maxTotal: string;
+  userIdFilter: string;
+  orderIdFilter: string;
+  paymentIdFilter: string;
+  sortKey: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | "delivery" | null;
+  sortDir: "asc" | "desc";
+  page: number;
+  pageSize: number;
+  ids?: string[];
+}) {
+  const params = new URLSearchParams();
+  params.set("all", "1");
+  if (options.filter && options.filter !== "ALL") params.set("filter", options.filter);
+  if (options.deliveryFilter && options.deliveryFilter !== "ALL") params.set("dFilter", options.deliveryFilter);
+  if (options.paymentMethod && options.paymentMethod !== "ALL") params.set("paymentMethod", options.paymentMethod);
+  if (options.customerType && options.customerType !== "ALL") params.set("customerType", options.customerType);
+  if (options.outstandingOnly) params.set("outstandingOnly", "1");
+  if (options.discountOnly) params.set("discountOnly", "1");
+  if (options.query) params.set("q", options.query);
+  if (options.start) params.set("start", options.start);
+  if (options.end) params.set("end", options.end);
+  if (options.minTotal) params.set("minTotal", options.minTotal);
+  if (options.maxTotal) params.set("maxTotal", options.maxTotal);
+  if (options.userIdFilter) params.set("userId", options.userIdFilter);
+  if (options.orderIdFilter) params.set("orderId", options.orderIdFilter);
+  if (options.paymentIdFilter) params.set("paymentId", options.paymentIdFilter);
+  if (options.sortKey) params.set("sortKey", options.sortKey);
+  if (options.sortKey) params.set("sortDir", options.sortDir);
+  if (options.ids && options.ids.length > 0) {
+    params.set("ids", options.ids.join(","));
+    params.set("page", "1");
+    params.set("pageSize", String(Math.max(options.ids.length, 1)));
+  } else {
+    params.set("page", String(options.page));
+    params.set("pageSize", String(options.pageSize));
+  }
+  return params;
+}
 
 function AdminOrdersContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const pathname = usePathname();
+  const { data: session } = useSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const isAdmin = role === "ADMIN";
   const [filter, setFilter] = useState<string>("ALL");
   const [deliveryFilter, setDeliveryFilter] = useState<string>("ALL");
   const [query, setQuery] = useState<string>("");
@@ -128,16 +252,21 @@ function AdminOrdersContent() {
   const [paymentNote, setPaymentNote] = useState("");
   const [paymentError, setPaymentError] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isSaveFilterDialogOpen, setIsSaveFilterDialogOpen] = useState(false);
   const [paymentTab, setPaymentTab] = useState<"custom" | "full">("custom");
   const [applyingCredit, setApplyingCredit] = useState(false);
+  const [recordingPayment, setRecordingPayment] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [paymentDialogMethod, setPaymentDialogMethod] = useState<"cash" | "momo" | "transfer" | "card">("cash");
   const [sortKey, setSortKey] = useState<
     | "total"
     | "amountPaid"
     | "balance"
     | "createdAt"
-      | "customer"
-      | "invoice"
-      | null
+    | "customer"
+    | "invoice"
+    | "delivery"
+    | null
   >("createdAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const initialized = useRef(false);
@@ -149,8 +278,13 @@ function AdminOrdersContent() {
   const [orderIdFilter, setOrderIdFilter] = useState<string>("");
   const [paymentIdFilter, setPaymentIdFilter] = useState<string>("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [selectedOrders, setSelectedOrders] = useState<Map<string, AdminOrder>>(new Map());
   const [savedFilters, setSavedFilters] = useState<OrdersSavedFilter[]>([]);
+  const [savedFiltersLoaded, setSavedFiltersLoaded] = useState(false);
+  const [savedFiltersSource, setSavedFiltersSource] = useState<SavedFiltersSource>("loading");
+  const [saveFilterName, setSaveFilterName] = useState("");
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [removingFilterId, setRemovingFilterId] = useState<string | null>(null);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const resizing = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({
     select: 44,
@@ -165,6 +299,7 @@ function AdminOrdersContent() {
     actions: 320,
   });
   const getColWidth = (key: string) => columnWidths[key] ?? 140;
+  const deferredQuery = useDeferredValue(query);
 
   useEffect(() => {
     if (!isDialogOpen) {
@@ -196,6 +331,7 @@ function AdminOrdersContent() {
       | "createdAt"
       | "customer"
       | "invoice"
+      | "delivery"
       | null;
     const sd = searchParams.get("sortDir") as "asc" | "desc" | null;
     const p = Number(searchParams.get("page") || 1);
@@ -216,7 +352,7 @@ function AdminOrdersContent() {
     if (userIdParam) setUserIdFilter(userIdParam);
     if (orderIdParam) setOrderIdFilter(orderIdParam);
     if (paymentIdParam) setPaymentIdFilter(paymentIdParam);
-    if (sk && ["total", "amountPaid", "balance", "createdAt", "customer", "invoice"].includes(sk)) setSortKey(sk);
+    if (sk && ["total", "amountPaid", "balance", "createdAt", "customer", "invoice", "delivery"].includes(sk)) setSortKey(sk);
     if (sd && ["asc", "desc"].includes(sd)) setSortDir(sd);
     if (!Number.isNaN(p) && p > 0) setPage(p);
     if (!Number.isNaN(ps) && ps > 0) setPageSize(ps);
@@ -227,29 +363,70 @@ function AdminOrdersContent() {
       )
     )
       setDeliveryFilter(df);
+    if (methodParam || customerTypeParam === "WALK_IN" || customerTypeParam === "REGISTERED" || minParam || maxParam || userIdParam || orderIdParam || paymentIdParam || discountOnlyParam === "1" || outstandingOnlyParam === "1") {
+      setShowAdvancedFilters(true);
+    }
     initialized.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem("admin-orders-saved-filters");
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as OrdersSavedFilter[];
-      if (Array.isArray(parsed)) setSavedFilters(parsed);
-    } catch {
-      // ignore
+    let cancelled = false;
+    async function loadSavedFilters() {
+      let localFilters: OrdersSavedFilter[] = [];
+      if (typeof window !== "undefined") {
+        const raw = window.localStorage.getItem(LEGACY_ORDERS_SAVED_FILTERS_STORAGE_KEY);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as OrdersSavedFilter[];
+            if (Array.isArray(parsed)) localFilters = parsed;
+          } catch {
+            // ignore malformed local filters
+          }
+        }
+      }
+
+      try {
+        const response = await fetchJsonOrThrow<{ value: OrdersSavedFilter[] | null }>(
+          `/api/admin/preferences?key=${encodeURIComponent(ORDERS_SAVED_FILTERS_KEY)}`,
+        );
+        const serverFilters = Array.isArray(response?.value) ? response.value : [];
+        const mergedFilters = mergeSavedFilters(serverFilters, localFilters);
+        if (cancelled) return;
+        setSavedFilters(mergedFilters);
+        setSavedFiltersSource("server");
+        if (mergedFilters.length !== serverFilters.length) {
+          void fetch("/api/admin/preferences", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: ORDERS_SAVED_FILTERS_KEY, value: mergedFilters, skipAudit: true }),
+          }).catch(() => {});
+        }
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem(LEGACY_ORDERS_SAVED_FILTERS_STORAGE_KEY);
+        }
+      } catch {
+        if (cancelled) return;
+        setSavedFilters(localFilters);
+        setSavedFiltersSource("local");
+      } finally {
+        if (!cancelled) setSavedFiltersLoaded(true);
+      }
     }
+    void loadSavedFilters();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (savedFiltersSource !== "local") return;
     window.localStorage.setItem(
-      "admin-orders-saved-filters",
+      LEGACY_ORDERS_SAVED_FILTERS_STORAGE_KEY,
       JSON.stringify(savedFilters),
     );
-  }, [savedFilters]);
+  }, [savedFilters, savedFiltersSource]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -409,31 +586,39 @@ function AdminOrdersContent() {
   }, []);
 
   const queryClient = useQueryClient();
-  const { data, isLoading } = useClientQuery({
-    queryKey: ["admin", "orders", { filter, deliveryFilter, paymentMethod, customerType, outstandingOnly, query, start, end, minTotal, maxTotal, userIdFilter, orderIdFilter, paymentIdFilter, sortKey, sortDir, page, pageSize }],
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    isFetching,
+    refetch,
+  } = useClientQuery<OrdersResponse>({
+    queryKey: ["admin", "orders", { filter, deliveryFilter, paymentMethod, customerType, outstandingOnly, discountOnly, query: deferredQuery, start, end, minTotal, maxTotal, userIdFilter, orderIdFilter, paymentIdFilter, sortKey, sortDir, page, pageSize }],
     // Admin dashboard should see all orders, not just the logged-in user's.
-    queryFn: () => {
-      const params = new URLSearchParams();
-      params.set("all", "1");
-      if (filter && filter !== "ALL") params.set("filter", filter);
-      if (deliveryFilter && deliveryFilter !== "ALL") params.set("dFilter", deliveryFilter);
-      if (paymentMethod && paymentMethod !== "ALL") params.set("paymentMethod", paymentMethod);
-      if (customerType && customerType !== "ALL") params.set("customerType", customerType);
-      if (outstandingOnly) params.set("outstandingOnly", "1");
-      if (query) params.set("q", query);
-      if (start) params.set("start", start);
-      if (end) params.set("end", end);
-      if (minTotal) params.set("minTotal", minTotal);
-      if (maxTotal) params.set("maxTotal", maxTotal);
-      if (userIdFilter) params.set("userId", userIdFilter);
-      if (orderIdFilter) params.set("orderId", orderIdFilter);
-      if (paymentIdFilter) params.set("paymentId", paymentIdFilter);
-      if (sortKey) params.set("sortKey", sortKey);
-      if (sortKey) params.set("sortDir", sortDir);
-      params.set("page", String(page));
-      params.set("pageSize", String(pageSize));
-      return fetcher(`/api/orders?${params.toString()}`);
-    },
+    queryFn: () =>
+      fetchJsonOrThrow<OrdersResponse>(
+        `/api/orders?${buildOrdersQueryParams({
+          filter,
+          deliveryFilter,
+          paymentMethod,
+          customerType,
+          outstandingOnly,
+          discountOnly,
+          query: deferredQuery,
+          start,
+          end,
+          minTotal,
+          maxTotal,
+          userIdFilter,
+          orderIdFilter,
+          paymentIdFilter,
+          sortKey,
+          sortDir,
+          page,
+          pageSize,
+        }).toString()}`,
+      ),
     refetchOnWindowFocus: false,
   });
 
@@ -459,7 +644,7 @@ function AdminOrdersContent() {
       string | null | undefined,
     ],
     queryFn: () =>
-      fetcher(`/api/admin/customers/${selectedUserId}/balance`),
+      fetchJsonOrThrow(`/api/admin/customers/${selectedUserId}/balance`),
     enabled: !!selectedUserId && isDialogOpen,
     refetchOnWindowFocus: false,
   });
@@ -482,16 +667,6 @@ function AdminOrdersContent() {
       else next.add(id);
       return next;
     });
-    setSelectedOrders((prev) => {
-      const next = new Map(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        return next;
-      }
-      const order = orders.find((o) => o.id === id);
-      if (order) next.set(id, order);
-      return next;
-    });
   };
 
   const toggleSelectAllVisible = () => {
@@ -504,113 +679,252 @@ function AdminOrdersContent() {
       }
       return next;
     });
-    setSelectedOrders((prev) => {
-      const next = new Map(prev);
-      if (allVisibleSelected) {
-        visibleIds.forEach((id) => next.delete(id));
-        return next;
-      }
-      orders.forEach((o) => next.set(o.id, o));
-      return next;
-    });
   };
 
   const clearSelection = () => {
     setSelectedIds(new Set());
-    setSelectedOrders(new Map());
   };
 
-  useEffect(() => {
-    setSelectedOrders((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const order of orders) {
-        if (selectedIds.has(order.id)) {
-          next.set(order.id, order);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [orders, selectedIds]);
-
-  if (isLoading) return <p className="text-center mt-10">Loading orders...</p>;
+  if (isLoading) {
+    return (
+      <section className="container mx-auto py-8 space-y-6">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="h-7 w-32 bg-muted animate-pulse rounded" />
+            <div className="h-4 w-56 bg-muted animate-pulse rounded mt-1" />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {[...Array(4)].map((_, i) => (
+            <Card key={i} className="!border-none shadow-sm">
+              <CardContent className="pt-4">
+                <div className="h-4 w-20 bg-muted animate-pulse rounded mb-2" />
+                <div className="h-7 w-28 bg-muted animate-pulse rounded" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <Card className="shadow-md !border-none">
+          <CardContent className="p-4 space-y-3">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="h-12 w-full bg-muted animate-pulse rounded" />
+            ))}
+          </CardContent>
+        </Card>
+      </section>
+    );
+  }
+  if (isError)
+    return (
+      <section className="container mx-auto py-8">
+        <Card className="border-destructive/30">
+          <CardContent className="flex flex-col gap-4 p-6">
+            <div>
+              <h1 className="text-xl font-semibold">Orders unavailable</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {error instanceof Error ? error.message : "Failed to load orders."}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => void refetch()}>
+                Retry
+              </Button>
+              <Button variant="outline" onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "orders"] })}>
+                Refresh cache
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+    );
   if (!data)
     return (
       <p className="text-center mt-10 text-red-500">Failed to load orders.</p>
     );
 
-  const exportSelected = () => {
-    const selected = Array.from(selectedIds)
-      .map((id) => selectedOrders.get(id))
-      .filter(Boolean) as AdminOrder[];
-    if (selected.length === 0) {
-      toast.error("Select at least one order to export.");
-      return;
-    }
-    const header = [
-      "OrderId",
-      "InvoiceNumber",
-      "Customer",
-      "Email",
-      "Phone",
-      "Status",
-      "DeliveryStatus",
-      "TaxableSubtotal",
-      "Tax",
-      "Total",
-      "Discount",
-      "Paid",
-      "Balance",
-      "PlacedAt",
-      "UpdatedAt",
-    ];
-    const lines = [header.join(",")];
-    for (const o of selected) {
-      const customerName = o.user?.name || o.walkInName || "Walk-in";
-      const customerEmail = o.user?.email || "";
-      const customerPhone = o.user?.phone || o.walkInPhone || "";
-      lines.push([
-        JSON.stringify(o.id),
-        JSON.stringify(o.invoiceNumber || ""),
-        JSON.stringify(customerName),
-        JSON.stringify(customerEmail),
-        JSON.stringify(customerPhone),
-        JSON.stringify(o.status || ""),
-        JSON.stringify(o.deliveryStatus || ""),
-        String(Number(o.subtotal || 0)),
-        String(Number(o.taxAmount || 0)),
-        String(Number(o.total || 0)),
-        String(Number(o.discountAmount || 0)),
-        String(Number(o.amountPaid || 0)),
-        String(Number(o.balance || 0)),
-        JSON.stringify(new Date(o.createdAt).toISOString()),
-        JSON.stringify(new Date(o.updatedAt || o.createdAt).toISOString()),
-      ].join(","));
-    }
-    const csv = lines.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const filename = `orders_${Date.now()}.csv`;
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    void logAdminExportDownload({
-      area: "orders",
-      format: "CSV",
-      fileName: filename,
-      rowCount: selected.length,
-      columnCount: header.length,
-      byteSize: blob.size,
-      scopeSnapshot: "Selected orders export",
+  const activeFilterCount = [
+    filter !== "ALL",
+    deliveryFilter !== "ALL",
+    paymentMethod !== "ALL",
+    customerType !== "ALL",
+    outstandingOnly,
+    discountOnly,
+    !!query,
+    !!start,
+    !!end,
+    !!minTotal,
+    !!maxTotal,
+    !!userIdFilter,
+    !!orderIdFilter,
+    !!paymentIdFilter,
+  ].filter(Boolean).length;
+  const advancedFilterCount = [
+    paymentMethod !== "ALL",
+    customerType !== "ALL",
+    outstandingOnly,
+    discountOnly,
+    !!minTotal,
+    !!maxTotal,
+    !!userIdFilter,
+    !!orderIdFilter,
+    !!paymentIdFilter,
+  ].filter(Boolean).length;
+  const resultsSummary = `${total.toLocaleString("en-GH")} matching order${total === 1 ? "" : "s"}`;
+
+  const currentFilterState: OrdersSavedFilter["state"] = {
+    filter,
+    deliveryFilter,
+    paymentMethod,
+    customerType,
+    outstandingOnly,
+    discountOnly,
+    query,
+    start,
+    end,
+    minTotal,
+    maxTotal,
+    userIdFilter,
+    orderIdFilter,
+    paymentIdFilter,
+    sortKey,
+    sortDir,
+    showPaid,
+    showBalance,
+    showDelivery,
+    pageSize,
+  };
+
+  const persistSavedFilters = async (
+    nextFilters: OrdersSavedFilter[],
+    options?: {
+      skipAudit?: boolean;
+      auditAction?: string;
+      resultSummary?: string;
+    },
+  ) => {
+    const body = options?.skipAudit
+      ? { key: ORDERS_SAVED_FILTERS_KEY, value: nextFilters, skipAudit: true }
+      : {
+          key: ORDERS_SAVED_FILTERS_KEY,
+          value: nextFilters,
+          sourcePage: "admin/orders",
+          section: "saved-filters",
+          auditAction: options?.auditAction || "ORDERS_FILTER_SAVE",
+          resultSummary: options?.resultSummary || `Orders saved filters updated (${nextFilters.length} saved).`,
+        };
+    await fetchJsonOrThrow("/api/admin/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
   };
 
-  function toggleSort(key: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice") {
+  const fetchOrdersForExport = async () => {
+    if (selectedIds.size === 0) return sortedOrders;
+    const response = await fetchJsonOrThrow<OrdersResponse>(
+      `/api/orders?${buildOrdersQueryParams({
+        filter: "ALL",
+        deliveryFilter: "ALL",
+        paymentMethod: "ALL",
+        customerType: "ALL",
+        outstandingOnly: false,
+        discountOnly: false,
+        query: "",
+        start: "",
+        end: "",
+        minTotal: "",
+        maxTotal: "",
+        userIdFilter: "",
+        orderIdFilter: "",
+        paymentIdFilter: "",
+        sortKey,
+        sortDir,
+        page,
+        pageSize,
+        ids: Array.from(selectedIds),
+      }).toString()}`,
+    );
+    return Array.isArray(response.items) ? response.items : [];
+  };
+
+  const exportSelected = async () => {
+    try {
+      setExporting(true);
+      const exportRows = await fetchOrdersForExport();
+      const header = [
+        "OrderId",
+        "InvoiceNumber",
+        "Customer",
+        "Email",
+        "Phone",
+        "Status",
+        "DeliveryStatus",
+        "TaxableSubtotal",
+        "Tax",
+        "Total",
+        "Discount",
+        "Paid",
+        "Balance",
+        "PlacedAt",
+        "UpdatedAt",
+      ];
+      const lines = [header.join(",")];
+      for (const o of exportRows) {
+        const customerName = o.user?.name || o.walkInName || "Walk-in";
+        const customerEmail = o.user?.email || "";
+        const customerPhone = o.user?.phone || o.walkInPhone || "";
+        lines.push([
+          JSON.stringify(o.id),
+          JSON.stringify(o.invoiceNumber || ""),
+          JSON.stringify(customerName),
+          JSON.stringify(customerEmail),
+          JSON.stringify(customerPhone),
+          JSON.stringify(o.status || ""),
+          JSON.stringify(o.deliveryStatus || ""),
+          String(Number(o.subtotal || 0)),
+          String(Number(o.taxAmount || 0)),
+          String(Number(o.total || 0)),
+          String(Number(o.discountAmount || 0)),
+          String(Number(o.amountPaid || 0)),
+          String(Number(o.balance || 0)),
+          JSON.stringify(new Date(o.createdAt).toISOString()),
+          JSON.stringify(new Date(o.updatedAt || o.createdAt).toISOString()),
+        ].join(","));
+      }
+      const csv = lines.join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const filename = `orders_${Date.now()}.csv`;
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      void logAdminExportDownload({
+        area: "orders",
+        format: "CSV",
+        fileName: filename,
+        rowCount: exportRows.length,
+        columnCount: header.length,
+        byteSize: blob.size,
+        sourcePage: "admin/orders",
+        matchingCount: total,
+        totalCount: total,
+        sortKey: sortKey || "default",
+        sortDir: sortKey ? sortDir : "default",
+        resultSummary: `Orders CSV export downloaded (${exportRows.length} rows).`,
+        scopeSnapshot: selectedIds.size > 0 ? "Selected orders export" : "Current page export",
+      });
+    } catch (exportError) {
+      toast.error(exportError instanceof Error ? exportError.message : "Could not export orders.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  function toggleSort(key: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | "delivery") {
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
@@ -620,7 +934,7 @@ function AdminOrdersContent() {
     setPage(1);
   }
 
-    function sortIndicator(key: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice") {
+    function sortIndicator(key: "total" | "amountPaid" | "balance" | "createdAt" | "customer" | "invoice" | "delivery") {
     const baseClass = "inline w-3 h-3 ml-1 align-middle";
     if (sortKey !== key) return <ArrowUpDown className={`${baseClass} text-muted-foreground`} />;
     return sortDir === "asc" ? (
@@ -628,6 +942,21 @@ function AdminOrdersContent() {
     ) : (
       <ArrowDown className={baseClass} />
     );
+  }
+
+  function formatStatus(status: string): string {
+    switch (String(status || "").toUpperCase()) {
+      case "UNPAID": return "Unpaid";
+      case "PARTIALLY_PAID": return "Partially Paid";
+      case "PAID": return "Paid";
+      case "ON_HOLD_CREDIT": return "On Hold (Credit)";
+      case "CANCELLED": return "Cancelled";
+      case "NOT_DELIVERED": return "Not Delivered";
+      case "PARTIALLY_DELIVERED": return "Partially Delivered";
+      case "DELIVERED": return "Delivered";
+      case "RETURNED": return "Returned";
+      default: return status;
+    }
   }
 
   function timeAgo(value: string | Date) {
@@ -640,7 +969,7 @@ function AdminOrdersContent() {
     if (h < 24) return `${h}h ago`;
     const days = Math.floor(h / 24);
     if (days < 7) return `${days}d ago`;
-    return d.toLocaleDateString();
+    return d.toLocaleDateString("en-GH", { day: "numeric", month: "short", year: "numeric" });
   }
 
   function shortOrderId(id: string | undefined | null) {
@@ -650,9 +979,7 @@ function AdminOrdersContent() {
     return parts.slice(0, 2).join("-");
   }
 
-  const sortedOrders = discountOnly
-    ? orders.filter((o) => Number(o.discountAmount || 0) > 0)
-    : orders;
+  const sortedOrders = orders;
   const pageTotal = sortedOrders.reduce(
     (sum, o) => sum + Number(o.total || 0),
     0
@@ -660,13 +987,43 @@ function AdminOrdersContent() {
 
   const dateInputValue = (d: Date) => d.toISOString().slice(0, 10);
 
+  function resetAllFilters() {
+    setFilter("ALL");
+    setDeliveryFilter("ALL");
+    setPaymentMethod("ALL");
+    setCustomerType("ALL");
+    setOutstandingOnly(false);
+    setDiscountOnly(false);
+    setQuery("");
+    setStart("");
+    setEnd("");
+    setMinTotal("");
+    setMaxTotal("");
+    setUserIdFilter("");
+    setOrderIdFilter("");
+    setPaymentIdFilter("");
+    setShowAdvancedFilters(false);
+  }
+
+  async function copyOrderLink(orderId: string) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(`${origin}/admin/orders/${orderId}`);
+      toast.success("Link copied");
+    } catch {
+      toast.error("Unable to copy the order link.");
+    }
+  }
+
   function applySavedView(kind: "unpaid-not-delivered" | "last-7-days" | "delivered-7-days") {
     const now = new Date();
+    resetAllFilters();
     if (kind === "unpaid-not-delivered") {
       setFilter("UNPAID");
       setDeliveryFilter("NOT_DELIVERED");
-      setStart("");
-      setEnd("");
     } else if (kind === "last-7-days") {
       const endDate = dateInputValue(now);
       const startDate = dateInputValue(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000));
@@ -694,11 +1051,12 @@ function AdminOrdersContent() {
     }
 
     try {
+      setRecordingPayment(true);
       setPaymentError("");
       const res = await fetch(`/api/orders/${orderId}/payment`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, note: paymentNote || undefined }),
+        body: JSON.stringify({ amount, method: paymentDialogMethod, note: paymentNote || undefined }),
       });
 
       if (!res.ok) {
@@ -706,23 +1064,56 @@ function AdminOrdersContent() {
           .json()
           .catch(async () => ({ error: await res.text().catch(() => "") }));
         const msg = j?.error || "Failed to record payment";
-        throw new Error(msg);
+        setPaymentError(msg);
+        return;
       }
       toast.success(`Payment of ${formatCurrency(amount)} recorded.`);
-      // Clear local state and navigate to order details for delivery updates
       setPaymentAmount("");
       setPaymentNote("");
+      setPaymentDialogMethod("cash");
       setIsDialogOpen(false);
-      // Navigate to the order details page so admin can update delivery
       router.push(`/admin/orders/${orderId}`);
     } catch (err) {
-      console.error(err);
-      toast.error("Error recording payment.");
+      const msg = err instanceof Error ? err.message : "Failed to record payment";
+      setPaymentError(msg);
+    } finally {
+      setRecordingPayment(false);
     }
   }
 
+  async function refreshSelectedOrder(orderId: string) {
+    const response = await fetchJsonOrThrow<OrdersResponse>(
+      `/api/orders?${buildOrdersQueryParams({
+        filter: "ALL",
+        deliveryFilter: "ALL",
+        paymentMethod: "ALL",
+        customerType: "ALL",
+        outstandingOnly: false,
+        discountOnly: false,
+        query: "",
+        start: "",
+        end: "",
+        minTotal: "",
+        maxTotal: "",
+        userIdFilter: "",
+        orderIdFilter: "",
+        paymentIdFilter: "",
+        sortKey: null,
+        sortDir: "desc",
+        page: 1,
+        pageSize: 1,
+        ids: [orderId],
+      }).toString()}`,
+    );
+    const latestOrder = Array.isArray(response.items) ? response.items[0] : null;
+    if (latestOrder) {
+      setSelectedOrder(latestOrder);
+    }
+    return latestOrder;
+  }
+
   async function applyStoreCredit() {
-    if (!selectedUserId) return;
+    if (!selectedUserId || !selectedOrder) return;
     try {
       setApplyingCredit(true);
       const res = await fetch(
@@ -741,6 +1132,16 @@ function AdminOrdersContent() {
       }
       const result = await res.json().catch(() => null);
       const applied = result?.applied ?? 0;
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["admin", "orders"] }),
+        queryClient.invalidateQueries({
+          queryKey: ["admin", "customer-balance", selectedUserId],
+        }),
+      ]);
+      const latestOrder = await refreshSelectedOrder(selectedOrder.id);
+      if (latestOrder && paymentTab === "full") {
+        setPaymentAmount(Number(latestOrder.balance || 0).toFixed(2));
+      }
       if (applied > 0) {
         toast.success(
           `Applied ${formatCurrency(Number(applied))} in store credit across this customer's open orders.`,
@@ -748,50 +1149,48 @@ function AdminOrdersContent() {
       } else {
         toast.info("No store credit available to apply.");
       }
-      queryClient.invalidateQueries({ queryKey: ["admin", "orders"] });
-      if (selectedUserId) {
-        queryClient.invalidateQueries({
-          queryKey: ["admin", "customer-balance", selectedUserId],
-        });
-      }
     } catch (err) {
       console.error(err);
-      toast.error("Error applying store credit.");
+      toast.error(err instanceof Error ? err.message : "Error applying store credit.");
     } finally {
       setApplyingCredit(false);
     }
   }
 
-  const saveCurrentFilter = () => {
-    const name = window.prompt("Name this saved filter");
-    if (!name) return;
+  const saveCurrentFilter = async () => {
+    if (!savedFiltersLoaded) {
+      toast.error("Saved filters are still loading.");
+      return;
+    }
+    const name = saveFilterName.trim();
+    if (!name) {
+      toast.error("Enter a name for this saved filter.");
+      return;
+    }
     const entry: OrdersSavedFilter = {
       id: `${Date.now()}`,
       name,
-      state: {
-        filter,
-        deliveryFilter,
-        paymentMethod,
-        customerType,
-        discountOnly,
-        query,
-        start,
-        end,
-        minTotal,
-        maxTotal,
-        userIdFilter,
-        orderIdFilter,
-        paymentIdFilter,
-        sortKey,
-        sortDir,
-        showPaid,
-        showBalance,
-        showDelivery,
-        pageSize,
-      },
+      state: currentFilterState,
     };
-    setSavedFilters((prev) => [entry, ...prev]);
-    toast.success("Saved filter");
+    const nextFilters = [entry, ...savedFilters];
+    setSavedFilters(nextFilters);
+    setSavingFilter(true);
+    try {
+      if (savedFiltersSource === "server") {
+        await persistSavedFilters(nextFilters, {
+          auditAction: "ORDERS_FILTER_SAVE",
+          resultSummary: `Saved orders filter "${name}".`,
+        });
+      }
+      setSaveFilterName("");
+      setIsSaveFilterDialogOpen(false);
+      toast.success("Saved filter");
+    } catch (saveError) {
+      setSavedFilters(savedFilters);
+      toast.error(saveError instanceof Error ? saveError.message : "Could not save filter.");
+    } finally {
+      setSavingFilter(false);
+    }
   };
 
   const applySavedFilter = (entry: OrdersSavedFilter) => {
@@ -800,6 +1199,7 @@ function AdminOrdersContent() {
     setDeliveryFilter(s.deliveryFilter);
     setPaymentMethod(s.paymentMethod);
     setCustomerType(s.customerType || "ALL");
+    setOutstandingOnly(Boolean(s.outstandingOnly));
     setDiscountOnly(Boolean(s.discountOnly));
     setQuery(s.query);
     setStart(s.start);
@@ -815,59 +1215,157 @@ function AdminOrdersContent() {
     setShowBalance(s.showBalance);
     setShowDelivery(s.showDelivery);
     setPageSize(s.pageSize);
+    setShowAdvancedFilters(
+      s.paymentMethod !== "ALL" ||
+      s.customerType !== "ALL" ||
+      Boolean(s.outstandingOnly) ||
+      Boolean(s.discountOnly) ||
+      Boolean(s.minTotal) ||
+      Boolean(s.maxTotal) ||
+      Boolean(s.userIdFilter) ||
+      Boolean(s.orderIdFilter) ||
+      Boolean(s.paymentIdFilter),
+    );
     setPage(1);
+    setIsSaveFilterDialogOpen(false);
     toast.success(`Applied "${entry.name}"`);
   };
 
-  const removeSavedFilter = (id: string) => {
-    setSavedFilters((prev) => prev.filter((f) => f.id !== id));
+  const removeSavedFilter = async (id: string) => {
+    if (!savedFiltersLoaded) {
+      toast.error("Saved filters are still loading.");
+      return;
+    }
+    const nextFilters = savedFilters.filter((item) => item.id !== id);
+    const removed = savedFilters.find((item) => item.id === id);
+    setSavedFilters(nextFilters);
+    setRemovingFilterId(id);
+    try {
+      if (savedFiltersSource === "server") {
+        await persistSavedFilters(nextFilters, {
+          auditAction: "ORDERS_FILTER_REMOVE",
+          resultSummary: removed ? `Removed orders filter "${removed.name}".` : "Removed an orders filter.",
+        });
+      }
+      toast.success("Removed saved filter");
+    } catch (removeError) {
+      setSavedFilters(savedFilters);
+      toast.error(removeError instanceof Error ? removeError.message : "Could not remove saved filter.");
+    } finally {
+      setRemovingFilterId(null);
+    }
   };
 
   return (
-    <section className="container mx-auto py-8 space-y-6">
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Orders</h1>
-          <p className="text-sm text-muted-foreground">
-            Track orders, payments, and delivery status.
-          </p>
-          {outstandingOnly ? (
-            <div className="mt-1 inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
-              Collections mode: Outstanding only
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-[11px]"
-                onClick={() => {
-                  setOutstandingOnly(false);
-                  setPage(1);
-                }}
-              >
-                Show all
-              </Button>
+    <section className="orders-page container mx-auto py-8 space-y-6" data-slot="admin-page">
+      <div className="orders-page-hero rounded-3xl border px-6 py-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary/80">Operations</p>
+              <h1 className="text-3xl font-semibold tracking-tight">Orders</h1>
+              <p className="max-w-2xl text-sm text-muted-foreground">
+                Operational worklist for orders, collections, and delivery follow-up.
+              </p>
             </div>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" className="w-full sm:w-auto" onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "orders"] })}>
-            <RefreshCcw className="w-4 h-4 mr-1" />
-            Refresh
-          </Button>
-          <Button
-            variant="secondary"
-            className="w-full sm:w-auto"
-            onClick={exportSelected}
-          >
-            <Download className="w-4 h-4 mr-1" />
-            Export CSV
-          </Button>
-          <Button className="w-full sm:w-auto" onClick={() => router.push("/admin/orders/new") }>
-            Create Order
-          </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="secondary">{resultsSummary}</Badge>
+              {activeFilterCount > 0 ? (
+                <Badge variant="outline">{activeFilterCount} active filter{activeFilterCount === 1 ? "" : "s"}</Badge>
+              ) : null}
+              {selectedCount > 0 ? (
+                <Badge variant="outline">{selectedCount} selected</Badge>
+              ) : null}
+              {outstandingOnly ? (
+                <div className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800">
+                  Collections mode: Outstanding only
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => {
+                      setOutstandingOnly(false);
+                      setPage(1);
+                    }}
+                  >
+                    Show all
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+            {isAdmin ? (
+              <Button variant="outline" className="w-full border-white/60 bg-white/80 sm:w-auto" asChild>
+                <Link href="/admin/audit?entityType=ORDER&sourcePage=admin/orders">
+                  Orders Audit
+                </Link>
+              </Button>
+            ) : null}
+            <Button
+              variant="outline"
+              className="w-full border-white/60 bg-white/80 sm:w-auto"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ["admin", "orders"] })}
+            >
+              <RefreshCcw className="w-4 h-4 mr-1" />
+              {isFetching ? "Refreshing…" : "Refresh"}
+            </Button>
+            <Button
+              variant="secondary"
+              className="w-full bg-white text-foreground shadow-sm sm:w-auto"
+              title={selectedCount > 0 ? `Export ${selectedCount} selected order(s)` : "Export current page orders"}
+              onClick={() => void exportSelected()}
+              disabled={exporting}
+            >
+              <Download className="w-4 h-4 mr-1" />
+              {exporting ? "Exporting…" : selectedCount > 0 ? `Export ${selectedCount} Selected` : "Export Page"}
+            </Button>
+            <Button variant="outline" className="w-full border-white/60 bg-white/80 sm:w-auto" onClick={() => router.push("/admin/orders/otc")}>
+              Walk-in Sale
+            </Button>
+            <Button className="w-full shadow-sm sm:w-auto" onClick={() => router.push("/admin/orders/new")}>
+              Create Order
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/* KPI summary cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Card className="orders-metric-card orders-metric-card-neutral !border-none shadow-sm">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">Matching Orders</p>
+            <p className="text-2xl font-semibold mt-1">{total.toLocaleString("en-GH")}</p>
+            <p className="mt-2 text-xs text-muted-foreground">Current result set after filters and search.</p>
+          </CardContent>
+        </Card>
+        <Card className="orders-metric-card orders-metric-card-primary !border-none shadow-sm">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">Filtered Revenue</p>
+            <p className="text-2xl font-semibold mt-1">{formatCurrency(Number(totals.total || 0))}</p>
+            <p className="mt-2 text-xs text-muted-foreground">Invoice total across visible matching orders.</p>
+          </CardContent>
+        </Card>
+        <Card className="orders-metric-card orders-metric-card-success !border-none shadow-sm">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">Filtered Collected</p>
+            <p className="text-2xl font-semibold mt-1 text-green-700">{formatCurrency(Number(totals.paid || 0))}</p>
+            <p className="mt-2 text-xs text-muted-foreground">Payments already captured against these orders.</p>
+          </CardContent>
+        </Card>
+        <Card className="orders-metric-card orders-metric-card-warning !border-none shadow-sm">
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">Filtered Outstanding</p>
+            <p className={`text-2xl font-semibold mt-1 ${Number(totals.balance || 0) > 0 ? "text-amber-700" : "text-muted-foreground"}`}>
+              {formatCurrency(Number(totals.balance || 0))}
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">Open exposure still awaiting collection.</p>
+          </CardContent>
+        </Card>
+      </div>
+
       {selectedCount > 0 && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm">
+        <div className="orders-selection-bar mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-3 text-sm">
           <div className="flex items-center gap-2">
             <span className="font-medium">{selectedCount} selected</span>
             <Button variant="ghost" size="sm" onClick={clearSelection}>
@@ -875,17 +1373,28 @@ function AdminOrdersContent() {
             </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={exportSelected}>
-              Export CSV
+            <Button size="sm" onClick={() => void exportSelected()} disabled={exporting}>
+              <Download className="w-4 h-4 mr-1" />
+              {exporting ? "Exporting…" : `Export ${selectedCount} Selected`}
             </Button>
           </div>
         </div>
       )}
 
       {/* Filters */}
-      <Card className="shadow-md !border-none mb-6">
-        <CardHeader className="flex flex-col gap-2 space-y-0 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base font-semibold">Filters</CardTitle>
+      <Card className="orders-filters-card shadow-md !border-none mb-6">
+        <CardHeader className="flex flex-col gap-3 space-y-0 py-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base font-semibold">Worklist Filters</CardTitle>
+              {activeFilterCount > 0 ? (
+                <Badge variant="secondary">{activeFilterCount} active</Badge>
+              ) : null}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Keep primary filters visible and expand advanced controls only when needed.
+            </p>
+          </div>
           <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -914,75 +1423,39 @@ function AdminOrdersContent() {
                 </DropdownMenuCheckboxItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="w-full sm:w-auto">
-                  Saved filters
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={saveCurrentFilter}>
-                  Save current filter
-                </DropdownMenuItem>
-                {savedFilters.length === 0 ? (
-                  <DropdownMenuItem disabled>No saved filters</DropdownMenuItem>
-                ) : (
-                  savedFilters.map((entry) => (
-                    <DropdownMenuItem key={entry.id} className="flex items-center justify-between gap-4">
-                      <button
-                        type="button"
-                        className="text-left"
-                        onClick={() => applySavedFilter(entry)}
-                      >
-                        {entry.name}
-                      </button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          removeSavedFilter(entry.id);
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </DropdownMenuItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={() => setIsSaveFilterDialogOpen(true)}
+            >
+              <Save className="mr-1 h-4 w-4" />
+              Saved filters
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={() => setShowAdvancedFilters((prev) => !prev)}
+            >
+              <SlidersHorizontal className="mr-1 h-4 w-4" />
+              {showAdvancedFilters ? "Hide advanced" : `Show advanced${advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ""}`}
+            </Button>
             <Button
               variant="ghost"
               size="sm"
               className="w-full sm:w-auto"
-              onClick={() => {
-                setQuery("");
-                setFilter("ALL");
-                setDeliveryFilter("ALL");
-                setPaymentMethod("ALL");
-                setCustomerType("ALL");
-              setOutstandingOnly(false);
-              setDiscountOnly(false);
-                setStart("");
-                setEnd("");
-                setMinTotal("");
-                setMaxTotal("");
-                setUserIdFilter("");
-                setOrderIdFilter("");
-                setPaymentIdFilter("");
-                setPage(1);
-              }}
+              onClick={() => { resetAllFilters(); setPage(1); }}
             >
               Clear all
             </Button>
           </div>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           {orderIdFilter || paymentIdFilter ? (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              <span className="font-medium">Exact source filter active:</span>{" "}
-              {orderIdFilter ? shortOrderId(orderIdFilter) : `payment ${shortOrderId(paymentIdFilter)}`}{" "}
+              <span className="font-medium">Exact lookup active:</span>{" "}
+              {orderIdFilter ? `order or invoice ${orderIdFilter}` : `payment ${paymentIdFilter}`}{" "}
               <Button
                 type="button"
                 size="sm"
@@ -998,190 +1471,270 @@ function AdminOrdersContent() {
               </Button>
             </div>
           ) : null}
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          <div className="relative">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search orders..."
-              value={query}
-              ref={searchRef}
-              autoFocus
-              onChange={(e) => {
-                setQuery(e.target.value);
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <Filter className="h-4 w-4" />
+              {resultsSummary}
+            </span>
+            {sortKey ? (
+              <span className="text-muted-foreground">
+                Sorted by {sortKey} {sortDir}
+              </span>
+            ) : null}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="relative sm:col-span-2">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by customer, invoice, phone, or order ID"
+                value={query}
+                ref={searchRef}
+                autoFocus
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+                className="pl-9"
+              />
+            </div>
+            <Select
+              value={filter}
+              onValueChange={(value) => {
+                setFilter(value);
                 setPage(1);
               }}
-              className="pl-9"
-            />
-          </div>
-          <Select
-            value={filter}
-            onValueChange={(value) => {
-              setFilter(value);
-              setPage(1);
-            }}
             >
               <SelectTrigger aria-label="Filter orders by status">
                 <SelectValue placeholder="Filter by status" />
               </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All</SelectItem>
-              <SelectItem value="UNPAID">Unpaid</SelectItem>
-              <SelectItem value="PARTIALLY_PAID">Partially Paid</SelectItem>
-              <SelectItem value="ON_HOLD_CREDIT">On hold (credit)</SelectItem>
-              <SelectItem value="PAID">Paid</SelectItem>
-              <SelectItem value="CANCELLED">Cancelled</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={deliveryFilter}
-            onValueChange={(value) => {
-              setDeliveryFilter(value);
-              setPage(1);
-            }}
+              <SelectContent>
+                <SelectItem value="ALL">All statuses</SelectItem>
+                <SelectItem value="UNPAID">Unpaid</SelectItem>
+                <SelectItem value="PARTIALLY_PAID">Partially Paid</SelectItem>
+                <SelectItem value="ON_HOLD_CREDIT">On hold (credit)</SelectItem>
+                <SelectItem value="PAID">Paid</SelectItem>
+                <SelectItem value="CANCELLED">Cancelled</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={deliveryFilter}
+              onValueChange={(value) => {
+                setDeliveryFilter(value);
+                setPage(1);
+              }}
             >
               <SelectTrigger aria-label="Filter orders by delivery status">
                 <SelectValue placeholder="Filter by delivery" />
               </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Deliveries</SelectItem>
-              <SelectItem value="NOT_DELIVERED">Not Delivered</SelectItem>
-              <SelectItem value="PARTIALLY_DELIVERED">Partially Delivered</SelectItem>
-              <SelectItem value="DELIVERED">Delivered</SelectItem>
-              <SelectItem value="RETURNED">Returned</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={paymentMethod}
-            onValueChange={(value) => {
-              setPaymentMethod(value);
-              setPage(1);
-            }}
+              <SelectContent>
+                <SelectItem value="ALL">All deliveries</SelectItem>
+                <SelectItem value="NOT_DELIVERED">Not Delivered</SelectItem>
+                <SelectItem value="PARTIALLY_DELIVERED">Partially Delivered</SelectItem>
+                <SelectItem value="DELIVERED">Delivered</SelectItem>
+                <SelectItem value="RETURNED">Returned</SelectItem>
+              </SelectContent>
+            </Select>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="orders-start-date" className="text-xs text-muted-foreground">From date</label>
+              <Input
+                id="orders-start-date"
+                type="date"
+                value={start}
+                onChange={(e) => {
+                  setStart(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="orders-end-date" className="text-xs text-muted-foreground">To date</label>
+              <Input
+                id="orders-end-date"
+                type="date"
+                value={end}
+                onChange={(e) => {
+                  setEnd(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Quick views:</span>
+            <Button
+              variant={outstandingOnly ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                setOutstandingOnly((prev) => !prev);
+                setShowAdvancedFilters(true);
+                setPage(1);
+              }}
             >
-              <SelectTrigger aria-label="Filter orders by payment method">
-                <SelectValue placeholder="Payment method" />
-              </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All methods</SelectItem>
-              <SelectItem value="cash">Cash</SelectItem>
-              <SelectItem value="card">Card</SelectItem>
-              <SelectItem value="momo">MoMo</SelectItem>
-              <SelectItem value="transfer">Transfer</SelectItem>
-              <SelectItem value="adjustment">Adjustment</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={customerType}
-            onValueChange={(value) => {
-              setCustomerType(value);
-              setPage(1);
-            }}
+              Outstanding only
+            </Button>
+            <Button
+              variant={discountOnly ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                setDiscountOnly((prev) => !prev);
+                setShowAdvancedFilters(true);
+                setPage(1);
+              }}
             >
-              <SelectTrigger aria-label="Filter orders by customer type">
-                <SelectValue placeholder="Customer type" />
-              </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All customers</SelectItem>
-              <SelectItem value="REGISTERED">Registered</SelectItem>
-              <SelectItem value="WALK_IN">Walk-in</SelectItem>
-            </SelectContent>
-          </Select>
-          <Input
-            type="date"
-            value={start}
-            onChange={(e) => {
-              setStart(e.target.value);
-              setPage(1);
-            }}
-            placeholder="Start date"
-          />
-          <Input
-            type="date"
-            value={end}
-            onChange={(e) => {
-              setEnd(e.target.value);
-              setPage(1);
-            }}
-            placeholder="End date"
-          />
-          <Input
-            type="number"
-            placeholder="Min total"
-            value={minTotal}
-            onChange={(e) => {
-              setMinTotal(e.target.value);
-              setPage(1);
-            }}
-          />
-          <Input
-            type="number"
-            placeholder="Max total"
-            value={maxTotal}
-            onChange={(e) => {
-              setMaxTotal(e.target.value);
-              setPage(1);
-            }}
-          />
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">Saved views:</span>
-          <Button
-            variant={discountOnly ? "default" : "outline"}
-            size="sm"
-            onClick={() => {
-              setDiscountOnly((prev) => !prev);
-              setPage(1);
-            }}
-          >
-            Discounted only
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => applySavedView("unpaid-not-delivered")}
-          >
-            Unpaid &amp; not delivered
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => applySavedView("last-7-days")}
-          >
-            Last 7 days
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => applySavedView("delivered-7-days")}
-          >
-            Delivered (7 days)
-          </Button>
-        </div>
+              Discounted only
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applySavedView("unpaid-not-delivered")}
+            >
+              Unpaid &amp; not delivered
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applySavedView("last-7-days")}
+            >
+              Last 7 days
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applySavedView("delivered-7-days")}
+            >
+              Delivered (7 days)
+            </Button>
+          </div>
+          {showAdvancedFilters ? (
+            <div className="rounded-lg border bg-muted/20 p-4 space-y-4">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-sm font-medium">Advanced filters</p>
+                  <p className="text-xs text-muted-foreground">
+                    Use exact lookups and finance-specific filters without crowding the main worklist.
+                  </p>
+                </div>
+                {advancedFilterCount > 0 ? (
+                  <Badge variant="outline">{advancedFilterCount} advanced filter{advancedFilterCount === 1 ? "" : "s"}</Badge>
+                ) : null}
+              </div>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <Select
+                  value={paymentMethod}
+                  onValueChange={(value) => {
+                    setPaymentMethod(value);
+                    setPage(1);
+                  }}
+                >
+                  <SelectTrigger aria-label="Filter orders by payment method">
+                    <SelectValue placeholder="Payment method" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">All methods</SelectItem>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="momo">MoMo</SelectItem>
+                    <SelectItem value="transfer">Transfer</SelectItem>
+                    <SelectItem value="adjustment">Adjustment</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={customerType}
+                  onValueChange={(value) => {
+                    setCustomerType(value);
+                    setPage(1);
+                  }}
+                >
+                  <SelectTrigger aria-label="Filter orders by customer type">
+                    <SelectValue placeholder="Customer type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ALL">All customers</SelectItem>
+                    <SelectItem value="REGISTERED">Registered</SelectItem>
+                    <SelectItem value="WALK_IN">Walk-in</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="orders-customer-id" className="text-xs text-muted-foreground">Customer ID</label>
+                  <Input
+                    id="orders-customer-id"
+                    placeholder="Exact customer ID"
+                    value={userIdFilter}
+                    onChange={(e) => {
+                      setUserIdFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="orders-order-id" className="text-xs text-muted-foreground">Order or invoice</label>
+                  <Input
+                    id="orders-order-id"
+                    placeholder="INV-1001 or order ID"
+                    value={orderIdFilter}
+                    onChange={(e) => {
+                      setOrderIdFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="orders-payment-id" className="text-xs text-muted-foreground">Payment ID</label>
+                  <Input
+                    id="orders-payment-id"
+                    placeholder="Exact payment ID"
+                    value={paymentIdFilter}
+                    onChange={(e) => {
+                      setPaymentIdFilter(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="orders-min-total" className="text-xs text-muted-foreground">Min total (GHS)</label>
+                  <Input
+                    id="orders-min-total"
+                    type="number"
+                    placeholder="0"
+                    value={minTotal}
+                    onChange={(e) => {
+                      setMinTotal(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="orders-max-total" className="text-xs text-muted-foreground">Max total (GHS)</label>
+                  <Input
+                    id="orders-max-total"
+                    type="number"
+                    placeholder="Any"
+                    value={maxTotal}
+                    onChange={(e) => {
+                      setMaxTotal(e.target.value);
+                      setPage(1);
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
       {/* Orders Table */}
       {sortedOrders.length === 0 ? (
-        <div className="mt-10 rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-          <p>No orders found for the current filters.</p>
+        <div className="orders-empty-state mt-10 rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <Search className="h-5 w-5" />
+          </div>
+          <p className="text-base font-medium text-foreground">No orders found for the current filters.</p>
+          <p className="mt-1">Try widening the date range, clearing exact lookups, or starting a new order.</p>
           <div className="mt-3 flex flex-wrap justify-center gap-2">
             <Button
               size="sm"
               variant="outline"
-              onClick={() => {
-                setQuery("");
-                setFilter("ALL");
-                setDeliveryFilter("ALL");
-                setPaymentMethod("ALL");
-                setCustomerType("ALL");
-                setOutstandingOnly(false);
-                setDiscountOnly(false);
-                setStart("");
-                setEnd("");
-                setMinTotal("");
-                setMaxTotal("");
-                setUserIdFilter("");
-                setPage(1);
-              }}
+              onClick={() => { resetAllFilters(); setPage(1); }}
             >
               Clear filters
             </Button>
@@ -1191,12 +1744,18 @@ function AdminOrdersContent() {
           </div>
         </div>
       ) : (
-        <Card className="shadow-md !border-none">
-          <CardHeader className="flex items-center justify-between py-3">
-            <CardTitle className="text-base font-semibold">Orders</CardTitle>
-            <span className="text-xs text-muted-foreground">
-              {sortedOrders.length} shown
-            </span>
+        <Card className="orders-list-card shadow-md !border-none">
+          <CardHeader className="flex flex-col gap-2 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="text-base font-semibold">Orders</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                {sortedOrders.length} shown on this page{isFetching ? " · syncing latest data" : ""}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant="outline">Page total {formatCurrency(pageTotal)}</Badge>
+              <Badge variant="outline">Balance {formatCurrency(Number(totals.balance || 0))}</Badge>
+            </div>
           </CardHeader>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
@@ -1255,23 +1814,14 @@ function AdminOrdersContent() {
                 />
               </TableHead>
               <TableHead
-                role="button"
-                title={`Click to cycle status filter (current: ${filter})`}
-                className="cursor-pointer select-none relative"
+                className="select-none relative"
                 style={{ width: columnWidths.status }}
-                onClick={() => {
-                  const seq = ["ALL", "UNPAID", "PARTIALLY_PAID", "ON_HOLD_CREDIT", "PAID", "CANCELLED"] as const;
-                  const i = seq.indexOf(filter as (typeof seq)[number]);
-                  const next = seq[(i + 1) % seq.length];
-                  setFilter(next);
-                  setPage(1);
-                }}
               >
                 <div className="inline-flex items-center gap-1">
-                  <span>Status ({filter})</span>
-                  <Tooltip content="Click to cycle filter">
-                    <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Cycle status filter" />
-                  </Tooltip>
+                  <span>Status</span>
+                  {filter !== "ALL" ? (
+                    <span className="text-[11px] text-muted-foreground">({formatStatus(filter)})</span>
+                  ) : null}
                 </div>
                 <div
                   className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
@@ -1337,12 +1887,15 @@ function AdminOrdersContent() {
                 </TableHead>
               ) : null}
               {showDelivery ? (
-                <TableHead className="text-left relative" style={{ width: columnWidths.delivery }}>
+                <TableHead
+                  role="button"
+                  aria-label="Sort by delivery status"
+                  className="text-left cursor-pointer select-none relative"
+                  style={{ width: columnWidths.delivery }}
+                  onClick={() => toggleSort("delivery")}
+                >
                   <div className="inline-flex items-center gap-1">
-                    <span>Delivery</span>
-                    <Tooltip content="Delivery status">
-                      <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Delivery" />
-                    </Tooltip>
+                    <span>Delivery{sortIndicator("delivery")}</span>
                   </div>
                   <div
                     className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
@@ -1417,16 +1970,11 @@ function AdminOrdersContent() {
                   <TableCell style={{ width: getColWidth("status") }}>
                     <div className="flex flex-col gap-1">
                       <span className={`text-xs px-2 py-1 rounded-full ${chipToneClass(orderStatusTone(order.status))}`}>
-                        {order.status}
+                        {formatStatus(order.status)}
                       </span>
-                      {String(order.status || "").toUpperCase() === "ON_HOLD_CREDIT" ? (
-                        <span className={`text-[10px] px-2 py-0.5 rounded-full ${chipToneClass("warning")}`}>
-                          Credit hold
-                        </span>
-                      ) : null}
                       {Boolean(order.hasPendingMomo) ? (
                         <span className={`text-[10px] px-2 py-0.5 rounded-full ${chipToneClass("warning")}`}>
-                          Hold release (MoMo pending)
+                          MoMo pending
                         </span>
                       ) : null}
                     </div>
@@ -1454,13 +2002,7 @@ function AdminOrdersContent() {
                   {showDelivery ? (
                     <TableCell style={{ width: getColWidth("delivery") }}>
                       <span className={`text-xs px-2 py-1 rounded-full ${chipToneClass(deliveryStatusTone(delivery))}`}>
-                        {delivery === "DELIVERED"
-                          ? "Delivered"
-                          : delivery === "PARTIALLY_DELIVERED"
-                          ? "Partial"
-                          : delivery === "RETURNED"
-                          ? "Returned"
-                          : "Not Delivered"}
+                        {formatStatus(delivery)}
                       </span>
                     </TableCell>
                   ) : null}
@@ -1469,9 +2011,11 @@ function AdminOrdersContent() {
                       <Link href={`/admin/orders/${order.id}`}>
                         <Button size="sm" variant="outline">View Details</Button>
                       </Link>
-                      <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>
-                        <Button size="sm" variant="outline">Audit</Button>
-                      </Link>
+                      {isAdmin ? (
+                        <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>
+                          <Button size="sm" variant="outline">Audit</Button>
+                        </Link>
+                      ) : null}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1480,6 +2024,7 @@ function AdminOrdersContent() {
                           setPaymentAmount("");
                           setPaymentNote("");
                           setPaymentTab("custom");
+                          setPaymentDialogMethod("cash");
                           setIsDialogOpen(true);
                         }}
                         disabled={order.status === "PAID" || order.status === "CANCELLED"}
@@ -1536,11 +2081,11 @@ function AdminOrdersContent() {
                     <p className="text-xs uppercase text-muted-foreground">Status</p>
                     <div className="flex flex-col gap-1">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${statusClass}`}>
-                        {order.status}
+                        {formatStatus(order.status)}
                       </span>
                       {Boolean(order.hasPendingMomo) ? (
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${chipToneClass("warning")}`}>
-                          Hold release (MoMo pending)
+                          MoMo pending
                         </span>
                       ) : null}
                     </div>
@@ -1549,13 +2094,7 @@ function AdminOrdersContent() {
                     <div>
                       <p className="text-xs uppercase text-muted-foreground">Delivery</p>
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${deliveryClass}`}>
-                        {delivery === "DELIVERED"
-                          ? "Delivered"
-                          : delivery === "PARTIALLY_DELIVERED"
-                          ? "Partial"
-                          : delivery === "RETURNED"
-                          ? "Returned"
-                          : "Not Delivered"}
+                        {formatStatus(delivery)}
                       </span>
                     </div>
                   ) : null}
@@ -1595,10 +2134,12 @@ function AdminOrdersContent() {
                   </div>
                 </div>
 
-                <div>
-                  <p className="text-xs uppercase text-muted-foreground">Notes</p>
-                  <p>{order.adminNote || "—"}</p>
-                </div>
+                {order.adminNote ? (
+                  <div>
+                    <p className="text-xs uppercase text-muted-foreground">Notes</p>
+                    <p className="text-sm">{order.adminNote}</p>
+                  </div>
+                ) : null}
 
                 <div className="border-t pt-2 mt-1 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
                   <div className="flex flex-col">
@@ -1619,11 +2160,7 @@ function AdminOrdersContent() {
                         if (delivery === "DELIVERED" && deliveredAt) {
                           return `Delivered on ${formatDateGH(deliveredAt)}`;
                         }
-                        if (delivery === "DELIVERED") return "Delivered";
-                        if (delivery === "PARTIALLY_DELIVERED")
-                          return "Partially delivered";
-                        if (delivery === "RETURNED") return "Returned";
-                        return "Not delivered";
+                        return formatStatus(delivery);
                       })()}
                     </span>
                   </div>
@@ -1633,9 +2170,11 @@ function AdminOrdersContent() {
                   <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
                     <Link href={`/admin/orders/${order.id}`}>View Details</Link>
                   </Button>
-                  <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
-                    <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>Audit</Link>
-                  </Button>
+                  {isAdmin ? (
+                    <Button variant="outline" size="sm" asChild className="w-full sm:flex-1 sm:min-w-[120px]">
+                      <Link href={`/admin/audit?entityType=ORDER&entityId=${order.id}&sourcePage=admin/orders`}>Audit</Link>
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     size="sm"
@@ -1645,6 +2184,7 @@ function AdminOrdersContent() {
                       setPaymentAmount("");
                       setPaymentNote("");
                       setPaymentTab("custom");
+                      setPaymentDialogMethod("cash");
                       setIsDialogOpen(true);
                     }}
                     disabled={order.status === "PAID" || order.status === "CANCELLED"}
@@ -1657,9 +2197,7 @@ function AdminOrdersContent() {
                     size="sm"
                     className="w-full sm:flex-1 sm:min-w-[120px]"
                     onClick={() => {
-                      navigator.clipboard
-                        .writeText(`${typeof window !== "undefined" ? window.location.origin : ""}/admin/orders/${order.id}`)
-                        .then(() => toast.success("Link copied"));
+                      void copyOrderLink(order.id);
                     }}
                   >
                     Copy Link
@@ -1804,6 +2342,97 @@ function AdminOrdersContent() {
         </Pagination>
       </div>
 
+      <Dialog open={isSaveFilterDialogOpen} onOpenChange={setIsSaveFilterDialogOpen}>
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-semibold">Saved filters</DialogTitle>
+            <DialogDescription>
+              {savedFiltersSource === "server"
+                ? "Saved to your account and available across devices."
+                : savedFiltersSource === "local"
+                  ? "Saved in this browser only. Server sync is unavailable right now."
+                  : "Loading saved filters..."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border p-4 space-y-3">
+              <div>
+                <p className="text-sm font-medium">Save current filter set</p>
+                <p className="text-xs text-muted-foreground">
+                  Capture the current filter, sort, and visible column settings.
+                </p>
+              </div>
+              <Input
+                value={saveFilterName}
+                placeholder="e.g. Collections queue"
+                onChange={(e) => setSaveFilterName(e.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void saveCurrentFilter();
+                  }
+                }}
+              />
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setIsSaveFilterDialogOpen(false)}>
+                  Close
+                </Button>
+                <Button onClick={() => void saveCurrentFilter()} disabled={savingFilter || !savedFiltersLoaded}>
+                  {savingFilter ? "Saving…" : "Save current filter"}
+                </Button>
+              </DialogFooter>
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Available filters</p>
+                <span className="text-xs text-muted-foreground">
+                  {savedFiltersLoaded ? `${savedFilters.length} saved` : "Loading..."}
+                </span>
+              </div>
+              {!savedFiltersLoaded ? (
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                  Loading saved filters...
+                </div>
+              ) : savedFilters.length === 0 ? (
+                <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+                  No saved filters yet.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {savedFilters.map((entry) => (
+                    <div key={entry.id} className="flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-medium">{entry.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Status: {entry.state.filter === "ALL" ? "All" : formatStatus(entry.state.filter)}
+                          {" · "}
+                          Delivery: {entry.state.deliveryFilter === "ALL" ? "All" : formatStatus(entry.state.deliveryFilter)}
+                          {" · "}
+                          Sort: {entry.state.sortKey ? `${entry.state.sortKey} ${entry.state.sortDir}` : "default"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="outline" size="sm" onClick={() => applySavedFilter(entry)}>
+                          Apply
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void removeSavedFilter(entry.id)}
+                          disabled={removingFilterId === entry.id}
+                        >
+                          {removingFilterId === entry.id ? "Removing…" : "Remove"}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Add Payment Modal */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto overflow-x-hidden sm:max-h-none">
@@ -1818,6 +2447,12 @@ function AdminOrdersContent() {
                   <span className="text-muted-foreground">Order ID</span>
                   <span className="font-mono">{selectedOrder.id.slice(0, 8)}…</span>
                 </div>
+                {selectedOrder.invoiceNumber ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">Invoice</span>
+                    <span className="font-mono">{selectedOrder.invoiceNumber}</span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-muted-foreground">Total</span>
                   <span className="font-mono">{formatCurrency(Number(selectedOrder.total || 0))}</span>
@@ -1907,6 +2542,24 @@ function AdminOrdersContent() {
                 </div>
               </div>
 
+              <div className="flex flex-col gap-2">
+                <span className="text-xs text-muted-foreground">Payment Method</span>
+                <div className="flex flex-wrap gap-2" role="group" aria-label="Payment method">
+                  {(["cash", "momo", "transfer", "card"] as const).map((m) => (
+                    <Button
+                      key={m}
+                      type="button"
+                      size="sm"
+                      variant={paymentDialogMethod === m ? "default" : "outline"}
+                      onClick={() => setPaymentDialogMethod(m)}
+                      className="w-full sm:w-auto capitalize"
+                    >
+                      {m === "momo" ? "MoMo" : m === "transfer" ? "Transfer" : m === "card" ? "Card" : "Cash"}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
               <Input
                 type="number"
                 aria-label="Payment amount"
@@ -1932,14 +2585,15 @@ function AdminOrdersContent() {
                 <Button
                   variant="outline"
                   onClick={() => setIsDialogOpen(false)}
+                  disabled={recordingPayment}
                 >
                   Cancel
                 </Button>
                 <Button
                   onClick={() => recordPayment(selectedOrder.id)}
-                  disabled={!paymentAmount}
+                  disabled={!paymentAmount || recordingPayment}
                 >
-                  Confirm Payment
+                  {recordingPayment ? "Recording…" : "Confirm Payment"}
                 </Button>
               </div>
             </div>
@@ -1964,6 +2618,3 @@ export default function AdminOrdersPage() {
     </Suspense>
   );
 }
-
-
-

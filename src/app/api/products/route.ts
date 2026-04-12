@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import type { Prisma } from "@prisma/client";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
@@ -112,6 +113,15 @@ type ProductRow = Awaited<ReturnType<typeof prisma.product.findFirst>> & {
   requiresExpiryDate?: boolean | null;
 };
 
+type ProductsOverviewStats = {
+  filteredTotal: number;
+  outOfStockCount: number;
+  lowStockCount: number;
+  archivedCount: number;
+  supplierCount: number;
+  marginRiskCount: number | null;
+};
+
 async function computeSellableStockByProductIds(productIds: string[]) {
   if (!productIds.length) return new Map<string, number>();
   const today = new Date();
@@ -192,9 +202,12 @@ export async function GET(request: Request) {
   const pageSize = Number.isFinite(pageSizeRaw)
     ? Math.min(Math.max(Math.floor(pageSizeRaw), 1), 100)
     : 12;
-  const sort = (searchParams.get("sort") || "createdAt") as
-    | "createdAt"
-    | "updatedAt";
+  const ALLOWED_SORT_FIELDS = ["createdAt", "updatedAt", "price", "stock", "name"] as const;
+  type SortField = typeof ALLOWED_SORT_FIELDS[number];
+  const sortRaw = searchParams.get("sort") || "updatedAt";
+  const sort: SortField = (ALLOWED_SORT_FIELDS as readonly string[]).includes(sortRaw)
+    ? (sortRaw as SortField)
+    : "updatedAt";
   const sortDirRaw = (searchParams.get("sortDir") || "desc").toLowerCase();
   const sortDir = sortDirRaw === "asc" ? "asc" : "desc";
   const rawCategory = (searchParams.get("category") || "").toLowerCase();
@@ -204,6 +217,7 @@ export async function GET(request: Request) {
   const supplierIdParam = String(searchParams.get("supplierId") || "").trim();
   const supplierParam = String(searchParams.get("supplier") || "").trim();
   const includeSellableStock = searchParams.get("includeSellableStock") === "1";
+  const includeStats = searchParams.get("includeStats") === "1";
   const includeDeleted = searchParams.get("includeDeleted") === "1";
 
   try {
@@ -310,6 +324,9 @@ export async function GET(request: Request) {
       }),
       prisma.product.count({ where }),
     ]);
+    const stats = includeStats
+      ? await computeProductsOverviewStats({ where, includePrivate, filteredTotal: total })
+      : null;
     const sellableStockById =
       includePrivate && includeSellableStock
         ? await computeSellableStockByProductIds(items.map((p) => p.id))
@@ -325,6 +342,7 @@ export async function GET(request: Request) {
       total,
       page,
       pageSize,
+      stats,
     });
   } catch (error) {
     console.error("Error fetching products:", error);
@@ -333,6 +351,66 @@ export async function GET(request: Request) {
       { status: 500 }
     );
   }
+}
+
+async function computeProductsOverviewStats({
+  where,
+  includePrivate,
+  filteredTotal,
+}: {
+  where: Prisma.ProductWhereInput;
+  includePrivate: boolean;
+  filteredTotal: number;
+}): Promise<ProductsOverviewStats> {
+  const [outOfStockCount, lowStockCount, archivedCount, supplierRows, marginRows] =
+    await Promise.all([
+      prisma.product.count({
+        where: {
+          AND: [where, { stock: { lte: 0 } }],
+        },
+      }),
+      prisma.product.count({
+        where: {
+          AND: [where, { stock: { gt: 0, lte: 5 } }],
+        },
+      }),
+      prisma.product.count({
+        where: {
+          AND: [where, { archived: true }],
+        },
+      }),
+      prisma.product.findMany({
+        where,
+        select: { supplier: true },
+        distinct: ["supplier"],
+      }),
+      includePrivate
+        ? prisma.product.findMany({
+            where,
+            select: { price: true, cost: true, minMarginPct: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+  const supplierCount = supplierRows.filter((row) => String(row.supplier || "").trim()).length;
+  const marginRiskCount = includePrivate
+    ? marginRows.filter((row) => {
+        const price = Number(row.price || 0);
+        const cost = Number(row.cost || 0);
+        const marginPct = price > 0 ? ((price - cost) / price) * 100 : 0;
+        const minMargin = row.minMarginPct != null ? Number(row.minMarginPct) : null;
+        return price > 0 && (price < cost || (minMargin != null && marginPct < minMargin));
+      }).length
+    : null;
+
+  return {
+    filteredTotal,
+    outOfStockCount,
+    lowStockCount,
+    archivedCount,
+    supplierCount,
+    marginRiskCount,
+  };
 }
 
 /**
@@ -658,6 +736,7 @@ export async function POST(request: Request) {
         action: "PRODUCT_CREATE",
         entityType: "PRODUCT",
         entityId: product.id,
+        request,
         meta: {
           name: product.name,
           sku: productWithSku.sku,
@@ -690,6 +769,7 @@ export async function POST(request: Request) {
           action: "PURCHASE_CREATE",
           entityType: "PURCHASE",
           entityId: initialPurchaseSummary.id,
+          request,
           meta: {
             name: product.name,
             productId: product.id,
@@ -729,7 +809,10 @@ export async function POST(request: Request) {
           action: "PRICE_MARGIN_OVERRIDE",
           entityType: "PRODUCT",
           entityId: product.id,
+          request,
           meta: {
+            name: product.name,
+            sku: productWithSku.sku,
             reason,
             price: Number(product.price),
             cost: Number(product.cost),
@@ -753,4 +836,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

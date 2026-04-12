@@ -28,6 +28,8 @@ export async function POST(
   if (!limited.ok) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
+  const sourcePage =
+    new URL(req.url).searchParams.get("sourcePage")?.trim() || "admin/supplier-payments";
 
   const { id: rawId } = await params;
   const id = String(rawId || "").trim();
@@ -75,7 +77,11 @@ export async function POST(
       action: "SUPPLIER_PAYMENT_APPROVE",
       entityType: "SUPPLIER_PAYMENT",
       entityId: id,
+      request: req,
       meta: {
+        sourcePage,
+        section: "pending-payment-approvals",
+        operation: "approve_supplier_payment",
         previousStatus: payment.status,
         status: approvedPayment.status,
         purchaseId: payment.purchaseId || null,
@@ -85,6 +91,7 @@ export async function POST(
         reference: payment.reference || null,
         note: payment.note || null,
         approvedAt: approvedPayment.approvedAt ? approvedPayment.approvedAt.toISOString() : null,
+        resultSummary: `Approved supplier payment of ${Number(payment.amount || 0).toFixed(2)}.`,
       },
     });
   } catch {

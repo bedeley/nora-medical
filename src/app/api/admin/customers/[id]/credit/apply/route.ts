@@ -6,8 +6,13 @@ import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
 import { assertSameOrigin } from "@/lib/origin";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { postPaymentEntry } from "@/lib/accounting-posting";
+import { recordAuditLog } from "@/lib/audit-log";
 import { randomUUID } from "crypto";
 import { rateLimit } from "@/lib/rate-limit";
+import {
+  buildCustomerActorTargetMeta,
+  canApproveEmployeeCustomerFinancialChange,
+} from "@/lib/customer-account-policy";
 
 type TxClient = Parameters<(typeof prisma)["$transaction"]>[0] extends (
   arg: infer A,
@@ -43,10 +48,63 @@ export async function POST(
   const userId = params.id;
 
   try {
+    const targetCustomerForApproval = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, email: true, role: true },
+    });
+    if (!targetCustomerForApproval) {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+    if (
+      !canApproveEmployeeCustomerFinancialChange({
+        actorRole: user.role,
+        targetRole: targetCustomerForApproval.role,
+      })
+    ) {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "STORE_CREDIT_APPLY_DENIED",
+        entityType: "USER",
+        entityId: userId,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: user.id,
+            actorRole: user.role,
+            targetId: userId,
+            targetRole: targetCustomerForApproval.role,
+          }),
+          customerName: targetCustomerForApproval.name,
+          customerEmail: targetCustomerForApproval.email,
+          sourcePage: "admin/customers",
+          sourceRoute: `/api/admin/customers/${userId}/credit/apply`,
+          reason: "ADMIN_APPROVAL_REQUIRED_FOR_EMPLOYEE_CUSTOMER",
+        },
+      });
+      return NextResponse.json(
+        { error: "Admin approval is required to apply store credit on employee-owned accounts." },
+        { status: 403 },
+      );
+    }
+
     const result = await prisma.$transaction(async (tx: TxClient) => {
+      const customer = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, email: true, role: true },
+      });
+      if (!customer) {
+        throw new Error("CUSTOMER_NOT_FOUND");
+      }
       const orders = await tx.order.findMany({
         where: { userId, NOT: { status: "CANCELLED" } },
-        select: { id: true, total: true, amountPaid: true, createdAt: true },
+        select: {
+          id: true,
+          invoiceNumber: true,
+          total: true,
+          amountPaid: true,
+          createdAt: true,
+        },
         orderBy: { createdAt: "asc" },
       });
       const payments = await tx.payment.findMany({
@@ -65,6 +123,28 @@ export async function POST(
         0,
       );
       const balance = Math.max(0, totalDue - totalPaid);
+      const openOrders = orders
+        .map((order) => {
+          const total = Number(order.total ?? 0);
+          const paid = Number(order.amountPaid ?? 0);
+          const remaining = Math.max(0, total - paid);
+          return remaining > 0
+            ? {
+                orderId: order.id,
+                invoiceNumber: order.invoiceNumber ?? null,
+                balanceBefore: remaining,
+              }
+            : null;
+        })
+        .filter(
+          (
+            entry,
+          ): entry is {
+            orderId: string;
+            invoiceNumber: string | null;
+            balanceBefore: number;
+          } => entry !== null,
+        );
 
       // Store credit ledger: credits issued (NORMAL + CREDIT),
       // minus AUTO_APPLY applications and cash payouts of credit.
@@ -100,29 +180,35 @@ export async function POST(
 
       if (balance <= 0.005 || credit <= 0.005) {
         return {
+          customerName: customer?.name ?? null,
+          customerEmail: customer?.email ?? null,
+          customerRole: customer?.role ?? null,
+          actorTargetMeta: buildCustomerActorTargetMeta({
+            actorId: user.id,
+            actorRole: user.role,
+            targetId: userId,
+            targetRole: customer.role,
+          }),
           applied: 0,
+          creditBefore: credit,
+          balanceBefore: balance,
           remainingBalance: balance,
           remainingCredit: credit,
           createdPaymentIds: [],
+          allocations: [],
+          openOrderCount: openOrders.length,
+          openOrders,
+          totalDueBefore: totalDue,
+          totalPaidBefore: totalPaid,
+          totalDueAfter: totalDue,
+          totalPaidAfter: totalPaid,
         };
       }
 
       const amountToApply = Math.min(balance, credit);
-
-      const beforeOrders = await tx.order.findMany({
-        where: { userId, NOT: { status: "CANCELLED" } },
-        select: { total: true, amountPaid: true },
-      });
-      const totalDueBefore = beforeOrders.reduce(
-        (s: number, o: { total: unknown }) => s + Number(o.total || 0),
-        0,
-      );
-      const totalPaidBefore = beforeOrders.reduce(
-        (s: number, o: { amountPaid: unknown }) =>
-          s + Number(o.amountPaid || 0),
-        0,
-      );
-      const balanceBefore = Math.max(0, totalDueBefore - totalPaidBefore);
+      const totalDueBefore = totalDue;
+      const totalPaidBefore = totalPaid;
+      const balanceBefore = balance;
 
       const meta = {
         note: "Admin-applied store credit",
@@ -230,15 +316,117 @@ export async function POST(
       const remainingCredit = Math.max(0, credit - amountToApply);
 
       return {
+        customerName: customer?.name ?? null,
+        customerEmail: customer?.email ?? null,
+        customerRole: customer?.role ?? null,
+        actorTargetMeta: buildCustomerActorTargetMeta({
+          actorId: user.id,
+          actorRole: user.role,
+          targetId: userId,
+          targetRole: customer.role,
+        }),
         applied: amountToApply,
+        creditBefore: credit,
+        balanceBefore,
         remainingBalance: balanceAfter,
         remainingCredit,
         createdPaymentIds: createdPayments.map((p) => p.id),
+        allocations: applied.map((entry) => ({
+          orderId: entry.orderId,
+          applied: entry.applied,
+          newAmountPaid: entry.newAmountPaid,
+          newBalance: entry.newBalance,
+          newStatus: entry.newStatus,
+          invoiceNumber:
+            orders.find((order) => order.id === entry.orderId)?.invoiceNumber ?? null,
+        })),
+        openOrderCount: openOrders.length,
+        openOrders,
+        totalDueBefore,
+        totalPaidBefore,
+        totalDueAfter,
+        totalPaidAfter,
       };
     });
 
+    const postingFailures: Array<{ paymentId: string; error: string }> = [];
     for (const paymentId of result.createdPaymentIds) {
-      await postPaymentEntry({ paymentId });
+      try {
+        await postPaymentEntry({ paymentId });
+      } catch (error) {
+        console.warn("postPaymentEntry (admin credit apply) error:", error);
+        postingFailures.push({
+          paymentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (result.applied > 0) {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "STORE_CREDIT_APPLY",
+          entityType: "CUSTOMER",
+          entityId: userId,
+          request: req,
+          outcome: postingFailures.length > 0 ? "PARTIAL" : "SUCCESS",
+          meta: {
+            customerId: userId,
+            customerName: result.customerName,
+            customerEmail: result.customerEmail,
+            customerRole: result.customerRole,
+            ...result.actorTargetMeta,
+            changedByName: user.name || user.email || null,
+            changedByEmail: user.email || null,
+            changedByRole: user.role || null,
+            sourcePage: "admin/customers",
+            sourceRoute: `/api/admin/customers/${userId}/credit/apply`,
+            appliedAmount: result.applied,
+            creditBefore: result.creditBefore,
+            creditAfter: result.remainingCredit,
+            balanceBefore: result.balanceBefore,
+            balanceAfter: result.remainingBalance,
+            totalDueBefore: result.totalDueBefore,
+            totalPaidBefore: result.totalPaidBefore,
+            totalDueAfter: result.totalDueAfter,
+            totalPaidAfter: result.totalPaidAfter,
+            openOrderCount: result.openOrderCount,
+            openOrders: result.openOrders,
+            allocations: result.allocations,
+            createdPaymentIds: result.createdPaymentIds,
+            postingFailureCount: postingFailures.length,
+            failedPaymentIds: postingFailures.map((entry) => entry.paymentId),
+          },
+        });
+      } catch {
+        // best-effort
+      }
+    }
+
+    for (const failure of postingFailures) {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "ACCOUNTING_POST_FAILED",
+          entityType: "PAYMENT",
+          entityId: failure.paymentId,
+          request: req,
+          outcome: "FAILED",
+          meta: {
+            customerId: userId,
+            customerName: result.customerName,
+            customerRole: result.customerRole,
+            ...result.actorTargetMeta,
+            sourcePage: "admin/customers",
+            sourceRoute: `/api/admin/customers/${userId}/credit/apply`,
+            reason: "store_credit_apply",
+            error: failure.error,
+          },
+        });
+      } catch {
+        // best-effort
+      }
     }
 
     return NextResponse.json({
@@ -247,6 +435,36 @@ export async function POST(
       remainingCredit: result.remainingCredit,
     });
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message === "CUSTOMER_NOT_FOUND") {
+      return NextResponse.json({ error: "Customer not found" }, { status: 404 });
+    }
+    if (message === "EMPLOYEE_CUSTOMER_ADMIN_APPROVAL_REQUIRED") {
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "STORE_CREDIT_APPLY_DENIED",
+          entityType: "USER",
+          entityId: userId,
+          request: req,
+          outcome: "FAILED",
+          meta: {
+            actorId: user.id,
+            actorRole: user.role || null,
+            targetCustomerId: userId,
+            sourcePage: "admin/customers",
+            sourceRoute: `/api/admin/customers/${userId}/credit/apply`,
+            reason: "ADMIN_APPROVAL_REQUIRED_FOR_EMPLOYEE_CUSTOMER",
+          },
+        });
+      } catch {
+        // best-effort
+      }
+      return NextResponse.json(
+        { error: "Admin approval is required to apply store credit on employee-owned accounts." },
+        { status: 403 },
+      );
+    }
     console.error("Admin apply credit error", e);
     return NextResponse.json(
       { error: "Failed to apply store credit" },

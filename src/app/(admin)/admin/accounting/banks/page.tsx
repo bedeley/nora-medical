@@ -1,9 +1,12 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClientQuery } from "@/hooks/use-client-query";
+import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,20 +85,54 @@ type SavedTxnFilter = {
   name: string;
   search: string;
   unmatchedOnly: boolean;
+  fromDate: string;
+  toDate: string;
   pageSize: number;
+  sortBy: TransactionSortBy;
+  sortDir: TransactionSortDir;
 };
 
 type BulkActionType = "DEBIT" | "CREDIT";
+type TransactionSortBy = "postedAt" | "amount" | "type" | "description" | "reference" | "matched";
+type TransactionSortDir = "asc" | "desc";
 
 type RuleEvaluation = {
   matched: boolean;
   checks: string[];
 };
 
+type TransactionListResponse = {
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  sortBy: TransactionSortBy;
+  sortDir: TransactionSortDir;
+  summary: {
+    total: number;
+    matched: number;
+    unmatched: number;
+  };
+  rows: BankTxn[];
+};
+
 function escapeCsv(value: string) {
   if (!value) return "";
   if (/[\",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
+}
+
+async function fetchJsonOrThrow<T>(input: string): Promise<T> {
+  const res = await fetch(input, { cache: "no-store" });
+  const payload = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+  if (!res.ok) {
+    const message =
+      typeof payload === "object" && payload !== null && "error" in payload
+        ? String(payload.error || `Request failed (${res.status})`)
+        : `Request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return payload as T;
 }
 
 function formatBankDate(value: string) {
@@ -139,31 +176,44 @@ function evaluateRule(txn: BankTxn, rule: BankMatchRule): RuleEvaluation {
       checks.push(textMatched ? "Text contains rule text." : "Text does not contain rule text.");
   }
   const amount = Math.abs(Number(txn.amount || 0));
+  const tol = rule.amountTolerance === null || rule.amountTolerance === undefined ? 0 : Math.max(0, Number(rule.amountTolerance));
   const min = rule.minAmount === null || rule.minAmount === undefined ? null : Number(rule.minAmount);
   const max = rule.maxAmount === null || rule.maxAmount === undefined ? null : Number(rule.maxAmount);
+  const effectiveMin = min !== null && Number.isFinite(min) ? min - tol : null;
+  const effectiveMax = max !== null && Number.isFinite(max) ? max + tol : null;
   let amountMatched = true;
-  if (min !== null && Number.isFinite(min) && amount < min) {
+  if (effectiveMin !== null && amount < effectiveMin) {
     amountMatched = false;
-    checks.push(`Amount ${amount.toFixed(2)} is below min ${min.toFixed(2)}.`);
+    checks.push(`Amount ${amount.toFixed(2)} is below min ${Number(min).toFixed(2)} (tol ±${tol.toFixed(2)}).`);
   }
-  if (max !== null && Number.isFinite(max) && amount > max) {
+  if (effectiveMax !== null && amount > effectiveMax) {
     amountMatched = false;
-    checks.push(`Amount ${amount.toFixed(2)} is above max ${max.toFixed(2)}.`);
+    checks.push(`Amount ${amount.toFixed(2)} is above max ${Number(max).toFixed(2)} (tol ±${tol.toFixed(2)}).`);
   }
-  if (amountMatched) checks.push("Amount range matched.");
+  if (amountMatched) checks.push(tol > 0 ? `Amount range matched (tol ±${tol.toFixed(2)}).` : "Amount range matched.");
   return { matched: textMatched && amountMatched, checks };
 }
 
 export default function BankAccountsPage() {
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
   const queryClient = useQueryClient();
-  const { data } = useClientQuery<BankAccount[]>({
+  const isAdmin = session?.user?.role === "ADMIN";
+  const {
+    data,
+    isError: banksIsError,
+    error: banksError,
+  } = useClientQuery<BankAccount[]>({
     queryKey: ["accounting", "banks"],
-    queryFn: () => fetch("/api/admin/accounting/banks").then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<BankAccount[]>("/api/admin/accounting/banks"),
   });
-  const { data: accountsData } = useClientQuery<LedgerAccount[]>({
+  const {
+    data: accountsData,
+    isError: accountsIsError,
+    error: accountsError,
+  } = useClientQuery<LedgerAccount[]>({
     queryKey: ["accounting", "accounts"],
-    queryFn: () => fetch("/api/admin/accounting/accounts").then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<LedgerAccount[]>("/api/admin/accounting/accounts"),
   });
   const banks = useMemo(() => (Array.isArray(data) ? data : []), [data]);
 
@@ -173,26 +223,24 @@ export default function BankAccountsPage() {
     [banks, selectedBankId],
   );
 
-  const { data: transactionsData } = useClientQuery<BankTxn[]>({
-    queryKey: ["accounting", "bank-transactions", activeBank?.id],
-    queryFn: () =>
-      fetch(`/api/admin/accounting/banks/${activeBank?.id}/transactions`).then((r) => r.json()),
-    enabled: Boolean(activeBank?.id),
-  });
-  const transactions = useMemo(
-    () => (Array.isArray(transactionsData) ? transactionsData : []),
-    [transactionsData],
-  );
-
-  const { data: rulesData } = useClientQuery<BankMatchRule[]>({
+  const {
+    data: rulesData,
+    isLoading: rulesLoading,
+    isError: rulesIsError,
+    error: rulesError,
+  } = useClientQuery<BankMatchRule[]>({
     queryKey: ["accounting", "bank-rules", activeBank?.id],
-    queryFn: () => fetch(`/api/admin/accounting/banks/${activeBank?.id}/rules`).then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<BankMatchRule[]>(`/api/admin/accounting/banks/${activeBank?.id}/rules`),
     enabled: Boolean(activeBank?.id),
   });
   const rules = useMemo(() => (Array.isArray(rulesData) ? rulesData : []), [rulesData]);
-  const { data: importRunsData } = useClientQuery<BankImportRun[]>({
+  const {
+    data: importRunsData,
+    isError: importRunsIsError,
+    error: importRunsError,
+  } = useClientQuery<BankImportRun[]>({
     queryKey: ["accounting", "bank-import-runs", activeBank?.id],
-    queryFn: () => fetch(`/api/admin/accounting/banks/${activeBank?.id}/import-runs`).then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<BankImportRun[]>(`/api/admin/accounting/banks/${activeBank?.id}/import-runs`),
     enabled: Boolean(activeBank?.id),
   });
   const importRuns = useMemo(
@@ -200,6 +248,7 @@ export default function BankAccountsPage() {
     [importRunsData],
   );
 
+  const [showAddBankForm, setShowAddBankForm] = useState(false);
   const [bankName, setBankName] = useState("");
   const [accountName, setAccountName] = useState("");
   const [accountMasked, setAccountMasked] = useState("");
@@ -209,7 +258,8 @@ export default function BankAccountsPage() {
   const [type, setType] = useState<"DEBIT" | "CREDIT">("CREDIT");
   const [description, setDescription] = useState("");
   const [reference, setReference] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [bankSaving, setBankSaving] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
   const [duplicateConflict, setDuplicateConflict] = useState<{ id: string; message: string } | null>(null);
   const [duplicateReason, setDuplicateReason] = useState("");
   const [transactionSearch, setTransactionSearch] = useState("");
@@ -236,6 +286,26 @@ export default function BankAccountsPage() {
   const [saveFilterName, setSaveFilterName] = useState("");
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [pendingRuleDelete, setPendingRuleDelete] = useState<BankMatchRule | null>(null);
+  const [deletingTxnId, setDeletingTxnId] = useState("");
+  const [txnFromDate, setTxnFromDate] = useState("");
+  const [txnToDate, setTxnToDate] = useState("");
+  const [txnSortBy, setTxnSortBy] = useState<TransactionSortBy>("postedAt");
+  const [txnSortDir, setTxnSortDir] = useState<TransactionSortDir>("desc");
+  const [exportingCsvScope, setExportingCsvScope] = useState<"" | "filtered" | "all">("");
+  const [debouncedFilteredTxns, setDebouncedFilteredTxns] = useState<BankTxn[]>([]);
+
+  // Rule edit state
+  const [editingRuleId, setEditingRuleId] = useState("");
+  const [editRuleName, setEditRuleName] = useState("");
+  const [editRuleText, setEditRuleText] = useState("");
+  const [editRuleMode, setEditRuleMode] = useState<BankMatchRule["matchMode"]>("CONTAINS");
+  const [editRuleAccountId, setEditRuleAccountId] = useState("");
+  const [editRuleMin, setEditRuleMin] = useState("");
+  const [editRuleMax, setEditRuleMax] = useState("");
+  const [editRuleTolerance, setEditRuleTolerance] = useState("0.00");
+  const [editRulePriority, setEditRulePriority] = useState("0");
+  const [editRuleActive, setEditRuleActive] = useState(true);
+  const [editRuleSaving, setEditRuleSaving] = useState(false);
 
   const [ruleName, setRuleName] = useState("");
   const [ruleText, setRuleText] = useState("");
@@ -258,6 +328,39 @@ export default function BankAccountsPage() {
   const [bankProfileEditMode, setBankProfileEditMode] = useState(false);
   const [bankProfileSaveDialogOpen, setBankProfileSaveDialogOpen] = useState(false);
   const [bankProfileSaving, setBankProfileSaving] = useState(false);
+
+  const transactionQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set("page", String(page));
+    params.set("pageSize", String(pageSize));
+    params.set("sortBy", txnSortBy);
+    params.set("sortDir", txnSortDir);
+    if (transactionSearch.trim()) params.set("q", transactionSearch.trim());
+    if (unmatchedOnly) params.set("unmatchedOnly", "1");
+    if (txnFromDate) params.set("from", txnFromDate);
+    if (txnToDate) params.set("to", txnToDate);
+    return params.toString();
+  }, [page, pageSize, txnSortBy, txnSortDir, transactionSearch, unmatchedOnly, txnFromDate, txnToDate]);
+
+  const {
+    data: transactionsData,
+    isLoading: txnsLoading,
+    isError: txnsIsError,
+    error: txnsError,
+  } = useClientQuery<TransactionListResponse>({
+    queryKey: ["accounting", "bank-transactions", activeBank?.id, transactionQuery],
+    queryFn: () =>
+      fetchJsonOrThrow<TransactionListResponse>(
+        `/api/admin/accounting/banks/${activeBank?.id}/transactions?${transactionQuery}`,
+      ),
+    enabled: Boolean(activeBank?.id),
+  });
+  const transactions = useMemo(
+    () => (Array.isArray(transactionsData?.rows) ? transactionsData.rows : []),
+    [transactionsData],
+  );
+  const transactionSummary = transactionsData?.summary ?? { total: 0, matched: 0, unmatched: 0 };
+  const totalPages = transactionsData?.totalPages ?? 1;
 
   const storageKey = useMemo(
     () => `accounting-banks-filters-${activeBank?.id || "none"}`,
@@ -282,6 +385,10 @@ export default function BankAccountsPage() {
     setEditOverrideDialogOpen(false);
     setEditOverrideReason("");
     setEditOverrideHint("");
+    setEditingRuleId("");
+    setDeletingTxnId("");
+    setTxnFromDate("");
+    setTxnToDate("");
   }, [activeBank?.id]);
 
   useEffect(() => {
@@ -305,7 +412,7 @@ export default function BankAccountsPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [transactionSearch, unmatchedOnly, pageSize]);
+  }, [transactionSearch, unmatchedOnly, pageSize, txnFromDate, txnToDate, txnSortBy, txnSortDir]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -328,7 +435,15 @@ export default function BankAccountsPage() {
           name: String(item.name || "Untitled"),
           search: String(item.search || ""),
           unmatchedOnly: Boolean(item.unmatchedOnly),
+          fromDate: String(item.fromDate || ""),
+          toDate: String(item.toDate || ""),
           pageSize: Number(item.pageSize || 20),
+          sortBy: ["postedAt", "amount", "type", "description", "reference", "matched"].includes(
+            String(item.sortBy || ""),
+          )
+            ? (String(item.sortBy) as TransactionSortBy)
+            : "postedAt",
+          sortDir: (String(item.sortDir || "").toLowerCase() === "asc" ? "asc" : "desc") as TransactionSortDir,
         }))
         .filter((item) => item.id);
       setSavedFilters(normalized);
@@ -339,53 +454,7 @@ export default function BankAccountsPage() {
     }
   }, [storageKey]);
 
-  const duplicateTxnHint = useMemo(() => {
-    if (!postedAt) return null;
-    const numericAmount = Number(amount);
-    if (!Number.isFinite(numericAmount) || numericAmount === 0) return null;
-    const normalizedRef = reference.trim();
-    return transactions.find((txn) => {
-      const txnDate = bankDateKey(txn.postedAt);
-      return (
-        txnDate === postedAt &&
-        Number(txn.amount) === numericAmount &&
-        (txn.reference || "") === normalizedRef
-      );
-    });
-  }, [postedAt, amount, reference, transactions]);
-
-  const filteredTransactions = useMemo(() => {
-    const q = transactionSearch.trim().toLowerCase();
-    return transactions.filter((txn) => {
-      if (unmatchedOnly && txn.matched) return false;
-      if (!q) return true;
-      const parts = [
-        formatBankDate(txn.postedAt),
-        txn.type,
-        txn.description || "",
-        txn.reference || "",
-        String(txn.amount),
-        txn.matched ? "matched" : "unmatched",
-      ];
-      return parts.join(" ").toLowerCase().includes(q);
-    });
-  }, [transactionSearch, transactions, unmatchedOnly]);
-
-  const totalPages = useMemo(() => {
-    if (!filteredTransactions.length) return 1;
-    return Math.max(1, Math.ceil(filteredTransactions.length / pageSize));
-  }, [filteredTransactions.length, pageSize]);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
-
-  const paginatedTransactions = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return filteredTransactions.slice(start, start + pageSize);
-  }, [filteredTransactions, page, pageSize]);
-
-  const visibleTxnIds = useMemo(() => paginatedTransactions.map((txn) => txn.id), [paginatedTransactions]);
+  const visibleTxnIds = useMemo(() => transactions.map((txn) => txn.id), [transactions]);
   const selectedTxns = useMemo(
     () => transactions.filter((txn) => selectedTxnIds.includes(txn.id)),
     [transactions, selectedTxnIds],
@@ -395,8 +464,21 @@ export default function BankAccountsPage() {
     [transactions, selectedTxnForRuleTestId],
   );
 
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  useEffect(() => {
+    setSelectedTxnIds((prev) => prev.filter((id) => visibleTxnIds.includes(id)));
+  }, [visibleTxnIds]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFilteredTxns(transactions), 400);
+    return () => clearTimeout(timer);
+  }, [transactions]);
+
   const simulator = useMemo(() => {
-    const sample = filteredTransactions;
+    const sample = debouncedFilteredTxns;
     const activeRules = rules.filter((rule) => rule.isActive);
     const sampleCount = sample.length;
     if (sampleCount === 0 || activeRules.length === 0) {
@@ -438,10 +520,10 @@ export default function BankAccountsPage() {
       .sort((a, b) => b.matchedCount - a.matchedCount);
 
     return { sampleCount, activeRules, overlapCount, byRule, accountPreview };
-  }, [filteredTransactions, rules]);
+  }, [debouncedFilteredTxns, rules]);
 
   const conflictInspector = useMemo(() => {
-    const sample = filteredTransactions;
+    const sample = debouncedFilteredTxns;
     const activeRules = rules.filter((rule) => rule.isActive);
     const pairCounts = new Map<string, number>();
 
@@ -474,7 +556,7 @@ export default function BankAccountsPage() {
       .filter((item): item is { key: string; count: number; left: BankMatchRule; right: BankMatchRule } => Boolean(item))
       .sort((a, b) => b.count - a.count)
       .slice(0, 8);
-  }, [filteredTransactions, rules]);
+  }, [debouncedFilteredTxns, rules]);
 
   const createBank = async () => {
     if (!accountName.trim()) {
@@ -482,7 +564,7 @@ export default function BankAccountsPage() {
       return;
     }
     try {
-      setSaving(true);
+      setBankSaving(true);
       const res = await fetch("/api/admin/accounting/banks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -499,11 +581,12 @@ export default function BankAccountsPage() {
       setBankName("");
       setAccountName("");
       setAccountMasked("");
+      setShowAddBankForm(false);
       queryClient.invalidateQueries({ queryKey: ["accounting", "banks"] });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to create bank account.");
     } finally {
-      setSaving(false);
+      setBankSaving(false);
     }
   };
 
@@ -522,7 +605,7 @@ export default function BankAccountsPage() {
       return;
     }
     try {
-      setSaving(true);
+      setBankSaving(true);
       const res = await fetch(`/api/admin/accounting/banks/${activeBank.id}/transactions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -559,7 +642,7 @@ export default function BankAccountsPage() {
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to add transaction.");
     } finally {
-      setSaving(false);
+      setBankSaving(false);
     }
   };
 
@@ -675,22 +758,63 @@ export default function BankAccountsPage() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+    void logAdminExportDownload({
+      area: "accounting-bank-transactions-selected",
+      format: "CSV",
+      fileName: filename,
+      sourcePage: "admin/accounting/banks",
+      scopeSnapshot: `Bank: ${activeBank?.name || activeBank?.id || "selected"} · Selected rows export`,
+      resultSummary: `Exported ${rows.length} selected bank transaction row(s).`,
+      rowCount: rows.length,
+      columnCount: header.length,
+      byteSize: blob.size,
+      matchingCount: rows.length,
+      totalCount: transactionSummary.total,
+      sortKey: txnSortBy,
+      sortDir: txnSortDir,
+    });
   };
 
-  const exportFilteredTransactionsCsv = () => {
-    if (!filteredTransactions.length) {
-      toast.error("No filtered transactions to export.");
+  const exportServerTransactionsCsv = async (scope: "filtered" | "all") => {
+    if (!activeBank?.id) {
+      toast.error("Select a bank account first.");
       return;
     }
-    exportTransactionsCsv(filteredTransactions, `bank-transactions-filtered-${activeBank?.id || "selected"}.csv`);
-  };
-
-  const exportAllTransactionsCsv = () => {
-    if (!transactions.length) {
-      toast.error("No transactions to export.");
-      return;
+    try {
+      setExportingCsvScope(scope);
+      const params = new URLSearchParams();
+      params.set("format", "csv");
+      params.set("sourcePage", "admin/accounting/banks");
+      params.set("sortBy", txnSortBy);
+      params.set("sortDir", txnSortDir);
+      if (scope === "filtered") {
+        if (transactionSearch.trim()) params.set("q", transactionSearch.trim());
+        if (unmatchedOnly) params.set("unmatchedOnly", "1");
+        if (txnFromDate) params.set("from", txnFromDate);
+        if (txnToDate) params.set("to", txnToDate);
+      }
+      const res = await fetch(`/api/admin/accounting/banks/${activeBank.id}/transactions?${params.toString()}`);
+      if (!res.ok) {
+        const payload = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+        throw new Error(payload?.error || "Failed to export CSV.");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download =
+        scope === "filtered"
+          ? `bank-transactions-filtered-${activeBank.id}.csv`
+          : `bank-transactions-all-${activeBank.id}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to export CSV.");
+    } finally {
+      setExportingCsvScope("");
     }
-    exportTransactionsCsv(transactions, `bank-transactions-all-${activeBank?.id || "selected"}.csv`);
   };
 
   const runTxnBulkAction = async (
@@ -748,7 +872,11 @@ export default function BankAccountsPage() {
     if (!found) return;
     setTransactionSearch(found.search);
     setUnmatchedOnly(found.unmatchedOnly);
+    setTxnFromDate(found.fromDate);
+    setTxnToDate(found.toDate);
     setPageSize(found.pageSize);
+    setTxnSortBy(found.sortBy);
+    setTxnSortDir(found.sortDir);
     setPage(1);
   };
 
@@ -768,7 +896,11 @@ export default function BankAccountsPage() {
         name: trimmed,
         search: transactionSearch,
         unmatchedOnly,
+        fromDate: txnFromDate,
+        toDate: txnToDate,
         pageSize,
+        sortBy: txnSortBy,
+        sortDir: txnSortDir,
       },
     ];
     saveFilters(next);
@@ -792,6 +924,8 @@ export default function BankAccountsPage() {
   const openDuplicateExisting = (duplicateId: string) => {
     setTransactionSearch("");
     setUnmatchedOnly(false);
+    setTxnFromDate("");
+    setTxnToDate("");
     setPage(1);
     setSelectedTxnForRuleTestId(duplicateId);
     setHighlightTxnId(duplicateId);
@@ -828,7 +962,7 @@ export default function BankAccountsPage() {
       return;
     }
     try {
-      setSaving(true);
+      setRuleSaving(true);
       const res = await fetch(`/api/admin/accounting/banks/${activeBank.id}/rules`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -860,7 +994,7 @@ export default function BankAccountsPage() {
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to create rule.");
     } finally {
-      setSaving(false);
+      setRuleSaving(false);
     }
   };
 
@@ -899,6 +1033,99 @@ export default function BankAccountsPage() {
 
   const deleteRule = async (rule: BankMatchRule) => {
     setPendingRuleDelete(rule);
+  };
+
+  const startEditRule = (rule: BankMatchRule) => {
+    setEditingRuleId(rule.id);
+    setEditRuleName(rule.name);
+    setEditRuleText(rule.matchText);
+    setEditRuleMode(rule.matchMode);
+    setEditRuleAccountId(rule.accountId || "");
+    setEditRuleMin(rule.minAmount === null || rule.minAmount === undefined ? "" : String(Number(rule.minAmount)));
+    setEditRuleMax(rule.maxAmount === null || rule.maxAmount === undefined ? "" : String(Number(rule.maxAmount)));
+    setEditRuleTolerance(String(Number(rule.amountTolerance || 0).toFixed(2)));
+    setEditRulePriority(String(Number(rule.priority || 0)));
+    setEditRuleActive(rule.isActive);
+  };
+
+  const saveRuleEdit = async () => {
+    if (!activeBank?.id || !editingRuleId) return;
+    if (!editRuleName.trim() || !editRuleText.trim()) {
+      toast.error("Provide a rule name and match text.");
+      return;
+    }
+    const minAmount = editRuleMin === "" ? null : Number(editRuleMin);
+    const maxAmount = editRuleMax === "" ? null : Number(editRuleMax);
+    const tolerance = editRuleTolerance === "" ? 0 : Number(editRuleTolerance);
+    const priority = editRulePriority === "" ? 0 : Number(editRulePriority);
+    if (editRuleMin !== "" && !Number.isFinite(minAmount as number)) {
+      toast.error("Enter a valid minimum amount.");
+      return;
+    }
+    if (editRuleMax !== "" && !Number.isFinite(maxAmount as number)) {
+      toast.error("Enter a valid maximum amount.");
+      return;
+    }
+    if (!Number.isFinite(tolerance)) {
+      toast.error("Enter a valid tolerance.");
+      return;
+    }
+    if (!Number.isFinite(priority)) {
+      toast.error("Enter a valid priority.");
+      return;
+    }
+    try {
+      setEditRuleSaving(true);
+      const res = await fetch(`/api/admin/accounting/banks/${activeBank.id}/rules/${editingRuleId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: editRuleName.trim(),
+          matchText: editRuleText.trim(),
+          matchMode: editRuleMode,
+          accountId: editRuleAccountId || null,
+          minAmount,
+          maxAmount,
+          amountTolerance: tolerance,
+          priority,
+          isActive: editRuleActive,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to update rule.");
+      toast.success("Rule updated.");
+      setEditingRuleId("");
+      queryClient.invalidateQueries({ queryKey: ["accounting", "bank-rules", activeBank.id] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to update rule.");
+    } finally {
+      setEditRuleSaving(false);
+    }
+  };
+
+  const deleteSingleTransaction = (txnId: string) => {
+    setDeletingTxnId(txnId);
+  };
+
+  const confirmDeleteSingleTransaction = async () => {
+    if (!activeBank?.id || !deletingTxnId) return;
+    try {
+      setBulkSaving(true);
+      const res = await fetch(`/api/admin/accounting/banks/${activeBank.id}/transactions/bulk`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: [deletingTxnId], action: "DELETE" }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to delete transaction.");
+      toast.success("Transaction deleted.");
+      setDeletingTxnId("");
+      queryClient.invalidateQueries({ queryKey: ["accounting", "bank-transactions", activeBank.id] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete transaction.");
+    } finally {
+      setBulkSaving(false);
+    }
   };
 
   const confirmDeleteRule = async () => {
@@ -1018,6 +1245,19 @@ export default function BankAccountsPage() {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
+      void logAdminExportDownload({
+        area: "accounting-bank-import-run-issues",
+        format: "CSV",
+        fileName: `bank-import-run-issues-${runId}.csv`,
+        sourcePage: "admin/accounting/banks",
+        scopeSnapshot: `Bank: ${activeBank?.name || activeBank?.id || "unknown"} · Import run: ${runId}`,
+        resultSummary: `Downloaded ${rows.length} bank import issue row(s).`,
+        rowCount: rows.length,
+        columnCount: header.length,
+        byteSize: blob.size,
+        matchingCount: rows.length,
+        totalCount: rows.length,
+      });
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to download issues CSV.");
     } finally {
@@ -1071,7 +1311,7 @@ export default function BankAccountsPage() {
         <div className="mt-3">
           <div className="flex flex-wrap gap-2">
             <Button asChild size="sm" variant="outline">
-              <a
+              <Link
                 href={
                   activeBank?.id
                     ? `/admin/import-export?focusImport=bankTransactions&bankId=${encodeURIComponent(activeBank.id)}`
@@ -1079,77 +1319,217 @@ export default function BankAccountsPage() {
                 }
               >
                 Bulk import transactions
-              </a>
+              </Link>
             </Button>
             <Button asChild size="sm" variant="outline">
-              <a href="/admin/accounting/banks/all-transactions">
-                All banks transactions
-              </a>
-            </Button>
-            <Button asChild size="sm" variant="outline" disabled={!activeBank?.id}>
-              <a
+              <Link
                 href={
                   activeBank?.id
-                    ? `/admin/accounting/reconciliations?bankAccountId=${encodeURIComponent(activeBank.id)}`
-                    : "/admin/accounting/reconciliations"
+                    ? `/admin/accounting/banks/all-transactions?bankAccountId=${encodeURIComponent(activeBank.id)}`
+                    : "/admin/accounting/banks/all-transactions"
                 }
               >
-                Open reconciliations
-              </a>
+                All banks transactions
+              </Link>
             </Button>
+            {activeBank?.id ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/admin/accounting/reconciliations?bankAccountId=${encodeURIComponent(activeBank.id)}`}>
+                  Open reconciliations
+                </Link>
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" disabled>
+                Open reconciliations
+              </Button>
+            )}
+            {isAdmin ? (
+              <Button asChild size="sm" variant="outline">
+                <Link href="/admin/audit?sourcePage=admin%2Faccounting%2Fbanks">Open bank audit</Link>
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
 
+      {banksIsError ? (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {banksError instanceof Error ? banksError.message : "Failed to load bank accounts."}
+        </div>
+      ) : null}
+
+      {accountsIsError ? (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {accountsError instanceof Error ? accountsError.message : "Failed to load ledger accounts."} Rule account
+          linking is temporarily unavailable.
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
-          <CardTitle>Add bank account</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <Input placeholder="Account name" value={accountName} onChange={(e) => setAccountName(e.target.value)} />
-          <Input placeholder="Bank name (optional)" value={bankName} onChange={(e) => setBankName(e.target.value)} />
-          <Input placeholder="Account # (masked)" value={accountMasked} onChange={(e) => setAccountMasked(e.target.value)} />
-          <div className="sm:col-span-2 lg:col-span-3">
-            <Button className="w-full sm:w-auto" onClick={createBank} disabled={saving}>
-              {saving ? "Saving..." : "Add bank"}
+          <div className="flex items-center justify-between">
+            <CardTitle>Add bank account</CardTitle>
+            <Button size="sm" variant="outline" onClick={() => setShowAddBankForm((v) => !v)}>
+              {showAddBankForm ? "Cancel" : "+ Add bank account"}
             </Button>
           </div>
-        </CardContent>
+        </CardHeader>
+        {showAddBankForm ? (
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Create a new bank account context before importing or entering transactions.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-muted-foreground">Account name</span>
+                <Input value={accountName} onChange={(e) => setAccountName(e.target.value)} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-muted-foreground">Bank name</span>
+                <Input value={bankName} onChange={(e) => setBankName(e.target.value)} />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-muted-foreground">Masked account number</span>
+                <Input value={accountMasked} onChange={(e) => setAccountMasked(e.target.value)} />
+              </label>
+            </div>
+            <div>
+              <Button className="w-full sm:w-auto" onClick={createBank} disabled={bankSaving}>
+                {bankSaving ? "Saving..." : "Add bank"}
+              </Button>
+            </div>
+          </CardContent>
+        ) : null}
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Bank transactions</CardTitle>
+          <div className="space-y-1">
+            <CardTitle>Bank operations</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Choose the active bank context, review its current status, and move directly into the next accounting action.
+            </p>
+          </div>
         </CardHeader>
-        <CardContent className="space-y-3">
+        <CardContent className="space-y-4">
           {banks.length > 0 ? (
-            <div className="space-y-1">
-              <select
-                className="h-10 w-full sm:w-auto rounded-md border bg-background px-3 text-sm"
-                value={activeBank?.id || ""}
-                onChange={(e) => setSelectedBankId(e.target.value)}
-              >
-                <option value="">Select bank account...</option>
-                {banks.map((bank) => (
-                  <option key={bank.id} value={bank.id}>
-                    {bank.name} ({bank.currency})
-                  </option>
-                ))}
-              </select>
-              {activeBank ? (
-                <div className="text-xs text-muted-foreground">
-                  Showing transactions for: <span className="font-medium">{activeBank.name}</span>
-                  {!activeBank.isActive ? (
-                    <span className="ml-2 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800">
-                      Inactive bank
-                    </span>
-                  ) : null}
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+              <div className="rounded-xl border bg-slate-50/70 p-4">
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Working bank account
+                  </div>
+                  <select
+                    className="h-10 w-full rounded-md border bg-background px-3 text-sm sm:max-w-md"
+                    value={activeBank?.id || ""}
+                    onChange={(e) => setSelectedBankId(e.target.value)}
+                  >
+                    <option value="">Select bank account...</option>
+                    {banks.map((bank) => (
+                      <option key={bank.id} value={bank.id}>
+                        {bank.name} ({bank.currency})
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              ) : (
-                <div className="text-xs text-amber-700">
-                  Choose a bank account before adding or reviewing transactions.
+
+                {activeBank ? (
+                  <div className="mt-3 rounded-lg border bg-background px-3 py-3 text-xs text-muted-foreground">
+                    <div className="font-medium text-foreground">Current context</div>
+                    <div className="mt-1">
+                      Showing transactions for: <span className="font-medium">{activeBank.name}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span>{activeBank.bankName || "No bank name recorded yet"}</span>
+                      <span className="text-slate-300">|</span>
+                      <span>{activeBank.accountNumberMasked || "No masked account number"}</span>
+                      <span className="text-slate-300">|</span>
+                      <span>{activeBank.currency}</span>
+                      <span
+                        className={
+                          activeBank.isActive
+                            ? "rounded border border-emerald-300 bg-emerald-50 px-1.5 py-0.5 text-emerald-800"
+                            : "rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
+                        }
+                      >
+                        {activeBank.isActive ? "Active bank" : "Inactive bank"}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-lg border border-dashed border-amber-300 bg-amber-50/60 px-3 py-3 text-xs text-amber-800">
+                    Choose a bank account before adding or reviewing transactions.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-xl border bg-background p-4">
+                <div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">At a glance</div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Keep bank status, imports, rules, and reconciliation handoff visible without leaving this view.
+                  </p>
                 </div>
-              )}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-lg border bg-slate-50 px-3 py-3">
+                    <div className="text-xs font-medium text-muted-foreground">Transactions</div>
+                    <div className="text-2xl font-semibold tabular-nums">
+                      {activeBank ? transactionSummary.total : 0}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-amber-50 px-3 py-3">
+                    <div className="text-xs font-medium text-muted-foreground">Unmatched</div>
+                    <div className="text-2xl font-semibold tabular-nums">
+                      {activeBank ? transactionSummary.unmatched : 0}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-slate-50 px-3 py-3">
+                    <div className="text-xs font-medium text-muted-foreground">Active rules</div>
+                    <div className="text-2xl font-semibold tabular-nums">
+                      {activeBank ? rules.filter((rule) => rule.isActive).length : 0}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border bg-slate-50 px-3 py-3">
+                    <div className="text-xs font-medium text-muted-foreground">Recent import runs</div>
+                    <div className="text-2xl font-semibold tabular-nums">{activeBank ? importRuns.length : 0}</div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button asChild size="sm" variant="outline">
+                    <Link
+                      href={
+                        activeBank?.id
+                          ? `/admin/import-export?focusImport=bankTransactions&bankId=${encodeURIComponent(activeBank.id)}`
+                          : "/admin/import-export?focusImport=bankTransactions"
+                      }
+                    >
+                      Bulk import
+                    </Link>
+                  </Button>
+                  <Button asChild size="sm" variant="outline">
+                    <Link
+                      href={
+                        activeBank?.id
+                          ? `/admin/accounting/banks/all-transactions?bankAccountId=${encodeURIComponent(activeBank.id)}`
+                          : "/admin/accounting/banks/all-transactions"
+                      }
+                    >
+                      Global view
+                    </Link>
+                  </Button>
+                  {activeBank?.id ? (
+                    <Button asChild size="sm" variant="outline">
+                      <Link href={`/admin/accounting/reconciliations?bankAccountId=${encodeURIComponent(activeBank.id)}`}>
+                        Reconciliations
+                      </Link>
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline" disabled>
+                      Reconciliations
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">Add a bank account to begin.</p>
@@ -1159,33 +1539,42 @@ export default function BankAccountsPage() {
             <div className="space-y-2 rounded-md border p-3">
               <div className="text-xs font-medium text-muted-foreground">Selected bank profile</div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Input
-                  placeholder="Account name"
-                  value={editingBankName}
-                  onChange={(e) => setEditingBankName(e.target.value)}
-                  disabled={!bankProfileEditMode || bankProfileSaving}
-                />
-                <Input
-                  placeholder="Bank name"
-                  value={editingBankLegalName}
-                  onChange={(e) => setEditingBankLegalName(e.target.value)}
-                  disabled={!bankProfileEditMode || bankProfileSaving}
-                />
-                <Input
-                  placeholder="Account # (masked)"
-                  value={editingAccountMasked}
-                  onChange={(e) => setEditingAccountMasked(e.target.value)}
-                  disabled={!bankProfileEditMode || bankProfileSaving}
-                />
-                <select
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  value={editingBankActive ? "active" : "inactive"}
-                  onChange={(e) => setEditingBankActive(e.target.value === "active")}
-                  disabled={!bankProfileEditMode || bankProfileSaving}
-                >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                </select>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Account name</span>
+                  <Input
+                    value={editingBankName}
+                    onChange={(e) => setEditingBankName(e.target.value)}
+                    disabled={!bankProfileEditMode || bankProfileSaving}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Bank name</span>
+                  <Input
+                    value={editingBankLegalName}
+                    onChange={(e) => setEditingBankLegalName(e.target.value)}
+                    disabled={!bankProfileEditMode || bankProfileSaving}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Masked account number</span>
+                  <Input
+                    value={editingAccountMasked}
+                    onChange={(e) => setEditingAccountMasked(e.target.value)}
+                    disabled={!bankProfileEditMode || bankProfileSaving}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Status</span>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={editingBankActive ? "active" : "inactive"}
+                    onChange={(e) => setEditingBankActive(e.target.value === "active")}
+                    disabled={!bankProfileEditMode || bankProfileSaving}
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </label>
               </div>
               {bankProfileEditMode ? (
                 <div className="flex flex-wrap items-center gap-2">
@@ -1213,38 +1602,55 @@ export default function BankAccountsPage() {
           ) : null}
 
           {activeBank ? (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="sm:col-span-2 lg:col-span-3 text-xs font-medium text-muted-foreground">
-                Manual transaction entry
+            <div className="space-y-3 rounded-md border p-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">Manual transaction entry</div>
+                <p className="text-xs text-muted-foreground">
+                  Use this for controlled fixes or one-off transactions. Imports remain the primary workflow.
+                </p>
               </div>
-              <Input type="date" value={postedAt} onChange={(e) => setPostedAt(e.target.value)} />
-              <Input
-                placeholder="Amount"
-                inputMode="decimal"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-              <select
-                className="h-10 rounded-md border bg-background px-3 text-sm"
-                value={type}
-                onChange={(e) => setType(e.target.value as "DEBIT" | "CREDIT")}
-              >
-                <option value="CREDIT">Credit (in)</option>
-                <option value="DEBIT">Debit (out)</option>
-              </select>
-              <Input placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-              <Input placeholder="Reference" value={reference} onChange={(e) => setReference(e.target.value)} />
-              <div className="sm:col-span-2 lg:col-span-3">
-                <Button className="w-full sm:w-auto" onClick={() => void addTransaction()} disabled={saving}>
-                  {saving ? "Saving..." : "Add transaction"}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Posting date</span>
+                  <Input type="date" value={postedAt} onChange={(e) => setPostedAt(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Amount</span>
+                  <Input
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Type</span>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={type}
+                    onChange={(e) => setType(e.target.value as "DEBIT" | "CREDIT")}
+                  >
+                    <option value="CREDIT">Credit (in)</option>
+                    <option value="DEBIT">Debit (out)</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Description</span>
+                  <Input value={description} onChange={(e) => setDescription(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Reference</span>
+                  <Input value={reference} onChange={(e) => setReference(e.target.value)} />
+                </label>
+              </div>
+              <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap items-center gap-2">
+                <Button
+                  className="w-full sm:w-auto"
+                  onClick={() => void addTransaction()}
+                  disabled={bankSaving}
+                >
+                  {bankSaving ? "Saving..." : "Add transaction"}
                 </Button>
               </div>
-            </div>
-          ) : null}
-
-          {duplicateTxnHint ? (
-            <div className="rounded-md border border-amber-400/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              Potential duplicate: this bank already has a transaction with the same date, amount, and reference.
             </div>
           ) : null}
 
@@ -1271,13 +1677,52 @@ export default function BankAccountsPage() {
             </div>
           ) : null}
 
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-10">
+            <label className="space-y-1 xl:col-span-4">
+              <span className="text-xs font-medium text-muted-foreground">Search</span>
+              <Input
+                placeholder="Description, reference, amount, type..."
+                value={transactionSearch}
+                onChange={(e) => setTransactionSearch(e.target.value)}
+              />
+            </label>
+            <label className="space-y-1 xl:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">From date</span>
+              <Input type="date" value={txnFromDate} onChange={(e) => setTxnFromDate(e.target.value)} />
+            </label>
+            <label className="space-y-1 xl:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">To date</span>
+              <Input type="date" value={txnToDate} onChange={(e) => setTxnToDate(e.target.value)} />
+            </label>
+            <label className="space-y-1 xl:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">Sort by</span>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={txnSortBy}
+                onChange={(e) => setTxnSortBy(e.target.value as TransactionSortBy)}
+              >
+                <option value="postedAt">Posted date</option>
+                <option value="amount">Amount</option>
+                <option value="type">Type</option>
+                <option value="description">Description</option>
+                <option value="reference">Reference</option>
+                <option value="matched">Match status</option>
+              </select>
+            </label>
+            <label className="space-y-1 xl:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">Direction</span>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={txnSortDir}
+                onChange={(e) => setTxnSortDir(e.target.value as TransactionSortDir)}
+              >
+                <option value="desc">Newest / highest first</option>
+                <option value="asc">Oldest / lowest first</option>
+              </select>
+            </label>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
-            <Input
-              className="w-full sm:max-w-xs"
-              placeholder="Search by date, text, amount, type..."
-              value={transactionSearch}
-              onChange={(e) => setTransactionSearch(e.target.value)}
-            />
             <Button
               size="sm"
               variant={unmatchedOnly ? "default" : "outline"}
@@ -1286,28 +1731,46 @@ export default function BankAccountsPage() {
             >
               {`Unmatched only: ${unmatchedOnly ? "On" : "Off"}`}
             </Button>
-            <select
-              className="h-9 rounded-md border bg-background px-2 text-xs"
-              value={String(pageSize)}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-            >
-              <option value="10">10 / page</option>
-              <option value="20">20 / page</option>
-              <option value="50">50 / page</option>
-              <option value="100">100 / page</option>
-            </select>
-            <select
-              className="h-9 min-w-48 rounded-md border bg-background px-2 text-xs"
-              value={selectedSavedFilterId}
-              onChange={(e) => applySavedFilter(e.target.value)}
-            >
-              <option value="">Saved filters</option>
-              {savedFilters.map((filter) => (
-                <option key={filter.id} value={filter.id}>
-                  {filter.name}
-                </option>
-              ))}
-            </select>
+            {(txnFromDate || txnToDate) ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setTxnFromDate("");
+                  setTxnToDate("");
+                }}
+              >
+                Clear dates
+              </Button>
+            ) : null}
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>Rows per page</span>
+              <select
+                className="h-9 rounded-md border bg-background px-2 text-xs"
+                value={String(pageSize)}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+              >
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>Saved view</span>
+              <select
+                className="h-9 min-w-48 rounded-md border bg-background px-2 text-xs"
+                value={selectedSavedFilterId}
+                onChange={(e) => applySavedFilter(e.target.value)}
+              >
+                <option value="">Saved filters</option>
+                {savedFilters.map((filter) => (
+                  <option key={filter.id} value={filter.id}>
+                    {filter.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <Button size="sm" variant="outline" onClick={saveCurrentFilter}>
               Save filter
             </Button>
@@ -1315,7 +1778,7 @@ export default function BankAccountsPage() {
               Delete filter
             </Button>
             <span className="text-xs text-muted-foreground">
-              {selectedTxnIds.length} selected / {filteredTransactions.length} filtered / {transactions.length} total
+              {selectedTxnIds.length} selected / {transactionSummary.total} matching current filters
             </span>
           </div>
 
@@ -1333,20 +1796,20 @@ export default function BankAccountsPage() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!filteredTransactions.length || bulkSaving}
-                onClick={exportFilteredTransactionsCsv}
-                title="Download CSV for rows matching current search/filter settings."
+                disabled={transactionSummary.total === 0 || bulkSaving || exportingCsvScope !== ""}
+                onClick={() => void exportServerTransactionsCsv("filtered")}
+                title="Download CSV for rows matching current search and filter settings."
               >
-                Export filtered CSV
+                {exportingCsvScope === "filtered" ? "Preparing filtered CSV..." : "Export filtered CSV"}
               </Button>
               <Button
                 variant="outline"
                 size="sm"
-                disabled={!transactions.length || bulkSaving}
-                onClick={exportAllTransactionsCsv}
+                disabled={transactionSummary.total === 0 || bulkSaving || exportingCsvScope !== ""}
+                onClick={() => void exportServerTransactionsCsv("all")}
                 title="Download CSV for all rows in this bank account."
               >
-                Export all CSV
+                {exportingCsvScope === "all" ? "Preparing full CSV..." : "Export all CSV"}
               </Button>
               <Button
                 variant="outline"
@@ -1366,115 +1829,195 @@ export default function BankAccountsPage() {
               >
                 Set type: CREDIT
               </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                disabled={!selectedTxnIds.length || bulkSaving}
-                onClick={() => runTxnBulkAction("DELETE")}
-                title="Delete selected rows (matched rows cannot be deleted; ADMIN only)."
-              >
-                Delete selected
-              </Button>
+              {isAdmin ? (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={!selectedTxnIds.length || bulkSaving}
+                  onClick={() => runTxnBulkAction("DELETE")}
+                  title="Delete selected rows (matched rows cannot be deleted)."
+                >
+                  Delete selected
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">Delete actions require ADMIN role.</span>
+              )}
             </div>
           </div>
 
+          {txnsIsError ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {txnsError instanceof Error ? txnsError.message : "Failed to load transactions."}
+            </div>
+          ) : null}
+
           <div className="space-y-1 text-sm">
-            {transactions.length === 0 ? (
-              <p className="text-muted-foreground">No transactions yet.</p>
+            {txnsLoading ? (
+              <p className="text-muted-foreground">Loading transactions…</p>
+            ) : txnsIsError ? (
+              null
+            ) : transactions.length === 0 ? (
+              <p className="text-muted-foreground">
+                {transactionSummary.total === 0 ? "No transactions yet." : "No transactions match the current page."}
+              </p>
             ) : (
-              <>
-                <label className="flex items-center gap-2 border-b py-1 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={visibleTxnIds.length > 0 && visibleTxnIds.every((id) => selectedTxnIds.includes(id))}
-                    onChange={(e) => toggleAllVisibleTxns(e.target.checked)}
-                  />
-                  Select all on current page
-                </label>
-                {paginatedTransactions.length === 0 ? (
-                  <p className="text-muted-foreground">No transactions match the current filters.</p>
-                ) : (
-                  paginatedTransactions.map((txn) =>
-                    editingTxnId === txn.id ? (
-                      <div key={txn.id} className="space-y-2 border-b py-2">
-                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                          <Input type="date" value={editPostedAt} onChange={(e) => setEditPostedAt(e.target.value)} />
-                          <Input value={editAmount} onChange={(e) => setEditAmount(e.target.value)} />
-                          <select
-                            className="h-10 rounded-md border bg-background px-3 text-sm"
-                            value={editType}
-                            onChange={(e) => setEditType(e.target.value as "DEBIT" | "CREDIT")}
+              <div className="overflow-x-auto rounded-md border">
+                <table className="w-full min-w-[980px] text-sm">
+                  <thead className="bg-slate-50 text-left text-xs font-medium text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2">
+                        <input
+                          aria-label="Select all transactions on this page"
+                          type="checkbox"
+                          checked={
+                            visibleTxnIds.length > 0 && visibleTxnIds.every((id) => selectedTxnIds.includes(id))
+                          }
+                          onChange={(e) => toggleAllVisibleTxns(e.target.checked)}
+                        />
+                      </th>
+                      <th className="px-3 py-2">Date</th>
+                      <th className="px-3 py-2">Description</th>
+                      <th className="px-3 py-2">Reference</th>
+                      <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2 text-right">Amount</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transactions.map((txn) =>
+                      editingTxnId === txn.id ? (
+                        <tr key={txn.id} className="border-t">
+                          <td colSpan={8} className="px-3 py-3">
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                              <Input
+                                aria-label="Edit posting date"
+                                type="date"
+                                value={editPostedAt}
+                                onChange={(e) => setEditPostedAt(e.target.value)}
+                              />
+                              <Input
+                                aria-label="Edit amount"
+                                value={editAmount}
+                                onChange={(e) => setEditAmount(e.target.value)}
+                              />
+                              <select
+                                aria-label="Edit transaction type"
+                                className="h-10 rounded-md border bg-background px-3 text-sm"
+                                value={editType}
+                                onChange={(e) => setEditType(e.target.value as "DEBIT" | "CREDIT")}
+                              >
+                                <option value="CREDIT">Credit (in)</option>
+                                <option value="DEBIT">Debit (out)</option>
+                              </select>
+                              <Input
+                                aria-label="Edit description"
+                                value={editDescription}
+                                onChange={(e) => setEditDescription(e.target.value)}
+                              />
+                              <Input
+                                aria-label="Edit reference"
+                                value={editReference}
+                                onChange={(e) => setEditReference(e.target.value)}
+                              />
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button size="sm" onClick={() => void saveEditTransaction()} disabled={editingSave}>
+                                {editingSave ? "Saving..." : "Save"}
+                              </Button>
+                              <Button size="sm" variant="ghost" onClick={() => setEditingTxnId("")}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr
+                          key={txn.id}
+                          className={`border-t align-top ${highlightTxnId === txn.id ? "bg-amber-50" : ""}`}
+                        >
+                          <td className="px-3 py-3">
+                            <input
+                              aria-label={`Select transaction ${txn.id}`}
+                              type="checkbox"
+                              checked={selectedTxnIds.includes(txn.id)}
+                              onChange={(e) => toggleTxnSelection(txn.id, e.target.checked)}
+                            />
+                          </td>
+                          <td className="px-3 py-3 font-medium tabular-nums">{formatBankDate(txn.postedAt)}</td>
+                          <td className="px-3 py-3 text-muted-foreground">{txn.description || "—"}</td>
+                          <td className="px-3 py-3 text-muted-foreground">{txn.reference || "—"}</td>
+                          <td className="px-3 py-3">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                                txn.type === "CREDIT" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                              }`}
+                            >
+                              {txn.type === "CREDIT" ? "CR" : "DR"}
+                            </span>
+                          </td>
+                          <td
+                            className={`px-3 py-3 text-right font-medium tabular-nums ${
+                              txn.type === "CREDIT" ? "text-green-700" : "text-red-700"
+                            }`}
                           >
-                            <option value="CREDIT">Credit (in)</option>
-                            <option value="DEBIT">Debit (out)</option>
-                          </select>
-                          <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} />
-                          <Input value={editReference} onChange={(e) => setEditReference(e.target.value)} />
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" onClick={() => void saveEditTransaction()} disabled={editingSave}>
-                            {editingSave ? "Saving..." : "Save"}
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => setEditingTxnId("")}>
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <label
-                        key={txn.id}
-                        className={`flex cursor-pointer items-center justify-between gap-2 border-b py-2 ${
-                          highlightTxnId === txn.id ? "bg-amber-50" : ""
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={selectedTxnIds.includes(txn.id)}
-                            onChange={(e) => toggleTxnSelection(txn.id, e.target.checked)}
-                          />
-                          <span>
-                            {formatBankDate(txn.postedAt)} - {txn.description || txn.reference || "Transaction"}
-                            {txn.matched ? " (matched)" : ""}
-                          </span>
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span>
-                            {txn.type === "CREDIT" ? "+" : "-"} {Number(txn.amount).toFixed(2)}
-                          </span>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={txn.matched}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              startEditTransaction(txn);
-                            }}
-                          >
-                            Edit
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              setSelectedTxnForRuleTestId(txn.id);
-                            }}
-                          >
-                            Test rules
-                          </Button>
-                        </span>
-                      </label>
-                    ),
-                  )
-                )}
-              </>
+                            {txn.type === "CREDIT" ? "+" : "-"}
+                            {activeBank?.currency || "GHS"} {Number(txn.amount).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-3">
+                            {txn.matched ? (
+                              <span className="rounded border border-green-300 bg-green-50 px-1.5 py-0.5 text-xs text-green-800">
+                                matched
+                              </span>
+                            ) : (
+                              <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs text-slate-500">
+                                unmatched
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={txn.matched}
+                                onClick={() => startEditTransaction(txn)}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setSelectedTxnForRuleTestId(txn.id)}
+                              >
+                                Test rules
+                              </Button>
+                              {isAdmin ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={txn.matched || bulkSaving}
+                                  className="text-destructive hover:text-destructive"
+                                  title={txn.matched ? "Unmatch before deleting." : "Delete this transaction."}
+                                  onClick={() => deleteSingleTransaction(txn.id)}
+                                >
+                                  Delete
+                                </Button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      ),
+                    )}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
 
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
-              Page {page} of {totalPages}
+              Page {page} of {totalPages} · {transactionSummary.total} matching transaction(s)
             </span>
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
@@ -1540,86 +2083,83 @@ export default function BankAccountsPage() {
             <p className="text-sm text-muted-foreground">Select a bank account to configure rules.</p>
           ) : (
             <>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <Input
-                  placeholder="Rule name"
-                  title="Short label so staff can understand the rule at a glance."
-                  value={ruleName}
-                  onChange={(e) => setRuleName(e.target.value)}
-                />
-                <Input
-                  placeholder="Match text"
-                  title="Text to look for in the bank transaction description."
-                  value={ruleText}
-                  onChange={(e) => setRuleText(e.target.value)}
-                />
-                <select
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  title="How to match the text against the description."
-                  value={ruleMode}
-                  onChange={(e) => setRuleMode(e.target.value as BankMatchRule["matchMode"])}
-                >
-                  <option value="CONTAINS">Contains</option>
-                  <option value="STARTS_WITH">Starts with</option>
-                  <option value="ENDS_WITH">Ends with</option>
-                  <option value="REGEX">Regex</option>
-                </select>
-                <select
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  title="If set, only match when the transaction should map to this ledger account."
-                  value={ruleAccountId}
-                  onChange={(e) => setRuleAccountId(e.target.value)}
-                >
-                  <option value="">Any account</option>
-                  {(accountsData || []).map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.code} - {acc.name}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  placeholder="Min amount (optional)"
-                  title="Only match when the amount is at or above this value."
-                  inputMode="decimal"
-                  value={ruleMin}
-                  onChange={(e) => setRuleMin(e.target.value)}
-                />
-                <Input
-                  placeholder="Max amount (optional)"
-                  title="Only match when the amount is at or below this value."
-                  inputMode="decimal"
-                  value={ruleMax}
-                  onChange={(e) => setRuleMax(e.target.value)}
-                />
-                <Input
-                  placeholder="Tolerance (GHS)"
-                  title="Allowed amount difference for matching (use 0 for exact match)."
-                  inputMode="decimal"
-                  value={ruleTolerance}
-                  onChange={(e) => setRuleTolerance(e.target.value)}
-                />
-                <Input
-                  placeholder="Priority (higher wins)"
-                  title="Higher priority rules are applied first."
-                  inputMode="numeric"
-                  value={rulePriority}
-                  onChange={(e) => setRulePriority(e.target.value)}
-                />
-                <select
-                  className="h-10 rounded-md border bg-background px-3 text-sm"
-                  title="Turn the rule on or off without deleting it."
-                  value={ruleActive ? "active" : "inactive"}
-                  onChange={(e) => setRuleActive(e.target.value === "active")}
-                >
-                  <option value="active">Active</option>
-                  <option value="inactive">Inactive</option>
-                </select>
+              {rulesIsError ? (
+                <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+                  {rulesError instanceof Error ? rulesError.message : "Failed to load rules."}
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Rule name</span>
+                  <Input value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Match text</span>
+                  <Input value={ruleText} onChange={(e) => setRuleText(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Match mode</span>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={ruleMode}
+                    onChange={(e) => setRuleMode(e.target.value as BankMatchRule["matchMode"])}
+                  >
+                    <option value="CONTAINS">Contains</option>
+                    <option value="STARTS_WITH">Starts with</option>
+                    <option value="ENDS_WITH">Ends with</option>
+                    <option value="REGEX">Regex</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Ledger account</span>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={ruleAccountId}
+                    onChange={(e) => setRuleAccountId(e.target.value)}
+                    disabled={accountsIsError}
+                  >
+                    <option value="">Any account</option>
+                    {(accountsData || []).map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.code} - {acc.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Min amount</span>
+                  <Input inputMode="decimal" value={ruleMin} onChange={(e) => setRuleMin(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Max amount</span>
+                  <Input inputMode="decimal" value={ruleMax} onChange={(e) => setRuleMax(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Tolerance ({activeBank.currency})</span>
+                  <Input inputMode="decimal" value={ruleTolerance} onChange={(e) => setRuleTolerance(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Priority</span>
+                  <Input inputMode="numeric" value={rulePriority} onChange={(e) => setRulePriority(e.target.value)} />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-xs font-medium text-muted-foreground">Status</span>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={ruleActive ? "active" : "inactive"}
+                    onChange={(e) => setRuleActive(e.target.value === "active")}
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </label>
                 <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap gap-2">
-                  <Button className="w-full sm:w-auto" onClick={createRule} disabled={saving}>
-                    {saving ? "Saving..." : "Add rule"}
+                  <Button className="w-full sm:w-auto" onClick={createRule} disabled={ruleSaving}>
+                    {ruleSaving ? "Saving..." : "Add rule"}
                   </Button>
                   <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
-                    <a href={`/api/admin/accounting/banks/${activeBank.id}/rules/export`}>
+                    <a href={`/api/admin/accounting/banks/${activeBank.id}/rules/export?sourcePage=admin%2Faccounting%2Fbanks`}>
                       Export CSV
                     </a>
                   </Button>
@@ -1644,7 +2184,7 @@ export default function BankAccountsPage() {
               <div className="space-y-2 rounded-md border p-3 text-xs">
                 <div className="font-medium">Rule simulator (current transaction sample)</div>
                 <div className="text-muted-foreground">
-                  Sample size: {simulator.sampleCount} transaction(s) from current search results.
+                  Sample size: {simulator.sampleCount} transaction(s) from the current page of filtered results.
                 </div>
                 {simulator.activeRules.length === 0 ? (
                   <div className="text-muted-foreground">Add at least one active rule to see simulation metrics.</div>
@@ -1701,39 +2241,104 @@ export default function BankAccountsPage() {
                 <div className="text-xs font-medium text-muted-foreground">
                   Current Rule Set for {activeBank?.name || "Selected Bank"}
                 </div>
-                {rules.length === 0 ? (
+                {rulesLoading ? (
+                  <p className="text-muted-foreground">Loading rules…</p>
+                ) : rules.length === 0 ? (
                   <p className="text-muted-foreground">No rules yet.</p>
                 ) : (
-                  rules.map((rule) => (
-                    <div key={rule.id} className="flex flex-wrap items-center justify-between gap-2 border-b py-2">
-                      <div>
-                        <div className="font-medium">
-                          {rule.name} {rule.isActive ? "" : "(inactive)"}
+                  rules.map((rule) =>
+                    editingRuleId === rule.id ? (
+                      <div key={rule.id} className="space-y-2 rounded-md border border-blue-200 bg-blue-50/40 p-3">
+                        <div className="text-xs font-medium text-muted-foreground">Editing rule</div>
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                          <Input placeholder="Rule name" value={editRuleName} onChange={(e) => setEditRuleName(e.target.value)} />
+                          <Input placeholder="Match text" value={editRuleText} onChange={(e) => setEditRuleText(e.target.value)} />
+                          <select
+                            className="h-10 rounded-md border bg-background px-3 text-sm"
+                            value={editRuleMode}
+                            onChange={(e) => setEditRuleMode(e.target.value as BankMatchRule["matchMode"])}
+                          >
+                            <option value="CONTAINS">Contains</option>
+                            <option value="STARTS_WITH">Starts with</option>
+                            <option value="ENDS_WITH">Ends with</option>
+                            <option value="REGEX">Regex</option>
+                          </select>
+                          <select
+                            className="h-10 rounded-md border bg-background px-3 text-sm"
+                            value={editRuleAccountId}
+                            onChange={(e) => setEditRuleAccountId(e.target.value)}
+                          >
+                            <option value="">Any account</option>
+                            {(accountsData || []).map((acc) => (
+                              <option key={acc.id} value={acc.id}>{acc.code} - {acc.name}</option>
+                            ))}
+                          </select>
+                          <Input placeholder="Min amount (optional)" inputMode="decimal" value={editRuleMin} onChange={(e) => setEditRuleMin(e.target.value)} />
+                          <Input placeholder="Max amount (optional)" inputMode="decimal" value={editRuleMax} onChange={(e) => setEditRuleMax(e.target.value)} />
+                          <Input placeholder="Tolerance (GHS)" inputMode="decimal" value={editRuleTolerance} onChange={(e) => setEditRuleTolerance(e.target.value)} />
+                          <Input placeholder="Priority" inputMode="numeric" value={editRulePriority} onChange={(e) => setEditRulePriority(e.target.value)} />
+                          <select
+                            className="h-10 rounded-md border bg-background px-3 text-sm"
+                            value={editRuleActive ? "active" : "inactive"}
+                            onChange={(e) => setEditRuleActive(e.target.value === "active")}
+                          >
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                          </select>
                         </div>
-                        <div className="text-xs text-muted-foreground">
-                          {rule.matchMode} &quot;{rule.matchText}&quot; - {rule.account?.name || "Any account"} -
-                          priority {Number(rule.priority || 0)} -
-                          {rule.minAmount ? ` min ${Number(rule.minAmount).toFixed(2)}` : ""}{" "}
-                          {rule.maxAmount ? ` max ${Number(rule.maxAmount).toFixed(2)}` : ""} - tol{" "}
-                          {Number(rule.amountTolerance || 0).toFixed(2)}
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" onClick={() => void saveRuleEdit()} disabled={editRuleSaving}>
+                            {editRuleSaving ? "Saving..." : "Save changes"}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingRuleId("")} disabled={editRuleSaving}>
+                            Cancel
+                          </Button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button size="sm" variant="outline" onClick={() => bumpRulePriority(rule, 1)}>
-                          Up
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => bumpRulePriority(rule, -1)}>
-                          Down
-                        </Button>
-                        <Button size="sm" variant="outline" onClick={() => toggleRule(rule)}>
-                          {rule.isActive ? "Disable" : "Enable"}
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => deleteRule(rule)}>
-                          Delete
-                        </Button>
+                    ) : (
+                      <div key={rule.id} className="flex flex-wrap items-center justify-between gap-2 border-b py-2">
+                        <div>
+                          <div className="font-medium">
+                            {rule.name}{" "}
+                            {rule.isActive ? null : (
+                              <span className="ml-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-xs text-slate-500">inactive</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {rule.matchMode} &quot;{rule.matchText}&quot; · {rule.account?.name || "Any account"} ·
+                            priority {Number(rule.priority || 0)}
+                            {rule.minAmount ? ` · min ${Number(rule.minAmount).toFixed(2)}` : ""}
+                            {rule.maxAmount ? ` · max ${Number(rule.maxAmount).toFixed(2)}` : ""}
+                            {Number(rule.amountTolerance || 0) > 0 ? ` · tol ±${Number(rule.amountTolerance).toFixed(2)}` : ""}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={() => bumpRulePriority(rule, 1)}>
+                            Up
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => bumpRulePriority(rule, -1)}>
+                            Down
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => startEditRule(rule)}>
+                            Edit
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => toggleRule(rule)}>
+                            {rule.isActive ? "Disable" : "Enable"}
+                          </Button>
+                          {isAdmin ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => deleteRule(rule)}
+                            >
+                              Delete
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    )
+                  )
                 )}
               </div>
             </>
@@ -1748,6 +2353,10 @@ export default function BankAccountsPage() {
         <CardContent className="space-y-2 text-sm">
           {!activeBank ? (
             <p className="text-muted-foreground">Select a bank account to view import run history.</p>
+          ) : importRunsIsError ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {importRunsError instanceof Error ? importRunsError.message : "Failed to load import runs."}
+            </div>
           ) : importRuns.length === 0 ? (
             <p className="text-muted-foreground">No recent bank import runs for this account.</p>
           ) : (
@@ -1790,11 +2399,9 @@ export default function BankAccountsPage() {
                           : "View diff preview"}
                     </Button>
                     <Button asChild size="sm" variant="ghost">
-                      <a
-                        href={`/admin/import-export?focusImport=bankTransactions&bankId=${encodeURIComponent(activeBank.id)}`}
-                      >
-                        Replay import
-                      </a>
+                      <Link href={`/admin/import-export?focusImport=bankTransactions&bankId=${encodeURIComponent(activeBank.id)}`}>
+                        Import transactions
+                      </Link>
                     </Button>
                   </div>
                   {expandedRunId === run.id && details ? (
@@ -1871,9 +2478,20 @@ export default function BankAccountsPage() {
           <DialogHeader>
             <DialogTitle>Delete selected transactions?</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This will permanently delete {selectedTxnIds.length} selected transaction(s). Matched rows cannot be deleted.
-          </p>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              {selectedTxnIds.length} transaction(s) selected.
+            </p>
+            {(() => {
+              const matchedInSelection = selectedTxns.filter((t) => t.matched).length;
+              return matchedInSelection > 0 ? (
+                <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800">
+                  {matchedInSelection} of these transaction(s) are matched and cannot be deleted. The entire operation will fail — unmatch them first.
+                </p>
+              ) : null;
+            })()}
+            <p>This action is permanent and cannot be undone.</p>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBulkDeleteDialogOpen(false)}>
               Cancel
@@ -1887,6 +2505,25 @@ export default function BankAccountsPage() {
               disabled={!selectedTxnIds.length || bulkSaving}
             >
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(deletingTxnId)} onOpenChange={(open) => !open && setDeletingTxnId("")}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete transaction?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete the transaction. This action cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeletingTxnId("")} disabled={bulkSaving}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void confirmDeleteSingleTransaction()} disabled={bulkSaving}>
+              {bulkSaving ? "Deleting..." : "Delete"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1965,4 +2602,3 @@ export default function BankAccountsPage() {
     </section>
   );
 }
-

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import type { Prisma } from "@prisma/client";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { PaymentStatus, RefundDestination } from "@/lib/prisma-enums";
+
+type SupportedRole = "CUSTOMER" | "ADMIN" | "STAFF" | "ACCOUNTANT";
 
 type UserSummary = {
   id: string;
@@ -62,33 +65,95 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const includeArchived = searchParams.get("includeArchived") === "1";
+    const q = String(searchParams.get("q") || "").trim();
+    const customerLedgerScope = searchParams.get("scope") === "customer-ledger";
+    const ids = String(searchParams.get("ids") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const requestedRoles = String(searchParams.get("roles") || "")
+      .split(",")
+      .map((value) => value.trim().toUpperCase())
+      .filter((value): value is SupportedRole =>
+        ["CUSTOMER", "ADMIN", "STAFF", "ACCOUNTANT"].includes(value),
+      );
+    const scopedRoles = requestedRoles.length
+      ? requestedRoles
+      : (["CUSTOMER", "ADMIN", "STAFF", "ACCOUNTANT"] as SupportedRole[]);
+    const rawPage = Number(searchParams.get("page") || 1);
+    const rawPageSize = Number(searchParams.get("pageSize") || 20);
+    const page = Number.isFinite(rawPage) ? Math.max(1, Math.floor(rawPage)) : 1;
+    const pageSize = Number.isFinite(rawPageSize)
+      ? Math.min(50, Math.max(1, Math.floor(rawPageSize)))
+      : 20;
+    const applyPagination =
+      ids.length > 0 || q.length > 0 || searchParams.has("page") || searchParams.has("pageSize");
+    const phoneDigits = q.replace(/\D/g, "");
+    const phoneTail = phoneDigits.length >= 7 ? phoneDigits.slice(-7) : "";
+    const scopeOr: Prisma.UserWhereInput[] = customerLedgerScope && !requestedRoles.length
+      ? [
+          { role: "CUSTOMER" },
+          { orders: { some: {} } },
+          { payments: { some: {} } },
+          { cart: { isNot: null } },
+          { balance: { isNot: null } },
+        ]
+      : scopedRoles.map((role) => ({ role }));
+    const searchOr: Prisma.UserWhereInput[] = q
+      ? [
+          { id: { contains: q } },
+          { name: { contains: q, mode: "insensitive" } },
+          { email: { contains: q, mode: "insensitive" } },
+          ...(phoneDigits ? [{ phone: { contains: phoneDigits } }] : []),
+          ...(phoneTail && phoneTail !== phoneDigits ? [{ phone: { contains: phoneTail } }] : []),
+        ]
+      : [];
+    const userWhere: Prisma.UserWhereInput = {
+      archived: includeArchived ? undefined : false,
+      AND: [
+        { OR: scopeOr },
+        ...(ids.length ? [{ id: { in: ids } }] : []),
+        ...(searchOr.length ? [{ OR: searchOr }] : []),
+      ],
+    };
+    const usersQuery = prisma.user.findMany({
+      where: userWhere,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        phone: true,
+        role: true,
+        archived: true,
+        phoneVerifiedAt: true,
+        lastLoginAt: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+      ...(applyPagination
+        ? {
+            skip: (page - 1) * pageSize,
+            take: pageSize,
+          }
+        : {}),
+    });
+    const totalQuery = applyPagination ? prisma.user.count({ where: userWhere }) : Promise.resolve(null);
+    const [selectedUsers, total] = await Promise.all([usersQuery, totalQuery]);
+    const userIds = selectedUsers.map((row) => row.id);
+    if (!userIds.length) {
+      return NextResponse.json({
+        rows: [],
+        partial: false,
+        total: Number(total || 0),
+        page,
+        pageSize: applyPagination ? pageSize : 0,
+      });
+    }
     const results = await Promise.allSettled([
-      prisma.user.findMany({
-        where: {
-          archived: includeArchived ? undefined : false,
-          OR: [
-            { role: "CUSTOMER" },
-            { role: "ADMIN" },
-            { role: "STAFF" },
-            { role: "ACCOUNTANT" },
-          ],
-        },
-        select: {
-          id: true,
-          email: true,
-          name: true,
-          phone: true,
-          role: true,
-          archived: true,
-          phoneVerifiedAt: true,
-          lastLoginAt: true,
-          createdAt: true,
-        },
-        orderBy: { createdAt: "desc" },
-      }),
+      Promise.resolve(selectedUsers),
       prisma.order.groupBy({
         by: ["userId"],
-        where: { status: { not: "CANCELLED" } },
+        where: { status: { not: "CANCELLED" }, userId: { in: userIds } },
         _sum: { total: true, amountPaid: true },
       }),
       prisma.payment.groupBy({
@@ -97,6 +162,7 @@ export async function GET(req: Request) {
         // credit issuance). We later subtract store-credit issuance so
         // the final "Payments" column reflects net cash/MoMo after refunds.
         where: {
+          userId: { in: userIds },
           NOT: {
             note: {
               contains: "\"reference\":\"AUTO_APPLY\"",
@@ -108,6 +174,7 @@ export async function GET(req: Request) {
       prisma.payment.groupBy({
         by: ["userId"],
         where: {
+          userId: { in: userIds },
           status: PaymentStatus.REFUND,
           refundDisposition: RefundDestination.CASH,
         },
@@ -116,14 +183,16 @@ export async function GET(req: Request) {
       // Store credit issued via returns/adjustments
       prisma.order.groupBy({
         by: ["userId", "deliveryStatus"],
-        where: { status: { not: "CANCELLED" } },
+        where: { status: { not: "CANCELLED" }, userId: { in: userIds } },
         _count: { _all: true },
       }),
       prisma.order.groupBy({
         by: ["userId"],
+        where: { userId: { in: userIds } },
         _max: { createdAt: true },
       }),
       prisma.cart.findMany({
+        where: { userId: { in: userIds } },
         include: {
           items: {
             include: {
@@ -131,6 +200,21 @@ export async function GET(req: Request) {
             },
           },
         },
+      }),
+      // Full payment ledger for store-credit computation — runs in parallel with other queries
+      prisma.payment.findMany({
+        where: { userId: { in: userIds } },
+        select: {
+          userId: true,
+          amount: true,
+          status: true,
+          refundDisposition: true,
+          note: true,
+        },
+      }),
+      prisma.balance.findMany({
+        where: { userId: { in: userIds } },
+        select: { userId: true, creditLimit: true },
       }),
     ] as const);
 
@@ -141,6 +225,8 @@ export async function GET(req: Request) {
     const deliveryRes = results[4];
     const lastRes = results[5];
     const cartsRes = results[6];
+    const paymentsLedgerRes = results[7];
+    const balanceRowsRes = results[8];
 
     const users: UserSummary[] =
       usersRes.status === "fulfilled" ? (usersRes.value as UserSummary[]) : [];
@@ -149,6 +235,8 @@ export async function GET(req: Request) {
     const deliveryGroups = deliveryRes.status === "fulfilled" ? deliveryRes.value : [];
     const lastOrders = lastRes.status === "fulfilled" ? lastRes.value : [];
     const carts = cartsRes.status === "fulfilled" ? cartsRes.value : [];
+    const paymentsLedger = paymentsLedgerRes.status === "fulfilled" ? paymentsLedgerRes.value : [];
+    const balanceRows = balanceRowsRes.status === "fulfilled" ? balanceRowsRes.value : [];
 
     const sumsByUser: Record<string, { ordersTotal: number; paidTotal: number }> = {};
     for (const s of orderSums) {
@@ -177,20 +265,7 @@ export async function GET(req: Request) {
 
     // Build a per-user store credit ledger using the same semantics as
     // /api/admin/customers/[id]/balance so values stay consistent.
-    const paymentsLedger = await prisma.payment.findMany({
-      select: {
-        userId: true,
-        amount: true,
-        status: true,
-        refundDisposition: true,
-        note: true,
-      },
-    });
-
-    const balanceRows = await prisma.balance.findMany({
-      where: { userId: { in: users.map((u) => u.id) } },
-      select: { userId: true, creditLimit: true },
-    });
+    // (paymentsLedger and balanceRows are fetched in parallel above)
     const creditLimitByUser: Record<string, number> = {};
     for (const row of balanceRows) {
       creditLimitByUser[row.userId] = Number(row.creditLimit || 0);
@@ -435,10 +510,37 @@ export async function GET(req: Request) {
                     ),
                   }
                 : null,
+              paymentsLedgerRes.status === "rejected"
+                ? {
+                    step: "paymentsLedger",
+                    error: String(
+                      (paymentsLedgerRes as { reason?: { message?: string } }).reason?.message ??
+                        (paymentsLedgerRes as { reason?: unknown }).reason ??
+                        "unknown"
+                    ),
+                  }
+                : null,
+              balanceRowsRes.status === "rejected"
+                ? {
+                    step: "balanceRows",
+                    error: String(
+                      (balanceRowsRes as { reason?: { message?: string } }).reason?.message ??
+                        (balanceRowsRes as { reason?: unknown }).reason ??
+                        "unknown"
+                    ),
+                  }
+                : null,
             ].filter(Boolean),
           }
         : undefined;
-    return NextResponse.json({ rows, partial: hadFailures, ...(debug || {}) });
+    return NextResponse.json({
+      rows,
+      partial: hadFailures,
+      total: applyPagination ? Number(total || 0) : rows.length,
+      page,
+      pageSize: applyPagination ? pageSize : rows.length,
+      ...(debug || {}),
+    });
   } catch (err) {
     console.error("Failed to load customers:", err);
     return NextResponse.json(

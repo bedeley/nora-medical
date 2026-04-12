@@ -22,6 +22,136 @@ type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A)
 
 type PurchasesWhere = Prisma.PurchaseWhereInput;
 
+type PurchaseRowDto = {
+  id: string;
+  productId: string;
+  productName: string;
+  productSku?: string | null;
+  requiresLotTracking?: boolean;
+  requiresExpiryDate?: boolean;
+  quantity: number;
+  orderedQuantity?: number;
+  receivedQuantity?: number;
+  status?: string;
+  expectedAt?: Date | null;
+  supplierId?: string | null;
+  unitCost: number;
+  total: number;
+  supplier?: string | null;
+  reason?: string | null;
+  note?: string | null;
+  createdAt: Date;
+};
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function startOfWeek(date: Date) {
+  const base = startOfDay(date);
+  const day = base.getDay();
+  base.setDate(base.getDate() - day);
+  return base;
+}
+
+function endOfWeek(date: Date) {
+  const base = startOfWeek(date);
+  base.setDate(base.getDate() + 6);
+  return base;
+}
+
+function isAwaitingReceive(row: PurchaseRowDto) {
+  const status = String(row.status || "").toUpperCase();
+  const openStatus = ["APPROVED", "ORDERED", "PARTIALLY_RECEIVED"].includes(status);
+  const ordered = Number(row.orderedQuantity ?? row.quantity);
+  const received = Number(row.receivedQuantity ?? 0);
+  return openStatus && received < ordered;
+}
+
+function getExpectedUrgency(row: PurchaseRowDto): { label: string; tone: "danger" | "warning" | "neutral" } | null {
+  if (!row.expectedAt || !isAwaitingReceive(row)) return null;
+  const expected = new Date(row.expectedAt);
+  if (Number.isNaN(expected.getTime())) return null;
+  const today = startOfDay(new Date());
+  const target = startOfDay(expected);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const diffDays = Math.round((target.getTime() - today.getTime()) / dayMs);
+  if (diffDays < 0) return { label: `Overdue ${Math.abs(diffDays)}d`, tone: "danger" };
+  if (diffDays === 0) return { label: "Due today", tone: "warning" };
+  if (diffDays <= 3) return { label: `Due in ${diffDays}d`, tone: "warning" };
+  return { label: `Expected ${expected.toLocaleDateString()}`, tone: "neutral" };
+}
+
+function applyQuickView(rows: PurchaseRowDto[], quickView: string) {
+  switch (quickView) {
+    case "pending_approval":
+      return rows.filter((row) => String(row.status || "").toUpperCase() === "PENDING_APPROVAL");
+    case "awaiting_receive":
+      return rows.filter((row) => isAwaitingReceive(row));
+    case "due_today":
+      return rows.filter((row) => getExpectedUrgency(row)?.label === "Due today");
+    case "overdue":
+      return rows.filter((row) => getExpectedUrgency(row)?.tone === "danger");
+    default:
+      return rows;
+  }
+}
+
+function applyExpectedWindow(rows: PurchaseRowDto[], expectedWindow: string) {
+  const today = startOfDay(new Date());
+  const weekStart = startOfWeek(today);
+  const weekEnd = endOfWeek(today);
+  const plus7 = new Date(today);
+  plus7.setDate(plus7.getDate() + 7);
+  switch (expectedWindow) {
+    case "missing":
+      return rows.filter((row) => isAwaitingReceive(row) && !row.expectedAt);
+    case "this_week":
+      return rows.filter((row) => {
+        if (!isAwaitingReceive(row) || !row.expectedAt) return false;
+        const d = startOfDay(new Date(row.expectedAt));
+        return d >= weekStart && d <= weekEnd;
+      });
+    case "next_7":
+      return rows.filter((row) => {
+        if (!isAwaitingReceive(row) || !row.expectedAt) return false;
+        const d = startOfDay(new Date(row.expectedAt));
+        return d >= today && d <= plus7;
+      });
+    default:
+      return rows;
+  }
+}
+
+function applyExpectedSort(rows: PurchaseRowDto[], expectedSort: string) {
+  if (expectedSort === "none") return rows;
+  const next = [...rows];
+  const toTime = (value?: Date | null) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.getTime();
+  };
+  next.sort((a, b) => {
+    const at = toTime(a.expectedAt);
+    const bt = toTime(b.expectedAt);
+    if (expectedSort === "missing_first") {
+      const am = at === null ? 0 : 1;
+      const bm = bt === null ? 0 : 1;
+      if (am !== bm) return am - bm;
+      if (at === null || bt === null) return 0;
+      return at - bt;
+    }
+    if (at === null && bt === null) return 0;
+    if (at === null) return 1;
+    if (bt === null) return -1;
+    return expectedSort === "expected_oldest" ? at - bt : bt - at;
+  });
+  return next;
+}
+
 function normalizePositiveThreshold(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -56,6 +186,17 @@ export async function GET(req: Request) {
         : undefined;
     const q = searchParams.get("q");
     const format = searchParams.get("format");
+    const quickView = searchParams.get("quickView") || "all";
+    const expectedWindow = searchParams.get("expectedWindow") || "all";
+    const expectedSort = searchParams.get("expectedSort") || "none";
+    const openOnly = searchParams.get("openOnly") === "1";
+    const paginate = searchParams.has("page") || searchParams.has("pageSize");
+    const pageRaw = Number(searchParams.get("page") || 1);
+    const pageSizeRaw = Number(searchParams.get("pageSize") || 50);
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const pageSize = Number.isFinite(pageSizeRaw)
+      ? Math.min(Math.max(Math.floor(pageSizeRaw), 1), 200)
+      : 50;
 
     const where: PurchasesWhere = {
       deletedAt: null,
@@ -133,12 +274,121 @@ export async function GET(req: Request) {
       reason: r.reason || "",
       note: r.note || "",
       createdAt: r.createdAt,
-    }));
+    })) satisfies PurchaseRowDto[];
+
+    const quickCounts = {
+      pendingApproval: items.filter((row) => String(row.status || "").toUpperCase() === "PENDING_APPROVAL").length,
+      awaitingReceive: items.filter((row) => isAwaitingReceive(row)).length,
+      dueToday: items.filter((row) => getExpectedUrgency(row)?.label === "Due today").length,
+      overdue: items.filter((row) => getExpectedUrgency(row)?.tone === "danger").length,
+    };
+    const quickRows = applyQuickView(items, quickView);
+    const expectedCounts = {
+      missing: quickRows.filter((row) => isAwaitingReceive(row) && !row.expectedAt).length,
+      thisWeek: applyExpectedWindow(quickRows, "this_week").length,
+      next7: applyExpectedWindow(quickRows, "next_7").length,
+    };
+    const expectedRows = applyExpectedWindow(quickRows, expectedWindow);
+    const scopedRows = applyExpectedSort(
+      openOnly ? expectedRows.filter((row) => isAwaitingReceive(row)) : expectedRows,
+      expectedSort,
+    );
+    const scopedItems = format === "csv" || !paginate
+      ? scopedRows
+      : scopedRows.slice((page - 1) * pageSize, (page - 1) * pageSize + pageSize);
+    const viewTotals = {
+      qty: scopedRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0),
+      value: scopedRows.reduce((sum, row) => sum + Number(row.total || 0), 0),
+    };
+    const statusCounts = Array.from(
+      scopedRows.reduce((map, row) => {
+        const statusName = String(row.status || "RECEIVED");
+        map.set(statusName, (map.get(statusName) || 0) + 1);
+        return map;
+      }, new Map<string, number>()),
+    ).map(([statusName, count]) => ({ status: statusName, count }));
+    const topSuppliers = Array.from(
+      scopedRows.reduce((map, row) => {
+        const supplierName = String(row.supplier || "").trim();
+        if (!supplierName) return map;
+        map.set(supplierName, (map.get(supplierName) || 0) + 1);
+        return map;
+      }, new Map<string, number>()),
+    )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([supplierName]) => supplierName);
+    const supplierOpenSummary = Array.from(
+      scopedRows.reduce((map, row) => {
+        if (!isAwaitingReceive(row)) return map;
+        const supplierName = String(row.supplier || "Unknown supplier").trim() || "Unknown supplier";
+        const ordered = Number(row.orderedQuantity ?? row.quantity);
+        const received = Number(row.receivedQuantity ?? 0);
+        const openQty = Math.max(0, ordered - received);
+        if (openQty <= 0) return map;
+        const entry = map.get(supplierName) || {
+          supplier: supplierName,
+          openQty: 0,
+          openValue: 0,
+          oldestExpected: null as Date | null,
+          overdueCount: 0,
+        };
+        entry.openQty += openQty;
+        entry.openValue += openQty * Number(row.unitCost || 0);
+        if (row.expectedAt) {
+          const expected = startOfDay(new Date(row.expectedAt));
+          if (!Number.isNaN(expected.getTime())) {
+            if (!entry.oldestExpected || expected < entry.oldestExpected) entry.oldestExpected = expected;
+            if (expected < startOfDay(new Date())) entry.overdueCount += 1;
+          }
+        }
+        map.set(supplierName, entry);
+        return map;
+      }, new Map<string, { supplier: string; openQty: number; openValue: number; oldestExpected: Date | null; overdueCount: number }>()),
+    )
+      .map(([, entry]) => ({
+        ...entry,
+        oldestExpected: entry.oldestExpected ? entry.oldestExpected.toISOString() : null,
+      }))
+      .sort((a, b) => b.openValue - a.openValue)
+      .slice(0, 4);
+    const staleOpenSummary = scopedRows.reduce(
+      (acc, row) => {
+        if (!isAwaitingReceive(row)) return acc;
+        if (!row.expectedAt) {
+          acc.missingExpected += 1;
+          acc.total += 1;
+          return acc;
+        }
+        const expected = startOfDay(new Date(row.expectedAt));
+        if (Number.isNaN(expected.getTime())) return acc;
+        const diffDays = Math.round((expected.getTime() - startOfDay(new Date()).getTime()) / (24 * 60 * 60 * 1000));
+        if (diffDays <= -7) {
+          acc.overdue7Plus += 1;
+          acc.total += 1;
+        }
+        return acc;
+      },
+      { missingExpected: 0, overdue7Plus: 0, total: 0 },
+    );
+
+    if (format === "ids") {
+      const condition = searchParams.get("condition") || "";
+      let conditionRows = scopedRows;
+      if (condition === "pending") {
+        conditionRows = scopedRows.filter((row) => String(row.status || "").toUpperCase() === "PENDING_APPROVAL");
+      } else if (condition === "open") {
+        conditionRows = scopedRows.filter((row) => isAwaitingReceive(row));
+      } else if (condition === "overdue") {
+        conditionRows = scopedRows.filter((row) => getExpectedUrgency(row)?.tone === "danger");
+      }
+      return NextResponse.json({ ids: conditionRows.map((row) => row.id) });
+    }
 
     if (format === "csv") {
       const header = ["Date", "Product", "SKU", "Qty", "Received", "Status", "Unit Cost", "Total", "Supplier", "Reason", "Note"];
       const lines = [header.join(",")];
-      for (const r of items) {
+      for (const r of scopedItems) {
         lines.push([
           new Date(r.createdAt).toISOString(),
           JSON.stringify(r.productName),
@@ -153,9 +403,9 @@ export async function GET(req: Request) {
           JSON.stringify(r.note || ""),
         ].join(","));
       }
-      const totalQty = items.reduce((s: number, r: { quantity: number }) => s + r.quantity, 0);
-      const totalVal = items.reduce((s: number, r: { total: number }) => s + r.total, 0);
-      lines.push(["Totals", "", "", String(totalQty), "", totalVal.toFixed(2), "", "", ""].join(","));
+      const totalQty = scopedItems.reduce((s: number, r: { quantity: number }) => s + r.quantity, 0);
+      const totalVal = scopedItems.reduce((s: number, r: { total: number }) => s + r.total, 0);
+      lines.push(["Totals", "", "", String(totalQty), "", "", "", totalVal.toFixed(2), "", "", ""].join(","));
       const csv = lines.join("\n");
       return new Response(csv, {
         headers: {
@@ -165,7 +415,24 @@ export async function GET(req: Request) {
       });
     }
 
-    return NextResponse.json({ items });
+    return NextResponse.json({
+      items: scopedItems,
+      total: scopedRows.length,
+      page: paginate ? page : 1,
+      pageSize: paginate ? pageSize : scopedRows.length,
+      meta: {
+        total: scopedRows.length,
+        baseTotal: items.length,
+        quickCounts,
+        expectedCounts,
+        statusCounts,
+        viewTotals,
+        topSuppliers,
+        supplierOpenSummary,
+        staleOpenSummary,
+        hasScopedViewMismatch: items.length > 0 && scopedRows.length === 0,
+      },
+    });
   } catch (err) {
     console.error("Error listing purchases:", err);
     return NextResponse.json({ error: "Failed to list purchases" }, { status: 500 });
@@ -422,6 +689,7 @@ export async function POST(req: Request) {
       };
     });
 
+    const correlationId = randomUUID();
     let purchaseJournalEntryId: string | null = null;
     let paymentJournalEntryId: string | null = null;
     try {
@@ -444,9 +712,32 @@ export async function POST(req: Request) {
       }
     } catch (e) {
       console.warn("Accounting purchase posting skipped:", e);
+      try {
+        await recordAuditLog({
+          actorId: user.id,
+          action: "ACCOUNTING_POST_FAILED",
+          entityType: "PURCHASE",
+          entityId: result.purchaseId,
+          meta: {
+            correlationId,
+            reason: "purchase_create_post_failed",
+            message: e instanceof Error ? e.message : String(e),
+            purchaseId: result.purchaseId,
+            productId,
+            productName: result.productName,
+            productSku: result.productSku || null,
+            supplierId: result.supplierId,
+            supplierName: result.supplierName || supplier || null,
+            amount: Number(unitCost) * Number(quantity),
+            purchaseJournalEntryId,
+            paymentJournalEntryId,
+            source: "PURCHASE_CREATE",
+          },
+        });
+      } catch {
+        // best-effort
+      }
     }
-
-    const correlationId = randomUUID();
 
     try {
       await recordAuditLog({
@@ -458,6 +749,7 @@ export async function POST(req: Request) {
           correlationId,
           name: result.productName,
           productId,
+          productSku: result.productSku || null,
           quantity,
           unitCost,
           amount: Number(unitCost) * Number(quantity),
@@ -475,6 +767,7 @@ export async function POST(req: Request) {
           supplierId: result.supplierId,
           reason,
           note,
+          expectedAt: expectedAt ? expectedAt.toISOString() : null,
           lotCode: normalizeLotCode(lotCode) || null,
           expiryDate: expiryDate ? expiryDate.toISOString() : null,
           highValueCreditOnly: result.highValueCreditOnly,
@@ -482,6 +775,7 @@ export async function POST(req: Request) {
           approvalThresholdQty: result.approvalThresholdQty,
           purchaseJournalEntryId,
           paymentJournalEntryId,
+          source: "PURCHASE_CREATE",
         },
       });
     } catch {

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { assertSameOrigin } from "@/lib/origin";
 import { formatInvoiceNumber } from "@/lib/utils";
 import { formatCurrency } from "@/lib/currency";
+import { recordAuditLog } from "@/lib/audit-log";
 
 const schema = z.object({ to: z.string().email().optional() });
 const normalizeBalance = (value: number) => (Math.abs(value) < 0.01 ? 0 : value);
@@ -28,6 +29,7 @@ export async function POST(
   }
   const session = await getServerSession(authOptions);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const actor = session.user as AuthenticatedUser;
   try {
     const params = await context.params;
     const url = new URL(req.url);
@@ -57,7 +59,7 @@ export async function POST(
     });
     if (!order) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    const user = session.user as AuthenticatedUser;
+    const user = actor;
     const isAdmin = user.role === "ADMIN";
     const isOwner = order.userId ? order.userId === user.id : false;
     if (!isAdmin && !isOwner) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -216,17 +218,96 @@ export async function POST(
       text,
       html,
     );
-    if (!res.ok)
+    if (!res.ok) {
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_RECEIPT_SEND",
+        entityType: "ORDER",
+        entityId: order.id,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          orderId: order.id,
+          invoiceNumber: order.invoiceNumber ?? null,
+          orderStatus: order.status,
+          customerId: order.userId ?? null,
+          customerName: order.user?.name ?? null,
+          customerEmail: order.user?.email ?? null,
+          recipientEmail: to,
+          requestedByName: user.name || user.email || null,
+          requestedByEmail: user.email || null,
+          requestedByRole: user.role || null,
+          total,
+          amountPaid: paid,
+          balance,
+          channel: "email",
+          sourcePage: isAdmin ? "/admin/orders/[id]" : "/orders/[id]",
+          sourceRoute: `/api/orders/${order.id}/receipt/email`,
+          targetProvidedInBody: parsed.success ? Boolean(parsed.data.to) : false,
+          providerError: res.error || "Email failed",
+        },
+      });
       return NextResponse.json(
         { error: res.error || "Email failed" },
         { status: 502 },
       );
+    }
+    await recordAuditLog({
+      actorId: user.id,
+      action: "ORDER_RECEIPT_SEND",
+      entityType: "ORDER",
+      entityId: order.id,
+      request: req,
+      outcome: "SUCCESS",
+      meta: {
+        orderId: order.id,
+        invoiceNumber: order.invoiceNumber ?? null,
+        orderStatus: order.status,
+        customerId: order.userId ?? null,
+        customerName: order.user?.name ?? null,
+        customerEmail: order.user?.email ?? null,
+        recipientEmail: to,
+        requestedByName: user.name || user.email || null,
+        requestedByEmail: user.email || null,
+        requestedByRole: user.role || null,
+        total,
+        amountPaid: paid,
+        balance,
+        channel: "email",
+        sourcePage: isAdmin ? "/admin/orders/[id]" : "/orders/[id]",
+        sourceRoute: `/api/orders/${order.id}/receipt/email`,
+        targetProvidedInBody: parsed.success ? Boolean(parsed.data.to) : false,
+        simulated: (res as { simulated?: boolean }).simulated === true,
+      },
+    });
     return NextResponse.json({
       ok: true,
       simulated: (res as { simulated?: boolean }).simulated === true,
     });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed";
+    try {
+      const params = await context.params;
+      await recordAuditLog({
+        actorId: actor.id,
+        action: "ORDER_RECEIPT_SEND",
+        entityType: "ORDER",
+        entityId: params.id,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          requestedByName: actor.name || actor.email || null,
+          requestedByEmail: actor.email || null,
+          requestedByRole: actor.role || null,
+          channel: "email",
+          sourcePage: actor.role === "ADMIN" ? "/admin/orders/[id]" : "/orders/[id]",
+          sourceRoute: `/api/orders/${params.id}/receipt/email`,
+          error: message,
+        },
+      });
+    } catch {
+      // best-effort
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

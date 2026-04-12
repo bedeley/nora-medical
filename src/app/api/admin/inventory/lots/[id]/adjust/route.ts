@@ -6,6 +6,14 @@ import { assertSameOrigin } from "@/lib/origin";
 import { applyLotAdjustment } from "@/lib/inventory-lots";
 import { recordAuditLog } from "@/lib/audit-log";
 
+type LotAdjustmentAuditPayload = {
+  actorId?: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  meta?: Record<string, unknown>;
+};
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -35,6 +43,9 @@ export async function POST(
   if (!Number.isFinite(quantityRemaining) || quantityRemaining < 0) {
     return NextResponse.json({ error: "Invalid quantity" }, { status: 400 });
   }
+  if (!Number.isInteger(quantityRemaining)) {
+    return NextResponse.json({ error: "Quantity must be a whole number" }, { status: 400 });
+  }
   if (!reason) {
     return NextResponse.json({ error: "Reason is required" }, { status: 400 });
   }
@@ -62,13 +73,7 @@ export async function POST(
     });
   }
 
-  let auditPayload: {
-    actorId?: string | null;
-    action: string;
-    entityType: string;
-    entityId: string;
-    meta?: Record<string, unknown>;
-  } | null = null;
+  let auditPayload: LotAdjustmentAuditPayload | null = null;
   try {
     await prisma.$transaction(async (tx) => {
       const product = await tx.product.findUnique({
@@ -133,7 +138,22 @@ export async function POST(
   }
 
   if (auditPayload) {
-    await recordAuditLog(auditPayload);
+    const finalizedAuditPayload = auditPayload as LotAdjustmentAuditPayload;
+    await recordAuditLog({
+      actorId: finalizedAuditPayload.actorId || null,
+      action: finalizedAuditPayload.action,
+      entityType: finalizedAuditPayload.entityType,
+      entityId: finalizedAuditPayload.entityId,
+      request: req,
+      outcome: "SUCCESS",
+      meta: {
+        sourcePage: "admin/inventory-lots",
+        section: "adjustment",
+        operation: "adjust_remaining_quantity",
+        resultSummary: `Adjusted lot ${lot.lotCode} by ${delta} units.`,
+        ...(finalizedAuditPayload.meta || {}),
+      },
+    });
   }
 
   return NextResponse.json({ ok: true });

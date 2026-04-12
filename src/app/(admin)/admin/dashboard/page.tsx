@@ -1133,7 +1133,7 @@ function AdminDashboardContent() {
               <Badge variant="outline">Payment-date: cash in/out, net cash</Badge>
             </div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <Link href={appendActivePeriod("/admin/balances")} className="border rounded-md px-3 py-2 text-xs bg-muted/30 hover:bg-muted/50">
+              <Link href="/admin/customers?balance=due&sort=balance_desc" className="border rounded-md px-3 py-2 text-xs bg-muted/30 hover:bg-muted/50">
                 Review Outstanding
               </Link>
               <Link href={appendActivePeriod("/admin/momo-payments")} className="border rounded-md px-3 py-2 text-xs bg-muted/30 hover:bg-muted/50">
@@ -1403,7 +1403,7 @@ function AdminDashboardContent() {
                 </p>
               )}
               <p className="text-[11px] text-muted-foreground">Current unpaid on orders from this period.</p>
-              <Link href={appendActivePeriod("/admin/balances")} className="text-[11px] underline text-muted-foreground">
+              <Link href="/admin/customers?balance=due&sort=balance_desc" className="text-[11px] underline text-muted-foreground">
                 View customer balances
               </Link>
             </div>

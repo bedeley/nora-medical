@@ -56,7 +56,16 @@ export async function POST(
           supplier: true,
           supplierId: true,
           createdAt: true,
-          product: { select: { stock: true, cost: true, name: true, requiresLotTracking: true, requiresExpiryDate: true } },
+          product: {
+            select: {
+              stock: true,
+              cost: true,
+              name: true,
+              sku: true,
+              requiresLotTracking: true,
+              requiresExpiryDate: true,
+            },
+          },
         },
       });
       if (!purchase) throw new Error("Purchase not found");
@@ -156,6 +165,7 @@ export async function POST(
         purchase: updatedPurchase,
         previousStatus: purchase.status,
         productName: purchase.product?.name || "",
+        productSku: purchase.product?.sku || null,
         oldStock,
         newStock,
         newCost: Number(newCost),
@@ -165,6 +175,7 @@ export async function POST(
         nextStatus,
         supplier: purchase.supplier || "",
         lotCode: lot.lotCode,
+        lotNotes: lotNotes?.trim() || null,
         supplierId: purchase.supplierId,
         receivedAt: new Date(),
         previousUnitCost: previousPurchase ? Number(previousPurchase.unitCost) : null,
@@ -184,6 +195,7 @@ export async function POST(
           purchaseId: result.purchase.id,
           productId: result.purchase.productId,
           productName: result.productName,
+          productSku: result.productSku,
           delta: result.delta,
           orderedQuantity: result.ordered,
           previousReceivedQuantity: Number(result.previousReceivedQuantity || 0),
@@ -197,8 +209,11 @@ export async function POST(
           supplierId: result.supplierId || null,
           from: result.oldStock,
           to: result.newStock,
+          receivedAt: result.receivedAt.toISOString(),
           expiryDate: expiryDate ? expiryDate.toISOString() : null,
           lotCode: normalizeLotCode(result.lotCode) || null,
+          lotNotes: result.lotNotes,
+          source: "PURCHASE_RECEIVE",
         },
       });
     } catch {
@@ -256,8 +271,8 @@ export async function POST(
       console.warn("Back-in-stock notification error:", e);
     }
 
+    const receiptKey = String(result.purchase.receivedQuantity || 0);
     try {
-      const receiptKey = String(result.purchase.receivedQuantity || 0);
       await postPurchaseReceiptEntry({
         purchaseId: result.purchase.id,
         receiptKey,
@@ -274,8 +289,19 @@ export async function POST(
           entityType: "PURCHASE",
           entityId: result.purchase.id,
           meta: {
+            correlationId,
             reason: "purchase_receive_post_failed",
             message: e instanceof Error ? e.message : String(e),
+            purchaseId: result.purchase.id,
+            productId: result.purchase.productId,
+            productName: result.productName,
+            productSku: result.productSku,
+            supplierId: result.supplierId || null,
+            supplierName: result.supplier || null,
+            receivedQuantityDelta: Number(result.delta || 0),
+            amount: Number(result.purchase.unitCost || 0) * Number(result.delta || 0),
+            receiptKey,
+            source: "PURCHASE_RECEIVE",
           },
         });
       } catch {

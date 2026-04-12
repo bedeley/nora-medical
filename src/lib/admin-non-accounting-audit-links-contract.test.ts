@@ -32,8 +32,12 @@ test("order pages audit links include sourcePage", () => {
   const listPage = read("src/app/(admin)/admin/orders/page.tsx");
   const detailPage = read("src/app/(admin)/admin/orders/[id]/OrderDetails.tsx");
   const otcPage = read("src/app/(admin)/admin/orders/otc/page.tsx");
+  assert.match(listPage, /const isAdmin = role === "ADMIN"/);
   assert.match(listPage, /entityType=ORDER&entityId=\$\{order\.id\}&sourcePage=admin\/orders/);
-  assert.match(detailPage, /entityType=ORDER&entityId=\$\{order\.id\}&sourcePage=admin\/orders\/\[id\]/);
+  assert.match(listPage, /entityType=ORDER&sourcePage=admin\/orders/);
+  assert.match(detailPage, /role === "ADMIN"/);
+  assert.match(detailPage, /buildAdminAuditHref/);
+  assert.match(detailPage, /sourcePage:\s*"admin\/orders\/\[id\]"/);
   assert.match(otcPage, /entityType=ORDER&entityId=\$\{completedOrderId\}&sourcePage=admin\/orders\/otc/);
 });
 

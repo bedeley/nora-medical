@@ -8,6 +8,7 @@ const {
   mockPrismaProductFindUnique,
   mockPrismaSupplierPaymentFindUnique,
   mockPrismaPurchaseFindMany,
+  mockPrismaPurchaseCount,
   mockPrismaTransaction,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
@@ -16,6 +17,7 @@ const {
   mockPrismaProductFindUnique: vi.fn(),
   mockPrismaSupplierPaymentFindUnique: vi.fn(),
   mockPrismaPurchaseFindMany: vi.fn(),
+  mockPrismaPurchaseCount: vi.fn(),
   mockPrismaTransaction: vi.fn(),
 }));
 
@@ -37,7 +39,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     product: { findUnique: mockPrismaProductFindUnique },
     supplierPayment: { findUnique: mockPrismaSupplierPaymentFindUnique },
-    purchase: { findMany: mockPrismaPurchaseFindMany, findUnique: vi.fn().mockResolvedValue(null) },
+    purchase: { findMany: mockPrismaPurchaseFindMany, findUnique: vi.fn().mockResolvedValue(null), count: mockPrismaPurchaseCount },
     $transaction: mockPrismaTransaction,
   },
 }));
@@ -106,6 +108,7 @@ const mockListPurchase = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrismaPurchaseCount.mockResolvedValue(0);
 });
 
 // ── GET – auth guard ───────────────────────────────────────────────────────
@@ -151,6 +154,7 @@ describe("GET /api/admin/purchases – list", () => {
     const body = await res.json();
     expect(body.items).toHaveLength(1);
     expect(body.items[0].id).toBe("purchase-1");
+    expect(body.meta.total).toBe(1);
   });
 
   it("handles start/end date filters via query string", async () => {

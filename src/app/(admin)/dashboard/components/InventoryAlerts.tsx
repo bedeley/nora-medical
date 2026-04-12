@@ -182,7 +182,7 @@ export default function InventoryAlerts() {
                       <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
                     </Button>
                     <Button asChild size="sm" variant="ghost">
-                      <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
+                      <Link href={`/admin/purchases?product=${p.productId}&new=1`}>Add purchase</Link>
                     </Button>
                   </div>
                 </div>
@@ -233,7 +233,7 @@ export default function InventoryAlerts() {
                             <Link href={`/admin/inventory-planning/${p.productId}`}>View planning</Link>
                           </Button>
                           <Button asChild size="sm" variant="ghost">
-                            <Link href={`/admin/purchases?product=${p.productId}`}>Add purchase</Link>
+                            <Link href={`/admin/purchases?product=${p.productId}&new=1`}>Add purchase</Link>
                           </Button>
                         </div>
                       </TableCell>

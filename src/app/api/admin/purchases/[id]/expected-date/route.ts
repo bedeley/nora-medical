@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -37,7 +38,15 @@ export async function POST(
         productId: true,
         quantity: true,
         orderedQuantity: true,
+        receivedQuantity: true,
         supplier: true,
+        supplierId: true,
+        product: {
+          select: {
+            name: true,
+            sku: true,
+          },
+        },
       },
     });
     if (!purchase) return NextResponse.json({ error: "Purchase not found." }, { status: 404 });
@@ -49,21 +58,31 @@ export async function POST(
     });
 
     try {
+      const orderedQuantity = Number(purchase.orderedQuantity ?? purchase.quantity ?? 0);
+      const receivedQuantity = Number(purchase.receivedQuantity ?? 0);
       await recordAuditLog({
         actorId: user.id,
         action: "PURCHASE_EXPECTED_DATE_UPDATE",
         entityType: "PURCHASE",
         entityId: purchase.id,
         meta: {
+          correlationId: randomUUID(),
           purchaseId: purchase.id,
           previousExpectedAt: purchase.expectedAt ? purchase.expectedAt.toISOString() : null,
           expectedAt: updated.expectedAt ? updated.expectedAt.toISOString() : null,
           status: purchase.status,
           productId: purchase.productId,
-          quantity: Number(purchase.orderedQuantity ?? purchase.quantity ?? 0),
+          productName: purchase.product?.name || null,
+          productSku: purchase.product?.sku || null,
+          quantity: orderedQuantity,
+          orderedQuantity,
+          receivedQuantity,
+          remainingQuantity: Math.max(0, orderedQuantity - receivedQuantity),
           supplier: purchase.supplier || null,
+          supplierId: purchase.supplierId || null,
           updatedById: user.id,
           updatedAt: new Date().toISOString(),
+          source: "PURCHASE_EXPECTED_DATE_UPDATE",
         },
       });
     } catch {
@@ -76,4 +95,3 @@ export async function POST(
     return NextResponse.json({ error: "Failed to update expected date." }, { status: 500 });
   }
 }
-

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -17,11 +18,12 @@ const escapeCsv = (value: string) => {
 };
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: { id: string } },
 ) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const actor = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(actor)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -60,6 +62,26 @@ export async function GET(
     .join("\n");
 
   const filename = `bank-match-rules-${params.id}.csv`;
+  const sourcePage = String(new URL(req.url).searchParams.get("sourcePage") || "admin/accounting/banks").trim();
+  await recordAccountingBankAudit({
+    req,
+    actor,
+    action: "BANK_RULE_EXPORT_CSV",
+    entityType: "BANK_MATCH_RULE",
+    entityId: params.id,
+    section: "rules",
+    operation: "export_csv",
+    resultSummary: `Exported ${rows.length} bank match rule row(s) to CSV.`,
+    meta: {
+      bankAccountId: params.id,
+      format: "CSV",
+      fileName: filename,
+      rowCount: rows.length,
+      columnCount: header.length,
+      byteSize: Buffer.byteLength(csv, "utf8"),
+      sourcePage,
+    },
+  });
   return new NextResponse(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

@@ -12,6 +12,7 @@ const bodySchema = z.object({
   productId: z.string().min(1),
   newUnitCost: z.number().min(0),
   reason: z.string().min(3).max(200),
+  sourcePage: z.string().min(3).max(120).optional(),
 });
 
 const DEFAULT_ACCOUNT_CODES = {
@@ -89,7 +90,7 @@ export async function POST(req: Request) {
 
     const product = await prisma.product.findUnique({
       where: { id: parsed.data.productId },
-      select: { id: true, name: true, stock: true, cost: true },
+      select: { id: true, sku: true, name: true, stock: true, cost: true },
     });
     if (!product) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
@@ -136,12 +137,12 @@ export async function POST(req: Request) {
             { accountId: accountMap.get(inventoryCode) as string, debit: 0, credit: amount, description: lineDesc },
           ];
 
-    await prisma.$transaction(async (tx) => {
+    const { journalEntryId } = await prisma.$transaction(async (tx) => {
       await tx.product.update({
         where: { id: product.id },
         data: { cost: newCost },
       });
-      await tx.journalEntry.create({
+      const journalEntry = await tx.journalEntry.create({
         data: {
           entryDate,
           memo,
@@ -152,22 +153,34 @@ export async function POST(req: Request) {
           approvedAt: new Date(),
           lines: { create: lines },
         },
+        select: { id: true },
       });
+      return { journalEntryId: journalEntry.id };
     });
 
     try {
+      const sourcePage = parsed.data.sourcePage?.trim() || "admin/inventory";
       await recordAuditLog({
         actorId: (session.user as AuthenticatedUser).id,
         action: "INVENTORY_REVALUATION",
         entityType: "PRODUCT",
         entityId: product.id,
+        request: req,
         meta: {
+          sourcePage,
+          section: "inventory-valuation",
           name: product.name,
+          sku: product.sku || null,
           fromCost: currentCost,
           toCost: newCost,
           stock,
+          previousValue: currentVal,
+          newValue: newVal,
           delta,
+          direction: delta > 0 ? "increase" : "decrease",
           reason: parsed.data.reason,
+          journalEntryId,
+          resultSummary: `Inventory revaluation posted for ${product.name}.`,
         },
       });
     } catch {

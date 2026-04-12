@@ -17,6 +17,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const supplierId = String(searchParams.get("supplierId") || "").trim();
   const supplierName = String(searchParams.get("supplier") || "").trim();
+  const sourcePage = String(searchParams.get("sourcePage") || "admin/supplier-payments").trim() || "admin/supplier-payments";
   if (!supplierId && !supplierName) {
     return NextResponse.json({ error: "Supplier is required." }, { status: 400 });
   }
@@ -109,6 +110,7 @@ export async function GET(req: Request) {
       action: "SUPPLIER_PAYABLES_STATEMENT_EXPORT_CSV",
       entityType: "SUPPLIER_PAYMENT",
       entityId: supplierId || supplierName || "SUMMARY",
+      request: req,
       meta: {
         supplierId: supplierId || null,
         supplierName: supplierName || null,
@@ -118,6 +120,9 @@ export async function GET(req: Request) {
         byteSize: Buffer.byteLength(csv, "utf8"),
         fileName: "supplier_statement.csv",
         format: "CSV",
+        sourcePage,
+        section: "exports",
+        operation: "export_supplier_statement",
         resultSummary: `Downloaded statement CSV with ${Math.max(0, lines.length - 1)} row(s).`,
         actorName: user?.name || null,
         actorEmail: user?.email || null,

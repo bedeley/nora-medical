@@ -12,6 +12,8 @@ const {
   mockLedgerAccountFindMany,
   mockLedgerAccountUpsert,
   mockPrismaTransaction,
+  mockTxProductUpdate,
+  mockTxJournalEntryCreate,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
   mockAssertSameOrigin: vi.fn(),
@@ -23,6 +25,8 @@ const {
   mockLedgerAccountFindMany: vi.fn(),
   mockLedgerAccountUpsert: vi.fn(),
   mockPrismaTransaction: vi.fn(),
+  mockTxProductUpdate: vi.fn(),
+  mockTxJournalEntryCreate: vi.fn(),
 }));
 
 // ── Module mocks ──────────────────────────────────────────────────────────
@@ -84,7 +88,14 @@ beforeEach(() => {
     },
   );
   mockProductFindUnique.mockResolvedValue(MOCK_PRODUCT);
-  mockPrismaTransaction.mockResolvedValue(undefined);
+  mockTxProductUpdate.mockResolvedValue({ id: MOCK_PRODUCT.id });
+  mockTxJournalEntryCreate.mockResolvedValue({ id: "journal-1" });
+  mockPrismaTransaction.mockImplementation(async (callback) =>
+    callback({
+      product: { update: mockTxProductUpdate },
+      journalEntry: { create: mockTxJournalEntryCreate },
+    }),
+  );
   mockRecordAuditLog.mockResolvedValue(undefined);
 });
 

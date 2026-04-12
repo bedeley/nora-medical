@@ -7,6 +7,7 @@ import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 import { postExpenseSettlementEntry } from "@/lib/accounting-posting";
+import { getExpenseMutationState } from "@/lib/expense-admin";
 
 const settleSchema = z.object({
   paymentMode: z.enum(["cash", "bank", "momo"]),
@@ -38,6 +39,45 @@ function withSettlementNote(
   return cleaned ? `${cleaned}\n${settlementLine}` : settlementLine;
 }
 
+async function recordBlockedSettlement(params: {
+  actorId?: string | null;
+  request: Request;
+  expenseId: string;
+  reason: string;
+  category?: string | null;
+  amount?: number | null;
+  createdAt?: Date | null;
+  payrollRunId?: string | null;
+  settlementCount?: number;
+  reversalCount?: number;
+  lockCode?: string | null;
+}) {
+  try {
+    await recordAuditLog({
+      actorId: params.actorId || null,
+      action: "EXPENSE_SETTLE_BLOCKED",
+      entityType: "EXPENSE",
+      entityId: params.expenseId,
+      request: params.request,
+      outcome: "FAILED",
+      meta: {
+        sourcePage: "admin/expenses",
+        expenseId: params.expenseId,
+        reason: params.reason,
+        category: params.category ?? null,
+        amount: params.amount ?? null,
+        createdAt: params.createdAt?.toISOString() ?? null,
+        payrollRunId: params.payrollRunId ?? null,
+        settlementCount: params.settlementCount ?? 0,
+        reversalCount: params.reversalCount ?? 0,
+        lockCode: params.lockCode ?? null,
+      },
+    });
+  } catch {
+    // best-effort
+  }
+}
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
@@ -67,14 +107,19 @@ export async function POST(
       deletedAt: true,
       isReversal: true,
       createdAt: true,
+      payrollRunId: true,
     },
   });
   if (!expense || expense.deletedAt) {
     return NextResponse.json({ error: "Expense not found" }, { status: 404 });
   }
-  if (expense.isReversal) {
-    return NextResponse.json({ error: "Cannot settle a reversal entry." }, { status: 400 });
-  }
+  const reversalCount = await prisma.expense.count({
+    where: {
+      reversalOfId: expense.id,
+      isReversal: true,
+      deletedAt: null,
+    },
+  });
   const baseAccrualEntry = await prisma.journalEntry.findFirst({
     where: {
       sourceType: "EXPENSE",
@@ -104,6 +149,33 @@ export async function POST(
     (sum, entry) => sum + (entry.lines || []).reduce((lineSum, line) => lineSum + Number(line.debit || 0), 0),
     0,
   );
+  const mutationState = getExpenseMutationState({
+    createdAt: expense.createdAt,
+    deletedAt: expense.deletedAt,
+    isReversal: expense.isReversal,
+    payrollRunId: expense.payrollRunId,
+    reversalCount,
+    settlementCount: settlementEntries.length,
+  });
+  if (!mutationState.canSettle) {
+    await recordBlockedSettlement({
+      actorId: user?.id,
+      request: req,
+      expenseId: expense.id,
+      reason: mutationState.lockReason || "Expense cannot be settled from this page.",
+      category: expense.category,
+      amount: Number(expense.amount),
+      createdAt: expense.createdAt,
+      payrollRunId: expense.payrollRunId,
+      settlementCount: settlementEntries.length,
+      reversalCount,
+      lockCode: mutationState.lockCode,
+    });
+    return NextResponse.json(
+      { error: mutationState.lockReason || "Expense cannot be settled from this page." },
+      { status: 400 },
+    );
+  }
   if (!baseAccrualEntry && settlementEntries.length === 0) {
     return NextResponse.json({ error: "Expense is not marked as accrued/unpaid." }, { status: 400 });
   }
@@ -161,8 +233,11 @@ export async function POST(
     action: "EXPENSE_SETTLE",
     entityType: "EXPENSE",
     entityId: expense.id,
+    request: req,
     meta: {
+      sourcePage: "admin/expenses",
       expenseId: expense.id,
+      category: expense.category,
       settledAt,
       amount: requestedAmount,
       paidSoFar: newPaidTotal,

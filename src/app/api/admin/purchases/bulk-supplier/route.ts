@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -35,6 +36,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Supplier is required." }, { status: 400 });
     }
 
+    const requestedRows = await prisma.purchase.findMany({
+      where: {
+        id: { in: purchaseIds },
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        productId: true,
+        quantity: true,
+        orderedQuantity: true,
+        receivedQuantity: true,
+        status: true,
+        supplierId: true,
+        supplier: true,
+        product: {
+          select: {
+            name: true,
+            sku: true,
+          },
+        },
+      },
+    });
+
     const supplier = await prisma.supplier.findUnique({
       where: { id: supplierId },
       select: { id: true, name: true },
@@ -43,9 +67,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Supplier not found." }, { status: 404 });
     }
 
+    const eligibleRows = requestedRows.filter(
+      (row) => !row.supplierId || !String(row.supplier || "").trim(),
+    );
+    const updatedPurchaseIds = eligibleRows.map((row) => row.id);
+    const skippedPurchaseIds = requestedRows
+      .filter((row) => !updatedPurchaseIds.includes(row.id))
+      .map((row) => row.id);
+
     const result = await prisma.purchase.updateMany({
       where: {
-        id: { in: purchaseIds },
+        id: { in: updatedPurchaseIds },
         deletedAt: null,
         OR: [{ supplierId: null }, { supplier: null }, { supplier: "" }],
       },
@@ -62,11 +94,28 @@ export async function POST(req: Request) {
         entityType: "PURCHASE",
         entityId: "BULK",
         meta: {
+          correlationId: randomUUID(),
           supplierId: supplier.id,
           supplierName: supplier.name,
           requestedCount: purchaseIds.length,
+          matchedCount: requestedRows.length,
+          eligibleCount: eligibleRows.length,
           updatedCount: result.count,
           purchaseIds,
+          updatedPurchaseIds,
+          skippedPurchaseIds,
+          purchasesPreview: eligibleRows.slice(0, 25).map((row) => ({
+            id: row.id,
+            productId: row.productId,
+            productName: row.product?.name || null,
+            productSku: row.product?.sku || null,
+            quantity: Number(row.orderedQuantity ?? row.quantity ?? 0),
+            receivedQuantity: Number(row.receivedQuantity ?? 0),
+            status: row.status,
+            previousSupplierId: row.supplierId || null,
+            previousSupplierName: row.supplier || null,
+          })),
+          source: "PURCHASE_BULK_SUPPLIER_ASSIGN",
         },
       });
     } catch {
@@ -79,4 +128,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to update supplier." }, { status: 500 });
   }
 }
-

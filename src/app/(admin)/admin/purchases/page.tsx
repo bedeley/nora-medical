@@ -46,7 +46,25 @@ function formatCategoryLabel(category?: string | null) {
 
 function formatStatusLabel(status?: string | null) {
   const base = status || "RECEIVED";
-  return base.replace(/_/g, " ");
+  return toTitleCase(base.replace(/_/g, " "));
+}
+
+function getProductOptionLabel(product?: Pick<Product, "name" | "sku"> | null) {
+  if (!product) return "";
+  return `${toTitleCase(product.name || "")}${product.sku ? ` - ${product.sku}` : ""}`;
+}
+
+function describeTrackingRequirements(requiresLotTracking?: boolean, requiresExpiryDate?: boolean) {
+  if (requiresLotTracking && requiresExpiryDate) return "lot/batch codes and expiry dates.";
+  if (requiresLotTracking) return "lot/batch codes.";
+  if (requiresExpiryDate) return "expiry dates.";
+  return "tracking details.";
+}
+
+function isCancelablePurchase(row: PurchaseRow) {
+  const status = String(row.status || "").toUpperCase();
+  const received = Number(row.receivedQuantity ?? 0);
+  return received <= 0 && ["PENDING_APPROVAL", "APPROVED", "ORDERED"].includes(status);
 }
 
 type Product = {
@@ -94,19 +112,6 @@ function startOfDay(date: Date) {
   return next;
 }
 
-function startOfWeek(date: Date) {
-  const base = startOfDay(date);
-  const day = base.getDay();
-  base.setDate(base.getDate() - day);
-  return base;
-}
-
-function endOfWeek(date: Date) {
-  const base = startOfWeek(date);
-  base.setDate(base.getDate() + 6);
-  return base;
-}
-
 function isAwaitingReceive(row: PurchaseRow) {
   const status = String(row.status || "").toUpperCase();
   const openStatus = ["APPROVED", "ORDERED", "PARTIALLY_RECEIVED"].includes(status);
@@ -152,6 +157,10 @@ type PurchasesSavedFilter = {
     status: string;
     purchaseId: string;
     paymentId: string;
+    quickView: PurchaseQuickView;
+    expectedWindow: PurchaseExpectedWindow;
+    expectedSort: ExpectedSort;
+    openOnly: boolean;
     pageSize: 25 | 50 | 100;
     showSupplierCol: boolean;
     showReasonCol: boolean;
@@ -159,9 +168,45 @@ type PurchasesSavedFilter = {
   };
 };
 
+type PurchasesListMeta = {
+  total: number;
+  baseTotal: number;
+  quickCounts: {
+    pendingApproval: number;
+    awaitingReceive: number;
+    dueToday: number;
+    overdue: number;
+  };
+  expectedCounts: {
+    missing: number;
+    thisWeek: number;
+    next7: number;
+  };
+  statusCounts: Array<{ status: string; count: number }>;
+  viewTotals: {
+    qty: number;
+    value: number;
+  };
+  topSuppliers: string[];
+  supplierOpenSummary: Array<{
+    supplier: string;
+    openQty: number;
+    openValue: number;
+    oldestExpected: string | null;
+    overdueCount: number;
+  }>;
+  staleOpenSummary: {
+    missingExpected: number;
+    overdue7Plus: number;
+    total: number;
+  };
+  hasScopedViewMismatch: boolean;
+};
+
 const PURCHASES_DRAFT_KEY = "admin-purchases-draft-v1";
 const PURCHASES_DRAFT_TTL_MS = 3 * 60 * 1000;
 const EMPTY_PURCHASE_FORM = {
+  productSearch: "",
   productId: "",
   quantity: "",
   unitCost: "",
@@ -192,6 +237,20 @@ function AdminPurchasesContent() {
   const [filtersReady, setFiltersReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<PurchaseRow[]>([]);
+  const [purchaseIntentProductId, setPurchaseIntentProductId] = useState("");
+  const [purchaseIntentQty, setPurchaseIntentQty] = useState("");
+  const [listMeta, setListMeta] = useState<PurchasesListMeta>({
+    total: 0,
+    baseTotal: 0,
+    quickCounts: { pendingApproval: 0, awaitingReceive: 0, dueToday: 0, overdue: 0 },
+    expectedCounts: { missing: 0, thisWeek: 0, next7: 0 },
+    statusCounts: [],
+    viewTotals: { qty: 0, value: 0 },
+    topSuppliers: [],
+    supplierOpenSummary: [],
+    staleOpenSummary: { missingExpected: 0, overdue7Plus: 0, total: 0 },
+    hasScopedViewMismatch: false,
+  });
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [receiveRow, setReceiveRow] = useState<PurchaseRow | null>(null);
   const [receiveQty, setReceiveQty] = useState("");
@@ -208,6 +267,7 @@ function AdminPurchasesContent() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<25 | 50 | 100>(50);
   const [products, setProducts] = useState<Product[]>([]);
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
   const { data: purchaseConfigData } = useClientQuery<{
     purchaseApprovalQtyThreshold?: number;
     supplierPaymentApprovalThreshold?: number;
@@ -225,13 +285,18 @@ function AdminPurchasesContent() {
     (s) => !systemSupplierNames.has(s.name.trim().toLowerCase()),
   );
   const [form, setForm] = useState({ ...EMPTY_PURCHASE_FORM });
+  const [purchaseFormOpen, setPurchaseFormOpen] = useState(false);
   const [draftAvailableAt, setDraftAvailableAt] = useState<number | null>(null);
   const [pendingDraft, setPendingDraft] = useState<PurchasesDraft | null>(null);
   const [currentCost, setCurrentCost] = useState<number | null>(null);
+  const [currentStock, setCurrentStock] = useState<number | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const [selected, setSelected] = useState<PurchaseRow | null>(null);
   const [approveOpen, setApproveOpen] = useState(false);
   const [approveTarget, setApproveTarget] = useState<PurchaseRow | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<PurchaseRow | null>(null);
+  const [cancelSubmitting, setCancelSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formErrors, setFormErrors] = useState<{
     productId?: string;
@@ -289,6 +354,8 @@ function AdminPurchasesContent() {
   const isAdmin = role === "ADMIN";
   const canManagePurchases = hasPermission(role, "purchases.manage");
   const [savedFilters, setSavedFilters] = useState<PurchasesSavedFilter[]>([]);
+  const [saveFilterOpen, setSaveFilterOpen] = useState(false);
+  const [saveFilterName, setSaveFilterName] = useState("");
   const resizing = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({
     select: 44,
@@ -308,16 +375,24 @@ function AdminPurchasesContent() {
   useEffect(() => {
     if (initialized.current) return;
     const sp = new URLSearchParams(searchParams.toString());
+    const incomingProductId = sp.get("product") || "";
+    const incomingQty = sp.get("qty") || "";
+    const wantsNewPurchase = sp.get("new") === "1";
     setFilters({
       start: sp.get("start") || "",
       end: sp.get("end") || "",
       supplier: sp.get("supplier") || "",
       q: sp.get("q") || "",
-      product: sp.get("product") || "",
+      product: incomingProductId,
       status: sp.get("status") || "",
       purchaseId: sp.get("purchaseId") || "",
       paymentId: sp.get("paymentId") || "",
     });
+    if (wantsNewPurchase && incomingProductId) {
+      setPurchaseIntentProductId(incomingProductId);
+      setPurchaseIntentQty(incomingQty);
+      setPurchaseFormOpen(true);
+    }
     initialized.current = true;
     setFiltersReady(true);
   }, [searchParams]);
@@ -356,6 +431,119 @@ function AdminPurchasesContent() {
       JSON.stringify(savedFilters),
     );
   }, [savedFilters]);
+
+  useEffect(() => {
+    if (!draftAvailableAt) return;
+    setPurchaseFormOpen(true);
+  }, [draftAvailableAt]);
+
+  const focusPurchaseForm = useCallback((targetId = "product") => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      const formEl = document.getElementById("purchase-form");
+      formEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const target = document.getElementById(targetId) as HTMLInputElement | null;
+      target?.focus();
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!form.productId) return;
+    const match = products.find((product) => product.id === form.productId);
+    if (!match) return;
+    const nextLabel = getProductOptionLabel(match);
+    setForm((prev) => (
+      prev.productId !== match.id
+        ? prev
+        : prev.productSearch === nextLabel &&
+            (prev.supplier || "") === (match.supplier || "") &&
+            (prev.supplierId || "") === (match.supplierId || "")
+          ? prev
+          : {
+              ...prev,
+              productSearch: nextLabel,
+              supplier:
+                prev.supplier.trim() ||
+                prev.supplierId ||
+                !match.supplier
+                  ? prev.supplier
+                  : match.supplier,
+              supplierId:
+                prev.supplierId ||
+                !match.supplierId
+                  ? prev.supplierId
+                  : match.supplierId,
+            }
+    ));
+  }, [form.productId, form.productSearch, products]);
+
+  useEffect(() => {
+    if (!purchaseIntentProductId || !products.length) return;
+    const product =
+      products.find((entry) => entry.id === purchaseIntentProductId) ?? null;
+    setForm({
+      ...EMPTY_PURCHASE_FORM,
+      productSearch: product ? getProductOptionLabel(product) : "",
+      productId: purchaseIntentProductId,
+      quantity: purchaseIntentQty,
+      supplier: product?.supplier ?? "",
+      supplierId: product?.supplierId ?? "",
+    });
+    setFormErrors({});
+    setProductPickerOpen(false);
+    setPurchaseFormOpen(true);
+    focusPurchaseForm(product ? "qty" : "product");
+    setPurchaseIntentProductId("");
+    setPurchaseIntentQty("");
+  }, [focusPurchaseForm, products, purchaseIntentProductId, purchaseIntentQty]);
+
+  const syncSupplierSelection = useCallback((rawValue: string) => {
+    const trimmed = rawValue.trim();
+    const match = assignableSuppliers.find(
+      (supplier) => supplier.name.trim().toLowerCase() === trimmed.toLowerCase(),
+    );
+    setForm((prev) => ({
+      ...prev,
+      supplier: match?.name ?? rawValue,
+      supplierId: match?.id ?? "",
+    }));
+    if (formErrors.supplier) {
+      setFormErrors((prev) => ({ ...prev, supplier: "" }));
+    }
+  }, [assignableSuppliers, formErrors.supplier]);
+
+  const selectProductOption = useCallback((product: Product | null) => {
+    setForm((prev) => ({
+      ...prev,
+      productSearch: product ? getProductOptionLabel(product) : "",
+      productId: product?.id ?? "",
+      supplier: product ? product.supplier || prev.supplier : prev.supplier,
+      supplierId: product ? product.supplierId ?? "" : prev.supplierId,
+    }));
+    if (formErrors.productId) {
+      setFormErrors((prev) => ({ ...prev, productId: "" }));
+    }
+    setProductPickerOpen(false);
+  }, [formErrors.productId]);
+
+  const productPickerOptions = useMemo(() => {
+    const query = form.productSearch.trim().toLowerCase();
+    const ranked = products.filter((product) => {
+      if (!query) return true;
+      return (
+        String(product.name || "").toLowerCase().includes(query) ||
+        String(product.sku || "").toLowerCase().includes(query) ||
+        String(product.brand || "").toLowerCase().includes(query) ||
+        String(product.category || "").toLowerCase().includes(query)
+      );
+    });
+    return ranked.slice(0, 12);
+  }, [form.productSearch, products]);
+
+  const openPurchaseFormPanel = useCallback(() => {
+    setPurchaseFormOpen(true);
+    focusPurchaseForm(form.productId ? "qty" : "product");
+  }, [focusPurchaseForm, form.productId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -508,6 +696,7 @@ function AdminPurchasesContent() {
     if (typeof window === "undefined" || !pendingDraft?.form) return;
     try {
       setForm({ ...EMPTY_PURCHASE_FORM, ...pendingDraft.form });
+      setPurchaseFormOpen(true);
       setDraftAvailableAt(null);
       setPendingDraft(null);
       toast.success("Recovered recent purchase draft.");
@@ -536,23 +725,35 @@ function AdminPurchasesContent() {
 
   const fetchProducts = useCallback(async () => {
     try {
-      const res = await fetch(`/api/products?pageSize=200&includeArchived=1`);
-      const data = await res.json();
-      const list: Product[] = (data.items || []).map((p: { id: string; name: string; sku?: string | null; category?: string | null; brand?: string | null; supplier?: string | null; supplierId?: string | null; approvalThresholdQty?: number | null; requiresLotTracking?: boolean | null; requiresExpiryDate?: boolean | null }) => ({
-        id: p.id,
-        name: p.name,
-        sku: p.sku ?? null,
-        category: p.category ?? null,
-        brand: p.brand ?? null,
-        supplier: p.supplier ?? null,
-        supplierId: p.supplierId ?? null,
-        approvalThresholdQty:
-          p.approvalThresholdQty === null || p.approvalThresholdQty === undefined
-            ? null
-            : Number(p.approvalThresholdQty),
-        requiresLotTracking: Boolean(p.requiresLotTracking),
-        requiresExpiryDate: Boolean(p.requiresExpiryDate),
-      }));
+      const pageSize = 100;
+      const list: Product[] = [];
+      let pageNumber = 1;
+      let total = Number.POSITIVE_INFINITY;
+      while (list.length < total) {
+        const res = await fetch(`/api/products?page=${pageNumber}&pageSize=${pageSize}&includeArchived=1`);
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        items.forEach((p: { id: string; name: string; sku?: string | null; category?: string | null; brand?: string | null; supplier?: string | null; supplierId?: string | null; approvalThresholdQty?: number | null; requiresLotTracking?: boolean | null; requiresExpiryDate?: boolean | null }) => {
+          list.push({
+            id: p.id,
+            name: p.name,
+            sku: p.sku ?? null,
+            category: p.category ?? null,
+            brand: p.brand ?? null,
+            supplier: p.supplier ?? null,
+            supplierId: p.supplierId ?? null,
+            approvalThresholdQty:
+              p.approvalThresholdQty === null || p.approvalThresholdQty === undefined
+                ? null
+                : Number(p.approvalThresholdQty),
+            requiresLotTracking: Boolean(p.requiresLotTracking),
+            requiresExpiryDate: Boolean(p.requiresExpiryDate),
+          });
+        });
+        total = Number(data.total || items.length);
+        if (items.length === 0 || items.length < pageSize) break;
+        pageNumber += 1;
+      }
       setProducts(list);
     } catch {}
   }, []);
@@ -570,12 +771,19 @@ function AdminPurchasesContent() {
       if (filters.status) params.append("status", filters.status);
       if (filters.purchaseId) params.append("purchaseId", filters.purchaseId);
       if (filters.paymentId) params.append("paymentId", filters.paymentId);
+      params.append("page", String(page));
+      params.append("pageSize", String(pageSize));
+      params.append("quickView", quickView);
+      params.append("expectedWindow", expectedWindow);
+      params.append("expectedSort", expectedSort);
+      if (openOnly) params.append("openOnly", "1");
       const res = await fetch(`/api/admin/purchases?${params.toString()}`);
-      let data: { items?: PurchaseRow[]; rows?: PurchaseRow[]; error?: string } = {};
+      let data: { items?: PurchaseRow[]; rows?: PurchaseRow[]; error?: string; meta?: PurchasesListMeta } = {};
       try { data = await res.json(); } catch {}
       if (!res.ok) {
         console.error("Failed to load purchases:", data?.error || res.statusText);
         setRows([]);
+        setListMeta((prev) => ({ ...prev, total: 0, baseTotal: 0 }));
         if (res.status === 401) {
           setError("Your session does not have access to Purchases. Please sign in as an admin.");
         } else {
@@ -595,7 +803,7 @@ function AdminPurchasesContent() {
         retryParams.delete("status");
         const retryRes = await fetch(`/api/admin/purchases?${retryParams.toString()}`);
         if (retryRes.ok) {
-          const retryData = (await retryRes.json().catch(() => ({}))) as { items?: PurchaseRow[]; rows?: PurchaseRow[] };
+          const retryData = (await retryRes.json().catch(() => ({}))) as { items?: PurchaseRow[]; rows?: PurchaseRow[]; meta?: PurchasesListMeta };
           const retryRows = Array.isArray(retryData.items)
             ? retryData.items
             : Array.isArray(retryData.rows)
@@ -604,7 +812,7 @@ function AdminPurchasesContent() {
           if (retryRows.length > 0) {
             setFilters((prev) => ({ ...prev, status: "" }));
             setRows(retryRows);
-            setPage(1);
+            if (retryData.meta) setListMeta(retryData.meta);
             setError(null);
             toast.info("Status filter was stale and has been cleared.");
             return;
@@ -612,16 +820,17 @@ function AdminPurchasesContent() {
         }
       }
       setRows(incomingRows);
-      setPage(1);
+      if (data.meta) setListMeta(data.meta);
       setError(null);
     } catch (err) {
       console.error(err);
       setRows([]);
+      setListMeta((prev) => ({ ...prev, total: 0, baseTotal: 0 }));
       setError(err instanceof Error ? err.message : "Failed to load purchases");
     } finally {
       setLoading(false);
     }
-  }, [filters.start, filters.end, filters.supplier, filters.q, filters.product, filters.status, filters.purchaseId, filters.paymentId]);
+  }, [filters.start, filters.end, filters.supplier, filters.q, filters.product, filters.status, filters.purchaseId, filters.paymentId, page, pageSize, quickView, expectedWindow, expectedSort, openOnly]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -631,14 +840,19 @@ function AdminPurchasesContent() {
       setError("You do not have access to Purchases.");
       return;
     }
-    fetchProducts();
     fetchPurchases();
-  }, [fetchProducts, fetchPurchases, filtersReady, canManagePurchases, sessionStatus]);
+  }, [fetchPurchases, filtersReady, canManagePurchases, sessionStatus]);
 
   useEffect(() => {
-    if (!rows.length) return;
+    if (!filtersReady) return;
+    if (sessionStatus === "loading") return;
+    if (!canManagePurchases) return;
+    fetchProducts();
+  }, [fetchProducts, filtersReady, canManagePurchases, sessionStatus]);
+
+  useEffect(() => {
     setUpdatedAtText(new Date().toLocaleString());
-  }, [rows.length]);
+  }, [rows]);
   useEffect(() => {
     if (!rows.length) return;
     setExpectedDraftById((prev) => {
@@ -649,6 +863,9 @@ function AdminPurchasesContent() {
       }
       return next;
     });
+  }, [rows]);
+  useEffect(() => {
+    setSelectedIds((prev) => new Set(Array.from(prev).filter((id) => rows.some((row) => row.id === id))));
   }, [rows]);
 
   // Keep the purchases filter in sync with the selected product,
@@ -674,7 +891,7 @@ function AdminPurchasesContent() {
   useEffect(() => {
     if (!initialized.current) return;
     if (!filters.product && form.productId && form.productId === lastFormProductId.current) {
-      setForm((prev) => ({ ...prev, productId: "" }));
+      setForm((prev) => ({ ...prev, productId: "", productSearch: "" }));
       lastFormProductId.current = "";
     }
   }, [filters.product, form.productId]);
@@ -682,14 +899,28 @@ function AdminPurchasesContent() {
   // Load current average cost when product changes
   useEffect(() => {
     (async () => {
-      if (!form.productId) { setCurrentCost(null); return; }
+      if (!form.productId) {
+        setCurrentCost(null);
+        setCurrentStock(null);
+        return;
+      }
       try {
-        const inv = await fetch('/api/admin/inventory');
+        const inv = await fetch(
+          `/api/admin/inventory?productId=${encodeURIComponent(form.productId)}`,
+        );
         const data = await inv.json();
-        const row = (data.rows || []).find((r: { id: string; cost?: number | string | null }) => r.id === form.productId);
+        const row = (data.rows || []).find(
+          (r: {
+            id: string;
+            cost?: number | string | null;
+            stock?: number | string | null;
+          }) => r.id === form.productId,
+        );
         setCurrentCost(row ? Number(row.cost || 0) : null);
+        setCurrentStock(row ? Number(row.stock || 0) : null);
       } catch {
         setCurrentCost(null);
+        setCurrentStock(null);
       }
     })();
   }, [form.productId]);
@@ -703,108 +934,10 @@ function AdminPurchasesContent() {
     return { diff, pct } as { diff: number; pct: number | null };
   }, [form.unitCost, currentCost]);
 
-  const quickCounts = useMemo(() => {
-    return {
-      pendingApproval: rows.filter((r) => String(r.status || "").toUpperCase() === "PENDING_APPROVAL").length,
-      awaitingReceive: rows.filter((r) => isAwaitingReceive(r)).length,
-      dueToday: rows.filter((r) => getExpectedUrgency(r)?.label === "Due today").length,
-      overdue: rows.filter((r) => getExpectedUrgency(r)?.tone === "danger").length,
-    };
-  }, [rows]);
-  const viewRows = useMemo(() => {
-    switch (quickView) {
-      case "pending_approval":
-        return rows.filter((r) => String(r.status || "").toUpperCase() === "PENDING_APPROVAL");
-      case "awaiting_receive":
-        return rows.filter((r) => isAwaitingReceive(r));
-      case "due_today":
-        return rows.filter((r) => getExpectedUrgency(r)?.label === "Due today");
-      case "overdue":
-        return rows.filter((r) => getExpectedUrgency(r)?.tone === "danger");
-      default:
-        return rows;
-    }
-  }, [rows, quickView]);
-  const expectedCounts = useMemo(() => {
-    const today = startOfDay(new Date());
-    const weekStart = startOfWeek(today);
-    const weekEnd = endOfWeek(today);
-    const plus7 = new Date(today);
-    plus7.setDate(plus7.getDate() + 7);
-    return {
-      missing: viewRows.filter((r) => isAwaitingReceive(r) && !r.expectedAt).length,
-      thisWeek: viewRows.filter((r) => {
-        if (!isAwaitingReceive(r) || !r.expectedAt) return false;
-        const d = startOfDay(new Date(r.expectedAt));
-        return d >= weekStart && d <= weekEnd;
-      }).length,
-      next7: viewRows.filter((r) => {
-        if (!isAwaitingReceive(r) || !r.expectedAt) return false;
-        const d = startOfDay(new Date(r.expectedAt));
-        return d >= today && d <= plus7;
-      }).length,
-    };
-  }, [viewRows]);
-  const scopedRows = useMemo(() => {
-    const today = startOfDay(new Date());
-    const weekStart = startOfWeek(today);
-    const weekEnd = endOfWeek(today);
-    const plus7 = new Date(today);
-    plus7.setDate(plus7.getDate() + 7);
-    switch (expectedWindow) {
-      case "missing":
-        return viewRows.filter((r) => isAwaitingReceive(r) && !r.expectedAt);
-      case "this_week":
-        return viewRows.filter((r) => {
-          if (!isAwaitingReceive(r) || !r.expectedAt) return false;
-          const d = startOfDay(new Date(r.expectedAt));
-          return d >= weekStart && d <= weekEnd;
-        });
-      case "next_7":
-        return viewRows.filter((r) => {
-          if (!isAwaitingReceive(r) || !r.expectedAt) return false;
-          const d = startOfDay(new Date(r.expectedAt));
-          return d >= today && d <= plus7;
-        });
-      default:
-        return viewRows;
-    }
-  }, [viewRows, expectedWindow]);
-  const displayRows = useMemo(() => {
-    let next = [...scopedRows];
-    if (openOnly) {
-      next = next.filter((row) => isAwaitingReceive(row));
-    }
-    if (expectedSort === "none") return next;
-    const toTime = (value?: string | Date | null) => {
-      if (!value) return null;
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return null;
-      return d.getTime();
-    };
-    next.sort((a, b) => {
-      const at = toTime(a.expectedAt);
-      const bt = toTime(b.expectedAt);
-      if (expectedSort === "missing_first") {
-        const am = at === null ? 0 : 1;
-        const bm = bt === null ? 0 : 1;
-        if (am !== bm) return am - bm;
-        if (at === null || bt === null) return 0;
-        return at - bt;
-      }
-      if (at === null && bt === null) return 0;
-      if (at === null) return 1;
-      if (bt === null) return -1;
-      return expectedSort === "expected_oldest" ? at - bt : bt - at;
-    });
-    return next;
-  }, [scopedRows, openOnly, expectedSort]);
-  const viewTotals = useMemo(() => {
-    const qty = displayRows.reduce((s, r) => s + Number(r.quantity || 0), 0);
-    const value = displayRows.reduce((s, r) => s + Number(r.total || 0), 0);
-    return { qty, value };
-  }, [displayRows]);
-  const hasScopedViewMismatch = rows.length > 0 && scopedRows.length === 0;
+  const quickCounts = listMeta.quickCounts;
+  const expectedCounts = listMeta.expectedCounts;
+  const viewTotals = listMeta.viewTotals;
+  const hasScopedViewMismatch = listMeta.hasScopedViewMismatch;
   const filtersAreClear =
     !filters.start &&
     !filters.end &&
@@ -812,77 +945,53 @@ function AdminPurchasesContent() {
     !filters.q &&
     !filters.product &&
     !filters.status &&
-    !filters.purchaseId;
+    !filters.purchaseId &&
+    !filters.paymentId;
   const avgUnitCostView = viewTotals.qty > 0 ? viewTotals.value / viewTotals.qty : 0;
-  const topSuppliers = useMemo(() => {
-    const map = new Map<string, number>();
-    displayRows.forEach((row) => {
-      const supplier = String(row.supplier || "").trim();
-      if (!supplier) return;
-      map.set(supplier, (map.get(supplier) || 0) + 1);
-    });
-    return Array.from(map.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([supplier]) => supplier);
-  }, [displayRows]);
-  const supplierOpenSummary = useMemo(() => {
-    const aggregate = new Map<string, { supplier: string; openQty: number; openValue: number; oldestExpected: Date | null; overdueCount: number }>();
-    displayRows.forEach((row) => {
-      if (!isAwaitingReceive(row)) return;
-      const supplier = String(row.supplier || "Unknown supplier").trim() || "Unknown supplier";
-      const ordered = Number(row.orderedQuantity ?? row.quantity);
-      const received = Number(row.receivedQuantity ?? 0);
-      const openQty = Math.max(0, ordered - received);
-      if (openQty <= 0) return;
-      const entry = aggregate.get(supplier) || {
-        supplier,
-        openQty: 0,
-        openValue: 0,
-        oldestExpected: null,
-        overdueCount: 0,
-      };
-      entry.openQty += openQty;
-      entry.openValue += openQty * Number(row.unitCost || 0);
-      if (row.expectedAt) {
-        const expected = startOfDay(new Date(row.expectedAt));
-        if (!Number.isNaN(expected.getTime())) {
-          if (!entry.oldestExpected || expected < entry.oldestExpected) entry.oldestExpected = expected;
-          if (expected < startOfDay(new Date())) entry.overdueCount += 1;
-        }
-      }
-      aggregate.set(supplier, entry);
-    });
-    return Array.from(aggregate.values()).sort((a, b) => b.openValue - a.openValue).slice(0, 4);
-  }, [displayRows]);
-  const staleOpenSummary = useMemo(() => {
-    let missingExpected = 0;
-    let overdue7Plus = 0;
-    const today = startOfDay(new Date());
-    const dayMs = 24 * 60 * 60 * 1000;
-    displayRows.forEach((row) => {
-      if (!isAwaitingReceive(row)) return;
-      if (!row.expectedAt) {
-        missingExpected += 1;
-        return;
-      }
-      const expected = startOfDay(new Date(row.expectedAt));
-      if (Number.isNaN(expected.getTime())) return;
-      const diffDays = Math.round((expected.getTime() - today.getTime()) / dayMs);
-      if (diffDays <= -7) overdue7Plus += 1;
-    });
-    return {
-      missingExpected,
-      overdue7Plus,
-      total: missingExpected + overdue7Plus,
-    };
-  }, [displayRows]);
+  const projectedAverageCost = useMemo(() => {
+    const qty = Number(form.quantity);
+    const unitCost = Number(form.unitCost);
+    const onHand = Number(currentStock);
+    if (currentCost === null || currentStock === null) return null;
+    if (!Number.isFinite(qty) || qty <= 0 || !Number.isFinite(unitCost) || unitCost <= 0) return null;
+    if (!Number.isFinite(onHand) || onHand < 0) return null;
+    const totalQty = onHand + qty;
+    if (totalQty <= 0) return null;
+    return ((Number(currentCost) * onHand) + (unitCost * qty)) / totalQty;
+  }, [currentCost, currentStock, form.quantity, form.unitCost]);
+  const topSuppliers = listMeta.topSuppliers;
+  const supplierOpenSummary = useMemo(
+    () => listMeta.supplierOpenSummary.map((entry) => ({
+      ...entry,
+      oldestExpected: entry.oldestExpected ? new Date(entry.oldestExpected) : null,
+    })),
+    [listMeta.supplierOpenSummary],
+  );
+  const staleOpenSummary = listMeta.staleOpenSummary;
   const tableColSpan = 9
     + (showSupplierCol ? 1 : 0)
     + (showReasonCol ? 1 : 0)
     + (showNoteCol ? 1 : 0);
+  const hasActiveScope =
+    quickView !== "all" ||
+    expectedWindow !== "all" ||
+    expectedSort !== "none" ||
+    openOnly ||
+    Boolean(
+      filters.status ||
+      filters.supplier ||
+      filters.product ||
+      filters.q ||
+      filters.start ||
+      filters.end ||
+      filters.purchaseId ||
+      filters.paymentId,
+    );
+  const showReceivingRuleBanner =
+    quickCounts.pendingApproval > 0 ||
+    listMeta.supplierOpenSummary.length > 0;
 
-  const totalPages = Math.max(1, Math.ceil((displayRows.length || 0) / pageSize));
+  const totalPages = Math.max(1, Math.ceil((listMeta.total || 0) / pageSize));
   const currentPage = Math.min(page, totalPages);
   const visiblePages = useMemo(() => {
     const start = Math.max(1, currentPage - 2);
@@ -891,10 +1000,7 @@ function AdminPurchasesContent() {
     for (let p = start; p <= end; p += 1) pages.push(p);
     return pages;
   }, [currentPage, totalPages]);
-  const paginatedRows = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return displayRows.slice(start, start + pageSize);
-  }, [displayRows, currentPage, pageSize]);
+  const paginatedRows = rows;
 
   const visibleIds = paginatedRows.map((r) => r.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
@@ -922,8 +1028,40 @@ function AdminPurchasesContent() {
   };
 
   const clearSelection = () => setSelectedIds(new Set());
-  const selectByCondition = (mode: "pending" | "open" | "overdue") => {
-    const ids = displayRows
+  const selectByCondition = async (mode: "pending" | "open" | "overdue") => {
+    // When paginating, rows only contains the current page. Fetch all matching
+    // IDs from the server so the selection spans every page.
+    if (totalPages > 1) {
+      try {
+        const params = new URLSearchParams();
+        if (filters.start) params.append("start", filters.start);
+        if (filters.end) params.append("end", filters.end);
+        if (filters.supplier) params.append("supplier", filters.supplier);
+        if (filters.q) params.append("q", filters.q);
+        if (filters.product) params.append("product", filters.product);
+        if (filters.status) params.append("status", filters.status);
+        if (filters.purchaseId) params.append("purchaseId", filters.purchaseId);
+        if (filters.paymentId) params.append("paymentId", filters.paymentId);
+        if (quickView !== "all") params.append("quickView", quickView);
+        if (expectedWindow !== "all") params.append("expectedWindow", expectedWindow);
+        if (expectedSort !== "none") params.append("expectedSort", expectedSort);
+        if (openOnly) params.append("openOnly", "1");
+        params.append("format", "ids");
+        params.append("condition", mode);
+        const res = await fetch(`/api/admin/purchases?${params.toString()}`);
+        if (res.ok) {
+          const data = await res.json().catch(() => ({})) as { ids?: string[] };
+          if (Array.isArray(data.ids)) {
+            setSelectedIds(new Set(data.ids));
+            return;
+          }
+        }
+      } catch {
+        // fall through to local filter
+      }
+    }
+    // Single page — filter directly from current rows.
+    const ids = rows
       .filter((row) => {
         if (mode === "pending") return String(row.status || "").toUpperCase() === "PENDING_APPROVAL";
         if (mode === "open") return isAwaitingReceive(row);
@@ -933,8 +1071,8 @@ function AdminPurchasesContent() {
     setSelectedIds(new Set(ids));
   };
   const selectedRowsForBulk = useMemo(
-    () => displayRows.filter((r) => selectedIds.has(r.id)),
-    [displayRows, selectedIds],
+    () => rows.filter((r) => selectedIds.has(r.id)),
+    [rows, selectedIds],
   );
   const selectedPendingCount = selectedRowsForBulk.filter(
     (row) => String(row.status || "").toUpperCase() === "PENDING_APPROVAL",
@@ -946,7 +1084,7 @@ function AdminPurchasesContent() {
   ).length;
 
   const exportSelected = () => {
-    const selectedRows = displayRows.filter((r) => selectedIds.has(r.id));
+    const selectedRows = rows.filter((r) => selectedIds.has(r.id));
     if (selectedRows.length === 0) {
       toast.error("Select at least one purchase to export.");
       return;
@@ -983,15 +1121,22 @@ function AdminPurchasesContent() {
       area: "purchases",
       format: "CSV",
       fileName: filename,
+      sourcePage: "admin/purchases",
       rowCount: selectedRows.length,
       columnCount: header.length,
       byteSize: blob.size,
+      resultSummary: `Purchases CSV export downloaded (${selectedRows.length} selected rows).`,
       scopeSnapshot: "Selected purchases export",
     });
   };
 
+  const openSaveFilterDialog = () => {
+    setSaveFilterName("");
+    setSaveFilterOpen(true);
+  };
+
   const saveCurrentFilter = () => {
-    const name = window.prompt("Name this saved filter");
+    const name = saveFilterName.trim();
     if (!name) return;
     const entry: PurchasesSavedFilter = {
       id: `${Date.now()}`,
@@ -1005,6 +1150,10 @@ function AdminPurchasesContent() {
         status: filters.status,
         purchaseId: filters.purchaseId,
         paymentId: filters.paymentId,
+        quickView,
+        expectedWindow,
+        expectedSort,
+        openOnly,
         pageSize,
         showSupplierCol,
         showReasonCol,
@@ -1012,6 +1161,8 @@ function AdminPurchasesContent() {
       },
     };
     setSavedFilters((prev) => [entry, ...prev]);
+    setSaveFilterOpen(false);
+    setSaveFilterName("");
     toast.success("Saved filter");
   };
 
@@ -1027,6 +1178,10 @@ function AdminPurchasesContent() {
       purchaseId: s.purchaseId || "",
       paymentId: s.paymentId || "",
     });
+    setQuickView(s.quickView || "all");
+    setExpectedWindow(s.expectedWindow || "all");
+    setExpectedSort(s.expectedSort || "none");
+    setOpenOnly(Boolean(s.openOnly));
     setPageSize(s.pageSize);
     setShowSupplierCol(s.showSupplierCol);
     setShowReasonCol(s.showReasonCol);
@@ -1046,7 +1201,7 @@ function AdminPurchasesContent() {
     setExpectedSort("none");
     setOpenOnly(false);
     setPage(1);
-    setForm((prev) => ({ ...prev, productId: "" }));
+    setForm((prev) => ({ ...prev, productId: "", productSearch: "" }));
     lastFormProductId.current = "";
   };
 
@@ -1072,25 +1227,28 @@ function AdminPurchasesContent() {
       toast.error("Only admins can approve purchases.");
       return;
     }
-    const selectedPending = displayRows.filter(
-      (row) => selectedIds.has(row.id) && String(row.status || "").toUpperCase() === "PENDING_APPROVAL",
-    );
-    if (!selectedPending.length) {
+    if (!selectedIds.size) {
       toast.error("Select at least one pending approval purchase.");
       return;
     }
     let success = 0;
     let failed = 0;
     const details: string[] = [];
-    for (const row of selectedPending) {
+    for (const id of Array.from(selectedIds)) {
       try {
-        const res = await fetch(`/api/admin/purchases/${row.id}/approve`, { method: "POST" });
-        if (!res.ok) throw new Error(`${row.id}: approve failed`);
+        const res = await fetch(`/api/admin/purchases/${id}/approve`, { method: "POST" });
+        // Server returns 400 for non-pending — count as skipped, not failed
+        if (res.status === 400) continue;
+        if (!res.ok) throw new Error(`${id}: approve failed`);
         success += 1;
       } catch (err) {
         failed += 1;
-        details.push(err instanceof Error ? err.message : `${row.id}: approve failed`);
+        details.push(err instanceof Error ? err.message : `${id}: approve failed`);
       }
+    }
+    if (success === 0 && failed === 0) {
+      toast.info("No pending approval purchases in selection.");
+      return;
     }
     if (success > 0) toast.success(`Approved ${success} purchase${success === 1 ? "" : "s"}.`);
     if (failed > 0) toast.error(`Failed to approve ${failed} purchase${failed === 1 ? "" : "s"}.`);
@@ -1128,8 +1286,7 @@ function AdminPurchasesContent() {
       toast.error("Select a date first.");
       return;
     }
-    const targets = displayRows.filter((row) => selectedIds.has(row.id) && isAwaitingReceive(row));
-    if (!targets.length) {
+    if (!selectedIds.size) {
       toast.error("Select at least one open purchase row.");
       return;
     }
@@ -1137,19 +1294,25 @@ function AdminPurchasesContent() {
     let success = 0;
     let failed = 0;
     const details: string[] = [];
-    for (const row of targets) {
+    for (const id of Array.from(selectedIds)) {
       try {
-        const res = await fetch(`/api/admin/purchases/${row.id}/expected-date`, {
+        const res = await fetch(`/api/admin/purchases/${id}/expected-date`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ expectedAt: bulkExpectedDate }),
         });
-        if (!res.ok) throw new Error(`${row.id}: expected date update failed`);
+        if (!res.ok && res.status === 400) continue;
+        if (!res.ok) throw new Error(`${id}: expected date update failed`);
         success += 1;
       } catch (err) {
         failed += 1;
-        details.push(err instanceof Error ? err.message : `${row.id}: expected date update failed`);
+        details.push(err instanceof Error ? err.message : `${id}: expected date update failed`);
       }
+    }
+    if (success === 0 && failed === 0) {
+      toast.info("No open purchases in selection to update.");
+      setBulkExpectedUpdating(false);
+      return;
     }
     if (success > 0) toast.success(`Updated expected date for ${success} purchase${success === 1 ? "" : "s"}.`);
     if (failed > 0) toast.error(`Failed to update ${failed} purchase${failed === 1 ? "" : "s"}.`);
@@ -1388,6 +1551,39 @@ function AdminPurchasesContent() {
     setReturnOpen(true);
   };
 
+  const openCancelDialog = (row: PurchaseRow) => {
+    if (!canManagePurchases) {
+      toast.error("Only admins can cancel purchases.");
+      return;
+    }
+    if (!isCancelablePurchase(row)) {
+      toast.error("Only open purchases without received stock can be cancelled.");
+      return;
+    }
+    setCancelTarget(row);
+    setCancelOpen(true);
+  };
+
+  const confirmCancel = async () => {
+    if (!cancelTarget) return;
+    setCancelSubmitting(true);
+    try {
+      const res = await fetch(`/api/admin/purchases/${cancelTarget.id}/cancel`, {
+        method: "POST",
+      });
+      const payload = await res.json().catch(() => ({} as { error?: string }));
+      if (!res.ok) throw new Error(payload.error || "Failed to cancel purchase.");
+      toast.success("Purchase cancelled.");
+      setCancelOpen(false);
+      setCancelTarget(null);
+      fetchPurchases();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to cancel purchase.");
+    } finally {
+      setCancelSubmitting(false);
+    }
+  };
+
   const confirmReturn = async () => {
     if (!returnRow) return;
     const qty = Number(returnQty);
@@ -1434,6 +1630,11 @@ function AdminPurchasesContent() {
     if (filters.product) params.append("product", filters.product);
     if (filters.status) params.append("status", filters.status);
     if (filters.purchaseId) params.append("purchaseId", filters.purchaseId);
+    if (filters.paymentId) params.append("paymentId", filters.paymentId);
+    if (quickView !== "all") params.append("quickView", quickView);
+    if (expectedWindow !== "all") params.append("expectedWindow", expectedWindow);
+    if (expectedSort !== "none") params.append("expectedSort", expectedSort);
+    if (openOnly) params.append("openOnly", "1");
     params.append("format", "csv");
     const res = await fetch(`/api/admin/purchases?${params.toString()}`);
     if (!res.ok) return;
@@ -1449,21 +1650,18 @@ function AdminPurchasesContent() {
       area: "purchases",
       format: "CSV",
       fileName: filename,
+      sourcePage: "admin/purchases",
       byteSize: blob.size,
+      resultSummary: "Purchases CSV export downloaded.",
       scopeSnapshot: `Status: ${filters.status || "all"} | Supplier: ${filters.supplier || "all"} | Product query: ${filters.product || "-"}`,
     });
   };
 
   const handleExportSummaryCsv = () => {
-    const statusCounts = new Map<string, number>();
-    for (const row of displayRows) {
-      const key = toTitleCase(formatStatusLabel(row.status));
-      statusCounts.set(key, (statusCounts.get(key) || 0) + 1);
-    }
     const lines = [
       ["Metric", "Value"].join(","),
       ["Scope", JSON.stringify(`Quick view: ${quickView.replace(/_/g, " ")} | Expected: ${expectedWindow.replace(/_/g, " ")} | Open only: ${openOnly ? "yes" : "no"} | Sort: ${expectedSort}`)].join(","),
-      ["Records", String(displayRows.length)].join(","),
+      ["Records", String(listMeta.total)].join(","),
       ["Total qty", String(viewTotals.qty)].join(","),
       ["Total value", Number(viewTotals.value || 0).toFixed(2)].join(","),
       ["Average unit cost", viewTotals.qty > 0 ? Number(avgUnitCostView).toFixed(2) : "0.00"].join(","),
@@ -1473,7 +1671,7 @@ function AdminPurchasesContent() {
       ["Overdue", String(quickCounts.overdue)].join(","),
       "",
       ["Status", "Count"].join(","),
-      ...Array.from(statusCounts.entries()).map(([status, count]) => [JSON.stringify(status), String(count)].join(",")),
+      ...listMeta.statusCounts.map(({ status, count }) => [JSON.stringify(toTitleCase(formatStatusLabel(status))), String(count)].join(",")),
     ];
     const csv = lines.join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -1490,9 +1688,11 @@ function AdminPurchasesContent() {
       area: "purchases-summary",
       format: "CSV",
       fileName: filename,
+      sourcePage: "admin/purchases",
       rowCount: lines.length - 1,
       columnCount: 2,
       byteSize: blob.size,
+      resultSummary: "Purchases summary CSV export downloaded.",
       scopeSnapshot: `Quick view: ${quickView} | Expected: ${expectedWindow} | Open only: ${openOnly ? "yes" : "no"}`,
     });
   };
@@ -1515,7 +1715,7 @@ function AdminPurchasesContent() {
       const rowsData: Array<[string, string]> = [
         ["Scope", `Quick view: ${quickView.replace(/_/g, " ")} | Expected: ${expectedWindow.replace(/_/g, " ")} | Open only: ${openOnly ? "yes" : "no"} | Sort: ${expectedSort}`],
         ["Generated", new Date().toLocaleString()],
-        ["Records", String(displayRows.length)],
+        ["Records", String(listMeta.total)],
         ["Total qty", String(viewTotals.qty)],
         ["Total value", formatMoney(viewTotals.value)],
         ["Average unit cost", viewTotals.qty > 0 ? formatMoney(avgUnitCostView) : "GHS 0.00"],
@@ -1524,12 +1724,6 @@ function AdminPurchasesContent() {
         ["Due today", String(quickCounts.dueToday)],
         ["Overdue", String(quickCounts.overdue)],
       ];
-      const statusCounts = new Map<string, number>();
-      for (const row of displayRows) {
-        const key = toTitleCase(formatStatusLabel(row.status));
-        statusCounts.set(key, (statusCounts.get(key) || 0) + 1);
-      }
-
       pageRef.drawText("Purchases - Summary Snapshot", { x: margin, y, size: 16, font: bold });
       y -= 26;
       for (const [label, value] of rowsData) {
@@ -1541,11 +1735,12 @@ function AdminPurchasesContent() {
       y -= 8;
       pageRef.drawText("Status breakdown", { x: margin, y, size: 11, font: bold });
       y -= line;
-      if (statusCounts.size === 0) {
+      if (listMeta.statusCounts.length === 0) {
         pageRef.drawText("No rows in current view.", { x: margin, y, size: 10, font });
       } else {
-        for (const [statusName, count] of Array.from(statusCounts.entries())) {
+        for (const { status: statusNameRaw, count } of listMeta.statusCounts) {
           if (y < 60) break;
+          const statusName = toTitleCase(formatStatusLabel(statusNameRaw));
           pageRef.drawText(statusName, { x: margin, y, size: 10, font });
           pageRef.drawText(String(count), { x: 250, y, size: 10, font });
           y -= line;
@@ -1567,9 +1762,11 @@ function AdminPurchasesContent() {
         area: "purchases-summary",
         format: "PDF",
         fileName: filename,
-        rowCount: rowsData.length + statusCounts.size,
+        sourcePage: "admin/purchases",
+        rowCount: rowsData.length + listMeta.statusCounts.length,
         columnCount: 2,
         byteSize: blob.size,
+        resultSummary: "Purchases summary PDF export downloaded.",
         scopeSnapshot: `Quick view: ${quickView} | Expected: ${expectedWindow} | Open only: ${openOnly ? "yes" : "no"}`,
       });
       toast.success("Summary PDF downloaded.");
@@ -1722,6 +1919,7 @@ function AdminPurchasesContent() {
         toast.info("High-value purchase received on credit. Record payment after approval.");
       }
       setForm({ ...EMPTY_PURCHASE_FORM });
+      setPurchaseFormOpen(false);
       setFormErrors({});
       setPurchaseConfirmOpen(false);
       setPendingPurchasePayload(null);
@@ -1743,6 +1941,14 @@ function AdminPurchasesContent() {
     setPage(1);
   }, [quickView, expectedWindow, expectedSort, openOnly]);
   useEffect(() => {
+    setPage(1);
+  }, [filters.start, filters.end, filters.supplier, filters.q, filters.product, filters.status, filters.purchaseId, filters.paymentId, pageSize]);
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+  useEffect(() => {
     if (!filtersAreClear) return;
     if (!hasScopedViewMismatch) return;
     if (quickView === "all" && expectedWindow === "all") return;
@@ -1760,7 +1966,26 @@ function AdminPurchasesContent() {
           <p className="text-sm text-muted-foreground">Record restocks and update weighted-average cost</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <Button className="w-full sm:w-auto" variant="outline" onClick={handleExport}>Export CSV</Button>
+          <Button className="w-full sm:w-auto" onClick={openPurchaseFormPanel}>
+            {purchaseFormOpen ? "Add purchase" : "Open add purchase"}
+          </Button>
+          {isAdmin ? (
+            <Button asChild className="w-full sm:w-auto" variant="outline">
+              <Link href="/admin/audit?sourcePage=admin%2Fpurchases">
+                View Audit Log
+              </Link>
+            </Button>
+          ) : null}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button className="w-full sm:w-auto" variant="outline">Export</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleExport}>Export CSV</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleExportSummaryCsv}>Export summary CSV</DropdownMenuItem>
+              <DropdownMenuItem onClick={handleExportSummaryPdf}>Export summary PDF</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -1769,27 +1994,78 @@ function AdminPurchasesContent() {
               {error}
             </div>
           )}
-        <div
-          className="sticky z-40 rounded-md border border-primary/30 bg-background p-2 text-xs text-muted-foreground shadow-md"
-          style={{ top: "var(--admin-nav-height, 4rem)" }}
-        >
-          <span className="font-medium text-foreground">Active scope:</span>{" "}
-          Quick view = {quickView.replace(/_/g, " ")} | Expected = {expectedWindow.replace(/_/g, " ")}
-          {(filters.status || filters.supplier || filters.product || filters.q || filters.start || filters.end) ? (
-            <>
-              {" "} | Base filters active
-            </>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="ml-2 h-6 px-2 text-xs"
-            onClick={resetPurchasesScope}
+        {hasActiveScope ? (
+          <div
+            className="sticky z-40 flex flex-wrap items-center gap-2 rounded-md border border-primary/20 bg-background p-2 text-xs shadow-md"
+            style={{ top: "var(--admin-nav-height, 4rem)" }}
           >
-            Reset all
-          </Button>
-        </div>
+            <span className="font-medium text-foreground">Active scope</span>
+            {quickView !== "all" ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setQuickView("all")}>
+                Quick view: {quickView.replace(/_/g, " ")} x
+              </Button>
+            ) : null}
+            {expectedWindow !== "all" ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setExpectedWindow("all")}>
+                Expected: {expectedWindow.replace(/_/g, " ")} x
+              </Button>
+            ) : null}
+            {expectedSort !== "none" ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setExpectedSort("none")}>
+                Sort: {expectedSort.replace(/_/g, " ")} x
+              </Button>
+            ) : null}
+            {openOnly ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setOpenOnly(false)}>
+                Open only x
+              </Button>
+            ) : null}
+            {filters.status ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, status: "" }))}>
+                Status: {formatStatusLabel(filters.status)} x
+              </Button>
+            ) : null}
+            {filters.supplier ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, supplier: "" }))}>
+                Supplier: {filters.supplier} x
+              </Button>
+            ) : null}
+            {filters.product ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, product: "" }))}>
+                Product filter x
+              </Button>
+            ) : null}
+            {filters.q ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, q: "" }))}>
+                Search: {filters.q} x
+              </Button>
+            ) : null}
+            {filters.start || filters.end ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, start: "", end: "" }))}>
+                Date range x
+              </Button>
+            ) : null}
+            {filters.purchaseId ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, purchaseId: "" }))}>
+                Purchase: {filters.purchaseId} x
+              </Button>
+            ) : null}
+            {filters.paymentId ? (
+              <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setFilters((prev) => ({ ...prev, paymentId: "" }))}>
+                Payment: {filters.paymentId} x
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onClick={resetPurchasesScope}
+            >
+              Reset all
+            </Button>
+          </div>
+        ) : null}
         {filters.purchaseId || filters.paymentId ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             <span className="font-medium">Exact source filter active:</span>{" "}
@@ -1811,38 +2087,79 @@ function AdminPurchasesContent() {
             </Button>
           </div>
         ) : null}
-        <div className="rounded-md border bg-background p-3">
-          <form id="purchase-form" onSubmit={submitPurchase} className="grid sm:grid-cols-2 lg:grid-cols-8 gap-2 items-end">
+        <div className="rounded-md border bg-background p-3" id="purchase-form-panel">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Add purchase</p>
+              <p className="text-xs text-muted-foreground">Keep this collapsed until you need to create a new purchase.</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPurchaseFormOpen((prev) => !prev)}
+            >
+              {purchaseFormOpen ? "Hide form" : "Show form"}
+            </Button>
+          </div>
+          {purchaseFormOpen ? (
+          <form id="purchase-form" onSubmit={submitPurchase} className="mt-4 grid sm:grid-cols-2 lg:grid-cols-8 gap-2 items-end">
             <fieldset className="contents" disabled={!canManagePurchases}>
             <div className="sm:col-span-2 lg:col-span-2">
               <Label htmlFor="product">Product</Label>
-              <select
-                id="product"
-                className={`border rounded-md h-9 w-full bg-background capitalize ${formErrors.productId ? "border-red-500" : ""}`}
-                value={form.productId}
-                onChange={(e) => {
-                  const nextProductId = e.target.value;
-                  const match = products.find((p) => p.id === nextProductId);
-                  setForm({
-                    ...form,
-                    productId: nextProductId,
-                    supplier: match?.supplier || "",
-                    supplierId: match?.supplierId || "",
-                  });
-                  if (formErrors.productId) {
-                    setFormErrors((prev) => ({ ...prev, productId: "" }));
-                  }
-                }}
-                required
-                aria-invalid={!!formErrors.productId}
-              >
-                <option value="">Select a product</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {toTitleCase(p.name || "")}{p.sku ? ` - ${p.sku}` : ""}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <Input
+                  id="product"
+                  className={formErrors.productId ? "border-red-500" : ""}
+                  value={form.productSearch}
+                  onFocus={() => setProductPickerOpen(true)}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setForm((prev) => ({
+                      ...prev,
+                      productSearch: nextValue,
+                      productId: prev.productId && nextValue !== getProductOptionLabel(selectedProduct) ? "" : prev.productId,
+                    }));
+                    setProductPickerOpen(true);
+                    if (formErrors.productId) {
+                      setFormErrors((prev) => ({ ...prev, productId: "" }));
+                    }
+                  }}
+                  onBlur={() => {
+                    window.setTimeout(() => setProductPickerOpen(false), 100);
+                  }}
+                  placeholder="Search products by name, SKU, brand, or category"
+                  required
+                  aria-invalid={!!formErrors.productId}
+                  aria-expanded={productPickerOpen}
+                  autoComplete="off"
+                />
+                {productPickerOpen ? (
+                  <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-background shadow-lg">
+                    {productPickerOptions.length > 0 ? (
+                      productPickerOptions.map((product) => (
+                        <button
+                          key={product.id}
+                          type="button"
+                          className="flex w-full flex-col items-start px-3 py-2 text-left hover:bg-muted"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            selectProductOption(product);
+                          }}
+                        >
+                          <span className="font-medium">{toTitleCase(product.name || "")}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {product.sku || "No SKU"}
+                            {product.brand ? ` | ${product.brand}` : ""}
+                            {product.category ? ` | ${formatCategoryLabel(product.category)}` : ""}
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-2 text-sm text-muted-foreground">No matching products</div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
               {formErrors.productId && <p className="mt-1 text-xs text-red-600">{formErrors.productId}</p>}
             </div>
             <div className="sm:col-span-1 lg:col-span-1">
@@ -1921,39 +2238,20 @@ function AdminPurchasesContent() {
             </div>
             <div className="sm:col-span-2 lg:col-span-2 space-y-1">
               <Label htmlFor="supplier">Supplier</Label>
-              <select
-                className={`border rounded-md h-9 w-full bg-background ${formErrors.supplier ? "border-red-500" : ""}`}
-                value={form.supplierId}
-                onChange={(e) => {
-                  const nextId = e.target.value;
-                  const match = suppliers.find((s) => s.id === nextId);
-                  setForm({
-                    ...form,
-                    supplierId: nextId,
-                    supplier: match?.name || form.supplier,
-                  });
-                  if (formErrors.supplier) {
-                    setFormErrors((prev) => ({ ...prev, supplier: "" }));
-                  }
-                }}
-              >
-                <option value="">Select supplier</option>
-                {assignableSuppliers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
               <Input
                 id="supplier"
-                className={`mt-1 ${formErrors.supplier ? "border-red-500" : ""}`}
+                list="purchase-supplier-options"
+                className={formErrors.supplier ? "border-red-500" : ""}
                 value={form.supplier}
-                onChange={(e) => {
-                  setForm({ ...form, supplier: e.target.value, supplierId: "" });
-                  if (formErrors.supplier) {
-                    setFormErrors((prev) => ({ ...prev, supplier: "" }));
-                  }
-                }}
-                placeholder="Or type supplier name"
+                onChange={(e) => syncSupplierSelection(e.target.value)}
+                onBlur={(e) => syncSupplierSelection(e.target.value)}
+                placeholder="Select an existing supplier or type a new one"
               />
+              <datalist id="purchase-supplier-options">
+                {assignableSuppliers.map((s) => (
+                  <option key={s.id} value={s.name} />
+                ))}
+              </datalist>
               {formErrors.supplier ? (
                 <p className="mt-1 text-xs text-red-600">{formErrors.supplier}</p>
               ) : null}
@@ -2079,9 +2377,10 @@ function AdminPurchasesContent() {
                   </div>
                   {selectedProduct?.requiresLotTracking || selectedProduct?.requiresExpiryDate ? (
                     <p className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-3">
-                      This SKU requires{" "}
-                      {selectedProduct.requiresLotTracking ? "lot/batch codes" : "lot/batch codes"}
-                      {selectedProduct.requiresExpiryDate ? " and expiry dates." : "."}
+                      This SKU requires {describeTrackingRequirements(
+                        selectedProduct.requiresLotTracking,
+                        selectedProduct.requiresExpiryDate,
+                      )}
                     </p>
                   ) : null}
                 </>
@@ -2140,6 +2439,11 @@ function AdminPurchasesContent() {
               </p>
             ) : null}
           </form>
+          ) : (
+            <div className="mt-4 rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+              Use <span className="font-medium text-foreground">Show form</span> when you need to record a new purchase order or immediate receipt.
+            </div>
+          )}
         </div>
         {draftAvailableAt ? (
           <div className="rounded-md border border-amber-300 bg-amber-50/70 p-3 text-sm">
@@ -2259,7 +2563,7 @@ function AdminPurchasesContent() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-md bg-background p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Purchases</div>
-            <div className="text-lg font-semibold">{displayRows.length}</div>
+            <div className="text-lg font-semibold">{listMeta.total}</div>
           </div>
           <div className="rounded-md bg-background p-3 shadow-sm">
             <div className="text-xs text-muted-foreground">Total qty</div>
@@ -2279,7 +2583,7 @@ function AdminPurchasesContent() {
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Next actions</div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant={quickView === "all" ? "default" : "outline"} onClick={() => setQuickView("all")}>
-              All ({rows.length})
+              All ({listMeta.baseTotal})
             </Button>
             <Button type="button" size="sm" variant={quickView === "pending_approval" ? "default" : "outline"} onClick={() => setQuickView("pending_approval")}>
               Pending approval ({quickCounts.pendingApproval})
@@ -2367,17 +2671,19 @@ function AdminPurchasesContent() {
           </div>
         ) : null}
 
-        <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3 text-sm text-amber-900">
-          <span className="font-medium">Receiving rule:</span> purchases that require approval cannot be received until an admin approves them.
-          {" "}
-          <Link href="/admin/purchases?status=PENDING_APPROVAL" className="underline font-medium">
-            Go to Pending Approvals
-          </Link>
-        </div>
+        {showReceivingRuleBanner ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3 text-sm text-amber-900">
+            <span className="font-medium">Receiving rule:</span> purchases that require approval cannot be received until an admin approves them.
+            {" "}
+            <Link href="/admin/purchases?status=PENDING_APPROVAL" className="underline font-medium">
+              Go to Pending Approvals
+            </Link>
+          </div>
+        ) : null}
 
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span>{loading ? "Loading..." : `${displayRows.length} record(s)`}</span>
+            <span>{loading ? "Loading..." : `${listMeta.total} record(s)`}</span>
             <span className="hidden sm:inline">•</span>
             <Button
               type="button"
@@ -2446,7 +2752,7 @@ function AdminPurchasesContent() {
                 <Button size="sm" variant="outline" className="w-full sm:w-auto">Saved filters</Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={saveCurrentFilter}>
+                <DropdownMenuItem onClick={openSaveFilterDialog}>
                   Save current filter
                 </DropdownMenuItem>
                 {savedFilters.length === 0 ? (
@@ -2477,30 +2783,29 @@ function AdminPurchasesContent() {
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
-            <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={handleExportSummaryCsv}>
-              Export summary CSV
-            </Button>
-            <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={handleExportSummaryPdf}>
-              Export summary PDF
-            </Button>
           </div>
         </div>
-        {displayRows.length > 0 ? (
+        {listMeta.total > 0 ? (
           <div className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-xs">
             <span className="text-muted-foreground">Quick select:</span>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => selectByCondition("pending")}>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void selectByCondition("pending")}>
               Select all pending approval
             </Button>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => selectByCondition("open")}>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void selectByCondition("open")}>
               Select all open
             </Button>
-            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => selectByCondition("overdue")}>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => void selectByCondition("overdue")}>
               Select all overdue
             </Button>
             {lastBulkSupplierUndoRows.length > 0 ? (
               <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={undoLastBulkSupplierAssign}>
                 Undo last supplier assign
               </Button>
+            ) : null}
+            {totalPages > 1 ? (
+              <span className="text-muted-foreground">
+                — Approve and set expected date apply across all pages. Receive, return, and supplier actions apply to the current page only.
+              </span>
             ) : null}
           </div>
         ) : null}
@@ -2605,7 +2910,7 @@ function AdminPurchasesContent() {
         )}
 
         <div className="lg:hidden space-y-3">
-          {displayRows.length === 0 ? (
+          {listMeta.total === 0 ? (
             <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
               <p>
                 {hasScopedViewMismatch
@@ -2636,10 +2941,7 @@ function AdminPurchasesContent() {
                 </Button>
                 <Button
                   size="sm"
-                  onClick={() => {
-                    const formEl = document.getElementById("purchase-form");
-                    formEl?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  }}
+                  onClick={openPurchaseFormPanel}
                 >
                   Add purchase
                 </Button>
@@ -2765,6 +3067,26 @@ function AdminPurchasesContent() {
                       Receive
                     </Button>
                   ) : null}
+                  {Number(r.receivedQuantity ?? 0) > 0 ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openReturnDialog(r)}
+                      disabled={!canManagePurchases}
+                    >
+                      Return to supplier
+                    </Button>
+                  ) : null}
+                  {isCancelablePurchase(r) ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openCancelDialog(r)}
+                      disabled={!canManagePurchases}
+                    >
+                      Cancel purchase
+                    </Button>
+                  ) : null}
                   {!canManagePurchases ? (
                     <span className="text-xs text-muted-foreground">Admin only</span>
                   ) : null}
@@ -2877,7 +3199,7 @@ function AdminPurchasesContent() {
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 ? (
+              {listMeta.total === 0 ? (
                 <tr>
                   <td colSpan={tableColSpan} className="p-6 text-center text-muted-foreground">
                     <div className="flex flex-col items-center gap-3">
@@ -2910,10 +3232,7 @@ function AdminPurchasesContent() {
                         </Button>
                         <Button
                           size="sm"
-                          onClick={() => {
-                            const formEl = document.getElementById("purchase-form");
-                            formEl?.scrollIntoView({ behavior: "smooth", block: "center" });
-                          }}
+                          onClick={openPurchaseFormPanel}
                         >
                           Add purchase
                         </Button>
@@ -2970,8 +3289,20 @@ function AdminPurchasesContent() {
                     </td>
                     <td className="p-2 border text-right">{formatCurrency(Number(r.total || 0))}</td>
                     {showSupplierCol && <td className="p-2 border">{r.supplier || ""}</td>}
-                    {showReasonCol && <td className="p-2 border">{r.reason || ""}</td>}
-                    {showNoteCol && <td className="p-2 border">{r.note || ""}</td>}
+                    {showReasonCol && (
+                      <td className="p-2 border">
+                        <div className="overflow-hidden text-ellipsis whitespace-nowrap" title={r.reason || ""}>
+                          {r.reason || ""}
+                        </div>
+                      </td>
+                    )}
+                    {showNoteCol && (
+                      <td className="p-2 border">
+                        <div className="overflow-hidden text-ellipsis whitespace-nowrap" title={r.note || ""}>
+                          {r.note || ""}
+                        </div>
+                      </td>
+                    )}
                     <td className="p-2 border text-right">
                       <div className="flex flex-col items-end gap-1">
                         {isAwaitingReceive(r) ? (
@@ -3024,6 +3355,16 @@ function AdminPurchasesContent() {
                             Return to supplier
                           </Button>
                         ) : null}
+                        {isCancelablePurchase(r) ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openCancelDialog(r)}
+                            disabled={!canManagePurchases}
+                          >
+                            Cancel purchase
+                          </Button>
+                        ) : null}
                         {!canManagePurchases ? (
                           <span className="text-xs text-muted-foreground">Admin only</span>
                         ) : null}
@@ -3045,7 +3386,7 @@ function AdminPurchasesContent() {
           </table>
         </div>
 
-        {displayRows.length > pageSize && (
+        {listMeta.total > pageSize && (
           <div className="flex flex-col gap-2 pt-2">
             <div className="text-xs text-muted-foreground">
               Page {currentPage} of {totalPages}
@@ -3205,6 +3546,12 @@ function AdminPurchasesContent() {
               <div className="flex justify-between"><span className="text-muted-foreground">Quantity</span><span>{form.quantity || "-"}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Unit cost</span><span>{form.unitCost ? formatCurrency(Number(form.unitCost)) : "-"}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Line total</span><span>{form.quantity && form.unitCost ? formatCurrency(Number(form.quantity) * Number(form.unitCost)) : "-"}</span></div>
+              {currentCost != null ? (
+                <div className="flex justify-between"><span className="text-muted-foreground">Current average cost</span><span>{formatCurrency(Number(currentCost))}</span></div>
+              ) : null}
+              {projectedAverageCost != null ? (
+                <div className="flex justify-between"><span className="text-muted-foreground">Projected average cost</span><span>{formatCurrency(Number(projectedAverageCost))}</span></div>
+              ) : null}
               <div className="flex justify-between"><span className="text-muted-foreground">Supplier</span><span>{form.supplier || "-"}</span></div>
               {form.expectedAt ? (
                 <div className="flex justify-between"><span className="text-muted-foreground">Expected date</span><span>{new Date(form.expectedAt).toLocaleDateString()}</span></div>
@@ -3368,6 +3715,7 @@ function AdminPurchasesContent() {
               setReceiveLotCode("");
               setReceiveExpiry("");
               setReceiveLotNotes("");
+              setReceiveErrors({});
             }
           }}
         >
@@ -3432,9 +3780,10 @@ function AdminPurchasesContent() {
                 </div>
                 {receiveRow.requiresLotTracking || receiveRow.requiresExpiryDate ? (
                   <p className="text-xs text-muted-foreground">
-                    This SKU requires{" "}
-                    {receiveRow.requiresLotTracking ? "lot/batch codes" : "lot/batch codes"}
-                    {receiveRow.requiresExpiryDate ? " and expiry dates." : "."}
+                    This SKU requires {describeTrackingRequirements(
+                      receiveRow.requiresLotTracking,
+                      receiveRow.requiresExpiryDate,
+                    )}
                   </p>
                 ) : null}
                 <div className="space-y-1">
@@ -3529,6 +3878,85 @@ function AdminPurchasesContent() {
             ) : null}
           </DialogContent>
         </Dialog>
+        <Dialog
+          open={saveFilterOpen}
+          onOpenChange={(open) => {
+            setSaveFilterOpen(open);
+            if (!open) setSaveFilterName("");
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-base font-semibold">Save current filter</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-3 text-sm">
+              <div className="space-y-1">
+                <Label htmlFor="saveFilterName">Filter name</Label>
+                <Input
+                  id="saveFilterName"
+                  value={saveFilterName}
+                  onChange={(e) => setSaveFilterName(e.target.value)}
+                  placeholder="e.g., Pending approvals this week"
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setSaveFilterOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    if (!saveFilterName.trim()) {
+                      toast.error("Enter a name for this saved filter.");
+                      return;
+                    }
+                    saveCurrentFilter();
+                  }}
+                >
+                  Save filter
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={cancelOpen}
+          onOpenChange={(open) => {
+            setCancelOpen(open);
+            if (!open && !cancelSubmitting) {
+              setCancelTarget(null);
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-base font-semibold">Cancel purchase</DialogTitle>
+            </DialogHeader>
+            {cancelTarget ? (
+              <div className="grid gap-3 text-sm">
+                <div className="space-y-1">
+                  <div className="font-medium">{toTitleCase(cancelTarget.productName || "")}</div>
+                  {cancelTarget.productSku ? (
+                    <div className="text-xs text-muted-foreground">SKU: {cancelTarget.productSku}</div>
+                  ) : null}
+                </div>
+                <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  This keeps the purchase record for audit history and closes it without receiving stock.
+                </div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Status</span><span>{formatStatusLabel(cancelTarget.status)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Quantity</span><span>{cancelTarget.quantity}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Supplier</span><span>{cancelTarget.supplier || "-"}</span></div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setCancelOpen(false)} disabled={cancelSubmitting}>
+                    Close
+                  </Button>
+                  <Button onClick={confirmCancel} disabled={cancelSubmitting}>
+                    {cancelSubmitting ? "Cancelling..." : "Cancel purchase"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );
@@ -3554,7 +3982,3 @@ export default function AdminPurchasesPage() {
     </section>
   );
 }
-
-
-
-

@@ -4,6 +4,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { evaluateAuditRisk } from "@/lib/audit-risk";
 import { getEffectiveAuditRiskSettings } from "@/lib/audit-risk-settings.server";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 type NotificationItem = {
   id: string;
@@ -15,11 +16,6 @@ type NotificationItem = {
   entityId: string;
   message: string;
 };
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
-}
 
 function parseMeta(raw: string | null) {
   if (!raw) return {} as Record<string, unknown>;
@@ -39,7 +35,7 @@ function rank(item: NotificationItem) {
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { searchParams } = new URL(req.url);

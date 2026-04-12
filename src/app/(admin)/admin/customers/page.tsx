@@ -28,13 +28,15 @@ import {
 } from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
 import { chipToneClass } from "@/lib/status-chips";
-import { RefreshCcw, HelpCircle, MoreVertical } from "lucide-react";
+import { RefreshCcw, HelpCircle, MoreVertical, Search, X, Eye, CreditCard } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import Link from "next/link";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatIdReadable } from "@/lib/utils";
 import { useSearchParams } from "next/navigation";
 import { logAdminExportDownload } from "@/lib/admin-export-audit-client";
+import { getCustomerActionPermissions } from "./customer-actions";
+import { Badge } from "@/components/ui/badge";
 
 const fetcher = async (u: string) => {
   const r = await fetch(u);
@@ -50,15 +52,17 @@ export type CustomerRow = {
     name?: string | null;
     role?: string | null;
     phone?: string | null;
+    archived?: boolean;
   };
   phoneVerified?: boolean;
   whatsappReady?: boolean;
   ordersTotal?: number;
   paidTotal?: number;
   paymentsTotal?: number;
-   storeCredit?: number;
+  storeCredit?: number;
   refundedCash?: number;
   creditLimit?: number;
+  lastOrderAt?: string | null;
   cart?: {
     total?: number;
     totalItems?: number;
@@ -119,6 +123,17 @@ type CustomerOrderPreview = {
   balance: number;
 };
 
+type CustomerProfileType = "B2B" | "B2C";
+
+function isEmployeeCustomer(row: CustomerRow) {
+  return Boolean(row.user.role && row.user.role !== "CUSTOMER");
+}
+
+function customerRoleLabel(role?: string | null) {
+  if (!role || role === "CUSTOMER") return "";
+  return `${role.charAt(0)}${role.slice(1).toLowerCase()} customer`;
+}
+
 function buildAppliedBreakdownDisplay(
   payment: PaymentRow,
 ): AppliedBreakdownDisplay {
@@ -160,22 +175,38 @@ function buildAppliedBreakdownDisplay(
 }
 
 function AdminCustomersContent() {
-  const { data: session } = useSession();
-  const currentRole = (session?.user as { role?: string } | undefined)?.role || "";
-  const canManageRoles =
-    process.env.NEXT_PUBLIC_ADMIN_ROLE_MANAGEMENT_ENABLED === "1" &&
-    currentRole === "ADMIN";
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const currentRole = (session?.user as { role?: string } | undefined)?.role;
+  const actionPermissions = useMemo(
+    () => getCustomerActionPermissions(currentRole),
+    [currentRole],
+  );
   const [confirmClear, setConfirmClear] = useState<{ id: string; email?: string|null } | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const pageSize = 25;
   const [deliveryFilter, setDeliveryFilter] = useState<string>("all");
   const [balanceFilter, setBalanceFilter] = useState<"all" | "due">("all");
   const [customerSort, setCustomerSort] = useState<"balance_desc" | "balance_asc" | "name_asc">("balance_desc");
   const [creditFilter, setCreditFilter] = useState<"all" | "credit">("all");
   const [limitFilter, setLimitFilter] = useState<"all" | "over">("all");
+  const [includeArchived, setIncludeArchived] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const customerListUrl = useMemo(() => {
+    const params = new URLSearchParams({
+      scope: "customer-ledger",
+      page: String(page),
+      pageSize: String(pageSize),
+    });
+    if (includeArchived) params.set("includeArchived", "1");
+    const q = searchQuery.trim();
+    if (q) params.set("q", q);
+    return `/api/admin/customers?${params.toString()}`;
+  }, [includeArchived, page, searchQuery]);
   const { data, error, isFetching: isValidating } = useClientQuery({
-    queryKey: ["admin", "customers"],
-    queryFn: () => fetcher("/api/admin/customers"),
+    queryKey: ["admin", "customers", { page, pageSize, q: searchQuery.trim(), includeArchived }],
+    queryFn: () => fetcher(customerListUrl),
     refetchInterval: 8000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
@@ -220,18 +251,31 @@ function AdminCustomersContent() {
   const [adjustAmount, setAdjustAmount] = useState<string>("");
   const [adjustNote, setAdjustNote] = useState<string>("");
   const [adjustSubmitting, setAdjustSubmitting] = useState(false);
-  const [adjustErrors, setAdjustErrors] = useState<{ amount?: string }>({});
+  const [adjustErrors, setAdjustErrors] = useState<{ amount?: string; note?: string }>({});
   const [creditLimitFor, setCreditLimitFor] = useState<{ userId: string; email: string | null; creditLimit: number } | null>(null);
   const [creditLimitValue, setCreditLimitValue] = useState<string>("");
   const [creditLimitSubmitting, setCreditLimitSubmitting] = useState(false);
   const [creditLimitError, setCreditLimitError] = useState<string>("");
+  const [profileFor, setProfileFor] = useState<{ userId: string; email: string | null; profile: CustomerProfileType } | null>(null);
+  const [profileValue, setProfileValue] = useState<CustomerProfileType>("B2B");
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSubmitting, setProfileSubmitting] = useState(false);
+  const [archiveFor, setArchiveFor] = useState<{ userId: string; email: string | null; archived: boolean } | null>(null);
+  const [archiveReason, setArchiveReason] = useState("");
+  const [archiveSubmitting, setArchiveSubmitting] = useState(false);
+  const [closeFor, setCloseFor] = useState<{ userId: string; email: string | null } | null>(null);
+  const [closeConfirmText, setCloseConfirmText] = useState("");
+  const [closeReason, setCloseReason] = useState("");
+  const [closeReasonDetail, setCloseReasonDetail] = useState("");
+  const [closeSubmitting, setCloseSubmitting] = useState(false);
+  const [closeErrors, setCloseErrors] = useState<{ confirmText?: string; reason?: string }>({});
   const searchParams = useSearchParams();
   const focusId = searchParams.get("focus") || "";
   const sortParam = searchParams.get("sort") || "";
   const balanceParam = searchParams.get("balance") || "";
-  const fromAgingHub =
-    (balanceParam === "due") ||
-    (sortParam === "balance_desc" || sortParam === "balance_asc" || sortParam === "name_asc");
+  // Only show the "Applied from Aging Hub" banner when actually navigated from the hub
+  // (balance=due is the hub signal; non-default sorts only count when balance=due is also present)
+  const fromAgingHub = balanceParam === "due";
 
   const addPaymentUserId = addPaymentFor?.userId || "";
 
@@ -241,6 +285,10 @@ function AdminCustomersContent() {
       setCustomerSort(sortParam);
     }
   }, [balanceParam, sortParam]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, deliveryFilter, balanceFilter, creditFilter, limitFilter, customerSort, includeArchived]);
 
   useEffect(() => {
     if (!addPaymentUserId) {
@@ -356,9 +404,32 @@ function AdminCustomersContent() {
     const paid = Number(r.paidTotal || 0);
     return Math.max(0, payments - paid);
   };
+  const getCloseBlockers = (r: CustomerRow) => {
+    const blockers: string[] = [];
+    if (isEmployeeCustomer(r)) blockers.push("employee role");
+    if (Number(r.ordersTotal || 0) > 0.005) blockers.push("orders");
+    if (Number(r.paymentsTotal || 0) > 0.005) blockers.push("payments");
+    if (getCustomerCredit(r) > 0.005) blockers.push("store credit");
+    if (Number(r.creditLimit || 0) > 0.005) blockers.push("credit limit");
+    if (r.cart) blockers.push("cart");
+    return blockers;
+  };
 
   const filteredRows = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     const base = rows
+      .filter((r) => {
+        if (!q) return true;
+        const name = (r.user.name || "").toLowerCase();
+        const email = (r.user.email || "").toLowerCase();
+        const phone = (r.user.phone || "").replace(/\D/g, "");
+        const phoneQ = q.replace(/\D/g, "");
+        return (
+          name.includes(q) ||
+          email.includes(q) ||
+          (phoneQ.length >= 4 && phone.includes(phoneQ))
+        );
+      })
       .filter((r) => {
         const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
         if (deliveryFilter === "pending") return (d.pending || 0) > 0;
@@ -395,10 +466,16 @@ function AdminCustomersContent() {
       return [...base].sort((a, b) => getCustomerBalance(a) - getCustomerBalance(b));
     }
     return [...base].sort((a, b) => getCustomerBalance(b) - getCustomerBalance(a));
-  }, [rows, deliveryFilter, balanceFilter, creditFilter, limitFilter, customerSort]);
+  }, [rows, searchQuery, deliveryFilter, balanceFilter, creditFilter, limitFilter, customerSort]);
   const visibleIds = filteredRows.map((r) => r.user.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const selectedCount = selectedIds.size;
+  const totalRows = Number(data?.total ?? rows.length);
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const toggleSelected = (id: string) => {
     setSelectedIds((prev) => {
@@ -503,7 +580,14 @@ function AdminCustomersContent() {
     return res.json();
   }
 
-  const renderActionsMenu = (r: CustomerRow, buttonClass = "") => (
+  const renderActionsMenu = (r: CustomerRow, buttonClass = "") => {
+    const canManageEmployeeFinancialActions =
+      !isEmployeeCustomer(r) || currentRole === "ADMIN";
+    const canManageCreditForRow =
+      actionPermissions.canManageCredit && canManageEmployeeFinancialActions;
+    const closeBlockers = getCloseBlockers(r);
+
+    return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -517,22 +601,24 @@ function AdminCustomersContent() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          onClick={() => {
-            const outstanding = Math.max(
-              0,
-              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
-            );
-            setAddPaymentFor({ userId: r.user.id, email: r.user.email });
-            setAddPaymentAmount(
-              outstanding > 0 ? outstanding.toFixed(2) : "",
-            );
-            setAddPaymentMethod("");
-            setAddPaymentNote("");
-          }}
-        >
-          Add Payment
-        </DropdownMenuItem>
+        {actionPermissions.canManagePayments && (
+          <DropdownMenuItem
+            onClick={() => {
+              const outstanding = Math.max(
+                0,
+                Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+              );
+              setAddPaymentFor({ userId: r.user.id, email: r.user.email });
+              setAddPaymentAmount(
+                outstanding > 0 ? outstanding.toFixed(2) : "",
+              );
+              setAddPaymentMethod("");
+              setAddPaymentNote("");
+            }}
+          >
+            Add Payment
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onClick={() => {
             setExplain({
@@ -566,66 +652,96 @@ function AdminCustomersContent() {
         >
           Download statement (PDF)
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={async () => {
-            try {
-              const res = await fetch(
-                `/api/admin/customers/${r.user.id}/statement/email`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ userId: r.user.id }),
-                },
-              );
-              const j = await res.json().catch(() => ({} as { error?: string }));
-              if (!res.ok) {
-                throw new Error(j?.error || "Failed to email statement");
+        {actionPermissions.canSendAccountEmails && (
+          <>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(
+                    `/api/admin/customers/${r.user.id}/statement/email`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ userId: r.user.id }),
+                    },
+                  );
+                  const j = await res.json().catch(() => ({} as { error?: string }));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to email statement");
+                  }
+                  toast.success("Statement emailed to customer.");
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to email statement";
+                  toast.error(message);
+                }
+              }}
+            >
+              Email statement
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={async () => {
+                try {
+                  const res = await fetch(
+                    `/api/admin/customers/${r.user.id}/reminder/email`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ userId: r.user.id }),
+                    },
+                  );
+                  const j = await res.json().catch(() => ({} as { error?: string }));
+                  if (!res.ok) {
+                    throw new Error(j?.error || "Failed to send reminder");
+                  }
+                  toast.success("Payment reminder sent.");
+                } catch (e: unknown) {
+                  const message =
+                    e instanceof Error ? e.message : "Failed to send reminder";
+                  toast.error(message);
+                }
+              }}
+            >
+              Send payment reminder
+            </DropdownMenuItem>
+          </>
+        )}
+        {actionPermissions.canManageCreditLimit && (
+          <DropdownMenuItem
+            onClick={() => {
+              const limit = Number(r.creditLimit ?? 0);
+              setCreditLimitFor({ userId: r.user.id, email: r.user.email, creditLimit: limit });
+              setCreditLimitValue(limit > 0 ? limit.toFixed(2) : "");
+              setCreditLimitError("");
+            }}
+          >
+            Set credit limit
+          </DropdownMenuItem>
+        )}
+        {actionPermissions.canManageProfile && (
+          <DropdownMenuItem
+            onClick={async () => {
+              setProfileFor({ userId: r.user.id, email: r.user.email, profile: "B2B" });
+              setProfileValue("B2B");
+              setProfileLoading(true);
+              try {
+                const res = await fetch(`/api/admin/customers/${r.user.id}/profile`);
+                const body = (await res.json().catch(() => ({}))) as { profile?: CustomerProfileType; error?: string };
+                if (!res.ok) throw new Error(body.error || "Failed to load customer profile");
+                const profile = body.profile === "B2C" ? "B2C" : "B2B";
+                setProfileFor({ userId: r.user.id, email: r.user.email, profile });
+                setProfileValue(profile);
+              } catch (e: unknown) {
+                const message = e instanceof Error ? e.message : "Failed to load customer profile";
+                toast.error(message);
+              } finally {
+                setProfileLoading(false);
               }
-              toast.success("Statement emailed to customer.");
-            } catch (e: unknown) {
-              const message =
-                e instanceof Error ? e.message : "Failed to email statement";
-              toast.error(message);
-            }
-          }}
-        >
-          Email statement
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={async () => {
-            try {
-              const res = await fetch(
-                `/api/admin/customers/${r.user.id}/reminder/email`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ userId: r.user.id }),
-                },
-              );
-              const j = await res.json().catch(() => ({} as { error?: string }));
-              if (!res.ok) {
-                throw new Error(j?.error || "Failed to send reminder");
-              }
-              toast.success("Payment reminder sent.");
-            } catch (e: unknown) {
-              const message =
-                e instanceof Error ? e.message : "Failed to send reminder";
-              toast.error(message);
-            }
-          }}
-        >
-          Send payment reminder
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            const limit = Number(r.creditLimit ?? 0);
-            setCreditLimitFor({ userId: r.user.id, email: r.user.email, creditLimit: limit });
-            setCreditLimitValue(limit > 0 ? limit.toFixed(2) : "");
-            setCreditLimitError("");
-          }}
-        >
-          Set credit limit
-        </DropdownMenuItem>
+            }}
+          >
+            Set commerce profile
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem asChild>
           <Link href={`/admin/customers/${r.user.id}/view`}>
             View as customer (read-only)
@@ -635,7 +751,7 @@ function AdminCustomersContent() {
           0,
           r.storeCredit ??
             Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
-        ) > 0.005 && (
+        ) > 0.005 && canManageCreditForRow && (
           <DropdownMenuItem
             onClick={async () => {
               const unapplied = Math.max(
@@ -659,19 +775,9 @@ function AdminCustomersContent() {
               }
 
               const amount = Math.min(unapplied, outstanding);
-              const res = await fetch("/api/payments", {
+              const res = await fetch(`/api/admin/customers/${r.user.id}/credit/apply`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  userId: r.user.id,
-                  amount,
-                  note: "Auto-apply remaining",
-                  method: "adjustment",
-                  reference: "AUTO_APPLY",
-                  receivedBy: "system",
-                  location: "admin/customers",
-                  status: "normal",
-                }),
               });
               if (!res.ok) {
                 const msg =
@@ -680,7 +786,8 @@ function AdminCustomersContent() {
                   ).error || "Failed to apply remaining";
                 toast.error(msg);
               } else {
-                toast.success("Remaining payments applied.");
+                const payload = await res.json().catch(() => ({ applied: amount }));
+                toast.success(`Store credit applied: ${formatCurrency(Number(payload.applied || amount))}.`);
                 queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
               }
             }}
@@ -688,26 +795,28 @@ function AdminCustomersContent() {
             Apply to Balance
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem
-          onClick={() => {
-            const outstanding = Math.max(
-              0,
-              Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
-            );
-            setAdjustFor({ userId: r.user.id, email: r.user.email });
-            setAdjustAmount(outstanding > 0 ? outstanding.toFixed(2) : "");
-            setAdjustNote("");
-          }}
-        >
-          Adjustment
-        </DropdownMenuItem>
+        {canManageCreditForRow && (
+          <DropdownMenuItem
+            onClick={() => {
+              const outstanding = Math.max(
+                0,
+                Number(r.ordersTotal || 0) - Number(r.paidTotal || 0),
+              );
+              setAdjustFor({ userId: r.user.id, email: r.user.email });
+              setAdjustAmount(outstanding > 0 ? outstanding.toFixed(2) : "");
+              setAdjustNote("");
+            }}
+          >
+            Issue store credit
+          </DropdownMenuItem>
+        )}
         {(() => {
           const credit = Math.max(
             0,
             r.storeCredit ??
               Math.max(0, (r.paymentsTotal ?? 0) - (r.paidTotal || 0)),
           );
-          if (credit <= 0.005) return null;
+          if (credit <= 0.005 || !canManageCreditForRow) return null;
           return (
             <DropdownMenuItem
               onClick={() => {
@@ -727,10 +836,6 @@ function AdminCustomersContent() {
             </DropdownMenuItem>
           );
         })()}
-        {canManageRoles && (
-          <>
-          </>
-        )}
         {r.cart?.items?.length ? (
           <DropdownMenuItem
             onClick={() => {
@@ -741,7 +846,7 @@ function AdminCustomersContent() {
           </DropdownMenuItem>
         ) : null}
         {(() => {
-          if (!r.cart) return null;
+          if (!r.cart || !actionPermissions.canManageCart) return null;
           const outstanding = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
           const deliveredAll = (r.delivery?.pending || 0) === 0 && (r.delivery?.partial || 0) === 0;
           const canDeleteCart = outstanding <= 0.0001 && deliveredAll;
@@ -760,9 +865,42 @@ function AdminCustomersContent() {
             </DropdownMenuItem>
           );
         })()}
+        {actionPermissions.canManageLifecycle && (
+          <>
+            <DropdownMenuItem
+              onClick={() => {
+                setArchiveFor({
+                  userId: r.user.id,
+                  email: r.user.email,
+                  archived: Boolean(r.user.archived),
+                });
+                setArchiveReason("");
+              }}
+            >
+              {r.user.archived ? "Unarchive account" : "Archive account"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={closeBlockers.length > 0}
+              onClick={() => {
+                if (closeBlockers.length > 0) {
+                  toast.info(`Archive instead. Close is blocked by ${closeBlockers.join(", ")}.`);
+                  return;
+                }
+                setCloseFor({ userId: r.user.id, email: r.user.email });
+                setCloseConfirmText("");
+                setCloseReason("");
+                setCloseReasonDetail("");
+                setCloseErrors({});
+              }}
+            >
+              Close account
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
+    );
+  };
 
   // Legacy per-order payment card removed in favor of Actions-based flows.
 
@@ -792,11 +930,21 @@ function AdminCustomersContent() {
           <p className="text-sm text-muted-foreground">
             Monitor balances, credits, and delivery status.
           </p>
-          {fromAgingHub ? (
-            <div className="mt-1 inline-flex items-center rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-800">
-              Applied from Aging Hub
-            </div>
-          ) : null}
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {fromAgingHub ? (
+              <div className="inline-flex items-center rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-800">
+                Applied from Aging Hub
+              </div>
+            ) : null}
+            <Link
+              href="/admin/audit?sourcePage=admin%2Fcustomers"
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
+              title="View audit trail for customer actions"
+            >
+              <HelpCircle className="h-3 w-3" />
+              Audit trail
+            </Link>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -814,7 +962,7 @@ function AdminCustomersContent() {
               window.open(`/api/admin/payments/export?${params.toString()}`, "_blank");
             }}
           >
-            Export CSV
+            Export Payments CSV
           </Button>
           <Button
             className="h-9 w-full sm:w-auto"
@@ -831,7 +979,7 @@ function AdminCustomersContent() {
               window.open(`/admin/payments/export/print?${params.toString()}`, "_blank");
             }}
           >
-            Export PDF
+            Export Payments PDF
           </Button>
           <Button
             className="h-9 w-full sm:w-9"
@@ -865,6 +1013,26 @@ function AdminCustomersContent() {
           <CardTitle className="text-base font-semibold">Filters</CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="relative mb-3">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            <Input
+              type="text"
+              placeholder="Search by name, email or phone…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 pr-8 h-9"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-2 pb-3">
             <Button
               size="sm"
@@ -920,39 +1088,25 @@ function AdminCustomersContent() {
             >
               Over credit limit
             </Button>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">Month</label>
+            <label className="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs text-muted-foreground">
               <input
-                type="month"
-                className="h-9 rounded-md border px-2 text-sm w-full"
-                value={exportMonth}
-                onChange={(e) => setExportMonth(e.target.value)}
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-primary"
+                checked={includeArchived}
+                onChange={(e) => setIncludeArchived(e.target.checked)}
               />
-            </div>
+              Include archived
+            </label>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">Method</label>
-              <Select value={exportMethod || "all"} onValueChange={(v) => setExportMethod(v === "all" ? "" : v)}>
-                <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
+              <label className="text-xs text-muted-foreground">Sort</label>
+              <Select value={customerSort} onValueChange={(v) => setCustomerSort(v as typeof customerSort)}>
+                <SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="card">Card</SelectItem>
-                  <SelectItem value="transfer">Transfer</SelectItem>
-                  <SelectItem value="adjustment">Adjustment</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">Status</label>
-              <Select value={exportStatus || "all"} onValueChange={(v) => setExportStatus(v === "all" ? "" : v)}>
-                <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="normal">Normal</SelectItem>
-                  <SelectItem value="refund">Refund</SelectItem>
-                  <SelectItem value="void">Void</SelectItem>
+                  <SelectItem value="balance_desc">Balance (highest first)</SelectItem>
+                  <SelectItem value="balance_asc">Balance (lowest first)</SelectItem>
+                  <SelectItem value="name_asc">Name (A–Z)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -969,8 +1123,87 @@ function AdminCustomersContent() {
               </Select>
             </div>
           </div>
+          <details className="mt-4 group">
+            <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 select-none list-none">
+              <span className="group-open:hidden">▶</span>
+              <span className="hidden group-open:inline">▼</span>
+              Payment Export Options (month, method, status)
+            </summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Month</label>
+                <input
+                  type="month"
+                  className="h-9 rounded-md border px-2 text-sm w-full"
+                  value={exportMonth}
+                  onChange={(e) => setExportMonth(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Method</label>
+                <Select value={exportMethod || "all"} onValueChange={(v) => setExportMethod(v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="card">Card</SelectItem>
+                    <SelectItem value="transfer">Transfer</SelectItem>
+                    <SelectItem value="adjustment">Adjustment</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Status</label>
+                <Select value={exportStatus || "all"} onValueChange={(v) => setExportStatus(v === "all" ? "" : v)}>
+                  <SelectTrigger className="h-9 w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="refund">Refund</SelectItem>
+                    <SelectItem value="void">Void</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
+
+      {/* KPI summary strip */}
+      {filteredRows.length > 0 && (() => {
+        const totalOutstanding = filteredRows.reduce((s, r) => s + Math.max(0, getCustomerBalance(r)), 0);
+        const totalCredit = filteredRows.reduce((s, r) => s + Math.max(0, getCustomerCredit(r)), 0);
+        const overLimitCount = filteredRows.filter((r) => {
+          const balance = getCustomerBalance(r);
+          const limit = Number(r.creditLimit || 0);
+          return limit > 0.005 && balance > limit + 0.005;
+        }).length;
+        const withBalanceCount = filteredRows.filter((r) => getCustomerBalance(r) > 0.005).length;
+        return (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-2">
+            <div className="rounded-lg border bg-card px-4 py-3">
+              <p className="text-xs text-muted-foreground">Showing</p>
+              <p className="text-lg font-semibold tabular-nums">{filteredRows.length}</p>
+              <p className="text-xs text-muted-foreground">{withBalanceCount} with balance due</p>
+            </div>
+            <div className="rounded-lg border bg-card px-4 py-3">
+              <p className="text-xs text-muted-foreground">Total Outstanding</p>
+              <p className="text-lg font-semibold tabular-nums text-red-700">{formatCurrency(totalOutstanding)}</p>
+              <p className="text-xs text-muted-foreground">across shown customers</p>
+            </div>
+            <div className="rounded-lg border bg-card px-4 py-3">
+              <p className="text-xs text-muted-foreground">Total Store Credit</p>
+              <p className="text-lg font-semibold tabular-nums text-amber-700">{formatCurrency(totalCredit)}</p>
+              <p className="text-xs text-muted-foreground">held across shown customers</p>
+            </div>
+            <div className={`rounded-lg border px-4 py-3 ${overLimitCount > 0 ? "bg-orange-50 border-orange-200" : "bg-card"}`}>
+              <p className="text-xs text-muted-foreground">Over Credit Limit</p>
+              <p className={`text-lg font-semibold tabular-nums ${overLimitCount > 0 ? "text-orange-700" : "text-muted-foreground"}`}>{overLimitCount}</p>
+              <p className="text-xs text-muted-foreground">customer{overLimitCount === 1 ? "" : "s"}</p>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid gap-4">
         {/* Record Payment card removed in favor of Actions-based Add Payment & Adjustment */}
@@ -993,10 +1226,29 @@ function AdminCustomersContent() {
           <CardHeader className="flex items-center justify-between py-3">
             <CardTitle className="text-base font-semibold">Customers</CardTitle>
             <span className="text-xs text-muted-foreground">
-              {filteredRows.length} shown
+              {filteredRows.length} shown on page {page} of {totalPages}
             </span>
           </CardHeader>
           <CardContent className="p-0 overflow-x-hidden">
+            {isValidating && rows.length === 0 && (
+              <div className="hidden lg:flex flex-col gap-0">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-3 px-4 py-3 border-b last:border-0 animate-pulse">
+                    <div className="h-4 w-4 rounded bg-muted shrink-0" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3.5 w-36 rounded bg-muted" />
+                      <div className="h-2.5 w-24 rounded bg-muted opacity-60" />
+                    </div>
+                    <div className="h-3.5 w-16 rounded bg-muted" />
+                    <div className="h-3.5 w-16 rounded bg-muted" />
+                    <div className="h-3.5 w-16 rounded bg-muted" />
+                    <div className="h-3.5 w-16 rounded bg-muted" />
+                    <div className="h-3.5 w-20 rounded bg-muted" />
+                    <div className="h-6 w-20 rounded bg-muted" />
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="hidden lg:block min-w-0 overflow-x-auto">
               <Table className="w-full table-auto admin-customers-table border-collapse">
                 <TableHeader>
@@ -1033,21 +1285,10 @@ function AdminCustomersContent() {
                         </Tooltip>
                       </div>
                     </TableHead>
-                    <TableHead className="w-[140px] text-right">
-                      <div className="inline-flex items-center justify-end gap-1 w-full">
-                        <span>Payments</span>
-                        <Tooltip content="Net cash/MoMo payments (excluding internal credit moves).">
-                          <HelpCircle
-                            className="h-3.5 w-3.5 text-muted-foreground"
-                            aria-label="Payments total"
-                          />
-                        </Tooltip>
-                      </div>
-                    </TableHead>
                     <TableHead className="w-[160px] text-right">
                       <div className="inline-flex items-center justify-end gap-1 w-full">
                         <span>Store Credit</span>
-                        <Tooltip content="Store credit held for this customer (credit from returns and adjustments not yet applied or refunded).">
+                        <Tooltip content="Store credit held for this customer (credit from returns and adjustments not yet applied or refunded). Use 'Explain totals' for full breakdown.">
                           <HelpCircle
                             className="h-3.5 w-3.5 text-muted-foreground"
                             aria-label="Store credit"
@@ -1057,19 +1298,8 @@ function AdminCustomersContent() {
                     </TableHead>
                     <TableHead className="w-[140px] text-right">
                       <div className="inline-flex items-center justify-end gap-1 w-full">
-                        <span>Refunded</span>
-                        <Tooltip content="Cash physically returned to the customer.">
-                          <HelpCircle
-                            className="h-3.5 w-3.5 text-muted-foreground"
-                            aria-label="Refunded cash"
-                          />
-                        </Tooltip>
-                      </div>
-                    </TableHead>
-                    <TableHead className="w-[140px] text-right">
-                      <div className="inline-flex items-center justify-end gap-1 w-full">
                         <span>Balance</span>
-                        <Tooltip content="Outstanding = Orders - Paid">
+                        <Tooltip content="Outstanding = Orders - Paid. Red = amount owed. Use 'Explain totals' from Actions for full payment breakdown.">
                           <HelpCircle
                             className="h-3.5 w-3.5 text-muted-foreground"
                             aria-label="Balance"
@@ -1080,7 +1310,7 @@ function AdminCustomersContent() {
                     <TableHead className="w-[140px] text-right">
                       <div className="inline-flex items-center justify-end gap-1 w-full">
                         <span>Credit Limit</span>
-                        <Tooltip content="Maximum outstanding balance allowed before orders are placed on hold.">
+                        <Tooltip content="Maximum outstanding balance allowed. Orange badge = over limit.">
                           <HelpCircle
                             className="h-3.5 w-3.5 text-muted-foreground"
                             aria-label="Credit limit"
@@ -1088,7 +1318,15 @@ function AdminCustomersContent() {
                         </Tooltip>
                       </div>
                     </TableHead>
-                    <TableHead className="w-[180px] text-center">
+                    <TableHead className="w-[130px] text-right">
+                      <div className="inline-flex items-center justify-end gap-1 w-full">
+                        <span>Last Order</span>
+                        <Tooltip content="Date of the most recent order placed by this customer.">
+                          <HelpCircle className="h-3.5 w-3.5 text-muted-foreground" aria-label="Last order date" />
+                        </Tooltip>
+                      </div>
+                    </TableHead>
+                    <TableHead className="w-[160px] text-center">
                       <div className="inline-flex items-center justify-center gap-1">
                         <span>Cart</span>
                         <Tooltip content="Live cart total and items currently in their basket">
@@ -1096,8 +1334,8 @@ function AdminCustomersContent() {
                         </Tooltip>
                       </div>
                     </TableHead>
-                    <TableHead className="w-[220px] text-center">Delivery</TableHead>
-                    <TableHead className="w-[220px] text-center">Actions</TableHead>
+                    <TableHead className="w-[200px] text-center">Delivery</TableHead>
+                    <TableHead className="w-[180px] text-center">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1115,7 +1353,9 @@ function AdminCustomersContent() {
                           className={
                             isFocused
                               ? "bg-amber-50 hover:bg-amber-100"
-                              : undefined
+                              : r.user.archived
+                                ? "bg-muted/30"
+                                : undefined
                           }
                         >
                         <TableCell className="text-center">
@@ -1135,6 +1375,16 @@ function AdminCustomersContent() {
                             >
                               {displayLabel}
                             </Link>
+                            {isEmployeeCustomer(r) && (
+                              <Badge variant="outline" className="ml-2 align-middle text-[10px]">
+                                {customerRoleLabel(r.user.role)}
+                              </Badge>
+                            )}
+                            {r.user.archived && (
+                              <Badge variant="secondary" className="ml-2 align-middle text-[10px]">
+                                Archived
+                              </Badge>
+                            )}
                             <div className="text-xs text-muted-foreground">
                               {r.user.phone || r.user.email || ""}
                             </div>
@@ -1143,40 +1393,36 @@ function AdminCustomersContent() {
                         <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.ordersTotal || 0)}</TableCell>
                         <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">{formatCurrency(r.paidTotal || 0)}</TableCell>
                         <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
-                          {formatCurrency(r.paymentsTotal ?? 0)}
+                          {(() => {
+                            const delta = getCustomerCredit(r);
+                            const cls = delta > 0.005 ? "text-amber-700" : "text-muted-foreground";
+                            return <span className={cls}>{formatCurrency(delta)}</span>;
+                          })()}
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
-                    {(() => {
-                      const delta = getCustomerCredit(r);
-                      const cls =
-                        delta > 0.005
-                          ? "text-amber-700"
-                          : "text-muted-foreground";
-                      return (
-                        <span className={cls}>{formatCurrency(delta)}</span>
-                      );
-                    })()}
-                  </TableCell>
-                  <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
-                    <span
-                      className={
-                        (r.refundedCash ?? 0) > 0 ? "text-amber-700" : "text-muted-foreground"
-                      }
-                    >
-                      {formatCurrency(r.refundedCash || 0)}
-                    </span>
-                  </TableCell>
-                        <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
-                    {(() => {
-                      const balance = getCustomerBalance(r);
-                      const cls = balance > 0.005 ? "text-red-700" : "text-muted-foreground";
-                      return <span className={cls}>{formatCurrency(balance)}</span>;
-                    })()}
-                  </TableCell>
+                          {(() => {
+                            const balance = getCustomerBalance(r);
+                            const limit = Number(r.creditLimit || 0);
+                            const overLimit = limit > 0.005 && balance > limit + 0.005;
+                            return (
+                              <div className="inline-flex flex-col items-end gap-0.5">
+                                <span className={balance > 0.005 ? "text-red-700" : "text-muted-foreground"}>{formatCurrency(balance)}</span>
+                                {overLimit && (
+                                  <span className="text-[10px] font-semibold rounded px-1 py-0 bg-orange-100 text-orange-700 leading-tight">Over limit</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </TableCell>
                         <TableCell className="text-right whitespace-nowrap tabular-nums font-mono px-2">
                           {Number(r.creditLimit || 0) > 0
                             ? formatCurrency(Number(r.creditLimit || 0))
-                            : "—"}
+                            : <span className="text-muted-foreground">—</span>}
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap px-2 text-xs text-muted-foreground">
+                          {r.lastOrderAt
+                            ? new Date(r.lastOrderAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+                            : <span className="text-muted-foreground">—</span>}
                         </TableCell>
                         <TableCell className="text-center whitespace-nowrap px-2 text-sm">
                           {r.cart?.totalItems ? (
@@ -1191,23 +1437,51 @@ function AdminCustomersContent() {
                         <TableCell className="text-center whitespace-nowrap">
                           {(() => {
                             const d = r.delivery || { delivered: 0, partial: 0, pending: 0 };
-                            return (
-                              <span className="text-xs">
-                                <span className={`${chipToneClass("success")} rounded px-1.5 py-0.5 mr-1`}>
-                                  Full {d.delivered || 0}
-                                </span>
-                                <span className={`${chipToneClass("warning")} rounded px-1.5 py-0.5 mr-1`}>
-                                  Partial {d.partial || 0}
-                                </span>
-                                <span className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>
-                                  Pending {d.pending || 0}
-                                </span>
-                              </span>
+                            const chips = [];
+                            if ((d.delivered || 0) > 0) chips.push(
+                              <span key="d" className={`${chipToneClass("success")} rounded px-1.5 py-0.5`}>Full {d.delivered}</span>
                             );
+                            if ((d.partial || 0) > 0) chips.push(
+                              <span key="p" className={`${chipToneClass("warning")} rounded px-1.5 py-0.5`}>Partial {d.partial}</span>
+                            );
+                            if ((d.pending || 0) > 0) chips.push(
+                              <span key="n" className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>Pending {d.pending}</span>
+                            );
+                            return chips.length > 0
+                              ? <span className="text-xs flex flex-wrap gap-1 justify-center">{chips}</span>
+                              : <span className="text-xs text-muted-foreground">—</span>;
                           })()}
                         </TableCell>
-                        <TableCell className="text-center w-[220px] min-w-[220px] overflow-visible whitespace-normal">
-                          <div className="flex w-full justify-center">
+                        <TableCell className="text-center w-[180px] min-w-[160px] overflow-visible whitespace-normal">
+                          <div className="flex w-full justify-center items-center gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              asChild
+                              title="View customer (read-only)"
+                            >
+                              <Link href={`/admin/customers/${r.user.id}/view`}>
+                                <Eye className="h-4 w-4" />
+                              </Link>
+                            </Button>
+                            {actionPermissions.canManagePayments && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title="Add payment"
+                                onClick={() => {
+                                  const outstanding = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
+                                  setAddPaymentFor({ userId: r.user.id, email: r.user.email });
+                                  setAddPaymentAmount(outstanding > 0 ? outstanding.toFixed(2) : "");
+                                  setAddPaymentMethod("");
+                                  setAddPaymentNote("");
+                                }}
+                              >
+                                <CreditCard className="h-4 w-4" />
+                              </Button>
+                            )}
                             {renderActionsMenu(r)}
                           </div>
                         </TableCell>
@@ -1216,7 +1490,7 @@ function AdminCustomersContent() {
                   })}
                   {filteredRows.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={11} className="text-center text-sm text-muted-foreground py-6">
+                      <TableCell colSpan={10} className="text-center text-sm text-muted-foreground py-6">
                         <div className="flex flex-col items-center gap-3">
                           <span>No customers found for the current filters.</span>
                           <div className="flex flex-wrap justify-center gap-2">
@@ -1224,9 +1498,12 @@ function AdminCustomersContent() {
                               size="sm"
                               variant="outline"
                               onClick={() => {
+                                setSearchQuery("");
                                 setDeliveryFilter("all");
                                 setBalanceFilter("all");
                                 setCreditFilter("all");
+                                setLimitFilter("all");
+                                setIncludeArchived(false);
                               }}
                             >
                               Clear filters
@@ -1254,7 +1531,7 @@ function AdminCustomersContent() {
             const credit = Math.max(0, getCustomerCredit(r));
                 const delivery = r.delivery || { delivered: 0, partial: 0, pending: 0 };
                 return (
-                  <div key={r.user.id} className="rounded-lg !border-0 shadow-md p-4 space-y-3 text-sm">
+                  <div key={r.user.id} className={`rounded-lg !border-0 shadow-md p-4 space-y-3 text-sm ${r.user.archived ? "bg-muted/30" : ""}`}>
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <input
                         type="checkbox"
@@ -1272,6 +1549,16 @@ function AdminCustomersContent() {
                             {r.user.name || r.user.email || "Customer"}
                           </Link>
                         </p>
+                        {isEmployeeCustomer(r) && (
+                          <Badge variant="outline" className="mt-1 text-[10px]">
+                            {customerRoleLabel(r.user.role)}
+                          </Badge>
+                        )}
+                        {r.user.archived && (
+                          <Badge variant="secondary" className="ml-1 mt-1 text-[10px]">
+                            Archived
+                          </Badge>
+                        )}
                         <p className="text-xs text-muted-foreground">{r.user.phone || r.user.email || ""}</p>
                       </div>
                     </div>
@@ -1286,43 +1573,75 @@ function AdminCustomersContent() {
                       </div>
                       <div>
                         <p className="text-xs uppercase text-muted-foreground">Store Credit</p>
-                        <p className="font-mono">{formatCurrency(Math.max(0, credit))}</p>
+                        <p className="font-mono text-amber-700">{formatCurrency(Math.max(0, credit))}</p>
                       </div>
                       <div>
                         <p className="text-xs uppercase text-muted-foreground">Balance</p>
                         <p className={`font-mono ${outstanding > 0.005 ? "text-red-700" : "text-muted-foreground"}`}>
                           {formatCurrency(outstanding)}
                         </p>
+                        {(() => {
+                          const limit = Number(r.creditLimit || 0);
+                          return limit > 0.005 && outstanding > limit + 0.005
+                            ? <span className="text-[10px] font-semibold rounded px-1 py-0 bg-orange-100 text-orange-700 leading-tight">Over limit</span>
+                            : null;
+                        })()}
                       </div>
                       <div>
-                        <p className="text-xs uppercase text-muted-foreground">Credit limit</p>
+                        <p className="text-xs uppercase text-muted-foreground">Credit Limit</p>
                         <p className="font-mono">
                           {Number(r.creditLimit || 0) > 0 ? formatCurrency(Number(r.creditLimit || 0)) : "—"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground">Last Order</p>
+                        <p className="text-xs text-muted-foreground">
+                          {r.lastOrderAt
+                            ? new Date(r.lastOrderAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+                            : "—"}
                         </p>
                       </div>
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {r.cart?.totalItems ? (
-                        <>
-                          Cart: {r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"} · {formatCurrency(r.cart.total || 0)}
-                        </>
+                        <>Cart: {r.cart.totalItems} item{r.cart.totalItems === 1 ? "" : "s"} · {formatCurrency(r.cart.total || 0)}</>
                       ) : (
                         <>Cart empty</>
                       )}
                     </div>
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      <span className={`${chipToneClass("success")} rounded px-1.5 py-0.5`}>
-                        Full {delivery.delivered || 0}
-                      </span>
-                      <span className={`${chipToneClass("warning")} rounded px-1.5 py-0.5`}>
-                        Partial {delivery.partial || 0}
-                      </span>
-                      <span className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>
-                        Pending {delivery.pending || 0}
-                      </span>
+                    <div className="flex flex-wrap gap-1.5 text-xs">
+                      {(delivery.delivered || 0) > 0 && (
+                        <span className={`${chipToneClass("success")} rounded px-1.5 py-0.5`}>Full {delivery.delivered}</span>
+                      )}
+                      {(delivery.partial || 0) > 0 && (
+                        <span className={`${chipToneClass("warning")} rounded px-1.5 py-0.5`}>Partial {delivery.partial}</span>
+                      )}
+                      {(delivery.pending || 0) > 0 && (
+                        <span className={`${chipToneClass("neutral")} rounded px-1.5 py-0.5`}>Pending {delivery.pending}</span>
+                      )}
+                      {(delivery.delivered || 0) === 0 && (delivery.partial || 0) === 0 && (delivery.pending || 0) === 0 && (
+                        <span className="text-muted-foreground">No orders</span>
+                      )}
                     </div>
-                    <div className="flex justify-end">
-                      {renderActionsMenu(r, "w-full justify-center")}
+                    <div className="flex items-center justify-between gap-2">
+                      {actionPermissions.canManagePayments && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 flex-1"
+                          onClick={() => {
+                            const outstandingAmt = Math.max(0, Number(r.ordersTotal || 0) - Number(r.paidTotal || 0));
+                            setAddPaymentFor({ userId: r.user.id, email: r.user.email });
+                            setAddPaymentAmount(outstandingAmt > 0 ? outstandingAmt.toFixed(2) : "");
+                            setAddPaymentMethod("");
+                            setAddPaymentNote("");
+                          }}
+                        >
+                          <CreditCard className="h-3.5 w-3.5 mr-1" />
+                          Add Payment
+                        </Button>
+                      )}
+                      {renderActionsMenu(r)}
                     </div>
                   </div>
                 );
@@ -1335,9 +1654,12 @@ function AdminCustomersContent() {
                       size="sm"
                       variant="outline"
                       onClick={() => {
+                        setSearchQuery("");
                         setDeliveryFilter("all");
                         setBalanceFilter("all");
                         setCreditFilter("all");
+                        setLimitFilter("all");
+                        setIncludeArchived(false);
                       }}
                     >
                       Clear filters
@@ -1354,6 +1676,32 @@ function AdminCustomersContent() {
                   </div>
                 </div>
               )}
+            </div>
+            <div className="flex flex-col gap-2 border-t p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-xs text-muted-foreground">
+                Showing {filteredRows.length} of {totalRows} matching customers
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page <= 1 || isValidating}
+                  onClick={() => setPage((value) => Math.max(1, value - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Page {page} / {totalPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= totalPages || isValidating}
+                  onClick={() => setPage((value) => Math.min(totalPages, value + 1))}
+                >
+                  Next
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1423,6 +1771,190 @@ function AdminCustomersContent() {
             }}
           >
             Confirm
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!archiveFor} onOpenChange={(open) => {
+      if (!open && !archiveSubmitting) {
+        setArchiveFor(null);
+        setArchiveReason("");
+      }
+    }}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="text-base font-semibold">
+            {archiveFor?.archived ? "Unarchive account" : "Archive account"}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            {archiveFor?.archived
+              ? "This will return the account to active customer workflows."
+              : "This will keep the customer history but remove the account from active customer workflows."}
+            {archiveFor?.email ? ` Customer: ${archiveFor.email}.` : ""}
+          </p>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Reason or note</label>
+            <Input
+              value={archiveReason}
+              onChange={(e) => setArchiveReason(e.target.value)}
+              placeholder="Optional audit note"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={archiveSubmitting} onClick={() => setArchiveFor(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant={archiveFor?.archived ? "secondary" : "destructive"}
+            disabled={archiveSubmitting}
+            onClick={async () => {
+              if (!archiveFor) return;
+              setArchiveSubmitting(true);
+              try {
+                const targetArchived = !archiveFor.archived;
+                const res = await fetch(`/api/admin/users/${archiveFor.userId}/archive`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    archived: targetArchived,
+                    reason: archiveReason.trim() || undefined,
+                    sourcePage: "admin/customers",
+                  }),
+                });
+                if (!res.ok) {
+                  const j = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+                  throw new Error(j?.error || "Failed to update archive status");
+                }
+                toast.success(targetArchived ? "Account archived" : "Account unarchived");
+                setArchiveFor(null);
+                setArchiveReason("");
+                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+              } catch (e: unknown) {
+                const message = e instanceof Error ? e.message : "Failed to update archive status";
+                toast.error(message);
+              } finally {
+                setArchiveSubmitting(false);
+              }
+            }}
+          >
+            {archiveFor?.archived ? "Unarchive" : "Archive"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!closeFor} onOpenChange={(open) => {
+      if (!open && !closeSubmitting) {
+        setCloseFor(null);
+        setCloseConfirmText("");
+        setCloseReason("");
+        setCloseReasonDetail("");
+        setCloseErrors({});
+      }
+    }}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="text-base font-semibold">Close account</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            Permanently close this unused customer account
+            {closeFor?.email ? ` (${closeFor.email})` : ""}. This cannot be undone.
+          </p>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">
+              Type &quot;{closeFor?.email || "CLOSE ACCOUNT"}&quot; to confirm
+            </label>
+            <Input
+              value={closeConfirmText}
+              onChange={(e) => {
+                setCloseConfirmText(e.target.value);
+                if (closeErrors.confirmText) setCloseErrors((prev) => ({ ...prev, confirmText: "" }));
+              }}
+              placeholder={closeFor?.email || "CLOSE ACCOUNT"}
+              aria-invalid={!!closeErrors.confirmText}
+              className={closeErrors.confirmText ? "border-red-500" : undefined}
+            />
+            {closeErrors.confirmText && <p className="text-xs text-red-600">{closeErrors.confirmText}</p>}
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">Closure reason</label>
+            <select
+              className={`h-9 w-full rounded border bg-background px-2 text-sm ${closeErrors.reason ? "border-red-500" : ""}`}
+              value={closeReason}
+              onChange={(e) => {
+                setCloseReason(e.target.value);
+                if (closeErrors.reason) setCloseErrors((prev) => ({ ...prev, reason: "" }));
+              }}
+            >
+              <option value="">Select reason</option>
+              <option value="Customer request">Customer request</option>
+              <option value="Duplicate account">Duplicate account</option>
+              <option value="Fraud or abuse">Fraud or abuse</option>
+              <option value="Other">Other</option>
+            </select>
+            {closeErrors.reason && <p className="text-xs text-red-600">{closeErrors.reason}</p>}
+            <Input
+              value={closeReasonDetail}
+              onChange={(e) => setCloseReasonDetail(e.target.value)}
+              placeholder={closeReason === "Other" ? "Required details" : "Optional details"}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" disabled={closeSubmitting} onClick={() => setCloseFor(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={closeSubmitting}
+            onClick={async () => {
+              if (!closeFor) return;
+              const expected = (closeFor.email || "CLOSE ACCOUNT").trim().toLowerCase();
+              const typed = closeConfirmText.trim().toLowerCase();
+              const detail = closeReasonDetail.trim();
+              const nextErrors: { confirmText?: string; reason?: string } = {};
+              if (typed !== expected) nextErrors.confirmText = "Confirmation text does not match.";
+              if (!closeReason) nextErrors.reason = "Select a closure reason.";
+              if (closeReason === "Other" && detail.length < 5) nextErrors.reason = "Enter details for Other.";
+              if (Object.keys(nextErrors).length > 0) {
+                setCloseErrors(nextErrors);
+                return;
+              }
+              setCloseSubmitting(true);
+              try {
+                const reason = closeReason === "Other"
+                  ? detail
+                  : detail
+                    ? `${closeReason}: ${detail}`
+                    : closeReason;
+                const res = await fetch(`/api/admin/users/${closeFor.userId}/close`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ reason, sourcePage: "admin/customers" }),
+                });
+                if (!res.ok) {
+                  const j = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+                  throw new Error(j?.error || "Failed to close account");
+                }
+                toast.success("Account closed");
+                setCloseFor(null);
+                setCloseConfirmText("");
+                setCloseReason("");
+                setCloseReasonDetail("");
+                setCloseErrors({});
+                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+              } catch (e: unknown) {
+                const message = e instanceof Error ? e.message : "Failed to close account";
+                toast.error(message);
+              } finally {
+                setCloseSubmitting(false);
+              }
+            }}
+          >
+            Close account
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1802,7 +2334,7 @@ function AdminCustomersContent() {
     >
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
         <DialogHeader>
-          <DialogTitle className="text-base font-semibold">Adjustment (back-office)</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Issue store credit</DialogTitle>
         </DialogHeader>
         {adjustFor && (() => {
           const row = rows.find((r) => r.user.id === adjustFor.userId);
@@ -1830,7 +2362,7 @@ function AdminCustomersContent() {
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder="Adjustment amount"
+                placeholder="Store credit amount"
                 value={adjustAmount}
                 onChange={(e) => {
                   setAdjustAmount(e.target.value);
@@ -1841,14 +2373,20 @@ function AdminCustomersContent() {
               />
               {adjustErrors.amount && <p className="text-xs text-red-600">{adjustErrors.amount}</p>}
               <Input
-                placeholder="Reason / note (recommended)"
+                placeholder="Reason / note (min 5 chars)"
                 value={adjustNote}
-                onChange={(e) => setAdjustNote(e.target.value)}
+                onChange={(e) => {
+                  setAdjustNote(e.target.value);
+                  if (adjustErrors.note) setAdjustErrors((prev) => ({ ...prev, note: "" }));
+                }}
+                aria-invalid={!!adjustErrors.note}
+                className={adjustErrors.note ? "border-red-500" : undefined}
               />
+              {adjustErrors.note && <p className="text-xs text-red-600">{adjustErrors.note}</p>}
               <p className="text-xs text-muted-foreground">
-                Positive adjustments reduce the customer&apos;s outstanding balance and
-                are applied automatically to the oldest unpaid or partially‑paid
-                orders first (same logic as Add Payment).
+                This creates unapplied store credit for the customer. Use{" "}
+                <strong>Apply to Balance</strong> from the Actions menu afterwards
+                if the credit should settle oldest unpaid orders.
               </p>
               <DialogFooter>
                 <DialogClose asChild>
@@ -1864,6 +2402,10 @@ function AdminCustomersContent() {
                       setAdjustErrors((prev) => ({ ...prev, amount: "Enter a valid adjustment amount." }));
                       return;
                     }
+                    if (adjustNote.trim().length < 5) {
+                      setAdjustErrors((prev) => ({ ...prev, note: "Please add a brief reason (min 5 chars)." }));
+                      return;
+                    }
                     try {
                       setAdjustSubmitting(true);
                       await createUserPayment({
@@ -1874,7 +2416,7 @@ function AdminCustomersContent() {
                         location: "admin/customers:actions-adjustment",
                         refundDisposition: "credit",
                       });
-                      toast.success("Adjustment recorded.");
+                      toast.success("Store credit issued.");
                       setAdjustFor(null);
                       setAdjustAmount("");
                       setAdjustNote("");
@@ -1894,7 +2436,7 @@ function AdminCustomersContent() {
                   }}
                   disabled={adjustSubmitting}
                 >
-                  Save Adjustment
+                  Issue credit
                 </Button>
               </DialogFooter>
             </div>
@@ -1992,6 +2534,83 @@ function AdminCustomersContent() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+    {/* Commerce profile */}
+    <Dialog
+      open={!!profileFor}
+      onOpenChange={(open) => {
+        if (!open) {
+          setProfileFor(null);
+          setProfileValue("B2B");
+          setProfileLoading(false);
+          setProfileSubmitting(false);
+        }
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-h-none">
+        <DialogHeader>
+          <DialogTitle className="text-base font-semibold">Set commerce profile</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            Controls customer feature access. B2B enables clinic procurement workflows; B2C uses the retail flow only.
+          </p>
+          <div className="space-y-2">
+            <label className="text-xs uppercase text-muted-foreground">
+              Profile for {profileFor?.email || "customer"}
+            </label>
+            <Select
+              value={profileValue}
+              onValueChange={(value) => setProfileValue(value as CustomerProfileType)}
+              disabled={profileLoading}
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="B2B">B2B</SelectItem>
+                <SelectItem value="B2C">B2C</SelectItem>
+              </SelectContent>
+            </Select>
+            {profileLoading && (
+              <p className="text-xs text-muted-foreground">Loading current profile...</p>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline" disabled={profileSubmitting}>
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button
+            disabled={profileSubmitting || profileLoading || !profileFor}
+            onClick={async () => {
+              if (!profileFor) return;
+              setProfileSubmitting(true);
+              try {
+                const res = await fetch(`/api/admin/customers/${profileFor.userId}/profile`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ profile: profileValue }),
+                });
+                const body = (await res.json().catch(() => ({}))) as { error?: string };
+                if (!res.ok) throw new Error(body.error || "Failed to update customer profile.");
+                toast.success(`Commerce profile updated to ${profileValue}.`);
+                setProfileFor(null);
+                queryClient.invalidateQueries({ queryKey: ["admin", "customers"] });
+              } catch (e: unknown) {
+                const message = e instanceof Error ? e.message : "Failed to update customer profile.";
+                toast.error(message);
+              } finally {
+                setProfileSubmitting(false);
+              }
+            }}
+          >
+            Save profile
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     {/* Explain totals dialog */}
     <Dialog open={!!explain} onOpenChange={(o) => { if (!o) setExplain(null); }}>
       <DialogContent className="max-w-2xl max-h-[85svh] overflow-y-auto sm:max-h-[90vh]">
@@ -2007,11 +2626,11 @@ function AdminCustomersContent() {
             storeCredit={explain.storeCredit}
             refundedCash={explain.refundedCash}
             balance={explain.balance}
+            canBackfillOrderLinks={actionPermissions.canManageCredit}
           />
         )}
       </DialogContent>
     </Dialog>
-    {/* Close Account functionality moved to Customer Accounts page */}
     </>
   );
 }
@@ -2166,6 +2785,7 @@ function ExplainTotals({
   storeCredit,
   refundedCash,
   balance,
+  canBackfillOrderLinks,
 }: {
   userId: string;
   paymentsTotal: number;
@@ -2174,6 +2794,7 @@ function ExplainTotals({
   storeCredit: number;
   refundedCash: number;
   balance: number;
+  canBackfillOrderLinks: boolean;
 }) {
   const queryClient = useQueryClient();
   const { data: payData, error: payErr, isFetching: fetchingPayments } = useClientQuery({
@@ -2183,6 +2804,15 @@ function ExplainTotals({
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j?.error || `Failed to load payments (${r.status})`);
       return j as { payments: PaymentRow[]; total: number };
+    },
+  });
+  const { data: balData } = useClientQuery({
+    queryKey: ["admin", "customer-balance", userId],
+    queryFn: async () => {
+      const r = await fetch(`/api/admin/customers/${userId}/balance`);
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error || `Failed to load balance (${r.status})`);
+      return j as { storeCredit: number; cashRefunds: number; balance: number; ordersTotal: number; paidTotal: number };
     },
   });
   const { data: ordData, error: ordErr, isFetching: fetchingOrders } = useClientQuery({
@@ -2245,7 +2875,7 @@ function ExplainTotals({
         <h4 className="text-sm font-semibold mb-2">
           Current summary (live orders + payments)
         </h4>
-        {hasAppliedOrders && ordersSum <= 0.005 ? (
+        {canBackfillOrderLinks && hasAppliedOrders && ordersSum <= 0.005 ? (
           <div className="mb-2 rounded-md border border-amber-200 bg-amber-50/60 p-2 text-xs text-amber-900">
             This customer has payments applied to orders that are not linked to their account,
             so current order totals show as zero. You can backfill order links below.
@@ -2273,13 +2903,13 @@ function ExplainTotals({
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Store credit (available)</div>
             <div className="font-mono tabular-nums font-semibold text-amber-700">
-              {formatCurrency(storeCredit)}
+              {formatCurrency(Number(balData?.storeCredit ?? storeCredit))}
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
             <div className="text-muted-foreground">Refunded (cash)</div>
             <div className="font-mono tabular-nums font-semibold text-rose-700">
-              {formatCurrency(refundedCash)}
+              {formatCurrency(Number(balData?.cashRefunds ?? refundedCash))}
             </div>
           </div>
           <div className="rounded border p-3 text-center break-words">
@@ -2377,12 +3007,12 @@ function ExplainTotals({
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <h4 className="text-sm font-semibold">Lifetime payment ledger</h4>
           <div className="flex items-center gap-2 text-xs">
-            <span className="text-muted-foreground">Show:</span>
+            <span className="text-muted-foreground" title="Filters the ledger table below; lifetime totals above are always shown in full">Table range:</span>
             <Button size="sm" variant={ledgerRange === "30" ? "default" : "outline"} onClick={() => setLedgerRange("30")}>
-              Last 30
+              Last 30 d
             </Button>
             <Button size="sm" variant={ledgerRange === "90" ? "default" : "outline"} onClick={() => setLedgerRange("90")}>
-              Last 90
+              Last 90 d
             </Button>
             <Button size="sm" variant={ledgerRange === "all" ? "default" : "outline"} onClick={() => setLedgerRange("all")}>
               All

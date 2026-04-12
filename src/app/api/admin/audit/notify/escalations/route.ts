@@ -8,6 +8,7 @@ import { evaluateAuditRisk } from "@/lib/audit-risk";
 import { sendEmail } from "@/lib/email";
 import { recordAuditLog } from "@/lib/audit-log";
 import { getEffectiveAuditRiskSettings } from "@/lib/audit-risk-settings.server";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 function parsePositiveInt(value: string | undefined, fallback: number) {
   const n = Number(value || 0);
@@ -28,9 +29,10 @@ function parseMeta(raw: string | null) {
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || user?.role !== "ADMIN") {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const currentUser = user as AuthenticatedUser;
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
   }
@@ -90,7 +92,7 @@ export async function POST(req: Request) {
       ? configuredTo
       : (
           await prisma.user.findMany({
-            where: { role: { in: ["ADMIN", "ACCOUNTANT"] }, deletedAt: null },
+            where: { role: "ADMIN", deletedAt: null },
             select: { email: true },
             take: 50,
           })
@@ -125,7 +127,7 @@ export async function POST(req: Request) {
   }
 
   await recordAuditLog({
-    actorId: user.id,
+    actorId: currentUser.id,
     action: "AUDIT_ESCALATION_NOTIFICATION_SENT",
     entityType: "AUDIT_LOG",
     entityId: "ESCALATION",

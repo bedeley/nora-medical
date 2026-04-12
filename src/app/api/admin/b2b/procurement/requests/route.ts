@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+type UserRow = { id: string; name: string | null; email: string | null; role: string };
 type ProcurementRequestSnapshot = {
   id: string;
   customerId: string;
@@ -127,13 +128,14 @@ export async function GET(req: Request) {
     : [];
   const userMap = new Map(users.map((u) => [u.id, u]));
 
-  const rows = hydrated
-    .map((row) => ({
-      ...row,
-      customer: userMap.get(row.customerId) || null,
-      accountManager: row.accountManagerId ? userMap.get(row.accountManagerId) || null : null,
-      isArchived: false as boolean,
-    }));
+  const rows = hydrated.map((row) => ({
+    ...row,
+    customer: (userMap.get(row.customerId) as UserRow | undefined) || null,
+    accountManager: row.accountManagerId
+      ? (userMap.get(row.accountManagerId) as UserRow | undefined) || null
+      : null,
+    isArchived: false as boolean,
+  }));
 
   const params = new URL(req.url).searchParams;
   const pageRaw = Number(params.get("page") || 1);
@@ -144,6 +146,18 @@ export async function GET(req: Request) {
   const archiveAfterDays = Number.isFinite(archiveAfterDaysRaw)
     ? Math.max(1, Math.min(365, Math.floor(archiveAfterDaysRaw)))
     : 30;
+
+  // New filter params
+  const requestTypeFilter = String(params.get("requestType") || "").trim().toUpperCase();
+  const validRequestTypes = new Set(["QUOTE", "PO_UPLOAD", "RECURRING_REORDER"]);
+  const effectiveTypeFilter = validRequestTypes.has(requestTypeFilter) ? requestTypeFilter : "";
+
+  const assignedManagerId = String(params.get("assignedManagerId") || "").trim();
+  const startDate = String(params.get("start") || "").trim();
+  const endDate = String(params.get("end") || "").trim();
+  const startMs = startDate ? new Date(startDate + "T00:00:00.000Z").getTime() : null;
+  const endMs = endDate ? new Date(endDate + "T23:59:59.999Z").getTime() : null;
+
   const nowMs = Date.now();
   const archiveMs = archiveAfterDays * 24 * 60 * 60 * 1000;
 
@@ -162,8 +176,42 @@ export async function GET(req: Request) {
     ),
   ).sort((a, b) => a.localeCompare(b));
 
+  // Build list of unique managers for the manager filter dropdown
+  const managerOptions: Array<{ id: string; name: string | null; email: string | null }> = Array.from(
+    new Map(
+      withArchive
+        .filter((row) => row.accountManager)
+        .map((row) => [row.accountManager!.id, row.accountManager!]),
+    ).values(),
+  ).sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
+
   const filtered = withArchive
     .filter((row) => {
+      // Status group filter
+      if (statusGroup === "open") {
+        if (row.isArchived || !openStatuses.has(row.status)) return false;
+      } else if (statusGroup === "closed") {
+        if (row.isArchived || (row.status !== "REJECTED" && row.status !== "CLOSED")) return false;
+      } else if (statusGroup === "archived") {
+        if (!row.isArchived) return false;
+      }
+      // Request type filter
+      if (effectiveTypeFilter && row.requestType !== effectiveTypeFilter) return false;
+      // Assigned manager filter
+      if (assignedManagerId) {
+        if (assignedManagerId === "__unassigned__") {
+          if (row.accountManagerId) return false;
+        } else {
+          if (row.accountManagerId !== assignedManagerId) return false;
+        }
+      }
+      // Date range filter (by createdAt)
+      if (startMs !== null || endMs !== null) {
+        const createdMs = new Date(row.createdAt).getTime();
+        if (startMs !== null && createdMs < startMs) return false;
+        if (endMs !== null && createdMs > endMs) return false;
+      }
+      // Text search
       if (q) {
         const haystack = [
           row.id,
@@ -178,15 +226,6 @@ export async function GET(req: Request) {
           .toLowerCase();
         if (!haystack.includes(q)) return false;
       }
-      if (statusGroup === "open") {
-        return !row.isArchived && openStatuses.has(row.status);
-      }
-      if (statusGroup === "closed") {
-        return !row.isArchived && (row.status === "REJECTED" || row.status === "CLOSED");
-      }
-      if (statusGroup === "archived") {
-        return row.isArchived;
-      }
       return true;
     })
     .sort((a, b) => {
@@ -200,7 +239,7 @@ export async function GET(req: Request) {
         const rb = rank(b);
         if (ra !== rb) return ra - rb;
       }
-      return a.updatedAt < b.updatedAt ? 1 : -1;
+      return a.createdAt < b.createdAt ? 1 : -1;
     });
 
   const pageSize = Number.isFinite(pageSizeRaw)
@@ -220,5 +259,6 @@ export async function GET(req: Request) {
     totalPages,
     archiveAfterDays,
     clinicOptions,
+    managerOptions,
   });
 }

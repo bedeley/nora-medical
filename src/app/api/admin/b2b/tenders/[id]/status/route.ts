@@ -97,10 +97,16 @@ export async function POST(
       action: "B2B_TENDER_STATUS_UPDATED",
       entityType: "B2B_TENDER",
       entityId: params.id,
+      outcome: "SUCCESS",
       meta: JSON.stringify({
-        status,
+        sourcePage: "admin/b2b/tenders",
+        operation: "status_update",
+        before: { status: tender.status },
+        after:  { status },
         note: parsed.data.note?.trim() || null,
-        snapshot,
+        tenderNumber: snapshot.tenderNumber,
+        buyerName: snapshot.buyerName,
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
       }),
     },
   });

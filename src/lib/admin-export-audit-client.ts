@@ -3,9 +3,16 @@ export type AdminExportAuditPayload = {
   format: "CSV" | "PDF";
   fileName: string;
   scopeSnapshot?: string;
+  sourcePage?: string;
+  resultSummary?: string;
   rowCount?: number;
   columnCount?: number;
   byteSize?: number;
+  matchingCount?: number;
+  totalCount?: number;
+  sortKey?: string;
+  sortDir?: string;
+  valuationMode?: string;
 };
 
 export async function logAdminExportDownload(payload: AdminExportAuditPayload) {

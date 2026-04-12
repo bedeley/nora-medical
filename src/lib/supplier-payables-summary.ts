@@ -341,6 +341,7 @@ export async function executeSupplierPayablesSummarySend(params?: {
   actorId?: string | null;
   auditAction?: string;
   subjectPrefix?: string;
+  sourcePage?: string;
 }) {
   const toRecipients = parseRecipients(process.env.SUPPLIER_PAYABLES_SUMMARY_TO);
   const ccRecipients = parseRecipients(process.env.SUPPLIER_PAYABLES_SUMMARY_CC);
@@ -377,7 +378,11 @@ export async function executeSupplierPayablesSummarySend(params?: {
       subject,
       recipientCount: targetRecipients.length,
       simulated,
+      sourcePage: params?.sourcePage || "admin/supplier-payments",
+      section: "summary-schedule",
+      operation: "run_supplier_payables_summary_send",
       snapshot,
+      resultSummary: `Sent supplier payables summary to ${targetRecipients.length} recipient(s).`,
     },
   });
 
@@ -390,4 +395,3 @@ export async function executeSupplierPayablesSummarySend(params?: {
   };
   return result;
 }
-

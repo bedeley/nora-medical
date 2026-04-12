@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -46,14 +47,34 @@ function bankDate(value: string) {
   return d.toLocaleDateString(undefined, { timeZone: "UTC" });
 }
 
+async function fetchJsonOrThrow<T>(input: string): Promise<T> {
+  const res = await fetch(input, { cache: "no-store" });
+  const payload = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+  if (!res.ok) {
+    const message =
+      typeof payload === "object" && payload !== null && "error" in payload
+        ? String(payload.error || `Request failed (${res.status})`)
+        : `Request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
 export default function AllBankTransactionsPage() {
+  const searchParams = useSearchParams();
+  const initialBankAccountId = String(searchParams.get("bankAccountId") || searchParams.get("bankId") || "").trim();
   const [q, setQ] = useState("");
-  const [bankAccountId, setBankAccountId] = useState("");
+  const [bankAccountId, setBankAccountId] = useState(initialBankAccountId);
   const [matched, setMatched] = useState("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+
+  useEffect(() => {
+    setBankAccountId(initialBankAccountId);
+    setPage(1);
+  }, [initialBankAccountId]);
 
   const params = useMemo(() => {
     const p = new URLSearchParams();
@@ -67,15 +88,31 @@ export default function AllBankTransactionsPage() {
     return p.toString();
   }, [q, bankAccountId, matched, from, to, page, pageSize]);
 
-  const { data: banksData } = useClientQuery<BankAccount[]>({
+  const {
+    data: banksData,
+    isError: banksIsError,
+    error: banksError,
+  } = useClientQuery<BankAccount[]>({
     queryKey: ["accounting", "banks"],
-    queryFn: () => fetch("/api/admin/accounting/banks").then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<BankAccount[]>("/api/admin/accounting/banks"),
   });
-  const banks = Array.isArray(banksData) ? banksData : [];
+  const banks = useMemo(
+    () => (Array.isArray(banksData) ? banksData : []),
+    [banksData],
+  );
+  const selectedBank = useMemo(
+    () => banks.find((bank) => bank.id === bankAccountId) || null,
+    [banks, bankAccountId],
+  );
 
-  const { data, isLoading } = useClientQuery<ResponseShape>({
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+  } = useClientQuery<ResponseShape>({
     queryKey: ["accounting", "all-bank-transactions", params],
-    queryFn: () => fetch(`/api/admin/accounting/banks/all-transactions?${params}`).then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<ResponseShape>(`/api/admin/accounting/banks/all-transactions?${params}`),
   });
 
   const rows = Array.isArray(data?.rows) ? data.rows : [];
@@ -90,70 +127,103 @@ export default function AllBankTransactionsPage() {
           <p className="text-sm text-muted-foreground">
             Read-only global search across all bank accounts.
           </p>
+          {selectedBank ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Scoped from bank context: <span className="font-medium text-foreground">{selectedBank.name}</span>
+            </p>
+          ) : null}
         </div>
         <Button asChild size="sm" variant="outline">
-          <Link href="/admin/accounting/banks">Back to bank-scoped page</Link>
+          <Link
+            href={
+              bankAccountId
+                ? `/admin/accounting/banks?bankId=${encodeURIComponent(bankAccountId)}`
+                : "/admin/accounting/banks"
+            }
+          >
+            Back to bank-scoped page
+          </Link>
         </Button>
       </div>
+
+      {banksIsError ? (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {banksError instanceof Error ? banksError.message : "Failed to load bank accounts."}
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader>
           <CardTitle>Filters</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-6">
-            <Input
-              className="lg:col-span-2"
-              placeholder="Search description, reference, bank..."
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setPage(1);
-              }}
-            />
-            <select
-              className="h-10 rounded-md border bg-background px-3 text-sm"
-              value={bankAccountId}
-              onChange={(e) => {
-                setBankAccountId(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="">All banks</option>
-              {banks.map((bank) => (
-                <option key={bank.id} value={bank.id}>
-                  {bank.name} ({bank.currency})
-                </option>
-              ))}
-            </select>
-            <select
-              className="h-10 rounded-md border bg-background px-3 text-sm"
-              value={matched}
-              onChange={(e) => {
-                setMatched(e.target.value);
-                setPage(1);
-              }}
-            >
-              <option value="all">Matched + unmatched</option>
-              <option value="matched">Matched only</option>
-              <option value="unmatched">Unmatched only</option>
-            </select>
-            <Input
-              type="date"
-              value={from}
-              onChange={(e) => {
-                setFrom(e.target.value);
-                setPage(1);
-              }}
-            />
-            <Input
-              type="date"
-              value={to}
-              onChange={(e) => {
-                setTo(e.target.value);
-                setPage(1);
-              }}
-            />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+            <label className="space-y-1 xl:col-span-2">
+              <span className="text-xs font-medium text-muted-foreground">Search</span>
+              <Input
+                placeholder="Search description, reference, bank..."
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Bank account</span>
+              <select
+                className="h-10 rounded-md border bg-background px-3 text-sm"
+                value={bankAccountId}
+                onChange={(e) => {
+                  setBankAccountId(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="">All banks</option>
+                {banks.map((bank) => (
+                  <option key={bank.id} value={bank.id}>
+                    {bank.name} ({bank.currency})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">Match status</span>
+              <select
+                className="h-10 rounded-md border bg-background px-3 text-sm"
+                value={matched}
+                onChange={(e) => {
+                  setMatched(e.target.value);
+                  setPage(1);
+                }}
+              >
+                <option value="all">Matched + unmatched</option>
+                <option value="matched">Matched only</option>
+                <option value="unmatched">Unmatched only</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">From date</span>
+              <Input
+                type="date"
+                value={from}
+                onChange={(e) => {
+                  setFrom(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium text-muted-foreground">To date</span>
+              <Input
+                type="date"
+                value={to}
+                onChange={(e) => {
+                  setTo(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </label>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -179,8 +249,15 @@ export default function AllBankTransactionsPage() {
           <CardTitle>Transactions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
+          {isError ? (
+            <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {error instanceof Error ? error.message : "Failed to load transactions."}
+            </div>
+          ) : null}
           {isLoading ? <p className="text-muted-foreground">Loading transactions...</p> : null}
-          {!isLoading && rows.length === 0 ? <p className="text-muted-foreground">No transactions found.</p> : null}
+          {!isLoading && !isError && rows.length === 0 ? (
+            <p className="text-muted-foreground">No transactions found.</p>
+          ) : null}
           {rows.map((row) => (
             <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 border-b py-2">
               <div className="space-y-0.5">
@@ -235,4 +312,3 @@ export default function AllBankTransactionsPage() {
     </section>
   );
 }
-

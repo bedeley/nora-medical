@@ -8,6 +8,8 @@ import { hasPermission } from "@/lib/permissions";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 
+const DEFAULT_SOURCE_PAGE = "admin/supplier-payments";
+
 function resolvePayableQuantity(purchase: {
   status: string;
   quantity?: number | null;
@@ -47,6 +49,58 @@ function parseMonth(m?: string) {
   return { from, to };
 }
 
+type SortMode = "newest" | "oldest" | "amount_desc" | "amount_asc";
+type ExposureView = "full" | "received";
+type AgingFilter =
+  | "all"
+  | "due_today"
+  | "due_7"
+  | "overdue"
+  | "0_30"
+  | "31_60"
+  | "61_90"
+  | "90_plus";
+
+function sortRows<T extends { createdAt: string; total?: number; amount?: number }>(
+  items: T[],
+  sortMode: SortMode,
+) {
+  const list = [...items];
+  list.sort((a, b) => {
+    if (sortMode === "amount_desc") return Number(b.total ?? b.amount ?? 0) - Number(a.total ?? a.amount ?? 0);
+    if (sortMode === "amount_asc") return Number(a.total ?? a.amount ?? 0) - Number(b.total ?? b.amount ?? 0);
+    const delta = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    return sortMode === "newest" ? delta : -delta;
+  });
+  return list;
+}
+
+function daysBetween(fromIso: string, toDate = new Date()) {
+  const from = new Date(fromIso);
+  const ms = toDate.getTime() - from.getTime();
+  return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
+}
+
+function getAgingBucket(days: number) {
+  if (days <= 30) return "0_30";
+  if (days <= 60) return "31_60";
+  if (days <= 90) return "61_90";
+  return "90_plus";
+}
+
+function expectedDiffDays(expectedAt: string | null, today = new Date()) {
+  if (!expectedAt) return null;
+  const expected = new Date(expectedAt);
+  const expectedDay = new Date(expected.getFullYear(), expected.getMonth(), expected.getDate());
+  const todayDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return Math.floor((expectedDay.getTime() - todayDay.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function normalizeSortMode(raw: string | null, fallbackSortDir: "asc" | "desc"): SortMode {
+  if (raw === "newest" || raw === "oldest" || raw === "amount_desc" || raw === "amount_asc") return raw;
+  return fallbackSortDir === "asc" ? "oldest" : "newest";
+}
+
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
@@ -62,8 +116,13 @@ export async function GET(req: Request) {
   const statusRaw = searchParams.get("status") || "";
   const q = searchParams.get("q") || "";
   const supplierId = searchParams.get("supplierId") || "";
+  const paymentId = searchParams.get("paymentId") || "";
   const strictDate = searchParams.get("strictDate") === "1";
   const sortDir = (searchParams.get("sort") as "asc" | "desc") || "desc";
+  const sortMode = normalizeSortMode(searchParams.get("sortMode"), sortDir);
+  const exposureView = (searchParams.get("exposureView") as ExposureView) || "full";
+  const agingFilter = (searchParams.get("agingFilter") as AgingFilter) || "all";
+  const outstandingOnly = searchParams.get("outstandingOnly") === "1";
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
   const pageSize = Math.max(1, Math.min(200, parseInt(searchParams.get("pageSize") || "25", 10) || 25));
 
@@ -195,6 +254,7 @@ export async function GET(req: Request) {
       deletedAt: null,
       status: "PENDING_APPROVAL",
       approvedAt: null,
+      ...(paymentId ? { id: paymentId } : {}),
       ...(dateFilter ? { createdAt: dateFilter } : {}),
       ...(supplierId
         ? { supplierId }
@@ -323,20 +383,49 @@ export async function GET(req: Request) {
     }
     creditBalanceBySupplier.set(key, remainingCredit);
   }
-  const sortedRows = [...rows].sort((a, b) => {
-    const aTime = new Date(a.createdAt).getTime();
-    const bTime = new Date(b.createdAt).getTime();
-    return sortDir === "asc" ? aTime - bTime : bTime - aTime;
+  const sortedRows = sortRows(rows, sortMode);
+  const scopedRows = sortedRows.filter((row) => {
+    if (
+      exposureView === "received" &&
+      row.status !== "RECEIVED" &&
+      row.status !== "PARTIALLY_RECEIVED"
+    ) {
+      return false;
+    }
+    if (outstandingOnly && Number(row.outstanding || 0) <= 0.01) {
+      return false;
+    }
+    if (agingFilter === "all") return true;
+    if (agingFilter === "overdue") {
+      const diff = expectedDiffDays(row.expectedAt);
+      return Number(row.outstanding || 0) > 0.01 && diff !== null && diff < 0;
+    }
+    if (agingFilter === "due_today") {
+      if (!row.expectedAt || Number(row.outstanding || 0) <= 0.01) return false;
+      const expected = new Date(row.expectedAt);
+      const today = new Date();
+      return (
+        expected.getFullYear() === today.getFullYear() &&
+        expected.getMonth() === today.getMonth() &&
+        expected.getDate() === today.getDate()
+      );
+    }
+    if (agingFilter === "due_7") {
+      const diff = expectedDiffDays(row.expectedAt);
+      return Number(row.outstanding || 0) > 0.01 && diff !== null && diff >= 0 && diff <= 7;
+    }
+    if (Number(row.outstanding || 0) <= 0.01) return false;
+    return getAgingBucket(daysBetween(row.createdAt)) === agingFilter;
   });
 
-  const total = sortedRows.length;
-  const totalAmount = sortedRows.reduce((sum, row) => sum + Number(row.total || 0), 0);
-  const totalPaid = sortedRows.reduce((sum, row) => sum + Number(row.paidAmount || 0), 0);
-  const totalCreditsFromRows = tempRows.reduce(
+  const total = scopedRows.length;
+  const totalAmount = scopedRows.reduce((sum, row) => sum + Number(row.total || 0), 0);
+  const totalPaid = scopedRows.reduce((sum, row) => sum + Number(row.paidAmount || 0), 0);
+  const totalCreditsFromRows = scopedRows.reduce(
     (sum, row) => sum + Number(row.creditGenerated || 0),
     0,
   );
-  const totalRefundsFromRows = tempRows.reduce(
+  const totalRefundsFromRows = scopedRows.reduce(
     (sum, row) => sum + Number(row.refundAmount || 0),
     0,
   );
@@ -366,21 +455,26 @@ export async function GET(req: Request) {
   }
   const totalCredits = totalCreditsFromRows + extraCredits;
   const totalRefunds = totalRefundsFromRows + extraRefunds;
+  const scopeSupplierKeys = new Set(scopedRows.map((row) => String(row.supplierKey || "")));
   const totalCreditBalance =
-    Array.from(creditBalanceBySupplier.values()).reduce((sum, value) => sum + Number(value || 0), 0) +
+    Array.from(creditBalanceBySupplier.entries()).reduce(
+      (sum, [key, value]) => sum + (scopeSupplierKeys.has(key) ? Number(value || 0) : 0),
+      0,
+    ) +
     Math.max(0, extraCredits - extraRefunds);
-  const totalOutstanding = sortedRows.reduce((sum, row) => sum + Number(row.outstanding || 0), 0);
-  const totalPendingPaymentApprovals = sortedRows.reduce((sum, row) => sum + Number(row.pendingAmount || 0), 0);
+  const totalOutstanding = scopedRows.reduce((sum, row) => sum + Number(row.outstanding || 0), 0);
+  const totalPendingPaymentApprovals = scopedRows.reduce((sum, row) => sum + Number(row.pendingAmount || 0), 0);
   const totalPendingPurchaseApprovals = pendingPurchaseApprovals.reduce(
     (sum, purchase) =>
       sum + Number(purchase.unitCost || 0) * Number(purchase.orderedQuantity ?? purchase.quantity ?? 0),
     0,
   );
   const startIdx = (page - 1) * pageSize;
-  const paged = sortedRows.slice(startIdx, startIdx + pageSize);
+  const paged = scopedRows.slice(startIdx, startIdx + pageSize);
 
   return NextResponse.json({
     rows: paged,
+    scopeRows: scopedRows,
     total,
     totalAmount,
     totalPaid,
@@ -440,6 +534,7 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
+    const sourcePage = String(body.sourcePage || DEFAULT_SOURCE_PAGE).trim() || DEFAULT_SOURCE_PAGE;
     const kind = String(body.kind || "").trim().toLowerCase();
     const approvalThreshold = Number(process.env.SUPPLIER_PAYMENT_APPROVAL_THRESHOLD || 0);
     const canBypassApproval = canManageSupplierPayments;
@@ -453,6 +548,15 @@ export async function POST(req: Request) {
     const note = String(body.note || "").trim() || null;
     const proofUrl = String(body.proofUrl || "").trim() || null;
     const paidAt = body.paidAt ? new Date(body.paidAt) : new Date();
+    const requestedPurchaseIds: string[] = Array.isArray(body.purchaseIds)
+      ? Array.from(
+          new Set(
+            body.purchaseIds
+              .map((value: unknown) => String(value || "").trim())
+              .filter((value: string) => Boolean(value)),
+          ),
+        )
+      : [];
 
     if (!Number.isFinite(amount) || amount <= 0) {
       return NextResponse.json({ error: "Invalid payment details" }, { status: 400 });
@@ -491,7 +595,11 @@ export async function POST(req: Request) {
           action: "SUPPLIER_REFUND_CREATE",
           entityType: "SUPPLIER_PAYMENT",
           entityId: payment.id,
+          request: req,
           meta: {
+            sourcePage,
+            section: "refunds",
+            operation: "create_supplier_refund",
             supplierId: resolvedSupplierId,
             purchaseId: purchaseId || null,
             amount: Number(payment.amount || 0),
@@ -500,6 +608,7 @@ export async function POST(req: Request) {
             note: payment.note || null,
             status: payment.status,
             paidAt: payment.paidAt ? payment.paidAt.toISOString() : null,
+            resultSummary: `Recorded supplier refund of ${Number(payment.amount || 0).toFixed(2)}.`,
           },
         });
       } catch {
@@ -562,7 +671,11 @@ export async function POST(req: Request) {
           action: "SUPPLIER_PAYMENT_CREATE",
           entityType: "SUPPLIER_PAYMENT",
           entityId: payment.id,
+          request: req,
           meta: {
+            sourcePage,
+            section: "ledger",
+            operation: "create_supplier_payment",
             supplierId: purchase.supplierId || null,
             purchaseId: purchase.id,
             amount: Number(payment.amount || 0),
@@ -573,6 +686,10 @@ export async function POST(req: Request) {
             approvalThreshold: approvalThreshold > 0 ? approvalThreshold : null,
             requiresApproval: payment.status === "PENDING_APPROVAL",
             paidAt: payment.paidAt ? payment.paidAt.toISOString() : null,
+            resultSummary:
+              payment.status === "PENDING_APPROVAL"
+                ? `Recorded supplier payment of ${Number(payment.amount || 0).toFixed(2)} pending approval.`
+                : `Recorded supplier payment of ${Number(payment.amount || 0).toFixed(2)}.`,
           },
         });
       } catch {
@@ -608,6 +725,7 @@ export async function POST(req: Request) {
 
     const purchaseWhere: Prisma.PurchaseWhereInput = {
       deletedAt: null,
+      ...(requestedPurchaseIds.length ? { id: { in: requestedPurchaseIds } } : {}),
       status: { in: [...eligibleStatuses, "CANCELLED"] as PurchaseStatus[] },
       ...(resolvedSupplierId
         ? {
@@ -715,7 +833,11 @@ export async function POST(req: Request) {
           action: "SUPPLIER_PAYMENT_CREATE",
           entityType: "SUPPLIER_PAYMENT",
           entityId: payment.id,
+          request: req,
           meta: {
+            sourcePage,
+            section: "bulk-payments",
+            operation: "create_bulk_supplier_payment",
             supplierId: payment.supplierId || resolvedSupplierId || null,
             purchaseId: payment.purchaseId || null,
             amount: Number(payment.amount || 0),
@@ -727,6 +849,12 @@ export async function POST(req: Request) {
             requiresApproval: payment.status === "PENDING_APPROVAL",
             paidAt: payment.paidAt ? payment.paidAt.toISOString() : null,
             source: "BULK_SUPPLIER_PAYMENT",
+            scopedPurchaseCount: requestedPurchaseIds.length || allocations.length,
+            scopedPurchaseIdsSample: requestedPurchaseIds.slice(0, 25),
+            resultSummary:
+              payment.status === "PENDING_APPROVAL"
+                ? `Recorded bulk supplier payment allocation of ${Number(payment.amount || 0).toFixed(2)} pending approval.`
+                : `Recorded bulk supplier payment allocation of ${Number(payment.amount || 0).toFixed(2)}.`,
           },
         });
       } catch {

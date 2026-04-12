@@ -8,6 +8,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
 import { formatCurrency } from "@/lib/currency";
 import { postExpenseEntry } from "@/lib/accounting-posting";
+import { getExpenseMutationState } from "@/lib/expense-admin";
 
 const SYSTEM_DRIVEN_EXPENSE_CODES = new Set(["5000", "6100", "6990"]);
 const SYSTEM_DRIVEN_EXPENSE_NAME_PATTERNS = [
@@ -110,6 +111,28 @@ function appendSettlementContext(note: string | undefined, payNow: boolean, paym
   if (!base) return settlementText;
   if (base.toLowerCase().includes("settlement:")) return base;
   return `${base}\n${settlementText}`;
+}
+
+type ExpenseSortBy = "createdAt" | "category" | "vendor" | "amount" | "settlementStatus";
+type ExpenseSortDir = "asc" | "desc";
+
+function parsePositiveInt(value: string | null, fallback: number, max = 500) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function normalizeExpenseSortBy(value: string | null): ExpenseSortBy {
+  return value === "category" ||
+    value === "vendor" ||
+    value === "amount" ||
+    value === "settlementStatus"
+    ? value
+    : "createdAt";
+}
+
+function normalizeExpenseSortDir(value: string | null): ExpenseSortDir {
+  return value === "asc" ? "asc" : "desc";
 }
 
 export async function POST(req: Request) {
@@ -254,7 +277,9 @@ export async function POST(req: Request) {
         action: "EXPENSE_CREATE",
         entityType: "EXPENSE",
         entityId: expense.id,
+        request: req,
         meta: {
+          sourcePage: "admin/expenses",
           expenseId: expense.id,
           createdAt: expense.createdAt.toISOString(),
           category: expense.category,
@@ -313,6 +338,10 @@ export async function GET(req: Request) {
       : "";
     const settlementState = searchParams.get("settlementState");
     const format = searchParams.get("format");
+    const page = parsePositiveInt(searchParams.get("page"), 1, 1_000_000);
+    const pageSize = parsePositiveInt(searchParams.get("pageSize"), 50, 200);
+    const sortBy = normalizeExpenseSortBy(searchParams.get("sortBy"));
+    const sortDir = normalizeExpenseSortDir(searchParams.get("sortDir"));
 
     const where: {
       category?: { contains: string; mode: "insensitive" };
@@ -368,6 +397,7 @@ export async function GET(req: Request) {
           deletedAt: null,
         },
         _sum: { amount: true },
+        _count: { _all: true },
       })
       : [];
     const reversalMap = new Map(
@@ -375,19 +405,31 @@ export async function GET(req: Request) {
         .filter((row) => row.reversalOfId)
         .map((row) => [row.reversalOfId as string, Number(row._sum.amount ?? 0)])
     );
-    const settlementEntries = await prisma.journalEntry.findMany({
-      where: {
-        sourceType: "EXPENSE",
-        status: "POSTED",
-        sourceId: { contains: ":settlement:" },
-      },
-      select: {
-        sourceId: true,
-        createdAt: true,
-        lines: { select: { debit: true } },
-      },
-    });
+    const reversalCountMap = new Map(
+      reversalTotals
+        .filter((row) => row.reversalOfId)
+        .map((row) => [row.reversalOfId as string, Number(row._count?._all ?? 0)])
+    );
+    // Scope settlement entry query to the current result set so large databases
+    // don't have to scan every settlement entry on every page load.
+    const settlementEntries = originalIds.length
+      ? await prisma.journalEntry.findMany({
+          where: {
+            sourceType: "EXPENSE",
+            status: "POSTED",
+            OR: originalIds.map((id) => ({
+              sourceId: { startsWith: `${id}:settlement:` },
+            })),
+          },
+          select: {
+            sourceId: true,
+            createdAt: true,
+            lines: { select: { debit: true } },
+          },
+        })
+      : [];
     const settlementMap = new Map<string, number>();
+    const settlementCountMap = new Map<string, number>();
     const latestSettlementAtMap = new Map<string, string>();
     for (const entry of settlementEntries) {
       const sourceId = String(entry.sourceId || "");
@@ -396,6 +438,7 @@ export async function GET(req: Request) {
       const settlementAmount = (entry.lines || []).reduce((sum, line) => sum + Number(line.debit || 0), 0);
       if (!(settlementAmount > 0)) continue;
       settlementMap.set(expenseId, (settlementMap.get(expenseId) || 0) + settlementAmount);
+      settlementCountMap.set(expenseId, (settlementCountMap.get(expenseId) || 0) + 1);
       const iso = new Date(entry.createdAt).toISOString();
       const prev = latestSettlementAtMap.get(expenseId) || "";
       if (!prev || new Date(iso).getTime() > new Date(prev).getTime()) {
@@ -404,21 +447,40 @@ export async function GET(req: Request) {
     }
     const itemsWithRemaining = items.map((item) => {
       if (item.isReversal) {
+        const mutationState = getExpenseMutationState({
+          createdAt: item.createdAt,
+          deletedAt: item.deletedAt,
+          isReversal: item.isReversal,
+          payrollRunId: item.payrollRunId,
+          reversalCount: 0,
+          settlementCount: 0,
+        });
         return {
           ...item,
           reversalRemaining: null,
           reversedSoFar: null,
+          reversalCount: 0,
+          settlementCount: 0,
           settlementPaid: null,
           settlementOutstanding: null,
           settlementStatus: null,
           settlementLastPaidAt: null,
+          mutationLocked: mutationState.mutationLocked,
+          canEdit: mutationState.canEdit,
+          canDelete: mutationState.canDelete,
+          canReverse: mutationState.canReverse,
+          canSettle: mutationState.canSettle,
+          lockCode: mutationState.lockCode,
+          lockReason: mutationState.lockReason,
         };
       }
       const reversedSoFar = Math.abs(reversalMap.get(item.id) ?? 0);
+      const reversalCount = reversalCountMap.get(item.id) ?? 0;
       const originalAmount = Number(item.amount);
       const remaining = Math.max(0, originalAmount - reversedSoFar);
       const noteText = String(item.note || "");
       const hasSettlementJournal = settlementMap.has(item.id);
+      const settlementCount = settlementCountMap.get(item.id) ?? 0;
       const isAccrualTracked = /settlement:\s*accrued/i.test(noteText) || hasSettlementJournal;
       const paidRaw = settlementMap.get(item.id) ?? 0;
       const settlementPaid = isAccrualTracked ? Math.min(originalAmount, Math.max(0, paidRaw)) : null;
@@ -434,14 +496,31 @@ export async function GET(req: Request) {
             ? "PARTIALLY_PAID"
             : "PAID"
           : null;
+      const mutationState = getExpenseMutationState({
+        createdAt: item.createdAt,
+        deletedAt: item.deletedAt,
+        isReversal: item.isReversal,
+        payrollRunId: item.payrollRunId,
+        reversalCount,
+        settlementCount,
+      });
       return {
         ...item,
         reversalRemaining: remaining,
         reversedSoFar,
+        reversalCount,
+        settlementCount,
         settlementPaid,
         settlementOutstanding,
         settlementStatus,
         settlementLastPaidAt: latestSettlementAtMap.get(item.id) || null,
+        mutationLocked: mutationState.mutationLocked,
+        canEdit: mutationState.canEdit,
+        canDelete: mutationState.canDelete,
+        canReverse: mutationState.canReverse,
+        canSettle: mutationState.canSettle,
+        lockCode: mutationState.lockCode,
+        lockReason: mutationState.lockReason,
       };
     });
     const stateFilter =
@@ -452,35 +531,132 @@ export async function GET(req: Request) {
       ? itemsWithRemaining.filter((item) => item.settlementStatus === stateFilter)
       : itemsWithRemaining;
 
-    // Prepare totals
+    const sortedItems = [...filteredItems].sort((a, b) => {
+      const direction = sortDir === "asc" ? 1 : -1;
+      const settlementRank = (value: string | null | undefined) =>
+        value === "UNPAID" ? 0 : value === "PARTIALLY_PAID" ? 1 : value === "PAID" ? 2 : 3;
+      const aVal =
+        sortBy === "amount"
+          ? Number(a.amount)
+          : sortBy === "category"
+          ? String(a.category || "").toLowerCase()
+          : sortBy === "vendor"
+          ? String(a.vendor || "").toLowerCase()
+          : sortBy === "settlementStatus"
+          ? settlementRank(a.settlementStatus)
+          : new Date(a.createdAt).getTime();
+      const bVal =
+        sortBy === "amount"
+          ? Number(b.amount)
+          : sortBy === "category"
+          ? String(b.category || "").toLowerCase()
+          : sortBy === "vendor"
+          ? String(b.vendor || "").toLowerCase()
+          : sortBy === "settlementStatus"
+          ? settlementRank(b.settlementStatus)
+          : new Date(b.createdAt).getTime();
+      if (aVal < bVal) return -1 * direction;
+      if (aVal > bVal) return 1 * direction;
+      return direction * (new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    });
+
     const totalAmount = filteredItems.reduce(
       (sum: number, e: { amount: unknown }) => sum + Number(e.amount),
       0
     );
+    const totalCount = filteredItems.length;
+    const grossAmount = filteredItems
+      .filter((item) => !item.isReversal)
+      .reduce((sum, item) => sum + Number(item.amount), 0);
+    const reversalAmount = Math.abs(
+      filteredItems
+        .filter((item) => item.isReversal)
+        .reduce((sum, item) => sum + Number(item.amount), 0)
+    );
+    const outstandingLiability = filteredItems
+      .filter((item) => item.settlementStatus === "UNPAID" || item.settlementStatus === "PARTIALLY_PAID")
+      .reduce((sum, item) => sum + Number(item.settlementOutstanding || 0), 0);
+    const unpaidCount = filteredItems.filter(
+      (item) => item.settlementStatus === "UNPAID" || item.settlementStatus === "PARTIALLY_PAID"
+    ).length;
+    const topCategories = Array.from(
+      filteredItems
+        .filter((item) => !item.isReversal)
+        .reduce((acc, item) => {
+          const key = String(item.category || "").trim();
+          if (!key) return acc;
+          acc.set(key, (acc.get(key) || 0) + 1);
+          return acc;
+        }, new Map<string, number>())
+        .entries(),
+    )
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([category, count]) => ({ category, count }));
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const currentPage = Math.min(Math.max(1, page), totalPages);
+    const pagedItems =
+      format === "csv"
+        ? sortedItems
+        : sortedItems.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
     if (format === "csv") {
-      const header = ["Date", "Category", "Amount (GHS)", "Amount (Raw)", "Vendor", "Reason", "Note"]; 
-      const rows = filteredItems.map((e: { createdAt: Date; category: string; amount: unknown; vendor?: string | null; reason?: string | null; note?: string | null }) => [
+      const header = [
+        "Date", "Category", "Amount (GHS)", "Amount (Raw)",
+        "Vendor", "Reason",
+        "Settlement Status", "Paid (GHS)", "Outstanding (GHS)",
+        "Settlement Count", "Reversal Count", "Mutation Lock", "Lock Reason",
+        "Note",
+      ];
+      const csvRows = sortedItems.map((e) => [
         new Date(e.createdAt).toISOString(),
         e.category.replaceAll("\"", "'"),
         formatCurrency(Number(e.amount)),
         Number(e.amount).toFixed(2),
         (e.vendor ?? "").replaceAll("\"", "'"),
         (e.reason ?? "").replaceAll("\"", "'"),
-        (e.note ?? "").replaceAll("\"", "'")
+        e.settlementStatus ?? "",
+        e.settlementPaid !== null ? Number(e.settlementPaid).toFixed(2) : "",
+        e.settlementOutstanding !== null ? Number(e.settlementOutstanding).toFixed(2) : "",
+        String(e.settlementCount ?? 0),
+        String(e.reversalCount ?? 0),
+        e.mutationLocked ? "Locked" : "Open",
+        e.lockReason ?? "",
+        (e.note ?? "").replaceAll("\"", "'"),
       ]);
-      const csv = [header, ...rows]
-        .map((r: Array<string | number>) => r.map((v: string | number) => `"${String(v)}"`).join(","))
+      const csv = [header, ...csvRows]
+        .map((r) => r.map((v) => `"${String(v).replaceAll('"', "'")}"`).join(","))
         .join("\n");
+      const fileDate =
+        start && end
+          ? `${start}_to_${end}`
+          : new Date().toISOString().slice(0, 10);
       return new NextResponse(csv, {
         headers: {
           "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename=expenses_${Date.now()}.csv`,
+          "Content-Disposition": `attachment; filename=expenses_${fileDate}.csv`,
         },
-      });
+        });
     }
 
-    return NextResponse.json({ items: filteredItems, totalAmount });
+    return NextResponse.json({
+      items: pagedItems,
+      totalAmount,
+      totalCount,
+      page: currentPage,
+      pageSize,
+      totalPages,
+      sortBy,
+      sortDir,
+      summary: {
+        grossAmount,
+        reversalAmount,
+        netAmount: totalAmount,
+        outstandingLiability,
+        unpaidCount,
+        topCategories,
+      },
+    });
   } catch (err) {
     console.error("Error listing expenses:", err);
     return NextResponse.json(

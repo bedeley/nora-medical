@@ -6,6 +6,7 @@ import { notifyOrderEvent } from "@/lib/notifications";
 import { assertSameOrigin } from "@/lib/origin";
 import { recordAuditLog } from "@/lib/audit-log";
 import { rateLimit } from "@/lib/rate-limit";
+import { getOrderDeliveryState } from "@/lib/order-delivery-state";
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 import { z } from "zod";
 
@@ -26,6 +27,7 @@ type OrderWithRelations = {
   deliveryStatus?: string | null;
   deliveredAt?: Date | string | null;
   createdAt: Date;
+  updatedAt: Date;
   user: { id: string; name: string | null; email: string | null } | null;
   placedById?: string | null;
   adminNote?: string | null;
@@ -74,7 +76,9 @@ function serializeOrder(o: OrderWithRelations) {
   const epsilon = 0.01;
   let balance = Math.max(0, total - amountPaid);
   let status = o.status as string;
-  if (status !== "CANCELLED") {
+  // Preserve special statuses that must not be overwritten by balance math
+  const isProtectedStatus = status === "CANCELLED" || status === "ON_HOLD_CREDIT";
+  if (!isProtectedStatus) {
     if (balance <= epsilon) {
       status = "PAID";
       amountPaid = total;
@@ -103,6 +107,7 @@ function serializeOrder(o: OrderWithRelations) {
     deliveryStatus: o.deliveryStatus || "NOT_DELIVERED",
     deliveredAt: o.deliveredAt ? new Date(o.deliveredAt).toISOString() : null,
     createdAt: o.createdAt.toISOString(),
+    updatedAt: o.updatedAt.toISOString(),
     user: o.user,
     placedById: o.placedById || null,
     adminNote: o.adminNote || null,
@@ -312,11 +317,12 @@ const updateSchema = z.object({
     .or(z.string().min(1))
     .optional(),
   deliveryStatus: z
-    .enum(["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED", "RETURNED"])
+    .enum(["NOT_DELIVERED", "PARTIALLY_DELIVERED", "DELIVERED"])
     .optional(),
   // When cancelling a RETURNED order, optionally restock items into inventory.
   restockReturned: z.boolean().optional(),
   cancelReason: z.string().min(5).max(200).optional(),
+  adminNote: z.string().max(2000).optional(),
 });
 
 // PATCH /api/orders/[id] — update status (admin only)
@@ -348,8 +354,40 @@ export async function PATCH(
 
     const body = await req.json();
     const parsed = updateSchema.safeParse(body);
-    if (!parsed.success || (!parsed.data.status && !parsed.data.deliveryStatus)) {
+    if (!parsed.success || (!parsed.data.status && !parsed.data.deliveryStatus && parsed.data.adminNote === undefined)) {
       return NextResponse.json({ error: "Invalid update payload" }, { status: 400 });
+    }
+
+    const current = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!current) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    // Handle adminNote-only updates
+    if (parsed.data.adminNote !== undefined && !parsed.data.status && !parsed.data.deliveryStatus) {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { adminNote: parsed.data.adminNote },
+      });
+      await recordAuditLog({
+        actorId: user.id,
+        action: "ORDER_NOTE_UPDATED",
+        entityType: "ORDER",
+        entityId: orderId,
+        request: req,
+        meta: {
+          changedByName: user.name || user.email || null,
+          changedByEmail: user.email || null,
+          changedByRole: user.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/orders/${orderId}`,
+          previousStatus: current.status,
+          deliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
+          previousNote: current.adminNote || null,
+          newNote: parsed.data.adminNote,
+        },
+      });
+      return NextResponse.json({ success: true });
     }
 
     // Staff can only update delivery status, not financial/order status.
@@ -360,19 +398,17 @@ export async function PATCH(
       );
     }
 
-    const current = await prisma.order.findUnique({ where: { id: orderId } });
-    if (!current) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
-    }
     const beforeItems = await prisma.orderItem.findMany({
       where: { orderId },
       select: {
         id: true,
         quantity: true,
         deliveredQuantity: true,
+        returnedQuantity: true,
         product: { select: { name: true } },
       },
     });
+    const beforeDeliveryState = getOrderDeliveryState(beforeItems);
 
     const newStatus = parsed.data.status;
     const newDelivery = parsed.data.deliveryStatus;
@@ -399,16 +435,20 @@ export async function PATCH(
             { status: 400 },
           );
         }
-        // Prevent cancelling a delivered order unless it has been marked as RETURNED
-        const currentDelivery = current.deliveryStatus || "NOT_DELIVERED";
-        if (
-          currentDelivery === "DELIVERED" ||
-          currentDelivery === "PARTIALLY_DELIVERED"
-        ) {
+        if (restockReturned) {
           return NextResponse.json(
             {
               error:
-                "Change delivery status to RETURNED before cancelling a delivered order.",
+                "Returned items must be restocked or disposed during item return processing, not during order cancellation.",
+            },
+            { status: 400 },
+          );
+        }
+        if (beforeDeliveryState.hasOutstandingDeliveredUnits) {
+          return NextResponse.json(
+            {
+              error:
+                "Process returns for all delivered units before cancelling this order.",
             },
             { status: 400 },
           );
@@ -434,30 +474,19 @@ export async function PATCH(
     }
 
     const updated = await prisma.$transaction(async (tx: TxClient) => {
-      // If cancelling an order, optionally restock items into inventory.
-      // - For RETURNED orders, this happens only when restockReturned = true.
-      // - For NOT_DELIVERED orders, always restock so that stock is restored
-      //   when a sale that never delivered is cancelled.
-      if (newStatus === "CANCELLED" && (restockReturned || current.deliveryStatus === "NOT_DELIVERED")) {
+      // If cancelling an order that never left the building, restore stock.
+      if (newStatus === "CANCELLED" && !beforeDeliveryState.anyDelivered) {
         const before = await tx.order.findUnique({
           where: { id: orderId },
           include: { items: true },
         });
         if (!before) throw new Error("Order not found for restock");
 
-        if (restockReturned) {
-          if (before.deliveryStatus !== "RETURNED") {
-            throw new Error(
-              "Can only restock items for orders marked as RETURNED.",
-            );
-          }
-        } else {
-          // Auto-restock only for orders that were never delivered.
-          if (before.deliveryStatus !== "NOT_DELIVERED") {
-            throw new Error(
-              "Auto-restock is only allowed for NOT_DELIVERED orders.",
-            );
-          }
+        const beforeState = getOrderDeliveryState(before.items);
+        if (beforeState.anyDelivered) {
+          throw new Error(
+            "Auto-restock is only allowed for orders with no delivered items.",
+          );
         }
 
         for (const it of before.items) {
@@ -503,20 +532,6 @@ export async function PATCH(
             data: { deliveredQuantity: it.quantity },
           });
         }
-      } else if (newDelivery === "RETURNED") {
-        // If the overall delivery status is RETURNED, mark all line items as
-        // fully returned so item-level summaries reflect a full return of the
-        // order.
-        const items = await tx.orderItem.findMany({
-          where: { orderId },
-          select: { id: true, quantity: true },
-        });
-        for (const it of items) {
-          await tx.orderItem.update({
-            where: { id: it.id },
-            data: { returnedQuantity: it.quantity },
-          });
-        }
       }
 
       return updatedOrder;
@@ -528,6 +543,7 @@ export async function PATCH(
         id: true,
         quantity: true,
         deliveredQuantity: true,
+        returnedQuantity: true,
         product: { select: { name: true } },
       },
     });
@@ -594,8 +610,7 @@ export async function PATCH(
         if (
           newDelivery &&
           (newDelivery === "DELIVERED" ||
-            newDelivery === "PARTIALLY_DELIVERED" ||
-            newDelivery === "RETURNED")
+            newDelivery === "PARTIALLY_DELIVERED")
         ) {
           await notifyOrderEvent({
             kind: "order_delivery_updated",
@@ -616,11 +631,21 @@ export async function PATCH(
         action: "ORDER_UPDATE",
         entityType: "ORDER",
         entityId: updated.id,
+        request: req,
         meta: {
           changedByName: user.name || user.email || null,
+          changedByEmail: user.email || null,
           changedByRole: user.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/orders/${updated.id}`,
           updatedAt: updatedAtIso,
           updatedAtTimezoneOffset,
+          customerId: current.userId || null,
+          total,
+          amountPaidBefore: Number(current.amountPaid ?? 0),
+          amountPaidAfter: Number(updated.amountPaid ?? 0),
+          balanceBefore: Number(current.balance ?? Math.max(0, total - Number(current.amountPaid ?? 0))),
+          balanceAfter: Number(updated.balance ?? Math.max(0, total - Number(updated.amountPaid ?? 0))),
           previousStatus: current.status,
           newStatus,
           previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
@@ -641,7 +666,17 @@ export async function PATCH(
           action: "ORDER_CANCEL",
           entityType: "ORDER",
           entityId: updated.id,
+          request: req,
           meta: {
+            changedByName: user.name || user.email || null,
+            changedByEmail: user.email || null,
+            changedByRole: user.role || null,
+            sourcePage: "/admin/orders/[id]",
+            sourceRoute: `/api/orders/${updated.id}`,
+            customerId: current.userId || null,
+            total,
+            amountPaid: Number(updated.amountPaid ?? 0),
+            balance: Number(updated.balance ?? Math.max(0, total - Number(updated.amountPaid ?? 0))),
             previousStatus: current.status,
             newStatus,
             previousDeliveryStatus: current.deliveryStatus || "NOT_DELIVERED",
@@ -674,7 +709,10 @@ export async function PATCH(
             action: "ACCOUNTING_POST_VOID",
             entityType: "ORDER",
             entityId: orderId,
+            request: req,
             meta: {
+              sourcePage: "/admin/orders/[id]",
+              sourceRoute: `/api/orders/${orderId}`,
               reason: "order_cancelled",
               voidedEntries: orderEntries.map((e) => e.id),
             },
@@ -723,8 +761,8 @@ export async function DELETE(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     const amountPaid = Number(order.amountPaid ?? 0);
-    const delivered = order.deliveryStatus === "DELIVERED" || order.deliveryStatus === "PARTIALLY_DELIVERED";
-    if (amountPaid > 0 || delivered) {
+    const hasDeliveryHistory = String(order.deliveryStatus || "NOT_DELIVERED") !== "NOT_DELIVERED";
+    if (amountPaid > 0 || hasDeliveryHistory) {
       return NextResponse.json({ error: "Only undelivered, unpaid orders can be deleted" }, { status: 400 });
     }
 
@@ -738,9 +776,19 @@ export async function DELETE(
         action: "ORDER_DELETE",
         entityType: "ORDER",
         entityId: orderId,
+        request: req,
         meta: {
+          changedByName: user.name || user.email || null,
+          changedByEmail: user.email || null,
+          changedByRole: user.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/orders/${orderId}`,
+          status: order.status,
+          total: Number(order.total ?? 0),
           amountPaid,
+          balance: Number(order.balance ?? Math.max(0, Number(order.total ?? 0) - amountPaid)),
           deliveryStatus: order.deliveryStatus,
+          deletedAt: new Date().toISOString(),
         },
       });
     } catch {
@@ -798,6 +846,23 @@ export async function POST(
         action: "ORDER_RESTORE",
         entityType: "ORDER",
         entityId: orderId,
+        request: req,
+        meta: {
+          changedByName: user.name || user.email || null,
+          changedByEmail: user.email || null,
+          changedByRole: user.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/orders/${orderId}`,
+          status: order.status,
+          total: Number(order.total ?? 0),
+          amountPaid: Number(order.amountPaid ?? 0),
+          balance: Number(
+            order.balance ??
+              Math.max(0, Number(order.total ?? 0) - Number(order.amountPaid ?? 0)),
+          ),
+          deliveryStatus: order.deliveryStatus,
+          previousDeletedAt: order.deletedAt.toISOString(),
+        },
       });
     } catch {
       // best-effort

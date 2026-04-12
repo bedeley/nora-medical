@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -52,8 +53,15 @@ export async function POST(req: Request) {
         entityType: "PURCHASE",
         entityId: "BULK",
         meta: {
+          correlationId: randomUUID(),
           restoredCount: result.updatedCount,
           rowIds: rows.map((r) => r.id),
+          restoredRows: rows.slice(0, 25).map((row) => ({
+            id: row.id,
+            supplierId: row.supplierId ? String(row.supplierId) : null,
+            supplierName: row.supplier ? String(row.supplier) : null,
+          })),
+          source: "PURCHASE_BULK_SUPPLIER_ASSIGN_UNDO",
         },
       });
     } catch {
@@ -66,4 +74,3 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Failed to undo supplier assignment." }, { status: 500 });
   }
 }
-

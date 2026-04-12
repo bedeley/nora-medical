@@ -60,6 +60,7 @@ export async function POST(req: Request) {
       actorId: user?.id || null,
       auditAction: "SUPPLIER_PAYABLES_SUMMARY_CRON_TEST_SEND",
       subjectPrefix: "Supplier payables summary (test run)",
+      sourcePage: "admin/supplier-payments",
     });
     return NextResponse.json(result);
   } catch (error) {

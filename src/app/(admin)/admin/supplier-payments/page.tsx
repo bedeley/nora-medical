@@ -8,7 +8,7 @@ import { useSession } from "next-auth/react";
 import { useClientQuery } from "@/hooks/use-client-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -17,6 +17,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency } from "@/lib/currency";
 import { hasPermission } from "@/lib/permissions";
 import { toast } from "sonner";
@@ -77,6 +85,10 @@ type ApprovalConfirmState =
       supplier: string;
       itemLabel: string;
       amount: number;
+      method?: string;
+      reference?: string;
+      proofUrl?: string;
+      note?: string;
     };
 
 type SupplierOption = {
@@ -141,6 +153,8 @@ const SUMMARY_ALERTS_STORAGE_KEY = "supplierPayments.summaryAlerts.v1";
 const SUMMARY_SCHEDULE_STORAGE_KEY = "supplierPayments.summarySchedule.v1";
 const CRON_TEST_LAST_SENT_KEY = "supplierPayments.cronTest.lastRunAt.v1";
 const CRON_TEST_COOLDOWN_SECONDS = 60;
+const SUPPLIER_PAYMENTS_SOURCE_PAGE = "admin/supplier-payments";
+const SUPPLIER_PAYMENTS_AUDIT_HREF = "/admin/audit?sourcePage=admin%2Fsupplier-payments";
 
 const paymentEligibleStatuses = new Set([
   "APPROVED",
@@ -163,6 +177,16 @@ const paymentStatusLabels: Record<string, string> = {
   PARTIALLY_PAID: "Partially paid",
   PENDING_APPROVAL: "Pending payment approval",
 };
+
+function isValidUrl(value: string): boolean {
+  if (!value.trim()) return true; // optional field
+  try {
+    const u = new URL(value.trim());
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 const fetcher = async (url: string) => {
   const res = await fetch(url);
@@ -188,6 +212,16 @@ function statusChipClass(kind: "ok" | "warn" | "info" | "neutral" | "danger") {
   if (kind === "info") return "bg-sky-100 text-sky-800";
   if (kind === "danger") return "bg-rose-100 text-rose-800";
   return "bg-slate-100 text-slate-700";
+}
+
+function rowUrgencyClass(row: Row): string {
+  if (Number(row.outstanding || 0) <= 0.01) return "";
+  const diff = expectedDiffDays(row.expectedAt);
+  if (diff !== null && diff < 0) return "bg-rose-50 border-l-4 border-l-rose-400";
+  if (diff !== null && diff <= 7) return "bg-amber-50 border-l-4 border-l-amber-400";
+  if (row.paymentStatus === "UNPAID" && (row.status === "RECEIVED" || row.status === "PARTIALLY_RECEIVED"))
+    return "bg-slate-50";
+  return "";
 }
 
 function paymentChipTone(status: string): "ok" | "warn" | "info" | "neutral" | "danger" {
@@ -269,6 +303,7 @@ export default function SupplierPaymentsPage() {
       searchParams.get("exposureView") ||
       searchParams.get("outstandingOnly"),
   );
+  const focusedPaymentId = String(searchParams.get("paymentId") || "").trim();
   const [q, setQ] = useState("");
   const [supplierId, setSupplierId] = useState("");
   const [month, setMonth] = useState("");
@@ -492,16 +527,22 @@ export default function SupplierPaymentsPage() {
     const sp = new URLSearchParams();
     if (q) sp.set("q", q);
     if (supplierId) sp.set("supplierId", supplierId);
+    if (focusedPaymentId) sp.set("paymentId", focusedPaymentId);
     if (month) sp.set("month", month);
     if (status !== "all") sp.set("status", status);
     if (strictDate) sp.set("strictDate", "1");
+    sp.set("sortMode", sortMode);
+    sp.set("exposureView", exposureView);
+    sp.set("agingFilter", agingFilter);
+    if (outstandingOnly) sp.set("outstandingOnly", "1");
     sp.set("page", String(page));
     sp.set("pageSize", String(pageSize));
     return sp.toString();
-  }, [q, supplierId, month, status, strictDate, page, pageSize]);
+  }, [q, supplierId, focusedPaymentId, month, status, strictDate, sortMode, exposureView, agingFilter, outstandingOnly, page, pageSize]);
 
   const { data, error, isLoading } = useClientQuery<{
     rows: Row[];
+    scopeRows: Row[];
     total: number;
     totalAmount: number;
     totalPaid: number;
@@ -517,7 +558,22 @@ export default function SupplierPaymentsPage() {
     pendingPayments: PendingPayment[];
     pendingPurchaseApprovals: PendingPurchaseApproval[];
   }>({
-    queryKey: ["admin", "supplier-payments", q, supplierId, month, status, strictDate, page, pageSize],
+    queryKey: [
+      "admin",
+      "supplier-payments",
+      q,
+      supplierId,
+      focusedPaymentId,
+      month,
+      status,
+      strictDate,
+      sortMode,
+      exposureView,
+      agingFilter,
+      outstandingOnly,
+      page,
+      pageSize,
+    ],
     queryFn: () => fetcher(`/api/admin/supplier-payments?${params}`),
   });
 
@@ -527,51 +583,8 @@ export default function SupplierPaymentsPage() {
   });
   const supplierOptions = Array.isArray(suppliersData?.rows) ? suppliersData?.rows : [];
 
-  const scopedRows = useMemo(() => {
-    const base = (data?.rows || []) as Row[];
-    const scoped =
-      exposureView === "received"
-        ? base.filter((row) => row.status === "RECEIVED" || row.status === "PARTIALLY_RECEIVED")
-        : base;
-    return sortRows(scoped, sortMode);
-  }, [data?.rows, sortMode, exposureView]);
-  const rows = useMemo(() => {
-    const base = outstandingOnly
-      ? scopedRows.filter((row) => Number(row.outstanding || 0) > 0.01)
-      : scopedRows;
-    if (agingFilter === "all") return base;
-    if (agingFilter === "overdue") {
-      return base.filter((row) => {
-        if (Number(row.outstanding || 0) <= 0.01) return false;
-        const diff = expectedDiffDays(row.expectedAt);
-        return diff !== null && diff < 0;
-      });
-    }
-    if (agingFilter === "due_today") {
-      return base.filter((row) => {
-        if (!row.expectedAt || Number(row.outstanding || 0) <= 0.01) return false;
-        const expected = new Date(row.expectedAt);
-        const today = new Date();
-        return (
-          expected.getFullYear() === today.getFullYear() &&
-          expected.getMonth() === today.getMonth() &&
-          expected.getDate() === today.getDate()
-        );
-      });
-    }
-    if (agingFilter === "due_7") {
-      return base.filter((row) => {
-        if (Number(row.outstanding || 0) <= 0.01) return false;
-        const diff = expectedDiffDays(row.expectedAt);
-        return diff !== null && diff >= 0 && diff <= 7;
-      });
-    }
-    return base.filter((row) => {
-      const outstanding = Number(row.outstanding || 0);
-      if (outstanding <= 0.01) return false;
-      return getAgingBucket(daysBetween(row.createdAt)) === agingFilter;
-    });
-  }, [scopedRows, agingFilter, outstandingOnly]);
+  const scopedRows = useMemo(() => (Array.isArray(data?.scopeRows) ? (data?.scopeRows as Row[]) : []), [data?.scopeRows]);
+  const rows = useMemo(() => (Array.isArray(data?.rows) ? (data?.rows as Row[]) : []), [data?.rows]);
   const supplierChartOptions = useMemo(() => {
     const map = new Map<string, { key: string; label: string; total: number }>();
     for (const row of scopedRows) {
@@ -704,11 +717,18 @@ export default function SupplierPaymentsPage() {
     () => sortRows(((data?.pendingPurchaseApprovals || []) as PendingPurchaseApproval[]), sortMode),
     [data?.pendingPurchaseApprovals, sortMode],
   );
-  const effectiveTotal = agingFilter === "all" ? total : rows.length;
-  const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize));
-  const uniqueSuppliers = Array.from(new Set(rows.map((r) => r.supplierId || r.supplier)));
-  const bulkSupplierName = rows.find((r) => r.supplier)?.supplier || "";
-  const bulkSupplierId = rows.find((r) => r.supplierId)?.supplierId || "";
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const isClientFiltered = false;
+  const uniqueSuppliers = Array.from(new Set(scopedRows.map((r) => r.supplierId || r.supplier)));
+  const bulkSupplierName = scopedRows.find((r) => r.supplier)?.supplier || "";
+  const bulkSupplierId = scopedRows.find((r) => r.supplierId)?.supplierId || "";
+  const supplierScopeOnly =
+    Boolean(supplierId) &&
+    !month &&
+    status === "all" &&
+    agingFilter === "all" &&
+    !outstandingOnly &&
+    exposureView === "full";
   const canBulkPay =
     canManageSupplierPayments &&
     Boolean(supplierId || q.trim()) &&
@@ -716,7 +736,7 @@ export default function SupplierPaymentsPage() {
     totalOutstanding > 0.01;
   const canRefund =
     canManageSupplierPayments &&
-    Boolean(supplierId || q.trim()) &&
+    supplierScopeOnly &&
     uniqueSuppliers.length === 1 &&
     totalCreditBalance > 0.01;
   const buildApAgingHref = () => {
@@ -819,7 +839,7 @@ export default function SupplierPaymentsPage() {
   const bulkAllocations = useMemo(() => {
     const amount = Number(bulkAmount);
     if (!Number.isFinite(amount) || amount <= 0) return [];
-    const ordered = [...rows]
+    const ordered = [...scopedRows]
       .filter((r) => Number(r.outstanding || 0) > 0.01)
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     let remaining = amount;
@@ -837,11 +857,11 @@ export default function SupplierPaymentsPage() {
       remaining -= apply;
     }
     return allocations;
-  }, [bulkAmount, rows]);
+  }, [bulkAmount, scopedRows]);
 
   const approveSupplierPayment = async (paymentId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/admin/supplier-payments/${paymentId}/approve`, {
+      const res = await fetch(`/api/admin/supplier-payments/${paymentId}/approve?sourcePage=${encodeURIComponent(SUPPLIER_PAYMENTS_SOURCE_PAGE)}`, {
         method: "POST",
       });
       const j = await res.json().catch(() => ({}));
@@ -856,7 +876,7 @@ export default function SupplierPaymentsPage() {
   };
   const approvePurchase = async (purchaseId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/admin/purchases/${purchaseId}/approve`, {
+      const res = await fetch(`/api/admin/purchases/${purchaseId}/approve?sourcePage=${encodeURIComponent(SUPPLIER_PAYMENTS_SOURCE_PAGE)}`, {
         method: "POST",
       });
       const j = await res.json().catch(() => ({}));
@@ -886,6 +906,10 @@ export default function SupplierPaymentsPage() {
       supplier: payment.supplier?.name || "Unknown",
       itemLabel: payment.purchase?.product?.name || payment.purchase?.id || "Supplier payment",
       amount: payment.amount,
+      method: payment.method || undefined,
+      reference: payment.reference || undefined,
+      proofUrl: payment.proofUrl || undefined,
+      note: payment.note || undefined,
     });
     setConfirmOpen(true);
   };
@@ -1027,6 +1051,10 @@ export default function SupplierPaymentsPage() {
       setBulkError("Amount exceeds outstanding balance.");
       return;
     }
+    if (bulkProof && !isValidUrl(bulkProof)) {
+      setBulkError("Proof URL must be a valid http/https URL.");
+      return;
+    }
     setBulkSubmitting(true);
     setBulkError("");
     try {
@@ -1034,8 +1062,10 @@ export default function SupplierPaymentsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           supplierId: bulkSupplierId || undefined,
           supplierName: bulkSupplierName || undefined,
+          purchaseIds: scopedRows.map((row) => row.id),
           amount,
           method: bulkMethod,
           reference: bulkReference || undefined,
@@ -1079,6 +1109,7 @@ export default function SupplierPaymentsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           kind: "refund",
           supplierId: bulkSupplierId || undefined,
           supplierName: bulkSupplierName || undefined,
@@ -1118,6 +1149,10 @@ export default function SupplierPaymentsPage() {
       setPaymentError("Amount exceeds outstanding balance.");
       return;
     }
+    if (paymentProof && !isValidUrl(paymentProof)) {
+      setPaymentError("Proof URL must be a valid http/https URL.");
+      return;
+    }
     setPaymentSubmitting(true);
     setPaymentError("");
     try {
@@ -1125,6 +1160,7 @@ export default function SupplierPaymentsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           purchaseId: paymentRow.id,
           amount,
           method: paymentMethod,
@@ -1139,6 +1175,7 @@ export default function SupplierPaymentsPage() {
         throw new Error(message);
       }
       setPaymentOpen(false);
+      toast.success("Payment recorded.");
       queryClient.invalidateQueries({ queryKey: ["admin", "supplier-payments"] });
     } catch (e) {
       setPaymentError(e instanceof Error ? e.message : "Failed to record payment.");
@@ -1149,6 +1186,7 @@ export default function SupplierPaymentsPage() {
 
   const buildScopeSnapshot = () =>
     [
+      `Source page: ${SUPPLIER_PAYMENTS_SOURCE_PAGE}`,
       `Scope: ${exposureView === "received" ? "Received AP only" : "Full exposure"}`,
       `Summary basis: ${selectedBasisLabel}`,
       `Status: ${status === "all" ? "All statuses" : status}`,
@@ -1165,7 +1203,8 @@ export default function SupplierPaymentsPage() {
                 : agingFilter.replace("_", "-").replace("plus", "+")
       }`,
       `Page: ${page}`,
-      `Rows in current view: ${rows.length}`,
+      `Rows in current page: ${rows.length}`,
+      `Rows in scope: ${scopedRows.length}`,
     ].join(" | ");
 
   const countCsvShape = (content: string) => {
@@ -1198,6 +1237,7 @@ export default function SupplierPaymentsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...payload,
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           scopeSnapshot: buildScopeSnapshot(),
         }),
       });
@@ -1340,6 +1380,7 @@ export default function SupplierPaymentsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           baseName,
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           scopeSnapshot,
           currentViewCsv: buildCurrentViewCsvContent(),
           summaryCsv: buildSummaryCsvContent(),
@@ -1430,6 +1471,7 @@ export default function SupplierPaymentsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           to,
           cc: cc || undefined,
           subject,
@@ -1511,6 +1553,7 @@ export default function SupplierPaymentsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sourcePage: SUPPLIER_PAYMENTS_SOURCE_PAGE,
           to,
           cc: cc || undefined,
           subject: emailSubject.trim(),
@@ -1589,7 +1632,11 @@ export default function SupplierPaymentsPage() {
           ? "All aging"
           : agingFilter === "due_today"
             ? "Due today"
-            : agingFilter.replace("_", "-").replace("plus", "+");
+            : agingFilter === "due_7"
+              ? "Due in 7 days"
+              : agingFilter === "overdue"
+                ? "Overdue"
+                : agingFilter.replace("_", "-").replace("plus", "+");
       const rowsData: Array<[string, string]> = [
         ["Scope", scopeLabel],
         ["Summary basis", basisLabel],
@@ -1867,94 +1914,82 @@ export default function SupplierPaymentsPage() {
             </div>
           ) : null}
         </div>
-        <div className="flex w-full sm:w-auto flex-wrap gap-2">
-          <Button asChild variant="outline" className="w-full sm:w-auto">
-            <Link href="/admin/purchases">Go to Purchases</Link>
+        <div className="flex w-full sm:w-auto flex-wrap items-center gap-2">
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/purchases">Purchases</Link>
           </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportCurrentViewCsv}
-            disabled={rows.length === 0}
-          >
-            Export current view (CSV)
+          <Button asChild variant="outline" size="sm">
+            <Link href={buildApAgingHref()}>AP Aging</Link>
           </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportCurrentViewPdf}
-            disabled={rows.length === 0}
-          >
-            Export current view (PDF)
+          <Button asChild variant="outline" size="sm">
+            <Link href={SUPPLIER_PAYMENTS_AUDIT_HREF}>Open audit log</Link>
           </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportCurrentViewSummaryCsv}
-          >
-            Export summary (CSV)
-          </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportCurrentViewSummaryPdf}
-          >
-            Export summary (PDF)
-          </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportBundleZip}
-            disabled={rows.length === 0}
-          >
-            Export bundle (ZIP)
-          </Button>
-          <Button
-            variant="outline"
-            className="w-full sm:w-auto"
-            onClick={exportEmailSummaryTemplate}
-          >
-            Export email summary (TXT)
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                Export ▾
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onClick={exportCurrentViewCsv} disabled={rows.length === 0}>
+                Current view — CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportCurrentViewPdf} disabled={rows.length === 0}>
+                Current view — PDF
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={exportCurrentViewSummaryCsv}>
+                Summary snapshot — CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={exportCurrentViewSummaryPdf}>
+                Summary snapshot — PDF
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {canManageSupplierPayments ? (
+                <DropdownMenuItem onClick={exportBundleZip} disabled={rows.length === 0}>
+                Full bundle — ZIP
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem onClick={exportEmailSummaryTemplate}>
+                Email summary template — TXT
+              </DropdownMenuItem>
+              {canBulkPay ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    const params = new URLSearchParams();
+                    if (bulkSupplierId) params.set("supplierId", bulkSupplierId);
+                    else if (bulkSupplierName) params.set("supplier", bulkSupplierName);
+                    params.set("sourcePage", SUPPLIER_PAYMENTS_SOURCE_PAGE);
+                    window.open(`/api/admin/supplier-payments/statement?${params.toString()}`, "_blank");
+                  }}
+                >
+                  Supplier statement — CSV
+                </DropdownMenuItem>
+              ) : null}
+            </DropdownMenuContent>
+          </DropdownMenu>
           {canManageSupplierPayments ? (
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={openSendSummaryEmail}
-            >
+            <Button variant="outline" size="sm" onClick={openSendSummaryEmail}>
               Send summary email
             </Button>
           ) : null}
-          {canBulkPay ? (
-            <Button
-              variant="outline"
-              className="w-full sm:w-auto"
-              onClick={() => {
-                const params = new URLSearchParams();
-                if (bulkSupplierId) params.set("supplierId", bulkSupplierId);
-                else if (bulkSupplierName) params.set("supplier", bulkSupplierName);
-                const url = `/api/admin/supplier-payments/statement?${params.toString()}`;
-                window.open(url, "_blank");
-              }}
-            >
-              Export statement (CSV)
-            </Button>
-          ) : null}
-          <Button asChild variant="outline" className="w-full sm:w-auto">
-            <Link href={buildApAgingHref()}>Open AP Aging</Link>
-          </Button>
-          {canBulkPay ? (
-            <Button variant="default" className="w-full sm:w-auto" onClick={openBulkDialog}>
-              Pay supplier balance
-            </Button>
-          ) : null}
           {canRefund ? (
-            <Button variant="outline" className="w-full sm:w-auto" onClick={openRefundDialog}>
-              Record supplier refund
+            <Button variant="outline" size="sm" onClick={openRefundDialog}>
+              Record refund
+            </Button>
+          ) : null}
+          {canBulkPay ? (
+            <Button variant="default" size="sm" onClick={openBulkDialog}>
+              Pay supplier balance
             </Button>
           ) : null}
         </div>
       </div>
+      {canManageSupplierPayments && totalCreditBalance > 0.01 && !canRefund ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Supplier refunds are supplier-level actions. To record one safely, keep a single supplier selected and clear month, status, aging, and exposure filters.
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader className="pb-3">
@@ -2064,18 +2099,32 @@ export default function SupplierPaymentsPage() {
                 <SelectItem value="100">100 rows</SelectItem>
               </SelectContent>
             </Select>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground sm:col-span-2 lg:col-span-3">
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={strictDate}
-                onChange={(e) => {
-                  setStrictDate(e.target.checked);
-                  setPage(1);
-                }}
-              />
-              Only include payments/credits within date filter
-            </label>
+            <div className="flex flex-wrap items-center gap-4 sm:col-span-2 lg:col-span-3">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={strictDate}
+                  onChange={(e) => {
+                    setStrictDate(e.target.checked);
+                    setPage(1);
+                  }}
+                />
+                Only include payments/credits within date filter
+              </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={outstandingOnly}
+                  onChange={(e) => {
+                    setOutstandingOnly(e.target.checked);
+                    setPage(1);
+                  }}
+                />
+                Outstanding only
+              </label>
+            </div>
             <Button className="w-full sm:w-auto lg:justify-self-end" variant="outline" onClick={resetFilters}>
               Clear filters
             </Button>
@@ -2093,154 +2142,6 @@ export default function SupplierPaymentsPage() {
               | {new Date(lastSummaryEmailInfo.at).toLocaleString()}
             </div>
           ) : null}
-          <div className="rounded-md border bg-muted/10 p-3 space-y-3">
-            <div className="text-xs font-medium text-foreground">Deviation alert thresholds</div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Absolute (GHS)</label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={deviationAbsThreshold}
-                  onChange={(e) => setDeviationAbsThreshold(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs text-muted-foreground">Percent (%)</label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={deviationPctThreshold}
-                  onChange={(e) => setDeviationPctThreshold(e.target.value)}
-                />
-              </div>
-              <div className="sm:col-span-2 text-xs text-muted-foreground flex items-end">
-                Current delta: {formatCurrency(reconciliationDelta)} ({deltaPct.toFixed(2)}%)
-              </div>
-            </div>
-          </div>
-          <div className="rounded-md border bg-muted/10 p-3 space-y-3">
-            <div className="text-xs font-medium text-foreground">Scheduled summary email</div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              <Select
-                value={scheduleConfig.frequency}
-                onValueChange={(v) =>
-                  setScheduleConfig((prev) => ({
-                    ...prev,
-                    frequency: v as SummaryScheduleFrequency,
-                    enabled: v !== "OFF",
-                  }))
-                }
-              >
-                <SelectTrigger className="h-9">
-                  <SelectValue placeholder="Frequency" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="OFF">Off</SelectItem>
-                  <SelectItem value="DAILY">Daily</SelectItem>
-                  <SelectItem value="WEEKLY">Weekly</SelectItem>
-                </SelectContent>
-              </Select>
-              {scheduleConfig.frequency === "WEEKLY" ? (
-                <Select
-                  value={String(scheduleConfig.weekday ?? 1)}
-                  onValueChange={(v) => setScheduleConfig((prev) => ({ ...prev, weekday: Number(v) }))}
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue placeholder="Weekday" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">Monday</SelectItem>
-                    <SelectItem value="2">Tuesday</SelectItem>
-                    <SelectItem value="3">Wednesday</SelectItem>
-                    <SelectItem value="4">Thursday</SelectItem>
-                    <SelectItem value="5">Friday</SelectItem>
-                    <SelectItem value="6">Saturday</SelectItem>
-                    <SelectItem value="0">Sunday</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : (
-                <div />
-              )}
-              <Input
-                type="email"
-                placeholder="To email"
-                value={scheduleConfig.to || ""}
-                onChange={(e) => setScheduleConfig((prev) => ({ ...prev, to: e.target.value }))}
-              />
-              <Input
-                type="email"
-                placeholder="CC (optional)"
-                value={scheduleConfig.cc || ""}
-                onChange={(e) => setScheduleConfig((prev) => ({ ...prev, cc: e.target.value }))}
-              />
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              <Input
-                placeholder="Subject prefix"
-                value={scheduleConfig.subjectPrefix || ""}
-                onChange={(e) => setScheduleConfig((prev) => ({ ...prev, subjectPrefix: e.target.value }))}
-              />
-              <div className="text-xs text-muted-foreground flex items-center">
-                <span>
-                  {scheduleConfig.lastSentAt
-                    ? `Last sent: ${new Date(scheduleConfig.lastSentAt).toLocaleString()}`
-                    : "No scheduled send yet."}
-                </span>
-                <span className="mx-2">|</span>
-                <span>
-                  {lastCronTestAt
-                    ? `Last test run: ${new Date(lastCronTestAt).toLocaleString()}`
-                    : "No test run yet."}
-                </span>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <Button size="sm" variant="outline" onClick={sendScheduledSummaryNow}>
-                  Send now
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={sendCronTestNow}
-                  disabled={cronTestSubmitting || !canManageSupplierPayments || cronTestRemaining > 0}
-                >
-                  {cronTestSubmitting
-                    ? "Running..."
-                    : cronTestRemaining > 0
-                      ? `Wait ${cronTestRemaining}s`
-                      : "Test cron send"}
-                </Button>
-                {isScheduleDue ? (
-                  <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-800">
-                    Due now
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-1 text-[11px] font-medium text-emerald-700">
-                    Not due
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="rounded-md border bg-background/80 p-2 text-[11px] text-muted-foreground space-y-1">
-              <div>
-                <span className="font-medium text-foreground">Cron test behavior:</span> Test cron send uses server env recipients (not the fields above).
-              </div>
-              <div>
-                To:{" "}
-                {cronRecipientPreview.to.length
-                  ? cronRecipientPreview.to.join(", ")
-                  : "Not configured (set SUPPLIER_PAYABLES_SUMMARY_TO)"}
-              </div>
-              {cronRecipientPreview.cc.length ? (
-                <div>CC: {cronRecipientPreview.cc.join(", ")}</div>
-              ) : null}
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              This schedule marks due checks on the page and supports one-click send. For fully automatic delivery, call a scheduled job that triggers the same summary send endpoint.
-            </p>
-          </div>
           <div className="rounded-md border bg-muted/10 p-3 space-y-2">
             <div className="text-xs text-muted-foreground">Saved filter presets</div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -2351,7 +2252,7 @@ export default function SupplierPaymentsPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span>Total: {effectiveTotal}</span>
+            <span>Total: {total}</span>
             <span>|</span>
             <span>Total amount: {formatCurrency(totalAmount)}</span>
             <span>|</span>
@@ -2395,58 +2296,22 @@ export default function SupplierPaymentsPage() {
               <div className="text-muted-foreground">Ordered not received exposure</div>
               <div className="font-medium">{formatCurrency(orderedNotReceivedExposure)}</div>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setAgingFilter("0_30");
-                setPage(1);
-              }}
-              className={`rounded-md border px-3 py-2 text-left ${
-                agingFilter === "0_30" ? "bg-sky-50 border-sky-300" : "bg-muted/10"
-              }`}
-            >
-              <div className="text-muted-foreground">Aging 0-30 days</div>
+            <div className="rounded-md border bg-muted/10 px-3 py-2">
+              <div className="text-muted-foreground">Aging 0–30 days</div>
               <div className="font-medium">{formatCurrency(agingBuckets["0_30"])}</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAgingFilter("31_60");
-                setPage(1);
-              }}
-              className={`rounded-md border px-3 py-2 text-left ${
-                agingFilter === "31_60" ? "bg-sky-50 border-sky-300" : "bg-muted/10"
-              }`}
-            >
-              <div className="text-muted-foreground">Aging 31-60 days</div>
+            </div>
+            <div className="rounded-md border bg-muted/10 px-3 py-2">
+              <div className="text-muted-foreground">Aging 31–60 days</div>
               <div className="font-medium">{formatCurrency(agingBuckets["31_60"])}</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAgingFilter("61_90");
-                setPage(1);
-              }}
-              className={`rounded-md border px-3 py-2 text-left ${
-                agingFilter === "61_90" ? "bg-sky-50 border-sky-300" : "bg-muted/10"
-              }`}
-            >
-              <div className="text-muted-foreground">Aging 61-90 days</div>
+            </div>
+            <div className="rounded-md border bg-muted/10 px-3 py-2">
+              <div className="text-muted-foreground">Aging 61–90 days</div>
               <div className="font-medium">{formatCurrency(agingBuckets["61_90"])}</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setAgingFilter("90_plus");
-                setPage(1);
-              }}
-              className={`rounded-md border px-3 py-2 text-left ${
-                agingFilter === "90_plus" ? "bg-sky-50 border-sky-300" : "bg-muted/10"
-              }`}
-            >
+            </div>
+            <div className="rounded-md border bg-muted/10 px-3 py-2">
               <div className="text-muted-foreground">Aging 90+ days</div>
               <div className="font-medium">{formatCurrency(agingBuckets["90_plus"])}</div>
-            </button>
+            </div>
           </div>
           <div className="rounded-md border bg-muted/10 p-3 space-y-3">
             <div className="flex items-center justify-between gap-2">
@@ -2529,7 +2394,7 @@ export default function SupplierPaymentsPage() {
             >
               Full exposure
             </Button>
-            <span className="ml-2 text-muted-foreground">Aging filter:</span>
+            <span className="ml-2 text-muted-foreground">Aging:</span>
             <Button
               size="sm"
               variant={agingFilter === "all" ? "default" : "outline"}
@@ -2542,33 +2407,43 @@ export default function SupplierPaymentsPage() {
             </Button>
             <Button
               size="sm"
-              variant={agingFilter === "due_today" ? "default" : "outline"}
+              variant={agingFilter === "0_30" ? "default" : "outline"}
               onClick={() => {
-                setAgingFilter("due_today");
+                setAgingFilter("0_30");
                 setPage(1);
               }}
             >
-              Due today
+              0–30d
             </Button>
             <Button
               size="sm"
-              variant={agingFilter === "due_7" ? "default" : "outline"}
+              variant={agingFilter === "31_60" ? "default" : "outline"}
               onClick={() => {
-                setAgingFilter("due_7");
+                setAgingFilter("31_60");
                 setPage(1);
               }}
             >
-              Due in 7 days
+              31–60d
             </Button>
             <Button
               size="sm"
-              variant={agingFilter === "overdue" ? "default" : "outline"}
+              variant={agingFilter === "61_90" ? "default" : "outline"}
               onClick={() => {
-                setAgingFilter("overdue");
+                setAgingFilter("61_90");
                 setPage(1);
               }}
             >
-              Overdue
+              61–90d
+            </Button>
+            <Button
+              size="sm"
+              variant={agingFilter === "90_plus" ? "default" : "outline"}
+              onClick={() => {
+                setAgingFilter("90_plus");
+                setPage(1);
+              }}
+            >
+              90d+
             </Button>
           </div>
           <div className="mt-2 rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
@@ -2628,6 +2503,36 @@ export default function SupplierPaymentsPage() {
                 Scope note: summary and table may differ when date/status filters exclude credits, refunds, or pending rows.
               </div>
             ) : null}
+            <div className="mt-3 border-t pt-2">
+              <div className="mb-1 text-[11px] font-medium text-foreground">Deviation alert thresholds</div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">Alert if absolute delta ≥ (GHS)</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={deviationAbsThreshold}
+                    onChange={(e) => setDeviationAbsThreshold(e.target.value)}
+                    className="h-7 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-muted-foreground">Alert if percent delta ≥ (%)</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={deviationPctThreshold}
+                    onChange={(e) => setDeviationPctThreshold(e.target.value)}
+                    className="h-7 text-xs"
+                  />
+                </div>
+                <div className="text-[11px] text-muted-foreground flex items-end pb-1">
+                  Current: {formatCurrency(deltaAbsolute)} ({deltaPct.toFixed(2)}%)
+                </div>
+              </div>
+            </div>
             <details className="mt-2 rounded border bg-background/70 p-2 text-[11px]">
               <summary className="cursor-pointer font-medium">Why this difference? (drilldown)</summary>
               <div className="mt-2 space-y-1 text-muted-foreground">
@@ -2655,10 +2560,143 @@ export default function SupplierPaymentsPage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-base">Summary email schedule</CardTitle>
+            {isScheduleDue ? (
+              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+                Send due
+              </span>
+            ) : scheduleConfig.enabled ? (
+              <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-1 text-xs font-medium text-emerald-700">
+                Scheduled
+              </span>
+            ) : null}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Configure a reminder schedule for the supplier payables summary email.{" "}
+            <span className="font-medium text-foreground">
+              Note: this is a manual-send reminder — the page will show a &quot;Send due&quot; badge when it is time. For fully automatic delivery, set up a server-side cron job that calls the summary send endpoint.
+            </span>
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Select
+              value={scheduleConfig.frequency}
+              onValueChange={(v) =>
+                setScheduleConfig((prev) => ({
+                  ...prev,
+                  frequency: v as SummaryScheduleFrequency,
+                  enabled: v !== "OFF",
+                }))
+              }
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="Frequency" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="OFF">Off</SelectItem>
+                <SelectItem value="DAILY">Daily reminder</SelectItem>
+                <SelectItem value="WEEKLY">Weekly reminder</SelectItem>
+              </SelectContent>
+            </Select>
+            {scheduleConfig.frequency === "WEEKLY" ? (
+              <Select
+                value={String(scheduleConfig.weekday ?? 1)}
+                onValueChange={(v) => setScheduleConfig((prev) => ({ ...prev, weekday: Number(v) }))}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Weekday" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">Monday</SelectItem>
+                  <SelectItem value="2">Tuesday</SelectItem>
+                  <SelectItem value="3">Wednesday</SelectItem>
+                  <SelectItem value="4">Thursday</SelectItem>
+                  <SelectItem value="5">Friday</SelectItem>
+                  <SelectItem value="6">Saturday</SelectItem>
+                  <SelectItem value="0">Sunday</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : (
+              <div />
+            )}
+            <Input
+              type="email"
+              placeholder="To email"
+              value={scheduleConfig.to || ""}
+              onChange={(e) => setScheduleConfig((prev) => ({ ...prev, to: e.target.value }))}
+            />
+            <Input
+              type="email"
+              placeholder="CC (optional)"
+              value={scheduleConfig.cc || ""}
+              onChange={(e) => setScheduleConfig((prev) => ({ ...prev, cc: e.target.value }))}
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <Input
+              placeholder="Subject prefix"
+              value={scheduleConfig.subjectPrefix || ""}
+              onChange={(e) => setScheduleConfig((prev) => ({ ...prev, subjectPrefix: e.target.value }))}
+            />
+            <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+              <span>
+                {scheduleConfig.lastSentAt
+                  ? `Last sent: ${new Date(scheduleConfig.lastSentAt).toLocaleString()}`
+                  : "No scheduled send yet."}
+              </span>
+              <span>|</span>
+              <span>
+                {lastCronTestAt
+                  ? `Last test run: ${new Date(lastCronTestAt).toLocaleString()}`
+                  : "No test run yet."}
+              </span>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" onClick={sendScheduledSummaryNow} disabled={!canManageSupplierPayments}>
+                Send now
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={sendCronTestNow}
+                disabled={cronTestSubmitting || !canManageSupplierPayments || cronTestRemaining > 0}
+              >
+                {cronTestSubmitting
+                  ? "Running..."
+                  : cronTestRemaining > 0
+                    ? `Wait ${cronTestRemaining}s`
+                    : "Test cron send"}
+              </Button>
+            </div>
+          </div>
+          <div className="rounded-md border bg-muted/10 p-2 text-[11px] text-muted-foreground space-y-1">
+            <div>
+              <span className="font-medium text-foreground">Cron test behavior:</span> Test cron send uses server env recipients (not the fields above).
+            </div>
+            <div>
+              To:{" "}
+              {cronRecipientPreview.to.length
+                ? cronRecipientPreview.to.join(", ")
+                : "Not configured (set SUPPLIER_PAYABLES_SUMMARY_TO)"}
+            </div>
+            {cronRecipientPreview.cc.length ? (
+              <div>CC: {cronRecipientPreview.cc.join(", ")}</div>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
       <Dialog open={emailOpen} onOpenChange={setEmailOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Send supplier payables summary</DialogTitle>
+            <DialogDescription>
+              Review the recipients and message before sending a scoped supplier payables summary.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div>
@@ -2784,6 +2822,12 @@ export default function SupplierPaymentsPage() {
                           <Link className="underline text-xs" href={`/admin/purchases?purchaseId=${p.id}`}>
                             View
                           </Link>
+                          <Link
+                            className="underline text-xs"
+                            href={`/admin/audit?entityType=PURCHASE&entityId=${encodeURIComponent(p.id)}&sourcePage=admin%2Fsupplier-payments`}
+                          >
+                            Audit
+                          </Link>
                         </div>
                       </td>
                     </tr>
@@ -2822,7 +2866,10 @@ export default function SupplierPaymentsPage() {
                 </thead>
                 <tbody>
                   {pendingPayments.map((p) => (
-                    <tr key={p.id} className="border-b last:border-0">
+                    <tr
+                      key={p.id}
+                      className={`border-b last:border-0 ${focusedPaymentId && focusedPaymentId === p.id ? "bg-amber-50" : ""}`}
+                    >
                       <td className="py-2 pr-3">{p.supplier?.name || "Unknown"}</td>
                       <td className="py-2 pr-3">
                         {p.purchase?.id ? (
@@ -2851,9 +2898,17 @@ export default function SupplierPaymentsPage() {
                       <td className="py-2 pr-3">{new Date(p.createdAt).toLocaleString()}</td>
                       <td className="py-2 pr-3">
                         {canManageSupplierPayments ? (
-                          <Button size="sm" variant="outline" onClick={() => openApprovePaymentConfirm(p)}>
-                            Approve
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button size="sm" variant="outline" onClick={() => openApprovePaymentConfirm(p)}>
+                              Approve
+                            </Button>
+                            <Link
+                              className="underline text-xs"
+                              href={`/admin/audit?entityType=SUPPLIER_PAYMENT&entityId=${encodeURIComponent(p.id)}&sourcePage=admin%2Fsupplier-payments`}
+                            >
+                              Audit
+                            </Link>
+                          </div>
                         ) : (
                           <span className="text-xs text-muted-foreground">Admin only</span>
                         )}
@@ -2871,6 +2926,9 @@ export default function SupplierPaymentsPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Pay supplier balance</DialogTitle>
+            <DialogDescription>
+              Record a payment that will allocate only across the supplier purchases in the current scope.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div className="rounded-md border p-3">
@@ -2880,6 +2938,9 @@ export default function SupplierPaymentsPage() {
             <div className="rounded-md border p-3">
               <div className="text-xs text-muted-foreground">Total outstanding</div>
               <div className="font-medium">{formatCurrency(totalOutstanding)}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                Scope rows: {scopedRows.length}. Payment will only allocate across the current supplier scope.
+              </div>
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Amount to pay</label>
@@ -2917,7 +2978,11 @@ export default function SupplierPaymentsPage() {
                 value={bulkProof}
                 onChange={(e) => setBulkProof(e.target.value)}
                 placeholder="https://..."
+                type="url"
               />
+              {bulkProof && !isValidUrl(bulkProof) ? (
+                <p className="mt-0.5 text-[11px] text-red-600">Must be a valid http/https URL.</p>
+              ) : null}
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Note</label>
@@ -2928,7 +2993,7 @@ export default function SupplierPaymentsPage() {
             </div>
             {bulkError ? <p className="text-xs text-red-600">{bulkError}</p> : null}
             <p className="text-xs text-muted-foreground">
-              Payments will be applied to the oldest outstanding purchases first.
+              Payments will be applied to the oldest outstanding purchases first within the current supplier scope.
             </p>
             {bulkAllocations.length > 0 ? (
               <div className="rounded-md border p-3 space-y-2">
@@ -2959,6 +3024,9 @@ export default function SupplierPaymentsPage() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Record supplier refund</DialogTitle>
+            <DialogDescription>
+              Record cash or bank refunds received back from the currently scoped supplier credit balance.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -2966,7 +3034,13 @@ export default function SupplierPaymentsPage() {
             </div>
             <div className="space-y-2">
               <label className="text-xs text-muted-foreground">Amount</label>
-              <Input value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} />
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={refundAmount}
+                onChange={(e) => setRefundAmount(e.target.value)}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-xs text-muted-foreground">Method</label>
@@ -3010,7 +3084,19 @@ export default function SupplierPaymentsPage() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading supplier payables...</p>
+            <div className="space-y-2" aria-label="Loading payables">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex gap-3">
+                  <Skeleton className="h-8 w-24" />
+                  <Skeleton className="h-8 w-32" />
+                  <Skeleton className="h-8 flex-1" />
+                  <Skeleton className="h-8 w-20" />
+                  <Skeleton className="h-8 w-24" />
+                  <Skeleton className="h-8 w-24" />
+                  <Skeleton className="h-8 w-20" />
+                </div>
+              ))}
+            </div>
           ) : error ? (
             <p className="text-sm text-red-600">
               {error instanceof Error ? error.message : "Failed to load supplier payments."}
@@ -3021,7 +3107,7 @@ export default function SupplierPaymentsPage() {
             <>
               <div className="space-y-3 lg:hidden">
                 {rows.map((row) => (
-                  <div key={row.id} className="rounded-md border p-3 text-sm space-y-2">
+                  <div key={row.id} className={`rounded-md border p-3 text-sm space-y-2 ${rowUrgencyClass(row)}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="font-medium truncate">
@@ -3095,22 +3181,28 @@ export default function SupplierPaymentsPage() {
                     </div>
                     <div className="sticky bottom-0 -mx-3 mt-1 border-t bg-background px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2">
-                      <Link className="underline text-xs" href={`/admin/purchases?purchaseId=${row.id}`}>
-                        View purchase
-                      </Link>
-                      {row.outstanding > 0.01 ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => openPaymentDialog(row)}
-                          disabled={!canManageSupplierPayments || !paymentEligibleStatuses.has(row.status)}
+                        <Link className="underline text-xs" href={`/admin/purchases?purchaseId=${row.id}`}>
+                          View purchase
+                        </Link>
+                        <Link
+                          className="underline text-xs"
+                          href={`/admin/audit?entityType=PURCHASE&entityId=${encodeURIComponent(row.id)}&sourcePage=admin%2Fsupplier-payments`}
                         >
-                          Record payment
-                        </Button>
-                      ) : null}
-                      {!canManageSupplierPayments ? (
-                        <span className="text-xs text-muted-foreground">Admin only</span>
-                      ) : null}
+                          Audit
+                        </Link>
+                        {row.outstanding > 0.01 ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openPaymentDialog(row)}
+                            disabled={!canManageSupplierPayments || !paymentEligibleStatuses.has(row.status)}
+                          >
+                            Record payment
+                          </Button>
+                        ) : null}
+                        {!canManageSupplierPayments ? (
+                          <span className="text-xs text-muted-foreground">Admin only</span>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -3136,7 +3228,7 @@ export default function SupplierPaymentsPage() {
                   </thead>
                   <tbody>
                     {rows.map((row) => (
-                      <tr key={row.id} className="border-t">
+                      <tr key={row.id} className={`border-t ${rowUrgencyClass(row)}`}>
                         <td className="py-2 pr-4">{new Date(row.createdAt).toLocaleString()}</td>
                         <td className="py-2 pr-4">
                           {row.supplierId ? (
@@ -3208,6 +3300,12 @@ export default function SupplierPaymentsPage() {
                             <Link className="underline" href={`/admin/purchases?purchaseId=${row.id}`}>
                               View purchase
                             </Link>
+                            <Link
+                              className="underline text-xs"
+                              href={`/admin/audit?entityType=PURCHASE&entityId=${encodeURIComponent(row.id)}&sourcePage=admin%2Fsupplier-payments`}
+                            >
+                              Audit
+                            </Link>
                             {row.outstanding > 0.01 ? (
                               <span
                                 className="inline-flex"
@@ -3239,17 +3337,30 @@ export default function SupplierPaymentsPage() {
               </div>
             </>
           )}
-          <div className="mt-3 flex items-center gap-2 text-sm">
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage(1)}
+            >
+              ««
+            </Button>
             <Button
               variant="outline"
               size="sm"
               disabled={page <= 1}
               onClick={() => setPage((p) => Math.max(1, p - 1))}
             >
-              Prev
+              ‹ Prev
             </Button>
-            <span>
+            <span className="text-muted-foreground">
               Page {page} of {totalPages}
+              {isClientFiltered ? (
+                <span className="ml-1 text-xs text-amber-700" title="Filter applied client-side — pagination reflects current page only">
+                  (filtered view)
+                </span>
+              ) : null}
             </span>
             <Button
               variant="outline"
@@ -3257,8 +3368,37 @@ export default function SupplierPaymentsPage() {
               disabled={page >= totalPages}
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             >
-              Next
+              Next ›
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page >= totalPages}
+              onClick={() => setPage(totalPages)}
+            >
+              »»
+            </Button>
+            {totalPages > 2 ? (
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground">Go to:</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={totalPages}
+                  className="h-7 w-16 text-xs"
+                  placeholder={String(page)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const v = Number((e.target as HTMLInputElement).value);
+                      if (Number.isFinite(v) && v >= 1 && v <= totalPages) {
+                        setPage(v);
+                        (e.target as HTMLInputElement).value = "";
+                      }
+                    }
+                  }}
+                />
+              </div>
+            ) : null}
           </div>
         </CardContent>
       </Card>
@@ -3267,6 +3407,9 @@ export default function SupplierPaymentsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Record supplier payment</DialogTitle>
+            <DialogDescription>
+              Enter a payment against this supplier purchase and attach reference details when available.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <div>
@@ -3305,7 +3448,15 @@ export default function SupplierPaymentsPage() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Proof URL (optional)</label>
-              <Input value={paymentProof} onChange={(e) => setPaymentProof(e.target.value)} />
+              <Input
+                value={paymentProof}
+                onChange={(e) => setPaymentProof(e.target.value)}
+                placeholder="https://..."
+                type="url"
+              />
+              {paymentProof && !isValidUrl(paymentProof) ? (
+                <p className="mt-0.5 text-[11px] text-red-600">Must be a valid http/https URL.</p>
+              ) : null}
             </div>
             <div>
               <label className="text-xs text-muted-foreground">Note</label>
@@ -3338,6 +3489,9 @@ export default function SupplierPaymentsPage() {
             <DialogTitle>
               {confirmState?.kind === "purchase" ? "Confirm Purchase Approval" : "Confirm Payment Approval"}
             </DialogTitle>
+            <DialogDescription>
+              Confirm this approval after reviewing the supplier, amount, and resulting workflow impact.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
             <p>
@@ -3345,7 +3499,7 @@ export default function SupplierPaymentsPage() {
                 ? "Approve this purchase now?"
                 : "Approve this supplier payment now?"}
             </p>
-            <div className="rounded-md border p-3 space-y-1">
+            <div className="rounded-md border p-3 space-y-1 text-sm">
               <div>
                 <span className="text-muted-foreground">Supplier: </span>
                 <span className="font-medium">{confirmState?.supplier || "-"}</span>
@@ -3360,6 +3514,43 @@ export default function SupplierPaymentsPage() {
                 <span className="text-muted-foreground">Amount: </span>
                 <span className="font-medium">{formatCurrency(confirmState?.amount || 0)}</span>
               </div>
+              {confirmState?.kind === "payment" && (
+                <>
+                  {confirmState.method ? (
+                    <div>
+                      <span className="text-muted-foreground">Method: </span>
+                      <span className="font-medium capitalize">{confirmState.method}</span>
+                    </div>
+                  ) : null}
+                  {confirmState.reference ? (
+                    <div>
+                      <span className="text-muted-foreground">Reference: </span>
+                      <span className="font-medium">{confirmState.reference}</span>
+                    </div>
+                  ) : null}
+                  {confirmState.proofUrl ? (
+                    <div>
+                      <span className="text-muted-foreground">Proof: </span>
+                      <a
+                        href={confirmState.proofUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline text-sky-700 break-all"
+                      >
+                        View proof document
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-amber-700">No proof document attached.</div>
+                  )}
+                  {confirmState.note ? (
+                    <div>
+                      <span className="text-muted-foreground">Note: </span>
+                      <span>{confirmState.note}</span>
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
             <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
               <div className="font-medium text-foreground">Impact preview</div>

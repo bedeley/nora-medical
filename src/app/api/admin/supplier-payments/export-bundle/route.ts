@@ -14,6 +14,7 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   baseName: z.string().min(3).max(120),
   scopeSnapshot: z.string().min(3).max(1200).optional(),
+  sourcePage: z.string().min(3).max(160).optional(),
   currentViewCsv: z.string().min(1),
   summaryCsv: z.string().min(1),
   emailSummaryText: z.string().min(1),
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const { baseName, scopeSnapshot, currentViewCsv, summaryCsv, emailSummaryText, notesText } = parsed.data;
+  const { baseName, scopeSnapshot, sourcePage, currentViewCsv, summaryCsv, emailSummaryText, notesText } = parsed.data;
   const safeBase = baseName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 48);
   const currentView = csvStats(currentViewCsv);
   const summaryView = csvStats(summaryCsv);
@@ -74,6 +75,7 @@ export async function POST(req: Request) {
     action: "SUPPLIER_PAYABLES_EXPORT_BUNDLE",
     entityType: "SUPPLIER_PAYMENT",
     entityId: "SUMMARY",
+    request: req,
     meta: {
       baseName: safeBase,
       generatedAt,
@@ -90,6 +92,9 @@ export async function POST(req: Request) {
       actorName: user?.name || null,
       actorEmail: user?.email || null,
       actorRole: user?.role || null,
+      sourcePage: sourcePage || "admin/supplier-payments",
+      section: "exports",
+      operation: "export_supplier_payables_bundle",
       scopeSnapshot: scopeSnapshot || null,
       resultSummary: `Exported ${files.length} files (${zip.length} bytes total).`,
     },

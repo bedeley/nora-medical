@@ -11,6 +11,10 @@ import { recordAuditLog } from "@/lib/audit-log";
 import { recomputeOrderTotalsFromPayments } from "@/lib/payments";
 import { randomUUID } from "crypto";
 import { postPaymentEntry } from "@/lib/accounting-posting";
+import {
+  buildCustomerActorTargetMeta,
+  canApproveEmployeeCustomerFinancialChange,
+} from "@/lib/customer-account-policy";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
 
@@ -64,11 +68,47 @@ export async function POST(req: Request) {
     if (isRefund && !Object.prototype.hasOwnProperty.call(RefundDestination, refundMode!)) {
       return NextResponse.json({ error: "Select how to handle the refund" }, { status: 400 });
     }
+    const isStoreCreditIssueRequest =
+      !isRefund &&
+      (String(refundDisposition || "").toUpperCase() === "CREDIT" ||
+        (method === "adjustment" && location === "admin/customers:actions-adjustment"));
 
     // Validate user exists
     const targetCustomer = await prisma.user.findUnique({ where: { id: userId } });
     if (!targetCustomer) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
+    if (
+      isStoreCreditIssueRequest &&
+      !canApproveEmployeeCustomerFinancialChange({
+        actorRole: actorUser?.role,
+        targetRole: targetCustomer.role,
+      })
+    ) {
+      await recordAuditLog({
+        actorId: actorUser?.id || null,
+        action: "STORE_CREDIT_ISSUE_DENIED",
+        entityType: "USER",
+        entityId: userId,
+        request: req,
+        outcome: "FAILED",
+        meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: actorUser?.id,
+            actorRole: actorUser?.role,
+            targetId: userId,
+            targetRole: targetCustomer.role,
+          }),
+          sourcePage: "admin/customers",
+          sourceRoute: "/api/payments",
+          amount: Number(amount),
+          reason: "ADMIN_APPROVAL_REQUIRED_FOR_EMPLOYEE_CUSTOMER",
+        },
+      });
+      return NextResponse.json(
+        { error: "Admin approval is required to issue store credit on employee-owned accounts." },
+        { status: 403 },
+      );
     }
 
     // If provided, validate order exists and belongs to user (defensive)
@@ -150,7 +190,23 @@ export async function POST(req: Request) {
       const createdPayments: Array<{ id: string; orderId: string | null }> = [];
       const batchId = randomUUID();
 
-      if (orderId) {
+      if (!orderId && refundDispositionValue === RefundDestination.CREDIT) {
+        const payment = await tx.payment.create({
+          data: {
+            userId,
+            orderId: null,
+            amount: normalizedAmount,
+            note: JSON.stringify({
+              ...meta,
+              refundDisposition: refundDisposition || "credit",
+              applied: [],
+            }),
+            status: PaymentStatus[normalizedStatus],
+            refundDisposition: RefundDestination.CREDIT,
+          },
+        });
+        createdPayments.push({ id: payment.id, orderId: null });
+      } else if (orderId) {
         const payment = await tx.payment.create({
           data: {
             userId,
@@ -302,7 +358,13 @@ export async function POST(req: Request) {
     try {
       // Only notify for customer-related payments (positive normal payments,
       // and refunds that create store credit).
-      if (!isRefund && normalizedAmount > 0) {
+      if (!isRefund && normalizedAmount > 0 && isStoreCreditIssueRequest) {
+        await notifyPaymentEvent({
+          kind: "store_credit_issued",
+          userId,
+          amount: normalizedAmount,
+        });
+      } else if (!isRefund && normalizedAmount > 0) {
         if (result.applied && result.applied.length > 0) {
           for (const entry of result.applied) {
             if (!entry.orderId || entry.applied <= 0) continue;
@@ -345,13 +407,21 @@ export async function POST(req: Request) {
           ? "PAYMENT_VOID"
           : isRefund
           ? "PAYMENT_REFUND"
-          : "PAYMENT_CREATE";
+          : isStoreCreditIssueRequest
+            ? "STORE_CREDIT_ISSUE"
+            : "PAYMENT_CREATE";
       await recordAuditLog({
         actorId: actorUser?.id || null,
         action: auditAction,
         entityType: "PAYMENT",
         entityId: result.payments?.[0]?.id ?? "batch",
         meta: {
+          ...buildCustomerActorTargetMeta({
+            actorId: actorUser?.id,
+            actorRole: actorUser?.role,
+            targetId: userId,
+            targetRole: targetCustomer.role,
+          }),
           actorType: "ADMIN",
           channel: "admin_customers",
           sourceRoute: "/api/payments",
@@ -387,6 +457,8 @@ export async function POST(req: Request) {
             (sum, row) => sum + Number(row.applied || 0),
             0,
           ),
+          storeCreditIssued:
+            auditAction === "STORE_CREDIT_ISSUE" ? normalizedAmount : null,
           note: note || null,
         },
       });

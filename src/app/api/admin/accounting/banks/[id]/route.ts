@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 const updateSchema = z.object({
   name: z.string().min(2).max(120).optional(),
@@ -48,38 +49,31 @@ export async function PATCH(
       data: parsed.data,
     });
     const actor = session.user as AuthenticatedUser;
-    const actorIdCandidate = String(actor?.id || "").trim();
-    let safeActorId: string | null = null;
-    if (actorIdCandidate) {
-      const actorExists = await prisma.user.findUnique({
-        where: { id: actorIdCandidate },
-        select: { id: true },
-      });
-      safeActorId = actorExists?.id || null;
-    }
     try {
-      await prisma.auditLog.create({
-        data: {
-          actorId: safeActorId,
-          action: "BANK_ACCOUNT_UPDATED",
-          entityType: "BANK_ACCOUNT",
-          entityId: bank.id,
-          meta: JSON.stringify({
-            before: {
-              name: before.name,
-              bankName: before.bankName || null,
-              accountNumberMasked: before.accountNumberMasked || null,
-              currency: before.currency,
-              isActive: before.isActive,
-            },
-            after: {
-              name: bank.name,
-              bankName: bank.bankName || null,
-              accountNumberMasked: bank.accountNumberMasked || null,
-              currency: bank.currency,
-              isActive: bank.isActive,
-            },
-          }),
+      await recordAccountingBankAudit({
+        req,
+        actor,
+        action: "BANK_ACCOUNT_UPDATED",
+        entityType: "BANK_ACCOUNT",
+        entityId: bank.id,
+        section: "bank-profile",
+        operation: "update",
+        resultSummary: `Updated bank account ${bank.name}.`,
+        meta: {
+          before: {
+            name: before.name,
+            bankName: before.bankName || null,
+            accountNumberMasked: before.accountNumberMasked || null,
+            currency: before.currency,
+            isActive: before.isActive,
+          },
+          after: {
+            name: bank.name,
+            bankName: bank.bankName || null,
+            accountNumberMasked: bank.accountNumberMasked || null,
+            currency: bank.currency,
+            isActive: bank.isActive,
+          },
         },
       });
     } catch (auditError) {

@@ -9,7 +9,7 @@ import { rateLimit } from "@/lib/rate-limit";
 // POST /api/admin/carts/[userId]/clear — clear a specific user's cart (admin only)
 export async function POST(
   req: Request,
-  { params }: { params: { userId: string } }
+  context: { params: Promise<{ userId: string }> | { userId: string } }
 ) {
   if (!assertSameOrigin(req)) {
     return NextResponse.json({ error: "Bad origin" }, { status: 403 });
@@ -32,15 +32,25 @@ export async function POST(
   }
 
   try {
+    const params = await context.params;
     const userId = params.userId;
     if (!userId) {
       return NextResponse.json({ error: "Missing userId" }, { status: 400 });
     }
 
-    const cart = await prisma.cart.findUnique({ where: { userId } });
+    const [cart, customer] = await Promise.all([
+      prisma.cart.findUnique({
+        where: { userId },
+        include: { items: { select: { id: true, quantity: true } } },
+      }),
+      prisma.user.findUnique({ where: { id: userId }, select: { email: true, name: true } }),
+    ]);
     if (!cart) {
       return NextResponse.json({ success: true, message: "Cart already empty" });
     }
+
+    const itemCount = cart.items.length;
+    const totalQty = cart.items.reduce((s, i) => s + i.quantity, 0);
 
     await prisma.$transaction([
       prisma.cartItem.deleteMany({ where: { cartId: cart.id } }),
@@ -54,7 +64,16 @@ export async function POST(
         action: "CART_CLEAR",
         entityType: "CART",
         entityId: cart.id,
-        meta: { customerId: userId },
+        request: req,
+        outcome: "SUCCESS",
+        meta: {
+          customerId: userId,
+          customerEmail: customer?.email ?? null,
+          customerName: customer?.name ?? null,
+          uniqueItemCount: itemCount,
+          totalQuantity: totalQty,
+          sourcePage: "admin/customers",
+        },
       });
     } catch {
       // best-effort

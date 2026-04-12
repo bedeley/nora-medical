@@ -99,10 +99,16 @@ export async function POST(
       action: "B2B_TENDER_REMINDER_SENT",
       entityType: "B2B_TENDER",
       entityId: tender.id,
+      outcome: "SUCCESS",
       meta: JSON.stringify({
+        sourcePage: "admin/b2b/tenders",
+        operation: "send_reminder",
+        tenderNumber: tender.tenderNumber,
+        buyerName: tender.buyerName,
         recipient,
         daysToExpiry,
         expiryDate: expiryDate.toISOString(),
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
       }),
     },
   });

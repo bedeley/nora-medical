@@ -185,17 +185,24 @@ export async function applyLotAdjustment(
     reason: string;
     reasonCode?: string | null;
     note?: string | null;
+    unitCost?: number | null;
   }
 ) {
   const lotCode = normalizeLotCode(opts.lotCode);
+  const unitCostData = opts.unitCost != null ? { unitCost: opts.unitCost } : {};
+  const createInventoryMovement = tx.inventoryMovement.create as unknown as (args: {
+    data: Record<string, unknown>;
+  }) => Promise<unknown>;
+
   if (!lotCode) {
-    await tx.inventoryMovement.create({
+    await createInventoryMovement({
       data: {
         productId: opts.productId,
         delta: opts.delta,
         reason: opts.reason,
         reasonCode: opts.reasonCode || null,
         note: opts.note || null,
+        ...unitCostData,
       },
     });
     return { lotId: null };
@@ -219,7 +226,7 @@ export async function applyLotAdjustment(
         notes: opts.note?.trim() || null,
       },
     });
-    await tx.inventoryMovement.create({
+    await createInventoryMovement({
       data: {
         productId: opts.productId,
         delta: opts.delta,
@@ -227,6 +234,7 @@ export async function applyLotAdjustment(
         reasonCode: opts.reasonCode || null,
         note: opts.note || null,
         lotId: created.id,
+        ...unitCostData,
       },
     });
     return { lotId: created.id };
@@ -246,7 +254,7 @@ export async function applyLotAdjustment(
     },
   });
 
-  await tx.inventoryMovement.create({
+  await createInventoryMovement({
     data: {
       productId: opts.productId,
       delta: opts.delta,
@@ -254,6 +262,7 @@ export async function applyLotAdjustment(
       reasonCode: opts.reasonCode || null,
       note: opts.note || null,
       lotId: existing.id,
+      ...unitCostData,
     },
   });
 

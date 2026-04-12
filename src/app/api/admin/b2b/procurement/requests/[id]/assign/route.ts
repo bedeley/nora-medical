@@ -5,10 +5,13 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 import {
   notifyCustomerProcurementAssigned,
   type ProcurementRequestSnapshot,
 } from "@/lib/b2b-procurement-notifications";
+
+const SOURCE_PAGE = "admin/b2b/procurement";
 
 const schema = z.object({
   accountManagerId: z.string().min(1),
@@ -69,15 +72,20 @@ export async function POST(
     );
   }
 
+  // When assigning to a SUBMITTED request, it automatically advances to IN_REVIEW.
+  // Expose this promotion explicitly so the UI can inform the user.
+  const previousStatus = current.status;
+  const autoPromoted = previousStatus === "SUBMITTED";
+
   const next: ProcurementRequestSnapshot = {
     ...current,
-    status: current.status === "SUBMITTED" ? "IN_REVIEW" : current.status,
+    status: autoPromoted ? "IN_REVIEW" : current.status,
     accountManagerId: parsed.data.accountManagerId,
     updatedAt: new Date().toISOString(),
   };
   const manager = await prisma.user.findUnique({
     where: { id: parsed.data.accountManagerId },
-    select: { name: true, email: true },
+    select: { id: true, name: true, email: true, role: true },
   });
   const actor = user?.id
     ? await prisma.user.findUnique({
@@ -85,10 +93,15 @@ export async function POST(
         select: { name: true, email: true },
       })
     : null;
+
+  if (!manager) {
+    return NextResponse.json({ error: "Manager not found" }, { status: 404 });
+  }
+
   const notification = await notifyCustomerProcurementAssigned(
     next,
     actor?.name || actor?.email || null,
-    manager?.name || manager?.email || null,
+    manager.name || manager.email || null,
   ).catch((error: unknown) => ({
     attempted: true,
     channel: "none" as const,
@@ -96,22 +109,49 @@ export async function POST(
     detail: error instanceof Error ? error.message : "Notification error",
   }));
 
-  await prisma.auditLog.create({
-    data: {
-      actorId: user?.id || null,
-      action: "B2B_PROCUREMENT_REQUEST_ASSIGNED",
-      entityType: "B2B_PROCUREMENT_REQUEST",
-      entityId: requestId,
-      meta: JSON.stringify({
-        snapshot: next,
-        assignment: {
-          accountManagerId: parsed.data.accountManagerId,
-          note: parsed.data.note?.trim() || null,
-        },
-        notification,
-      }),
+  await recordAuditLog({
+    actorId: user?.id || null,
+    action: "B2B_PROCUREMENT_REQUEST_ASSIGNED",
+    entityType: "B2B_PROCUREMENT_REQUEST",
+    entityId: requestId,
+    request: req,
+    outcome: "SUCCESS",
+    meta: {
+      sourcePage: SOURCE_PAGE,
+      section: "assignment",
+      operation: "assign_account_manager",
+      actor: { id: user?.id, role: user?.role, name: actor?.name || actor?.email || null },
+      before: {
+        status: previousStatus,
+        accountManagerId: current.accountManagerId || null,
+      },
+      after: {
+        status: next.status,
+        accountManagerId: next.accountManagerId,
+        managerName: manager.name || manager.email || null,
+      },
+      autoPromoted,
+      note: parsed.data.note?.trim() || null,
+      clinicName: current.clinicName,
+      contactName: current.contactName,
+      notification: {
+        ok: notification.ok,
+        channel: notification.channel,
+        attempted: notification.attempted,
+        detail: notification.ok ? undefined : notification.detail,
+      },
+      status: "SUCCESS",
+      resultSummary: autoPromoted
+        ? `Manager assigned; request auto-advanced from SUBMITTED to IN_REVIEW.`
+        : `Account manager assigned to ${current.clinicName}.`,
     },
   });
 
-  return NextResponse.json({ ok: true, snapshot: next, notification });
+  return NextResponse.json({
+    ok: true,
+    snapshot: next,
+    autoPromoted,
+    previousStatus,
+    notification,
+  });
 }

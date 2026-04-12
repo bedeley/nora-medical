@@ -207,11 +207,17 @@ export async function POST(
       action: "B2B_TENDER_DRAFT_ORDER_PREPARED",
       entityType: "B2B_TENDER",
       entityId: tender.id,
+      outcome: "SUCCESS",
       meta: JSON.stringify({
+        sourcePage: "admin/b2b/tenders",
+        operation: "convert_to_order_draft",
         tenderNumber: tender.tenderNumber,
+        buyerName: tender.buyerName,
         matchedCount,
         unmatchedCount,
+        linkedCustomerId: linkedCustomer?.id || null,
         customerLinkMethod,
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
       }),
     },
   });

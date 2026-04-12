@@ -30,27 +30,27 @@ export default function AdminDashboard() {
     let active = true;
     const load = async () => {
       try {
-        const [productsRes, customersRes, summaryRes, balancesRes, healthRes] = await Promise.all([
+        const [productsRes, customersRes, summaryRes, healthRes] = await Promise.all([
           fetch("/api/products?page=1&pageSize=1&includeArchived=1"),
-          fetch("/api/admin/customers?includeArchived=1"),
+          fetch("/api/admin/customers?scope=customer-ledger&includeArchived=1"),
           fetch("/api/admin/summary?groupBy=day"),
-          fetch("/api/balance"),
           fetch("/api/admin/health/summary"),
         ]);
         if (!active) return;
         const productsData = await productsRes.json().catch(() => ({}));
         const customersData = await customersRes.json().catch(() => ({}));
         const summaryData = await summaryRes.json().catch(() => ({}));
-        const balancesData = await balancesRes.json().catch(() => ([]));
         const healthData = await healthRes.json().catch(() => ({}));
-        const balances = Array.isArray(balancesData)
-          ? balancesData.filter((row: { balance?: number }) => Number(row?.balance || 0) > 0).length
-          : null;
+        const customerRows = Array.isArray(customersData?.rows) ? customersData.rows : [];
+        const balances = customerRows.filter(
+          (row: { ordersTotal?: number; paidTotal?: number }) =>
+            Number(row?.ordersTotal || 0) - Number(row?.paidTotal || 0) > 0.005,
+        ).length;
         const missing = (healthData?.missingPostings || {}) as Record<string, number>;
         const missingTotal = Object.values(missing).reduce((sum, n) => sum + Number(n || 0), 0);
         setCounts({
           products: Number(productsData?.total ?? null),
-          customers: Array.isArray(customersData?.rows) ? customersData.rows.length : null,
+          customers: customerRows.length,
           orders: Number(summaryData?.summary?.orderCount ?? null),
           balances,
         });
@@ -196,12 +196,12 @@ export default function AdminDashboard() {
           </CardContent>
         </Card>
 
-        {/* Balances */}
+        {/* Outstanding customer balances */}
         <Card className="hover:shadow-md transition-all duration-200">
           <CardHeader className="flex items-center gap-3">
             <CreditCard className="h-6 w-6 text-primary" />
             <div>
-              <CardTitle>Balances</CardTitle>
+              <CardTitle>Outstanding Customers</CardTitle>
               {counts.balances !== null && (
                 <p className="text-xs text-muted-foreground">{counts.balances.toLocaleString()} outstanding</p>
               )}
@@ -209,26 +209,10 @@ export default function AdminDashboard() {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              View outstanding balances across all customers.
+              Review customer-ledger accounts with outstanding balances.
             </p>
-            <Link href="/admin/balances">
-              <Button className="w-full">Manage Balances</Button>
-            </Link>
-          </CardContent>
-        </Card>
-
-        {/* Customer Accounts */}
-        <Card className="hover:shadow-md transition-all duration-200">
-          <CardHeader className="flex items-center gap-3">
-            <Users className="h-6 w-6 text-primary" />
-            <CardTitle>Customer Accounts</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Close customer accounts when necessary.
-            </p>
-            <Link href="/admin/customer-accounts">
-              <Button className="w-full">Manage Accounts</Button>
+            <Link href="/admin/customers?balance=due&sort=balance_desc">
+              <Button className="w-full">Review Outstanding</Button>
             </Link>
           </CardContent>
         </Card>

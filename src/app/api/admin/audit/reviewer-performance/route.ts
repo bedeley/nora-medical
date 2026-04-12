@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 type ReviewerRow = {
   reviewerId: string;
@@ -12,11 +13,6 @@ type ReviewerRow = {
   assignedInProgress: number;
   assignedOverdue: number;
 };
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "ACCOUNTANT";
-}
 
 function parseMeta(raw: string | null) {
   if (!raw) return {} as Record<string, unknown>;
@@ -30,7 +26,7 @@ function parseMeta(raw: string | null) {
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { searchParams } = new URL(req.url);

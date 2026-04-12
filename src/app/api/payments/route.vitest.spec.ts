@@ -8,6 +8,10 @@ const {
   mockPrismaUserFindUnique,
   mockPrismaOrderFindUnique,
   mockPrismaTransaction,
+  mockRecordAuditLog,
+  mockNotifyPaymentEvent,
+  mockPostPaymentEntry,
+  mockRecomputeOrderTotalsFromPayments,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
   mockAssertSameOrigin: vi.fn(),
@@ -15,16 +19,20 @@ const {
   mockPrismaUserFindUnique: vi.fn(),
   mockPrismaOrderFindUnique: vi.fn(),
   mockPrismaTransaction: vi.fn(),
+  mockRecordAuditLog: vi.fn(),
+  mockNotifyPaymentEvent: vi.fn(),
+  mockPostPaymentEntry: vi.fn(),
+  mockRecomputeOrderTotalsFromPayments: vi.fn(),
 }));
 
 // ── Module mocks ──────────────────────────────────────────────────────────
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/origin", () => ({ assertSameOrigin: mockAssertSameOrigin }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mockRateLimit }));
-vi.mock("@/lib/audit-log", () => ({ recordAuditLog: vi.fn() }));
-vi.mock("@/lib/notifications", () => ({ notifyPaymentEvent: vi.fn() }));
-vi.mock("@/lib/accounting-posting", () => ({ postPaymentEntry: vi.fn() }));
-vi.mock("@/lib/payments", () => ({ recomputeOrderTotalsFromPayments: vi.fn() }));
+vi.mock("@/lib/audit-log", () => ({ recordAuditLog: mockRecordAuditLog }));
+vi.mock("@/lib/notifications", () => ({ notifyPaymentEvent: mockNotifyPaymentEvent }));
+vi.mock("@/lib/accounting-posting", () => ({ postPaymentEntry: mockPostPaymentEntry }));
+vi.mock("@/lib/payments", () => ({ recomputeOrderTotalsFromPayments: mockRecomputeOrderTotalsFromPayments }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     user: { findUnique: mockPrismaUserFindUnique },
@@ -280,5 +288,113 @@ describe("POST /api/payments – business logic guards", () => {
     const body = await res.json();
     expect(body.payment?.id).toBe("pay-1");
     expect(body.applied?.[0]?.newStatus).toBe("PAID");
+  });
+
+  it("issues store credit without applying it to open orders", async () => {
+    const txOrderFindMany = vi
+      .fn()
+      .mockResolvedValueOnce([{ total: 100, amountPaid: 0 }])
+      .mockResolvedValueOnce([{ total: 100, amountPaid: 0 }]);
+    const txPaymentCreate = vi.fn().mockResolvedValue({ id: "credit-pay-1", orderId: null });
+    const tx = {
+      order: {
+        findMany: txOrderFindMany,
+        findUnique: vi.fn(),
+      },
+      payment: {
+        create: txPaymentCreate,
+        update: vi.fn(),
+      },
+    };
+    mockPrismaUserFindUnique.mockResolvedValue(mockCustomer);
+    mockPrismaTransaction.mockImplementation(async (callback: (arg: unknown) => Promise<unknown>) =>
+      callback(tx),
+    );
+
+    const res = await POST(makeRequest({
+      userId: "customer-1",
+      amount: 25,
+      method: "adjustment",
+      status: "normal",
+      refundDisposition: "credit",
+      location: "admin/customers:actions-adjustment",
+      note: "Billing correction",
+    }));
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      payment: { id: "credit-pay-1", orderId: null },
+      applied: [],
+    });
+    expect(txPaymentCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          orderId: null,
+          amount: 25,
+          status: "NORMAL",
+          refundDisposition: "CREDIT",
+        }),
+      }),
+    );
+    expect(mockRecomputeOrderTotalsFromPayments).not.toHaveBeenCalled();
+    expect(mockNotifyPaymentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "store_credit_issued",
+        userId: "customer-1",
+        amount: 25,
+      }),
+    );
+    expect(mockRecordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "STORE_CREDIT_ISSUE",
+        entityType: "PAYMENT",
+        meta: expect.objectContaining({
+          customerId: "customer-1",
+          storeCreditIssued: 25,
+          appliedCount: 0,
+        }),
+      }),
+    );
+  });
+
+  it("requires admin approval before issuing store credit on an employee-owned account", async () => {
+    mockGetServerSession.mockResolvedValue(ACCOUNTANT_SESSION);
+    mockAssertSameOrigin.mockReturnValue(true);
+    mockRateLimit.mockResolvedValue({ ok: true });
+    mockPrismaUserFindUnique.mockResolvedValue({
+      ...mockCustomer,
+      id: "admin-customer-1",
+      role: "ADMIN",
+    });
+
+    const res = await POST(makeRequest({
+      userId: "admin-customer-1",
+      amount: 25,
+      method: "adjustment",
+      status: "normal",
+      refundDisposition: "credit",
+      location: "admin/customers:actions-adjustment",
+      note: "Billing correction",
+    }));
+
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({
+      error: expect.stringMatching(/admin approval/i),
+    });
+    expect(mockPrismaTransaction).not.toHaveBeenCalled();
+    expect(mockRecordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "STORE_CREDIT_ISSUE_DENIED",
+        entityType: "USER",
+        entityId: "admin-customer-1",
+        outcome: "FAILED",
+        meta: expect.objectContaining({
+          actorRole: "ACCOUNTANT",
+          targetCustomerRole: "ADMIN",
+          isEmployeeCustomer: true,
+          reason: "ADMIN_APPROVAL_REQUIRED_FOR_EMPLOYEE_CUSTOMER",
+        }),
+      }),
+    );
   });
 });

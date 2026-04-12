@@ -66,6 +66,21 @@ export type TenderPreview = {
   currency: string;
 };
 
+export type TenderListOptions = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: TenderSnapshot["status"] | "";
+};
+
+export type TenderListResult = {
+  items: TenderSnapshot[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
 type ProductLite = {
   id: string;
   sku: string | null;
@@ -185,7 +200,7 @@ function matchProduct(inputDescription: string, products: ProductLite[]) {
 }
 
 export async function buildTenderPreview(input: TenderPreviewInput): Promise<TenderPreview> {
-  const currency = (input.currency || "EUR").trim().toUpperCase();
+  const currency = (input.currency || "GHS").trim().toUpperCase();
   const parsed = parseTenderItemsText(input.itemsText || "");
   const products = (await getProducts()) as ProductLite[];
 
@@ -370,35 +385,70 @@ export async function getLatestTenderSnapshot(tenderId: string) {
 }
 
 export async function listLatestTenderSnapshots(limit = 100) {
-  const tenders = await prisma.tender.findMany({
-    where: { deletedAt: null },
-    orderBy: { updatedAt: "desc" },
-    include: {
-      items: {
-        select: {
-          lineNo: true,
-          requestedDescription: true,
-          requestedUnit: true,
-          quantity: true,
-          matchedProductId: true,
-          matchedProductName: true,
-          matchedSku: true,
-          availableStock: true,
-          baseCost: true,
-          marginPct: true,
-          unitPrice: true,
-          lineTotal: true,
-          matchConfidence: true,
-          bidDisposition: true,
-          note: true,
-          leadTimeDays: true,
-          supplyNote: true,
+  const result = await listTenderSnapshotsPage({ page: 1, pageSize: limit });
+  return result.items;
+}
+
+export async function listTenderSnapshotsPage(options: TenderListOptions = {}): Promise<TenderListResult> {
+  const page = Math.max(1, Number(options.page || 1));
+  const pageSize = Math.min(100, Math.max(1, Number(options.pageSize || 20)));
+  const search = String(options.search || "").trim();
+  const status = String(options.status || "").trim().toUpperCase();
+  const where = {
+    deletedAt: null,
+    ...(status ? { status: status as TenderSnapshot["status"] } : {}),
+    ...(search
+      ? {
+          OR: [
+            { tenderNumber: { contains: search, mode: "insensitive" as const } },
+            { buyerName: { contains: search, mode: "insensitive" as const } },
+            { tenderRef: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
+
+  const [totalCount, tenders] = await prisma.$transaction([
+    prisma.tender.count({ where }),
+    prisma.tender.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      include: {
+        items: {
+          select: {
+            lineNo: true,
+            requestedDescription: true,
+            requestedUnit: true,
+            quantity: true,
+            matchedProductId: true,
+            matchedProductName: true,
+            matchedSku: true,
+            availableStock: true,
+            baseCost: true,
+            marginPct: true,
+            unitPrice: true,
+            lineTotal: true,
+            matchConfidence: true,
+            bidDisposition: true,
+            note: true,
+            leadTimeDays: true,
+            supplyNote: true,
+          },
         },
       },
-    },
-    take: limit,
-  });
-  return tenders.map((row) => mapDbTenderToSnapshot(row));
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  return {
+    items: tenders.map((row) => mapDbTenderToSnapshot(row)),
+    totalCount,
+    page,
+    pageSize,
+    totalPages,
+  };
 }
 
 export function nextTenderNumber(date = new Date()) {
@@ -458,7 +508,7 @@ export async function generateTenderPdf(snapshot: TenderSnapshot) {
   };
   const toMoney = (n: number) => n.toFixed(2);
   const tenderDate = new Date(snapshot.createdAt).toISOString().slice(0, 10);
-  const currency = safeText(snapshot.currency || "EUR");
+  const currency = safeText(snapshot.currency || "GHS");
   const pageCols = { no: 44, desc: 76, unit: 332, qtyR: 405, unitPriceR: 494, totalR: 553 };
   const drawRightText = (
     page: ReturnType<typeof pdfDoc.addPage>,

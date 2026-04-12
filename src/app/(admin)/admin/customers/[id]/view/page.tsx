@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { formatIdReadable } from "@/lib/utils";
-import type { CustomerRow } from "../../page";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -40,9 +39,77 @@ type NormalizedOrderRow = OrderRow & {
   totalPaid: number;
   computedBalance: number;
 };
-type CustomerProfileType = "B2B" | "B2C";
+
+type CustomerProfileSnapshot = {
+  userId: string;
+  profile: "B2B" | "B2C";
+  name?: string | null;
+  email?: string | null;
+  role?: string | null;
+  phone?: string | null;
+  archived?: boolean;
+  deletedAt?: string | null;
+  createdAt?: string | null;
+  lastLoginAt?: string | null;
+  isEmployeeCustomer?: boolean;
+};
+
+type LifecycleAuditRow = {
+  id: string;
+  action: string;
+  outcome?: string | null;
+  createdAt: string;
+  actor?: {
+    id?: string | null;
+    email?: string | null;
+    name?: string | null;
+    role?: string | null;
+  } | null;
+  meta?: {
+    reason?: string | null;
+    from?: boolean | null;
+    to?: boolean | null;
+    blockers?: string[] | null;
+    profile?: string | null;
+    sourcePage?: string | null;
+  } | null;
+};
+
+const LIFECYCLE_AUDIT_ACTIONS = new Set([
+  "USER_ARCHIVE",
+  "USER_UNARCHIVE",
+  "USER_CLOSE",
+  "USER_CLOSE_DENIED",
+  "CUSTOMER_PROFILE_UPDATED",
+]);
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Never";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return date.toLocaleString();
+}
+
+function lifecycleActionLabel(action: string) {
+  if (action === "USER_ARCHIVE") return "Archived";
+  if (action === "USER_UNARCHIVE") return "Restored";
+  if (action === "USER_CLOSE") return "Closed";
+  if (action === "USER_CLOSE_DENIED") return "Close blocked";
+  if (action === "CUSTOMER_PROFILE_UPDATED") return "Profile updated";
+  return action.replace(/_/g, " ");
+}
+
+function lifecycleActionTone(
+  action: string,
+  outcome?: string | null,
+): "success" | "warning" | "danger" {
+  if (outcome === "FAILED" || action === "USER_CLOSE_DENIED") return "danger";
+  if (action === "USER_ARCHIVE") return "warning";
+  if (action === "USER_CLOSE") return "danger";
+  return "success";
+}
 
 export default function AdminCustomerReadOnlyView() {
   const params = useParams<{ id: string }>();
@@ -68,8 +135,9 @@ export default function AdminCustomerReadOnlyView() {
     updatedAt: string;
   };
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
-  const [customerProfile, setCustomerProfile] = useState<CustomerProfileType>("B2B");
-  const [savingCustomerProfile, setSavingCustomerProfile] = useState(false);
+  const [customerName, setCustomerName] = useState<string | null>(null);
+  const [customerEmail, setCustomerEmail] = useState<string | null>(null);
+  const [customerProfile, setCustomerProfile] = useState<CustomerProfileSnapshot | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -101,11 +169,11 @@ export default function AdminCustomerReadOnlyView() {
         const res = await fetch(
           `/api/admin/customers/${encodeURIComponent(String(userId))}/profile`,
         );
-        if (!res.ok) return;
-        const json = (await res.json().catch(() => null)) as { profile?: CustomerProfileType } | null;
-        if (!cancelled && (json?.profile === "B2B" || json?.profile === "B2C")) {
-          setCustomerProfile(json.profile);
-        }
+        const json = (await res.json().catch(() => null)) as CustomerProfileSnapshot | null;
+        if (cancelled || !json) return;
+        setCustomerProfile(json);
+        if (json.name) setCustomerName(json.name.trim() || null);
+        if (json.email) setCustomerEmail(json.email.trim() || null);
       } catch {
         // best effort
       }
@@ -116,35 +184,42 @@ export default function AdminCustomerReadOnlyView() {
     };
   }, [userId]);
 
-  // Lightweight customer identity for header context (reuse admin customers summary)
-  const { data: customerMeta } = useClientQuery<{
-    id: string;
-    email: string | null;
-    name: string | null;
-  } | null>({
-    queryKey: ["admin", "customer-meta", userId],
+  const {
+    data: lifecycleAuditRows,
+    error: lifecycleAuditError,
+    isFetching: lifecycleAuditLoading,
+  } = useClientQuery<LifecycleAuditRow[]>({
+    queryKey: ["admin", "customer-lifecycle-audit", userId],
     queryFn: async () => {
-      const res = await fetch("/api/admin/customers");
+      const params = new URLSearchParams({
+        customerId: String(userId),
+        entityType: "USER",
+        limit: "20",
+      });
+      const res = await fetch(`/api/admin/audit?${params.toString()}`);
+      const json = await res.json().catch(() => null);
       if (!res.ok) {
-        return { id: userId, email: null, name: null };
+        throw new Error(
+          json && typeof json === "object" && "error" in json
+            ? String((json as { error?: unknown }).error || "Failed to load lifecycle history")
+            : "Failed to load lifecycle history",
+        );
       }
-      const j = (await res.json().catch(() => ({}))) as {
-        rows?: CustomerRow[];
-      };
-      const rows: CustomerRow[] = j.rows || [];
-      const match = rows.find(
-        (r) => r?.user?.id && String(r.user.id) === String(userId),
-      );
-      if (match?.user) {
-        return {
-          id: match.user.id,
-          email: match.user.email ?? null,
-          name: match.user.name ?? null,
-        };
-      }
-      return { id: userId, email: null, name: null };
+      const rows = Array.isArray(json)
+        ? json
+        : Array.isArray((json as { items?: unknown } | null)?.items)
+          ? ((json as { items: unknown[] }).items)
+          : [];
+      return rows
+        .filter((row): row is LifecycleAuditRow => {
+          if (!row || typeof row !== "object") return false;
+          const action = String((row as { action?: unknown }).action || "");
+          return LIFECYCLE_AUDIT_ACTIONS.has(action);
+        })
+        .slice(0, 5);
     },
-    refetchInterval: 60000,
+    enabled: Boolean(userId),
+    refetchInterval: 30000,
     refetchOnWindowFocus: false,
   });
 
@@ -184,9 +259,19 @@ export default function AdminCustomerReadOnlyView() {
     Number(accountSummary?.storeCredit ?? 0),
   );
   const creditLimit = Math.max(0, Number(accountSummary?.creditLimit ?? 0));
+  const accountStatus = customerProfile?.deletedAt
+    ? "Closed"
+    : customerProfile?.archived
+      ? "Archived"
+      : "Active";
+  const accountStatusTone =
+    accountStatus === "Active"
+      ? "success"
+      : accountStatus === "Archived"
+        ? "warning"
+        : "danger";
+  const recentLifecycleRows = lifecycleAuditRows || [];
 
-  const customerName = (customerMeta?.name || "").trim() || null;
-  const customerEmail = (customerMeta?.email || "").trim() || null;
   const orderQuery = new URLSearchParams();
   orderQuery.set("userId", String(userId));
   if (customerEmail) {
@@ -212,14 +297,14 @@ export default function AdminCustomerReadOnlyView() {
     <section className="container mx-auto py-8 max-w-4xl space-y-4">
       <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold">Customer View (read-only)</h1>
+          <h1 className="text-xl font-semibold">Customer Account View</h1>
           <p className="text-xs">
             <span className="font-semibold">Customer:</span>{" "}
             {customerName || "Unknown name"}
             {customerEmail ? (
               <>
                 {" "}
-                ·{" "}
+                -{" "}
                 <span className="text-muted-foreground">
                   {customerEmail}
                 </span>
@@ -227,27 +312,25 @@ export default function AdminCustomerReadOnlyView() {
             ) : (
               <>
                 {" "}
-                ·{" "}
+                -{" "}
                 <span className="text-muted-foreground">
-                  ID: {formatIdReadable(customerMeta?.id || userId)}
+                  ID: {formatIdReadable(userId)}
                 </span>
               </>
             )}
           </p>
           <p className="text-xs text-muted-foreground">
-            This view mirrors what the customer sees in their account and orders pages. Changes
-            here are not possible; use other admin tools to manage balances and orders.
+            Balance and order history mirrors what the customer sees. Changes must be made
+            from the main admin tools.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button asChild variant="outline" size="sm">
-            <Link
-              href={`/admin/audit?customerId=${encodeURIComponent(
-                String(userId),
-              )}&sourcePage=admin/customers/[id]/view`}
+            <a
+              href={`/admin/audit?customerId=${encodeURIComponent(String(userId))}&entityType=USER&entityId=${encodeURIComponent(String(userId))}&sourcePage=admin/customers/[id]/view`}
             >
               Audit log
-            </Link>
+            </a>
           </Button>
           <Button
             variant="outline"
@@ -305,58 +388,123 @@ export default function AdminCustomerReadOnlyView() {
 
       <Card className="!border-none !shadow-md !rounded-none">
         <CardHeader className="py-3">
-          <CardTitle className="text-sm">Customer Commerce Profile</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-sm">Account Status</CardTitle>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${chipToneClass(accountStatusTone)}`}
+            >
+              {accountStatus}
+            </span>
+          </div>
         </CardHeader>
-        <CardContent className="py-3 text-sm space-y-2">
-          <p className="text-xs text-muted-foreground">
-            Controls feature access: B2B profile can use clinic procurement workflows; B2C profile uses retail flow only.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              className="h-9 rounded border bg-background px-2 text-sm"
-              value={customerProfile}
-              onChange={(e) => setCustomerProfile(e.target.value as CustomerProfileType)}
-            >
-              <option value="B2B">B2B</option>
-              <option value="B2C">B2C</option>
-            </select>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={savingCustomerProfile}
-              onClick={async () => {
-                try {
-                  setSavingCustomerProfile(true);
-                  const res = await fetch(
-                    `/api/admin/customers/${encodeURIComponent(String(userId))}/profile`,
-                    {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ profile: customerProfile }),
-                    },
+        <CardContent className="py-3 text-sm space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Commerce profile</div>
+              <div className="font-medium">{customerProfile?.profile || "Unknown"}</div>
+            </div>
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Role</div>
+              <div className="font-medium">{customerProfile?.role || "Unknown"}</div>
+            </div>
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Created</div>
+              <div className="font-medium">{formatDateTime(customerProfile?.createdAt)}</div>
+            </div>
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Last login</div>
+              <div className="font-medium">{formatDateTime(customerProfile?.lastLoginAt)}</div>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Outstanding balance</div>
+              <div className={displayBalance > 0 ? "font-semibold text-red-600" : "font-medium text-green-700"}>
+                {formatBalance(displayBalance)}
+              </div>
+            </div>
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Store credit</div>
+              <div className="font-medium">{formatCurrency(creditAvailable)}</div>
+            </div>
+            <div className="rounded border p-3">
+              <div className="text-xs text-muted-foreground">Credit limit</div>
+              <div className="font-medium">{creditLimit > 0 ? formatCurrency(creditLimit) : "None"}</div>
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Recent lifecycle history</h2>
+              <a
+                href={`/admin/audit?customerId=${encodeURIComponent(String(userId))}&entityType=USER&entityId=${encodeURIComponent(String(userId))}&sourcePage=admin/customers/[id]/view`}
+                className="text-xs underline"
+              >
+                Open full audit log
+              </a>
+            </div>
+            {lifecycleAuditLoading && recentLifecycleRows.length === 0 ? (
+              <p className="text-xs text-muted-foreground">Loading lifecycle history...</p>
+            ) : lifecycleAuditError ? (
+              <p className="text-xs text-muted-foreground">
+                Lifecycle history is not available for this admin session.
+              </p>
+            ) : recentLifecycleRows.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No lifecycle changes have been recorded for this customer yet.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {recentLifecycleRows.map((row) => {
+                  const tone = lifecycleActionTone(row.action, row.outcome);
+                  const actor =
+                    row.actor?.name ||
+                    row.actor?.email ||
+                    row.actor?.id ||
+                    "System";
+                  const blockers = Array.isArray(row.meta?.blockers)
+                    ? row.meta?.blockers.filter(Boolean).join(", ")
+                    : "";
+                  return (
+                    <div key={row.id} className="rounded border p-3 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className={`rounded-full px-2 py-0.5 font-medium ${chipToneClass(tone)}`}>
+                          {lifecycleActionLabel(row.action)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          {formatDateTime(row.createdAt)}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-muted-foreground">
+                        Actor: <span className="text-foreground">{actor}</span>
+                        {row.outcome ? (
+                          <>
+                            {" "}
+                            | Outcome: <span className="text-foreground">{row.outcome}</span>
+                          </>
+                        ) : null}
+                      </div>
+                      {row.meta?.reason ? (
+                        <div className="mt-1 text-muted-foreground">
+                          Reason: <span className="text-foreground">{row.meta.reason}</span>
+                        </div>
+                      ) : null}
+                      {blockers ? (
+                        <div className="mt-1 text-muted-foreground">
+                          Blockers: <span className="text-foreground">{blockers}</span>
+                        </div>
+                      ) : null}
+                    </div>
                   );
-                  const body = (await res.json().catch(() => ({}))) as { error?: string };
-                  if (!res.ok) {
-                    toast.error(body.error || "Failed to update customer profile.");
-                    return;
-                  }
-                  toast.success(`Customer profile updated to ${customerProfile}.`);
-                } catch {
-                  toast.error("Failed to update customer profile.");
-                } finally {
-                  setSavingCustomerProfile(false);
-                }
-              }}
-            >
-              {savingCustomerProfile ? "Saving..." : "Save Profile"}
-            </Button>
+                })}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
 
       <Card className="!border-none !shadow-md !rounded-none">
         <CardHeader className="py-3">
-          <CardTitle className="text-sm">My Balance</CardTitle>
+          <CardTitle className="text-sm">Account Balance</CardTitle>
         </CardHeader>
         <CardContent className="py-3 text-sm space-y-1">
           {hasOutstanding && (
@@ -410,7 +558,9 @@ export default function AdminCustomerReadOnlyView() {
 
       <Card className="!border-none !shadow-md !rounded-none">
         <CardHeader className="py-3">
-          <CardTitle className="text-sm">Recent Orders</CardTitle>
+          <CardTitle className="text-sm">
+            Orders {orders.length > 0 ? `(${orders.length})` : ""}
+          </CardTitle>
         </CardHeader>
         <CardContent className="py-3">
           {orders.length === 0 ? (
@@ -444,7 +594,7 @@ export default function AdminCustomerReadOnlyView() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {orders.slice(0, 5).map((o) => (
+                  {orders.map((o) => (
                     <TableRow key={o.id}>
                       <TableCell>{new Date(o.createdAt).toLocaleDateString()}</TableCell>
                       <TableCell className="text-right">

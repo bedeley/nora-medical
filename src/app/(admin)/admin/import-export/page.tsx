@@ -160,6 +160,19 @@ async function logAction(payload: {
   });
 }
 
+async function fetchJsonOrThrow<T>(input: string): Promise<T> {
+  const res = await fetch(input, { cache: "no-store" });
+  const payload = await res.json().catch(async () => ({ error: await res.text().catch(() => "") }));
+  if (!res.ok) {
+    const message =
+      typeof payload === "object" && payload !== null && "error" in payload
+        ? String(payload.error || `Request failed (${res.status})`)
+        : `Request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return payload as T;
+}
+
 export default function ImportExportCenterPage() {
   const searchParams = useSearchParams();
   const { data: session, status } = useSession();
@@ -178,9 +191,13 @@ export default function ImportExportCenterPage() {
   const focusImport = (searchParams.get("focusImport") || "").trim();
   const preselectedBankId = (searchParams.get("bankId") || "").trim();
 
-  const { data: banksData } = useClientQuery<{ id: string; name: string }[]>({
+  const {
+    data: banksData,
+    isError: banksIsError,
+    error: banksError,
+  } = useClientQuery<{ id: string; name: string }[]>({
     queryKey: ["accounting", "banks"],
-    queryFn: () => fetch("/api/admin/accounting/banks").then((r) => r.json()),
+    queryFn: () => fetchJsonOrThrow<{ id: string; name: string }[]>("/api/admin/accounting/banks"),
     enabled: isAdmin,
   });
   const banks = useMemo(() => (Array.isArray(banksData) ? banksData : []), [banksData]);
@@ -380,6 +397,13 @@ export default function ImportExportCenterPage() {
         </p>
       </div>
 
+      {banksIsError ? (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {banksError instanceof Error ? banksError.message : "Failed to load bank accounts."} Bank transaction imports
+          will stay disabled until bank accounts load successfully.
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Exports</CardTitle>
@@ -429,21 +453,28 @@ export default function ImportExportCenterPage() {
                 <p className="text-xs text-muted-foreground">{item.note}</p>
               ) : null}
               {item.resource === "bankTransactions" ? (
-                <select
-                  className="h-9 rounded-md border bg-background px-2 text-xs"
-                  value={bankSelections[item.resource] || ""}
-                  onChange={(event) =>
-                    setBankSelections((prev) => ({ ...prev, [item.resource]: event.target.value }))
-                  }
-                  disabled={!item.enabled}
-                >
-                  <option value="">Select bank</option>
-                  {banks.map((bank) => (
-                    <option key={bank.id} value={bank.id}>
-                      {bank.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="space-y-1">
+                  <select
+                    className="h-9 rounded-md border bg-background px-2 text-xs"
+                    value={bankSelections[item.resource] || ""}
+                    onChange={(event) =>
+                      setBankSelections((prev) => ({ ...prev, [item.resource]: event.target.value }))
+                    }
+                    disabled={!item.enabled || banksIsError}
+                  >
+                    <option value="">Select bank</option>
+                    {banks.map((bank) => (
+                      <option key={bank.id} value={bank.id}>
+                        {bank.name}
+                      </option>
+                    ))}
+                  </select>
+                  {focusImport === item.resource && bankSelections[item.resource] ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      Bank context preselected from the Bank Accounts page.
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
               <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input
@@ -502,7 +533,7 @@ export default function ImportExportCenterPage() {
                   className="w-full sm:w-auto"
                   size="sm"
                   onClick={() => handleImport(item)}
-                  disabled={logBusy === item.resource || !item.enabled}
+                  disabled={logBusy === item.resource || !item.enabled || (item.resource === "bankTransactions" && banksIsError)}
                 >
                   {item.enabled ? "Import" : "Import (coming soon)"}
                 </Button>

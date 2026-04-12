@@ -28,13 +28,19 @@ export async function PATCH(
     return new Response("Missing user id", { status: 400 });
   }
 
-  const body = await req.json().catch(() => null) as { archived?: boolean } | null;
+  const body = await req.json().catch(() => null) as {
+    archived?: boolean;
+    reason?: string;
+    sourcePage?: string;
+  } | null;
   const archived = body?.archived ?? true;
+  const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+  const sourcePage = typeof body?.sourcePage === "string" ? body.sourcePage.trim() : "";
 
   try {
     const existing = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, archived: true },
+      select: { id: true, email: true, role: true, archived: true },
     });
     if (!existing) {
       return new Response("User not found", { status: 404 });
@@ -52,10 +58,18 @@ export async function PATCH(
         action: archived ? "USER_ARCHIVE" : "USER_UNARCHIVE",
         entityType: "USER",
         entityId: updated.id,
+        request: req,
         meta: {
+          actorId: user?.id ?? null,
+          actorRole: user?.role ?? null,
+          targetUserId: updated.id,
+          targetUserRole: existing.role,
           email: updated.email,
           from: existing.archived,
           to: updated.archived,
+          reason: reason || null,
+          sourcePage: sourcePage || "admin/customers",
+          sourceRoute: "/api/admin/users/[id]/archive",
         },
       });
     } catch {

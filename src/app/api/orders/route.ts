@@ -18,6 +18,43 @@ import {
 } from "@/lib/store-credit-policy";
 
 type TxClient = Parameters<typeof prisma.$transaction>[0] extends (arg: infer A) => unknown ? A : never;
+const KNOWN_PAYMENT_METHODS = new Set(["cash", "card", "momo", "transfer", "adjustment"]);
+
+function parseCsvParam(value: string | null) {
+  return Array.from(
+    new Set(
+      String(value || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function extractPaymentMethodFromNote(note: string | null | undefined) {
+  if (!note) return null;
+  try {
+    const parsed = JSON.parse(note) as { method?: unknown };
+    const method = String(parsed?.method || "").trim().toLowerCase();
+    if (KNOWN_PAYMENT_METHODS.has(method)) return method;
+  } catch {
+    // fall through to string heuristics for legacy/manual rows
+  }
+
+  const normalized = note.toLowerCase();
+  if (normalized.includes("\"method\":\"momo\"") || /\bmomo\b/.test(normalized)) return "momo";
+  if (normalized.includes("\"method\":\"transfer\"") || normalized.includes("bank transfer")) return "transfer";
+  if (normalized.includes("\"method\":\"card\"") || /\bcard\b/.test(normalized)) return "card";
+  if (normalized.includes("\"method\":\"cash\"") || /\bcash\b/.test(normalized)) return "cash";
+  if (
+    normalized.includes("\"method\":\"adjustment\"") ||
+    normalized.includes("\"reference\":\"auto_apply\"") ||
+    normalized.includes("store credit")
+  ) {
+    return "adjustment";
+  }
+  return null;
+}
 
 /**
  * ✅ GET /api/orders
@@ -47,16 +84,28 @@ export async function GET(req: Request) {
   const minTotal = url.searchParams.get("minTotal");
   const maxTotal = url.searchParams.get("maxTotal");
   const paymentMethod = url.searchParams.get("paymentMethod");
+  const ids = parseCsvParam(url.searchParams.get("ids"));
   const orderIdParam = (url.searchParams.get("orderId") || "").trim();
   const paymentIdParam = (url.searchParams.get("paymentId") || "").trim();
   const userIdParam = url.searchParams.get("userId");
   const customerType = url.searchParams.get("customerType");
   const outstandingOnly = url.searchParams.get("outstandingOnly") === "1";
+  const discountOnly = url.searchParams.get("discountOnly") === "1";
   const sortKey = url.searchParams.get("sortKey");
   const sortDir = url.searchParams.get("sortDir") === "asc" ? "asc" : "desc";
 
   try {
     const where: Prisma.OrderWhereInput = allowAll ? {} : { userId: user.id };
+
+    if (ids.length > 0) {
+      const and = Array.isArray(where.AND)
+        ? [...where.AND]
+        : where.AND
+          ? [where.AND]
+          : [];
+      and.push({ id: { in: ids } });
+      where.AND = and;
+    }
 
     if (allowAll && userIdParam) {
       where.userId = userIdParam;
@@ -72,8 +121,8 @@ export async function GET(req: Request) {
     }
     if (start || end) {
       where.createdAt = {};
-      if (start) where.createdAt.gte = new Date(`${start}T00:00:00`);
-      if (end) where.createdAt.lte = new Date(`${end}T23:59:59`);
+      if (start) where.createdAt.gte = new Date(`${start}T00:00:00Z`);
+      if (end) where.createdAt.lte = new Date(`${end}T23:59:59Z`);
     }
     if (minTotal || maxTotal) {
       where.total = {};
@@ -90,10 +139,6 @@ export async function GET(req: Request) {
         { walkInName: { contains: q, mode: "insensitive" } },
         { walkInPhone: { contains: q, mode: "insensitive" } },
       ];
-    }
-    if (paymentMethod && paymentMethod !== "ALL") {
-      const token = `"method":"${paymentMethod}"`;
-      where.payments = { some: { note: { contains: token } } };
     }
     if (orderIdParam) {
       const normalizedOrderId = orderIdParam.replace(/^INV-/i, "");
@@ -131,6 +176,51 @@ export async function GET(req: Request) {
       where.AND = and;
     }
 
+    // discountOnly: fetch all IDs of orders where total < subtotal + taxAmount,
+    // filtered by the current where clause, then restrict the main query to those IDs.
+    // This ensures correct server-side pagination and aggregate totals.
+    if (discountOnly) {
+      const candidateOrders = await prisma.order.findMany({
+        where,
+        select: { id: true, subtotal: true, taxAmount: true, total: true },
+      });
+      const discountedIds = candidateOrders
+        .filter(
+          (o) =>
+            Number(o.subtotal) + Number(o.taxAmount) >
+            Number(o.total) + 0.001,
+        )
+        .map((o) => o.id);
+      where.id = { in: discountedIds };
+    }
+
+    if (paymentMethod && paymentMethod !== "ALL") {
+      const candidateOrders = await prisma.order.findMany({
+        where,
+        select: { id: true },
+      });
+      const candidateIds = candidateOrders.map((order) => order.id);
+      if (candidateIds.length === 0) {
+        where.id = { in: [] };
+      } else {
+        const matchingPayments = await prisma.payment.findMany({
+          where: {
+            orderId: { in: candidateIds },
+          },
+          select: { orderId: true, note: true },
+        });
+        const matchingOrderIds = Array.from(
+          new Set(
+            matchingPayments
+              .filter((payment) => extractPaymentMethodFromNote(payment.note) === paymentMethod)
+              .map((payment) => payment.orderId)
+              .filter((orderId): orderId is string => Boolean(orderId)),
+          ),
+        );
+        where.id = { in: matchingOrderIds };
+      }
+    }
+
     const orderBy: Prisma.OrderOrderByWithRelationInput = (() => {
       switch (sortKey) {
         case "total":
@@ -145,10 +235,14 @@ export async function GET(req: Request) {
           return { user: { name: sortDir } };
         case "invoice":
           return { invoiceNumber: sortDir };
+        case "delivery":
+          return { deliveryStatus: sortDir };
         default:
           return { createdAt: "desc" as const };
       }
     })();
+
+    const take = ids.length > 0 ? Math.max(1, Math.min(500, ids.length)) : pageSize;
 
     const [orders, total, aggregates] = await Promise.all([
       prisma.order.findMany({
@@ -158,8 +252,8 @@ export async function GET(req: Request) {
           user: { select: { id: true, name: true, email: true, phone: true } },
         },
         orderBy,
-        skip: (page - 1) * pageSize,
-        take: pageSize,
+        skip: ids.length > 0 ? 0 : (page - 1) * pageSize,
+        take,
       }),
       prisma.order.count({ where }),
       prisma.order.aggregate({
@@ -244,6 +338,7 @@ export async function GET(req: Request) {
         updatedAt: o.updatedAt.toISOString(),
         invoiceNumber: o.invoiceNumber || null,
         hasPendingMomo: pendingMomoOrderIds.has(o.id),
+        adminNote: allowAll ? (o.adminNote || null) : null,
         user: o.user,
         items: o.items.map((i) => ({
           id: i.id,
@@ -719,4 +814,3 @@ async function enforceCreditHoldForOrder(
     { maxWait: 5000, timeout: 20000 },
   );
 }
-

@@ -6,11 +6,7 @@ import { Prisma } from "@prisma/client";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
 import { recordAuditLog } from "@/lib/audit-log";
-
-function isAuthorized(user?: AuthenticatedUser | null) {
-  const role = user?.role;
-  return role === "ADMIN" || role === "STAFF" || role === "ACCOUNTANT";
-}
+import { canAccessAdminAudit } from "@/lib/admin-audit-access";
 
 function normalizeName(value: unknown) {
   const name = String(value || "").trim();
@@ -21,7 +17,7 @@ function normalizeName(value: unknown) {
 export async function GET() {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const currentUser = user as AuthenticatedUser;
@@ -60,7 +56,7 @@ export async function GET() {
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const currentUser = user as AuthenticatedUser;
@@ -126,7 +122,7 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
-  if (!session || !isAuthorized(user)) {
+  if (!session || !canAccessAdminAudit(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const currentUser = user as AuthenticatedUser;

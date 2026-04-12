@@ -645,16 +645,15 @@ Test strip - `/admin/profit-loss/products`
 - Page-specific Playwright coverage exists in `e2e/admin-profit-loss-products.spec.js`.
 
 ## Products & Catalog
-- Pages: /admin/products, /admin/purchases, /admin/movements
-- What it is: Catalog maintenance and stock movement tracking.
-- How to use: Add/edit products, upload images, archive obsolete items, and record purchases.
+- Page: /admin/products
+- What it is: Catalog maintenance for products, pricing, supplier defaults, and archive lifecycle.
+- How to use: Add/edit products, upload images, archive obsolete items, and hand off replenishment work to `/admin/purchases`.
 - Add product (initial stock vs order):
   - Receive now checked: creates a received purchase, posts inventory + AP, and logs an inventory movement.
   - Receive now unchecked: creates an ordered purchase only; stock stays 0 until received later.
   - Pay now: records a supplier payment and posts AP to Cash/Bank.
   - Add Product modal uses inline field validation (supplier, lot/batch, expiry date, and payment mode) so missing fields are shown directly beside the input.
-  - Purchase form uses inline field validation for required inputs (product, quantity, unit cost, supplier, and payment mode when Pay now is checked).
-  - Regulated/lot-history SKUs enforce lot code at receipt; expiry date is enforced when expiry tracking applies.
+  - Detailed purchase-order, approval, receipt, return, and export behavior is documented in `Purchases` below.
 - Cleanup behavior:
   - Deleted products are hidden from product pickers by default.
   - If a deleted product has an unreceived/no-history purchase draft (pending/approved/ordered/cancelled with no movements/payments/lots), that purchase is soft-removed from operational pages.
@@ -679,40 +678,191 @@ Test strip - `/admin/profit-loss/products`
 - Related: Use this when deciding preferred vendors or resolving supplier-driven stock issues.
 
 ## Orders & Receipts
-- Pages: /admin/orders, /admin/orders/new, /admin/orders/[id], /admin/orders/[id]/receipt
-- What it is: Order lifecycle management and admin receipt handling.
-- How to use:
-  1) Create order (full or partial payment).
-     - Flow is optimized for operations: select customer -> add order lines -> finalize payment/delivery.
-     - If `Delivery Status = Partially Delivered`, enter delivered quantity for each line item before saving.
-     - Upfront payment fields are collapsed by default; click `Enable Payment` only when collecting payment at order creation.
-     - Upfront payment mode uses explicit placeholder selection (no default payment method).
-     - If upfront payment is enabled, amount and required reference fields are validated inline before create.
-     - Walk-in/unregistered customers are excluded from `/admin/orders/new` customer list; use OTC for walk-ins.
-  2) Record remaining payments from order page (cash/transfer/momo).
-  3) Mark delivery status.
-  4) Process returns from item row.
-  5) Validate payment summary line:
-     - Ledger total
-     - Less non-ledger return credits
-     - Net paid (must match Amount Paid)
-  6) If you see a protracted pending provider MoMo warning on the order:
-     - Use `Cancel pending MoMo request(s)` if customer wants another payment method.
-     - Record alternate payment (cash/transfer/manual MoMo) only once.
-     - If provider later returns success after cancel, keep order unchanged and resolve on MoMo page as store credit.
-- Expected:
-  - Partial payment -> `PARTIALLY_PAID`
-  - Full payment -> `PAID`
-  - Discounts are admin-only and must include a reason.
-  - `/admin/orders` list shows discount under the order total when applied.
-  - Order receipt and customer receipt show: Subtotal, Tax, Discount, Invoice total.
-  - Receipt layout is compact and operational: customer/status in header cards, item grid, delivery summary, and right-aligned financial summary.
-  - Partially delivered status requires per-line delivered quantities; fully delivered lines should use `Delivered`.
-  - Return credits reduce net paid correctly without false mismatch warnings.
-  - Provider MoMo pending does not count as paid until confirmed success.
-  - If page is opened with `outstandingOnly=1`, the header shows `Collections mode: Outstanding only`.
-  - Use `Show all` in the badge to return to normal full-order listing.
-- Related: Orders feed accounting, inventory movements, and customer balances.
+- Pages: /admin/orders, /admin/orders/new, /admin/orders/[id]
+- What it is: The three-page admin order loop for worklist triage, registered-customer order creation, payment collection, delivery updates, returns, and receipt handling.
+- Scope rules:
+  - `/admin/orders/new` is for registered customers only.
+  - Walk-ins and anonymous OTC sales belong in `/admin/orders/otc`.
+  - Audit links on the orders pages are admin-only.
+  - Order actions write audit metadata with source-page context so the audit page can be filtered back to the exact workflow.
+
+Page walkthrough - top to bottom
+
+1) `/admin/orders` worklist
+   - Header and action row:
+     - Shows `Orders`, result badges, active-filter count, selected-row count, and the `Collections mode: Outstanding only` badge when opened in collections scope.
+     - Action buttons are:
+       - `Orders Audit` (admin only)
+       - `Refresh`
+       - `Export Page` or `Export N Selected`
+       - `Walk-in Sale`
+       - `Create Order`
+   - KPI strip:
+     - `Matching Orders`
+     - `Filtered Revenue`
+     - `Filtered Collected`
+     - `Filtered Outstanding`
+   - Selection bar:
+     - Appears only when rows are selected.
+     - Supports clear selection and export of only the selected rows.
+   - Worklist Filters card:
+     - Primary controls stay visible for day-to-day use.
+     - Includes column toggles, saved filters, status and delivery filters, search, payment method, customer type, and advanced controls such as totals/date ranges plus exact `userId`, `orderId`, and `paymentId` filters.
+     - `Outstanding only` and `Discount only` are explicit quick toggles.
+     - Saved filters persist the full worklist state, including sort, columns, and advanced filters.
+   - Results area:
+     - Desktop uses the orders table.
+     - Mobile uses stacked order cards.
+     - Each row/card exposes:
+       - `View Details`
+       - `Audit` (admin only)
+       - `Add Payment`
+       - `Copy Link`
+     - `Add Payment` opens the payment dialog directly from the list.
+     - If the selected customer has store credit, the dialog also offers `Apply store credit`.
+   - Footer controls:
+     - Pagination, rows-per-page, page jump, and filtered totals remain visible at the bottom.
+
+2) `/admin/orders/new` create workspace
+   - Header:
+     - Shows `Create Order`.
+     - Includes `Go to OTC Quick Sale` and `Back to Orders`.
+     - Keyboard shortcuts are shown inline: `Alt+I` to add the selected item and `Alt+S` to validate/submit.
+   - Recovery banners:
+     - `Saved draft available` appears when an unfinished draft can be restored.
+     - Import banners appear when the page is opened from a backorder, tender, or B2B request source.
+   - Sticky flow strip:
+     - Steps are shown in order:
+       - `Customer`
+       - `Order Lines`
+       - `Payment`
+       - `Finalize`
+   - `Order Workspace` main form:
+     - `Customer`
+       - Select from the registered-customer list only.
+       - Includes reload and clear actions.
+       - Shows store credit and credit limit context for the selected customer.
+     - `Imported Line Review`
+       - Appears only when imported draft lines need manual resolution.
+       - Unmatched lines can be resolved, noted, or dismissed before create.
+     - `Order Lines`
+       - Search/select product, quantity, add line, review shortages, and remove lines.
+       - If the order is being created as partially delivered, each line must carry a delivered quantity.
+     - `Payment & Pricing`
+       - Upfront payment is optional and off by default.
+       - `Enable Payment` reveals amount, method, and conditional reference fields.
+       - `Set Full` fills the upfront payment with the current total.
+       - Tax is optional.
+       - Discount amount and discount reason are admin-only; a reason is required when a discount is entered.
+     - `Finalize Order`
+       - Shows subtotal, tax, discount, total, optional initial payment, and balance due.
+       - Includes the `Delivery Status` selector and optional order/supply note.
+       - `Create Order` validates first, then opens `Confirm Order Creation`.
+   - Confirmation dialog:
+     - Restates customer, item count, delivery state, upfront payment, balance after payment, totals, and note before submit.
+
+3) `/admin/orders/[id]` operational detail page
+   - Breadcrumb and header:
+     - `Orders > Order <id>`
+     - Status chip, created/updated timestamps, and action buttons.
+     - Action buttons are:
+       - `Print`
+       - `Send Receipt`
+       - `Audit Log` (admin only)
+       - `Actions` (admin-only cancel/delete entry point)
+   - Alert banners:
+     - Credit hold banner with `Release hold` for admins.
+     - Unpaid banner for call-to-complete follow-up.
+     - Pending MoMo warnings with `Check status` and `Cancel pending MoMo request(s)`.
+   - KPI strip:
+     - Total
+     - Paid
+     - Balance
+     - Delivery state
+   - Section tabs:
+     - `Items` - delivery and fulfillment
+     - `Payments` - receipts and ledger
+     - `Returns` - credits and refunds
+     - `Activity` - timeline and customer signals
+   - Left column behavior:
+     - `Items`
+       - Mark a line `Delivered`
+       - Record `Partial Delivery`
+       - `Return` a delivered quantity
+     - `Payments`
+       - Record remaining payment
+       - Review payment ledger
+       - Confirm the ledger summary line:
+         - ledger total
+         - less non-ledger return credits
+         - net paid
+         - amount paid match/mismatch
+     - `Returns`
+       - Dedicated list of return credits and refunds tied to the order.
+     - `Activity`
+       - Timeline and customer signal summary for order, payment, credit, and delivery events.
+   - Right rail behavior:
+     - `Customer` card links to the customer account when the order belongs to a registered user.
+     - `Delivery` card shows delivery status, proof-of-delivery details when available, and full-order delivery actions.
+     - `Admin Note` supports edit/save for admin or staff.
+     - `Backorder Lines` appears when the order still has remaining quantities and links back into `/admin/orders/new`.
+     - `Back to Orders` returns to the worklist.
+
+Operational outcomes to expect
+- Partial payment creates `PARTIALLY_PAID`; full settlement creates `PAID`.
+- Provider MoMo records do not count as settled until the provider status is confirmed successful.
+- Store credit can be applied from the list payment dialog and is allocated oldest-first across the customer’s open orders.
+- Returns can reduce the current order balance, create store credit, or produce a refund trail depending on the state of the order and return flow.
+- Discounts affect subtotal/tax/total presentation on the order, receipt, and customer-facing receipt output.
+- `sourcePage` audit metadata is now attached to important order actions so `/admin/audit` can be opened in the correct scope.
+
+Test strips
+
+Test strip - `/admin/orders`
+- Page opens successfully and shows `Orders`, `Refresh`, `Export Page`, `Walk-in Sale`, and `Create Order`.
+- Admin sees `Orders Audit`; non-admin does not.
+- Opening the page with `outstandingOnly=1` shows the collections badge and `Show all` clears that scope.
+- KPI cards change when filters narrow the worklist.
+- Worklist filters update the visible rows without losing sort or pagination state unexpectedly.
+- `Saved filters` can save the current scope and restore it later.
+- `Columns` toggles hide and restore optional columns.
+- Selecting rows shows the selection bar and changes export from page export to selected export.
+- Each row/card exposes `View Details`, `Add Payment`, and `Copy Link`; `Audit` is admin-only.
+- `Copy Link` copies the order detail URL and shows a success toast; clipboard failure shows an error toast.
+- `Add Payment` opens the dialog from the list and records payment against the selected order.
+- When the selected customer has store credit, the dialog offers `Apply store credit`.
+- `Export Page` and selected export respect the current scoped result set.
+- Desktop table and mobile cards both expose the same important operational actions.
+
+Test strip - `/admin/orders/new`
+- Page opens successfully and shows `Create Order`, `Go to OTC Quick Sale`, and `Back to Orders`.
+- The sticky step strip appears in order: `Customer`, `Order Lines`, `Payment`, `Finalize`.
+- Registered customers load into the customer selector; walk-ins are not created from this page.
+- Saved draft recovery appears when a recent incomplete draft exists.
+- Imported draft banner and `Imported Line Review` appear only when the page is opened from a backorder, tender, or B2B import flow.
+- Creating with no customer or no items shows inline validation errors.
+- `Enable Payment` reveals the upfront payment controls; disabling it clears payment-only fields.
+- Upfront payment requires an explicit payment method and conditional reference when the method is MoMo or transfer.
+- Discount amount requires a discount reason and is admin-only.
+- Setting `Delivery Status = Partially Delivered` requires delivered quantity on every line before submit.
+- `Create Order` opens `Confirm Order Creation` instead of submitting immediately.
+- Confirmed create returns to the created order flow cleanly and clears the saved draft.
+
+Test strip - `/admin/orders/[id]`
+- Page opens successfully and shows breadcrumb, order header, status chip, and action buttons.
+- `Print` opens the receipt print view.
+- `Send Receipt` can trigger WhatsApp/SMS and email receipt actions.
+- Admin sees `Audit Log`; non-admin does not.
+- Credit-hold orders show the hold banner and admin-only `Release hold`.
+- Pending MoMo warnings show `Check status` and `Cancel pending MoMo request(s)`.
+- KPI strip reflects total, paid, balance, and delivery state.
+- `Items` tab supports `Mark Delivered`, `Partial Delivery`, and `Return` on eligible lines.
+- `Payments` tab can record payment and shows ledger summary that matches `Amount Paid` when data is consistent.
+- `Returns` tab shows return credits and refunds without duplicating the payments table purpose.
+- `Activity` tab shows timeline and customer-signal summaries.
+- `Admin Note` can be edited and saved by admin or staff.
+- `Actions` menu allows cancel/delete only when the order state allows it.
+- Orders with backorder lines show `Create Fulfillment Order` and carry the remaining quantities into `/admin/orders/new`.
 
 ## Orders — OTC Sales
 - Page: /admin/orders/otc
@@ -761,15 +911,216 @@ Test strip - `/admin/profit-loss/products`
   - New day requires manual open (staff after 06:00 UTC, admin anytime).
 - Related: Audit logs use `OTC_SHIFT_OPEN` and `OTC_SHIFT_CLOSE` with human-readable metadata.
 
-## Customers & Accounts
-- Pages: /admin/customers, /admin/customers/[id]/view, /admin/customer-accounts
-- What it is: Customer profiles, balances, and store credit workflows.
-- How to use: Review payment history, apply credits, and export statements.
-- Aging hub drill-through:
-  - `Open customers` from Aging Hub opens `balance due` customers sorted by highest balance first.
-  - A subtle `Applied from Aging Hub` badge appears when this context is active.
-- Statements & reminders: Use “Statement” or “Send reminder” to prompt overdue balances.
-- Related: Customer balances are validated in Accounting Integrity.
+## Customers
+- Pages: /admin/customers, /admin/customers/[id]/view
+- What it is: The single customer-ledger workspace for reviewing customer accounts, balances, store credit, statements, carts, account lifecycle, and customer-facing account views.
+- Customer definition:
+  - The page lists customer-ledger accounts, not only users whose role is `CUSTOMER`.
+  - Employee users such as Admin, Accountant, Staff, and Dispatcher can appear when they have customer activity such as orders, payments, store credit, balance, or cart data.
+  - Employee-owned customer rows are labeled with a role badge such as `Admin customer` so reviewers can distinguish permission role from customer ledger activity.
+- Access model:
+  - Admin and Accountant can review balances and payment/account activity.
+  - Staff can manage non-financial customer operations where permitted, such as cart/profile workflows.
+  - Admin-only safeguard: refunds, store-credit issue/apply, and credit-limit changes on employee-owned customer accounts require Admin approval. Admins can approve these actions on their own employee-owned account for now.
+- Related:
+  - Customer balances are validated in Accounting Integrity.
+  - AR Aging links into this page for balance follow-up.
+  - `/admin/customers/[id]/view` is a read-only mirror of the customer account experience.
+  - Account lifecycle actions are handled from `/admin/customers`; there is no separate account-lifecycle surface.
+
+Customers - top-to-bottom walkthrough
+
+1) Header
+   - Title: `Customers`.
+   - Subtitle: monitor balances, credits, and delivery status.
+   - If opened from Aging Hub with `balance=due`, the header shows `Applied from Aging Hub`.
+   - Header actions include refresh/export-style customer review controls where available.
+
+2) Payment summary strip
+   - Shows payment totals for the current month and common payment methods.
+   - Use it as a quick cash/MoMo/adjustment reference before working account rows.
+   - This strip is informational; row-level payment and credit actions are in the customer Actions menu.
+
+3) Search, filters, and sorting
+   - Search supports name, email, and phone matching.
+   - The customer list is server-paginated and requested with `scope=customer-ledger`.
+   - Filters:
+     - Balance: all accounts or balance due.
+     - Store credit: all accounts or accounts with credit.
+     - Credit limit: all accounts or over-limit accounts.
+     - Delivery: all, pending, partial, or delivered.
+     - Archived accounts: hidden by default; `Include archived` adds archived rows for lifecycle review.
+   - Sorting:
+     - highest balance first
+     - lowest balance first
+     - name A-Z
+   - Changing search/filter/sort resets the page back to page 1.
+
+4) Summary cards
+   - Cards summarize the currently visible filtered page:
+     - customer count shown
+     - outstanding balance
+     - available store credit
+     - over-limit count
+     - accounts with balance due
+   - Use these as page-scope indicators, not lifetime system totals.
+
+5) Customer table and mobile cards
+   - Desktop uses a table; mobile uses stacked cards.
+   - Each row/card shows:
+     - customer name, email, or readable ID
+     - employee-customer role badge when applicable
+     - orders total
+     - paid total
+     - store credit
+     - outstanding balance
+     - credit limit and over-limit badge
+     - last order date
+     - cart total/items
+     - delivery chips for full, partial, and pending delivery
+   - The customer name opens `/admin/customers/[id]/view`.
+   - The eye icon also opens the read-only customer account view.
+   - The payment icon opens Add Payment when the current role can manage payments.
+
+6) Pagination and empty states
+   - Pagination is server-backed with 25 rows per page.
+   - Footer text shows how many rows are visible and the total matching count.
+   - Empty results include recovery actions such as clearing filters and refreshing.
+   - If customer count looks lower than expected, check:
+     - active search text
+     - balance/store-credit/credit-limit/delivery filters
+     - whether the account has any customer-ledger activity
+     - whether the account is archived
+
+7) Actions menu - review and statements
+   - `Explain totals` opens the payment/order breakdown dialog.
+   - `Download statement (CSV)` downloads the customer statement.
+   - `Download statement (PDF)` downloads a printable statement.
+   - `Email statement` sends the statement when the role can send account emails.
+   - `Send payment reminder` sends a payment reminder when the role can send account emails.
+   - Statement/reminder actions should be used for balance follow-up, especially after AR Aging review.
+
+8) Actions menu - payments, credit, and limits
+   - `Add Payment` records a cash or transfer payment and applies it to oldest open orders.
+   - `Apply to Balance` consumes available store credit against oldest unpaid balances through the dedicated customer credit endpoint.
+   - `Issue store credit` creates unapplied store credit and requires a short reason.
+   - `Refund credit` pays out available store credit as cash/transfer and requires a short reason.
+   - `Set credit limit` updates the customer's credit limit.
+   - Employee-owned account safeguard:
+     - Admin can perform these financial actions.
+     - Accountant cannot perform refunds/store-credit/credit-limit changes on employee-owned customer accounts.
+     - Denied attempts are audit-logged with actor role, target role, source route, and failure reason.
+
+9) Actions menu - profile and cart
+   - `Set commerce profile` edits B2B/B2C customer commerce behavior.
+   - The profile editor lives on `/admin/customers` under Actions, not in the read-only customer view.
+   - `View Cart` opens the live cart detail when the customer has cart items.
+   - `Delete Cart` is available only when the account is fully paid and all delivery is complete.
+
+10) Actions menu - account lifecycle
+   - `Archive account` keeps the customer history but removes the account from active customer workflows.
+   - `Unarchive account` is available when archived rows are included.
+   - `Close account` is Admin-only and available only for unused CUSTOMER accounts with no orders, payments, store credit, credit limit, or cart blockers.
+   - Unsafe closure attempts are rejected by the server and audit-logged with actor, target, source route, reason, blockers, and relevant counts.
+   - Accounts with customer history should be archived, not closed.
+
+11) Explain Totals dialog
+   - Shows live summary for:
+     - orders total
+     - paid total
+     - store credit available
+     - cash refunds
+     - outstanding balance
+   - Shows order and payment ledgers with applied breakdowns.
+   - The table range buttons only filter the ledger table; the top summary remains lifetime/live.
+   - If payments reference orders not linked to the customer account, eligible users can backfill missing order links.
+   - Backfill links only unassigned orders to the customer, skips orders already linked to another user, and writes an audit event.
+
+12) Account status panel and read-only customer view
+   - `/admin/customers/[id]/view` mirrors the customer-facing account/balance/orders experience.
+   - It is intentionally read-only.
+   - The top `Account Status` panel shows:
+     - account status: `Active`, `Archived`, or `Closed`
+     - commerce profile
+     - user role
+     - created date
+     - last login
+     - outstanding balance
+     - store credit
+     - credit limit
+   - `Recent lifecycle history` shows the latest account lifecycle audit entries, including archive, restore, close, blocked close, and commerce-profile updates.
+   - Use this panel for quick lifecycle review before opening the full audit log.
+   - Profile changes, payments, credit changes, cart deletion, reminders, and statements are managed from the main `/admin/customers` Actions menu.
+   - The view links to audit filtered for the customer user entity.
+
+13) Audit behavior
+   - Important customer actions write page-specific audit metadata.
+   - Audit metadata includes source page/route, actor identity/role, target customer identity/role, employee-customer flag, self-service flag when applicable, amounts, allocations, and before/after totals where relevant.
+   - Expected audit actions include:
+     - `PAYMENT_CREATE`
+     - `STORE_CREDIT_ISSUE`
+     - `STORE_CREDIT_ISSUE_DENIED`
+     - `STORE_CREDIT_APPLY`
+     - `STORE_CREDIT_APPLY_DENIED`
+     - `STORE_CREDIT_REFUND`
+     - `STORE_CREDIT_REFUND_DENIED`
+     - `CUSTOMER_CREDIT_LIMIT_UPDATE`
+     - `CUSTOMER_PROFILE_UPDATED`
+     - `CUSTOMER_ORDER_LINK_BACKFILL`
+     - `USER_ARCHIVE`
+     - `USER_UNARCHIVE`
+     - `USER_CLOSE`
+     - `USER_CLOSE_DENIED`
+
+How to use the page well
+- Start with search/filter/sort, then use the row Actions menu for the account workflow.
+- Use `Explain totals` before issuing, applying, or refunding store credit.
+- Use `Issue store credit` for credit creation only; use `Apply to Balance` separately when the credit should settle invoices.
+- Use statements/reminders for collection follow-up after confirming the balance in Explain Totals.
+- Treat employee-owned customer rows as higher-control accounts. Admin must approve financial credit/refund/limit changes on those rows.
+- Use the read-only account view for customer-perspective review, not for edits.
+- Use Archive for historical customer accounts; use Close only for unused or duplicate accounts that pass the server-side lifecycle check.
+
+Test strip - `/admin/customers`
+- Page opens for an authenticated Admin and shows `Customers`.
+- Customer request uses `scope=customer-ledger`, `page`, and `pageSize`.
+- Large-list QA: with 60 customer-ledger rows, the page shows 25 rows per page and reports the full matching count.
+- A normal `CUSTOMER` account appears in the list.
+- An employee account with orders/payments/cart/balance appears in the list.
+- Employee-owned rows show a role badge such as `Admin customer`.
+- Internal users with no customer-ledger activity do not appear.
+- Search by name, email, phone, and edge-case email text such as plus-addressing or apostrophes filters results and resets pagination to page 1.
+- Balance due, store-credit, over-limit, and delivery filters update the visible rows.
+- `Include archived` adds archived rows and exposes Unarchive in the Actions menu.
+- Archived rows show an `Archived` badge and remain visually distinguishable from active rows.
+- Sorting by highest balance, lowest balance, and name changes row order.
+- Pagination previous/next controls update the requested page.
+- Empty filtered state offers clear-filter recovery.
+- Rows with carts show cart value and item count.
+- Rows with credit limits below outstanding balance show `Over limit`.
+- Delivery chips show full, partial, and pending order counts where present.
+- The customer name or eye icon opens `/admin/customers/[id]/view`.
+- The read-only detail view shows `Customer Account View`, `Account Status`, and `Recent lifecycle history`.
+- The Account Status panel shows active/archived/closed state, commerce profile, role, created date, last login, balance, store credit, and credit limit.
+- Recent lifecycle history renders account lifecycle audit entries and links to the full customer audit log.
+- The read-only view does not show `Save Profile` or mutable commerce-profile controls.
+- `Set commerce profile` opens from the main Actions menu and saves B2B/B2C profile changes.
+- `Explain totals` opens and shows live totals plus payment/order ledgers.
+- Explain Totals backfill appears only for permitted users and links only eligible unassigned orders.
+- `Add Payment` posts to `/api/payments` and applies to oldest open orders.
+- `Issue store credit` creates unapplied store credit and requires a reason.
+- `Apply to Balance` posts to `/api/admin/customers/[id]/credit/apply`.
+- `Refund credit` requires a reason and cannot exceed available store credit.
+- `Set credit limit` is Admin-only.
+- Accountant cannot issue/apply/refund store credit or change credit limits on employee-owned customer accounts.
+- Admin can approve financial actions on employee-owned customer accounts, including her own account.
+- Denied employee-owned financial attempts write audit logs with `FAILED` outcome.
+- `Archive account` posts to `/api/admin/users/[id]/archive` with source page metadata.
+- `Close account` posts to `/api/admin/users/[id]/close` only after typed confirmation and reason.
+- Close attempts with orders, payments, store credit, credit limit, cart data, or employee role are blocked and audit-logged.
+- Successful financial/profile/backfill actions write audit logs with source page/route and actor/target metadata.
+- `Email statement` and `Send payment reminder` are visible only to roles allowed to send account emails.
+- `Delete Cart` is disabled unless the account is fully paid and fully delivered.
 
 ## Payments
 - Pages: /admin/payments/momo, /admin/payments/receipt/[id], /admin/payments/export/print
@@ -807,26 +1158,457 @@ Test strip - `/admin/profit-loss/products`
 
 ## Inventory & Alerts
 - Pages: /admin/inventory, /admin/inventory-alerts
-- What it is: Stock on hand and low-stock notifications.
-- How to use: Adjust stock, review alerts, schedule restocks. Use "Adjust inventory value" to revalue cost and post a matching journal entry.
-- Related: Inventory is used in sales, COGS, and integrity checks.
+- What it is: Inventory valuation, replenishment visibility, and product-level stock review in one workspace.
+- Related: Inventory is used in sales, COGS, purchasing, audit review, and integrity checks.
+
+Inventory - top-to-bottom walkthrough
+1) Header summary
+   - The page title is `Inventory Valuation`.
+   - The `Updated` timestamp reflects the latest successful inventory refresh, not just a row-count change.
+   - The first summary line shows:
+     - how many filters are active;
+     - how many products match the current filters;
+     - the visible result range for the current page.
+   - Header actions:
+     - `View Audit Log` opens `/admin/audit?sourcePage=admin/inventory` and is visible to admins only.
+     - `Export CSV` downloads the current filtered and sorted inventory view.
+     - `Copy Link` copies the current URL, including active filters and sort.
+
+2) Layout and valuation controls
+   - `Columns` controls optional columns and supports resetting back to the default layout.
+   - Default layout is intentionally narrower than before so the table is usable without immediate full-width horizontal scrolling.
+   - `Saved filters` stores reusable inventory scopes with a dialog-based save flow.
+   - `Sales` and `Cost` toggle the valuation total shown in the header.
+   - `How valuation works` explains:
+     - Expected Sales = Price x Stock
+     - Cost of Purchase = Unit Purchase Cost x Stock
+     - Expected P/L = Expected Sales minus Cost of Purchase
+     - status uses each product's reorder point
+     - days of stock and weeks cover use recent sales pace
+   - The valuation help appears next to the valuation controls because that is the part of the page it explains.
+
+3) Inventory alerts panel
+   - Alerts refresh every minute independently of the main inventory query.
+   - Each alert shows severity, product name, and the alert message.
+   - `View all <count>` expands the list when more than the default alert set is present.
+   - If the user can create purchases, each alert includes `Create purchase`.
+   - That link opens `/admin/purchases` with the product already selected and the add form opened.
+
+4) Filter row
+   - Search supports item name and SKU.
+   - Numeric filters are available for:
+     - minimum stock
+     - maximum stock
+     - minimum price
+     - maximum price
+   - `Include archived` brings archived products back into scope.
+   - `Reset` clears the active filter set.
+   - The status text at the far right shows either:
+     - `Loading inventory...`
+     - `Page X of Y`
+     - `No products match the current filters.`
+     - `No inventory rows available.`
+
+5) Product list behavior
+   - Desktop uses the inventory table; mobile uses stacked cards with the same core information.
+   - The item name is the primary restock shortcut when the user can create purchases.
+   - Clicking an item name opens `/admin/purchases?product=<id>&new=1`, expands the purchase form, and prefills the product.
+   - Regulated products show a `Regulated` badge on both desktop and mobile.
+   - Status chips use the product reorder point so the page aligns with planning and alert logic.
+   - The table supports:
+     - sorting by supported headers;
+     - optional columns;
+     - drag reorder for columns;
+     - column resize handles.
+   - The desktop table includes a `Filtered totals` row for sales and cost valuation totals.
+
+6) Row actions and dialogs
+   - `Details` opens `Last Purchase Details`.
+   - The details dialog shows last purchase date, last unit cost, supplier, note, and the product SKU when available.
+   - `Adjust inventory value` appears in the details dialog only for users who can perform valuation adjustments.
+   - Revaluation posts the matching accounting journal entry and writes to audit.
+   - `Add Purchase` opens the purchase page with the product preselected.
+   - `Movements` opens `/admin/movements?product=<id>` for product-level stock movement review.
+
+7) Pagination and empty states
+   - Inventory results are paginated.
+   - The footer range uses the clearer wording `Showing A-B of N matching products`.
+   - Empty-state behavior is scoped correctly:
+     - if there are no products at all, the page shows `No products found yet.`;
+     - if products exist but filters remove them, the page shows `No products found for the current filters.`
+   - The empty state offers recovery actions such as `Clear filters` and `Add product` when appropriate.
+
+8) Audit behavior
+   - `View Audit Log` is admin-only because the audit page itself is admin-only.
+   - Inventory CSV exports are written to audit with `sourcePage=admin/inventory`.
+   - Inventory valuation adjustments are also written to audit with page-specific metadata.
+   - Inventory layout and saved-filter changes that are persisted server-side are audited when they are user-initiated changes, not background hydration.
+
+How to use the page well
+- Use alerts to identify urgent stock risk, then move into the table for valuation, movement review, and replenishment action.
+- Use the item-name link or `Create purchase` alert action as the fastest restock entry point; it is faster than scrolling to the far-right action area.
+- Keep optional columns focused on the current task instead of enabling every column at once.
+- Save repeated operational scopes such as low stock, archived review, or high-value items as named saved filters.
+- Use the audit shortcut when you need to review who exported, revalued, or changed inventory page preferences.
+
+Test strip - `/admin/inventory`
+- Page opens successfully for an authenticated inventory user and shows `Inventory Valuation`.
+- Header summary renders:
+  - updated timestamp;
+  - active-filter badge when filters are present;
+  - `X of Y products match current filters`;
+  - `Showing A-B of X`.
+- Header actions render:
+  - `Export CSV`
+  - `Copy Link`
+  - `View Audit Log` for admin only
+- `View Audit Log` routes admins to `/admin/audit?sourcePage=admin/inventory`.
+- `View Audit Log` is hidden for non-admin users.
+- `How valuation works` appears beside the valuation controls and the tooltip stays inside the viewport.
+- `Columns` menu can:
+  - reset to default layout;
+  - toggle all optional columns;
+  - toggle each optional column independently.
+- `Saved filters` behavior:
+  - `Save current filter` opens a dialog, not a browser prompt;
+  - applying a saved filter restores the inventory scope;
+  - removing a saved filter updates the saved list.
+- Alerts panel behavior:
+  - auto-refresh note is visible;
+  - alert cards show severity and message;
+  - `View all N` expands the list when alerts exceed the default visible set;
+  - `Create purchase` opens the purchase page with the add form shown for that product.
+- Filter validation:
+  - invalid min/max stock ranges show inline error text;
+  - invalid min/max price ranges show inline error text.
+- Result feedback:
+  - zero-filtered results show `No products found for the current filters.`;
+  - zero-total results show `No products found yet.`;
+  - the filter empty state offers `Clear filters`;
+  - the no-data empty state offers `Add product` when permitted.
+- Product list behavior:
+  - desktop table and mobile cards both show the `Regulated` badge when required;
+  - status chips respect the row reorder point;
+  - cost renders as plain formatted text, not a disabled input;
+  - the table footer shows filtered valuation totals.
+- Purchase shortcuts:
+  - clicking an item name opens `/admin/purchases` with the product prefilled and the form expanded;
+  - `Add Purchase` row actions do the same.
+- Details dialog:
+  - `Details` opens `Last Purchase Details`;
+  - if allowed, `Adjust inventory value` is available from that dialog.
+- Pagination:
+  - page indicator and next/previous controls update correctly;
+  - range text remains accurate after filtering and paging.
+
+## Inventory - Movements
+- Page: /admin/movements
+- What it is: The stock movement review page for purchases, sales, returns, deletes, and manual adjustments.
+- Who uses it:
+  - Admins for audit review, exports, and cross-page investigation.
+  - Staff for product- and lot-level movement review.
+  - Accountants for quantity and unit-cost trace checks.
+- Access rule:
+  - The page itself is available to Admin, Staff, and Accountant users.
+  - `View audit trail` is admin-only because `/admin/audit` is restricted to admins.
+- Data rule:
+  - The page is server-paginated and server-sorted.
+  - Summary cards reflect the full filtered result set, not only the current page.
+  - Filtered CSV export uses the active filters and sort order.
+  - Opening movement details writes an audit event with page/filter context.
+
+Top-to-bottom walkthrough
+
+1) Header and primary actions
+   - Title: `Inventory Movements`.
+   - Subtitle explains that the page audits restocks and sales by product, lot, and time.
+   - Header actions:
+     - `View audit trail` for admins only
+     - `Export CSV (filtered)` for the full filtered result set
+   - Use the audit button when you need the activity trail for this page, not just the movement rows.
+
+2) Error and status banners
+   - Movement-load failures show an error banner instead of falling through to a false empty state.
+   - Product-filter load failures show a separate warning banner.
+   - These are actionable failures, not "no data" states.
+
+3) Filter row
+   - `Start date`
+   - `End date`
+   - `Lot ID`
+   - `Reason`
+   - `Product` search plus filtered product picker
+   - Product options are search-backed; the page does not preload the full catalog blindly.
+   - Filter state syncs into the URL so the page can be reopened or shared with the same scope.
+
+4) Date presets and quick filters
+   - Date preset buttons:
+     - `Today`
+     - `Last 7 days`
+     - `This month`
+     - `Last month`
+   - Reason quick filters:
+     - `All`
+     - `Purchases`
+     - `Sales`
+     - `Returns`
+     - `Adjustments`
+   - `Clear filters` resets dates, product, reason, lot, page, and sort back to the default review state.
+   - If a lot filter is active, the page shows a visible `Lot filter` chip with a clear action.
+
+5) Summary cards
+   - `Total in`
+   - `Total out`
+   - `Net`
+   - `Movements`
+   - Quantity cards use signs and units so the page reads as movement flow, not just raw counts.
+
+6) Toolbar controls
+   - Record count label shows either loading state or the filtered result count.
+   - Mobile-only sort controls:
+     - `Sort by`
+     - `Order`
+   - Shared control:
+     - `Rows per page`
+   - `Columns` menu toggles visibility for:
+     - Supplier
+     - Unit Cost
+     - Lot
+     - Expiry
+   - Desktop sorting is done from clickable table headers instead of the mobile dropdowns.
+
+7) Selected-row action strip
+   - Appears only when one or more rows on the current page are selected.
+   - Actions:
+     - `Clear`
+     - `Export <n> selected`
+     - `Download all <n> filtered rows`
+   - Important behavior:
+     - selected export is current-page only
+     - filtered export is the full filtered result set
+
+8) Loading and empty states
+   - While data is loading, the page shows mobile cards and desktop table skeletons.
+   - Empty state appears only after loading completes.
+   - Empty-state recovery actions:
+     - `Clear filters`
+     - `Export CSV`
+
+9) Result list behavior
+   - Mobile uses stacked cards.
+   - Desktop uses a sortable table.
+   - Each row shows the movement timestamp, product, delta, reason, and optional supplier/unit-cost/lot/expiry data.
+   - Rows with notes show a small message icon so detail-bearing rows are discoverable before opening them.
+   - Unit cost is formatted with `GHS`.
+   - Expiry values show urgency badges when near or past expiry.
+
+10) Sorting and paging
+   - Desktop headers support sorting by:
+     - Date
+     - Product
+     - Delta
+     - Reason
+     - Expiry
+   - Paging controls:
+     - `Previous`
+     - `Next`
+   - Footer copy confirms the current page, current row count, and total filtered rows.
+
+11) Movement details dialog
+   - Opens from the row or `View details` button.
+   - Shows:
+     - Date
+     - Product
+     - SKU
+     - Delta
+     - Reason
+     - Detail note
+     - Lot
+     - Expiry
+     - Supplier
+     - Unit Cost
+   - If the movement came from a purchase receipt, the dialog also shows `View source purchase`.
+   - Opening this dialog records a dedicated audit event with the active filters, paging, and sort context.
+
+How to use the page well
+- Start with date and reason filters before narrowing to a single product.
+- Use `Lot ID` when investigating expiry, recalls, or a specific received batch.
+- Use the product search field to reduce the product picker before selecting a product.
+- Use the desktop column toggles to hide fields that are not relevant to the current investigation.
+- Use selected export when you only need a few visible rows and filtered export when you need the complete scope.
+- Open the details dialog for notes, sourcing context, and purchase back-links rather than overloading the grid with more columns.
+- Use `View audit trail` when you need to review exports or movement-detail access associated with this page.
+
+Test strip - `/admin/movements`
+- Page opens successfully for an authenticated allowed user and shows `Inventory Movements`.
+- Admins see `View audit trail` linking to `/admin/audit?sourcePage=admin/movements`.
+- Non-admin users do not see `View audit trail`.
+- Movement load failures show an error banner instead of a false empty state.
+- Product load failures show a separate warning banner.
+- URL-backed filters work for:
+  - `start`
+  - `end`
+  - `product`
+  - `reason`
+  - `lotId`
+- Date presets apply the expected start/end range.
+- Quick reason buttons update the active reason filter correctly.
+- `Clear filters` resets search, filters, page, and default sort state.
+- Summary cards render signed quantities and the filtered movement count.
+- Column toggles show and hide supplier, unit-cost, lot, and expiry columns.
+- Desktop sortable headers update server sort for Date, Product, Delta, Reason, and Expiry.
+- Loading state shows skeletons instead of `No movements found`.
+- Empty state appears only after loading completes and includes recovery actions.
+- Current-page selection works:
+  - row checkboxes toggle selection
+  - header checkbox selects all visible rows
+  - selected action strip appears only when rows are selected
+- Selected export creates a CSV for current-page selections and includes the `Note` column.
+- Filtered export uses the current filters/sort and includes the `Note` column.
+- Movement details dialog opens from row actions and shows note, supplier, lot, expiry, and unit-cost fields when present.
+- `View source purchase` appears only when the movement is linked to a purchase.
+- Closing the detail dialog clears the selection state cleanly.
+- Opening movement details writes a dedicated audit event with page/filter context.
+- Filtered and selected exports write export audit events with `sourcePage=admin/movements`.
+- Page-specific coverage exists in:
+  - `src/app/(admin)/admin/movements/page.vitest.spec.tsx`
+  - `src/app/api/admin/movements/route.vitest.spec.ts`
+  - `src/app/api/admin/movements/detail-view/route.vitest.spec.ts`
+  - `e2e/admin-movements-page.spec.js`
 
 ## Inventory — Lots & Expiry
 - Page: /admin/inventory-lots
-- What it is: Batch/lot tracking with expiry dates for compliance and audits.
-- How to use: Review lot balances and expiry windows; use FEFO Priority + Days left to plan picking.
-- FEFO behavior: Lots expiring sooner are sold first.
-- FEFO visuals: Priority labels use threshold bands (High 0-high threshold, Medium high+1-medium threshold, Low medium+1+, No expiry). Threshold days are configurable in app settings (`inventory.lots.fefo.thresholdDays.high`, `inventory.lots.fefo.thresholdDays.medium`).
-- Traceability: Use `Trace` on any lot to view source purchase details and lot-level movement history, export adaptive CSV files (single combined export for 0-1 movement; separate summary/movements for 2+), and deep-link into Purchases or lot-filtered Movements.
-- Movement navigation: Use `View all lot movements` from Trace to open all movements for the selected lot (not a single reason-only subset).
+- What it is: The admin workbench for lot balances, expiry risk, compliance exceptions, lot traceability, and manual lot-level quantity corrections.
 - Related: Lot details are captured on receive; batch code and expiry are required for lot-tracked items.
 
-## Inventory — Stock Adjustments
+Page layout - top to bottom:
+1) Header
+   - Title: `Inventory Lots` with a subtitle explaining batch/lot tracking and expiry oversight.
+   - FEFO note: The page reminds staff that FEFO (first expiry, first out) should guide picking whenever expiry data is present.
+   - Jump links: `Lots` and `Compliance` anchors move directly to the operational table or the exception review section.
+   - Admin-only audit shortcut: `Open lot audit` opens `/admin/audit` prefiltered to `sourcePage=admin/inventory-lots`.
+2) Filters and exports
+   - Product: Searchable combobox for regulated products. Selection is keyboard-usable, can be cleared, and syncs into the URL.
+   - Lot code: Free-text filter for finding a specific batch code quickly.
+   - Status: Filters by lot state such as active, expired, depleted, or expiring soon based on the computed lot status.
+   - Expiry window: Use `Expiry from`, `Expiry to`, and `Expiry window` together to narrow review periods.
+   - Export actions: `Export CSV` downloads the filtered lot table; `Export compliance CSV` downloads the filtered compliance exception report.
+3) Error handling
+   - If the lot list request fails, the page keeps the filters visible but replaces summary cards, the lot table, and compliance content with a dedicated retry panel.
+   - Use `Retry` after a transient server or auth issue instead of treating a failed request as a true zero-state.
+4) Summary cards
+   - Cards show total lots, total remaining units, expired lots, lots expiring in the high-priority band, and lots expiring in the medium-priority band.
+   - Priority thresholds come from app settings (`inventory.lots.fefo.thresholdDays.high` and `inventory.lots.fefo.thresholdDays.medium`).
+5) Lot table
+   - FEFO legend explains the High / Medium / Low / No expiry labels.
+   - Sortable columns support review by product, lot, expiry, received date, quantity received, quantity remaining, and supplier.
+   - Non-sort columns keep the FEFO priority, days-left signal, notes, and row actions visible.
+   - Row actions: `Trace` opens full lot traceability; `Adjust` opens lot-level quantity correction.
+   - Pagination shows the current page, total pages, and the current visible range of lots.
+6) Compliance report
+   - This section respects the active product/date filters so teams can export or review only the slice they are working on.
+   - KPI cards summarize regulated SKUs, missing expiry, untracked movements, and stock without lot coverage.
+   - Detail tables show the actual exception rows for missing expiry lots, stock without lot coverage, and movements recorded without a lot reference.
+   - Resolution checklist explains the expected cleanup path before the next audit or stocktake.
+
+How to use the page well:
+1) Start with filters.
+   - Narrow to a product, lot code, or expiry window before exporting or investigating.
+   - Because filter state lives in the URL, the current view can be reopened or shared without rebuilding it manually.
+2) Review FEFO risk.
+   - Sort by `Expiry` or scan the FEFO priority and `Days left` columns to find the lots that need attention first.
+   - Use this section to confirm older-expiring stock will be picked before newer stock.
+3) Validate compliance exceptions.
+   - Move to the `Compliance` section after filtering.
+   - Use the cards and tables to catch missing expiry data, movement gaps, or stock that exists without lot coverage.
+4) Trace a lot when something looks wrong.
+   - Open `Trace` from the row action or via a `?focus=<lotId>` deep link.
+   - Review the lot summary, source purchase, and lot movement history before changing any quantity.
+   - Use `View all lot movements` to jump into the broader movements page for that lot.
+5) Adjust only after trace review.
+   - Use `Adjust` when physical stock does not match the recorded remaining quantity.
+   - Enter a whole number only. For unexpired lots, a note is required so the change is defensible in audit review.
+
+Trace dialog:
+- Opens from the row action or a `focus` query parameter.
+- Shows a lot summary, linked source purchase details when available, and a movement ledger for that lot.
+- Export behavior adapts to the trace size:
+  - 0-1 movement: single combined CSV export.
+  - 2+ movements: separate `Summary CSV` and `Movements CSV` exports.
+- If the movement ledger is truncated, the dialog warns that only the first 200 movements are shown/exported and points staff to `View all lot movements` for the complete operational view.
+
+Adjust dialog:
+- Shows the current lot summary before editing.
+- `New remaining quantity` accepts whole numbers only.
+- `Reason` captures why the correction is being made.
+- A note is required when adjusting an unexpired lot so the audit trail explains why usable stock was changed.
+
+Test strip - /admin/inventory-lots
+- Header renders title, subtitle, FEFO note, and `Lots` / `Compliance` anchor links.
+- Admins see `Open lot audit` and non-admins do not.
+- Product combobox supports type-ahead search, keyboard selection, clear, and URL sync.
+- URL state restores product, lot code, status, expiry filters, sort, and page on reload/back-forward navigation.
+- List request failures show the retryable error panel and do not render misleading summary zeros or `No lots found`.
+- Summary cards use the configured FEFO threshold bands.
+- Table sorting works for product, lot, expiry, received date, quantity received, quantity remaining, and supplier.
+- Pagination updates the URL and preserves active filters/sort.
+- `Trace` opens from row actions and from `?focus=<lotId>`.
+- Trace dialog shows source purchase details and lot-level movements when present.
+- Trace exports follow the adaptive behavior:
+  - combined export for 0-1 movement
+  - separate summary/movements exports for 2+ movements
+- Truncated trace history shows the 200-row warning and keeps `View all lot movements` available.
+- `Adjust` enforces whole-number quantity entry and requires a note for unexpired lots.
+- Compliance cards and tables honor the current product/date filters.
+- `Export CSV` downloads the filtered/sorted lot list.
+- `Export compliance CSV` downloads the filtered compliance view.
+- Page-specific coverage exists in:
+  - `src/app/(admin)/admin/inventory-lots/page.vitest.spec.tsx`
+  - `src/app/api/admin/inventory/lots/route.vitest.spec.ts`
+  - `src/app/api/admin/inventory/lots/[id]/adjust/route.vitest.spec.ts`
+
+## Inventory - Stock Adjustments
 - Page: /admin/stock-adjustments
-- What it is: Reconcile system stock to physical count.
-- How to use: Choose Cycle Count (periodic audit) or Stock Adjustment (one-off correction), enter the reason (e.g., damaged/expired), and save.
-- Posts: Creates inventory movement + journal entry to keep valuation aligned.
-- Related: Movement details show the adjustment reason in the modal.
+- What it is: Controlled inventory correction page for bringing system stock back to a verified physical count.
+- Access:
+  - Viewing follows the admin inventory workspace.
+  - Creating adjustments follows the central `inventory.adjust` permission gate.
+- Posting + audit:
+  - Saving an adjustment posts the inventory movement and linked accounting impact.
+  - Adjustment history, CSV export, and page-level actions write audit entries with `sourcePage=admin/stock-adjustments`.
+  - The page header links directly to the audit log for stock-adjustment activity.
+- Top to bottom walkthrough:
+  1. Header
+     - Use `Open adjustment audit` to jump to audit entries for this page.
+     - After selecting a product, `Product audit` opens audit filtered to that product context.
+  2. New adjustment
+     - Search by product name or SKU and select the exact item before entering counts.
+     - The page shows the selected product summary so the operator can confirm the item before saving.
+  3. Adjustment form
+     - Enter the counted stock.
+     - Choose the adjustment type:
+       - `CYCLE_COUNT` for routine count reconciliation.
+       - Use the non-cycle adjustment path only for one-off stock corrections.
+     - Set the reason code, note, lot/batch, and expiry when relevant.
+  4. Live preview
+     - Review `Delta`, `Value impact`, and the journal-entry preview before saving.
+     - This confirms whether stock is increasing or decreasing and what the accounting value effect will be.
+  5. Save flow
+     - `Save adjustment` opens a confirmation dialog before posting.
+     - After save, the selected SKU stock refreshes immediately so repeat adjustments on the same item use current numbers rather than stale client state.
+  6. Recent adjustments
+     - Review the latest posted entries in the history table.
+     - Filter by date, product, and adjustment type to isolate a count session or a product investigation.
+     - `Export CSV (page)` exports the current history view for operations or finance review.
+- Usage notes:
+  - Use `CYCLE_COUNT` for count-sheet reconciliation and reserve other adjustment types for exceptions.
+  - Fill in lot, expiry, and note whenever the correction relates to damaged, expired, or traceability-sensitive stock.
+  - Use the audit link when investigating who changed stock, which SKU was affected, and what evidence was attached.
+- Test strip:
+  - Select a SKU, enter a counted stock lower than system stock, and confirm the preview shows a negative delta and reduced value.
+  - Save an adjustment, then confirm the selected SKU summary refreshes to the new stock without needing to reselect the product.
+  - Filter `Recent adjustments` by product and date and confirm the table and CSV export match the filtered view.
+  - Open `Open adjustment audit` and verify the resulting audit page is prefiltered to `sourcePage=admin/stock-adjustments`.
 
 ## Supplier + Inventory Enhancements
 - Pages: /admin/suppliers, /admin/products, /admin/purchases, /admin/inventory-planning, /admin/dashboard
@@ -851,19 +1633,14 @@ Step-by-step (enhanced workflow)
    - Use “Set as primary” if you switch vendors.
    - Example: Primary = MedSupply Wholesale (lead time 14), Alternate = HealthPro (lead time 21, MOQ 100).
 3) Purchase creation (PO)
-   - Create a purchase with supplier + expected arrival date.
-   - Leave “Receive now” unchecked when it’s an order, not a delivery.
-   - Large quantities go to PENDING_APPROVAL automatically.
-   - Example: 500 units @ 12.50 from MedSupply, expected 2026-01-15 ? status PENDING_APPROVAL.
+   - Create the purchase from `/admin/purchases` with supplier and expected arrival date.
+   - Leave `Receive now` off when stock has not yet arrived.
+   - Large quantities move to `PENDING_APPROVAL` automatically.
 4) Approval (admin)
-   - Approve PENDING_APPROVAL purchases from the Purchases table.
-   - Once approved, the PO can be received.
-   - Example: Admin approves PO-123; status moves to APPROVED.
+   - Approve pending purchases from the Purchases table before receipt.
 5) Receiving (partial/full)
-   - Click Receive and enter the quantity received (partial or full).
-   - Stock, inventory movement, and accounting entry update on receipt.
+   - Receive partial or full quantities from the same page; stock, movement history, and accounting update on receipt.
    - Remaining on-order quantity stays in planning until fully received.
-   - Example: Receive 200/500 ? status PARTIALLY_RECEIVED; on-order remains 300.
 6) Alerts + Planning
    - Check Inventory Alerts for low stock, supplier inactive, lead time missing, and demand spikes.
    - Recompute Inventory Planning to refresh suggestions based on new receipts and demand.
@@ -1475,90 +2252,73 @@ Test strip
   - Ordered/not-received exposure is operational and is tracked in `/admin/supplier-payments`.
 - Expected: AP Aging changes after supplier payments are posted/approved.
 
-## Accounting — Supplier Payments (AP)
+## Accounting - Supplier Payments (AP)
 - Pages: /admin/supplier-payments, /admin/purchases
-- What it is: AP subledger built from purchase receipts and supplier settlements.
-- How to use:
-  - Record supplier payments from payables ledger.
-  - Track pending approvals.
-  - Approve pending purchases directly from the "Pending Purchase Approvals" panel.
-  - Approval clicks (purchase/payment) now open a confirmation modal before final approval.
-  - Use "Next actions" buttons (`Overdue`, `Due today`, `Due in 7 days`) for quick follow-up queues.
-  - Use `Aging filter` (`All`, `Due today`, `Due in 7 days`, `Overdue`, and bucket drilldowns) to focus execution.
-  - Use `Outstanding only` follow-up scope (from Aging Hub deep-link) to focus strictly on rows with balance due across all buckets.
-  - Click aging cards (`0-30`, `31-60`, `61-90`, `90+`) to drill down ledger rows by bucket.
-  - Save frequently used filter combinations in "Saved filter presets" (save/apply/delete).
-  - If opened from Aging Hub, a subtle `Applied from Aging Hub` badge appears for context.
-  - Export bundle audits now capture file manifest and row/column counts (current view + summary) for stronger evidence.
-  - CSV/PDF downloads from this page are audit-logged:
-    - `Export current view (CSV)`
-    - `Export current view (PDF)`
-    - `Export summary (CSV)`
-    - `Export summary (PDF)`
-    - `Export statement (CSV)` (from supplier statement action)
-    Each log captures initiator, file name, format, scope snapshot, and size/row-column counts where available.
-- Summary behavior:
-  - `Summary basis` selector controls how outstanding/reconciliation are presented:
-    - `Operational exposure`: includes full operational open exposure.
-    - `Ledger AP basis`: focuses on received AP outstanding.
-  - Meaning and use:
-    - `Operational exposure` answers: “What supplier obligations are still operationally open right now?”
-      - Includes open ordered/not-yet-received exposure plus received/unpaid exposure within current page scope.
-      - Use for procurement execution, supplier follow-up, and expected-date discipline.
-    - `Ledger AP basis` answers: “What amount is currently represented as AP liability in accounting view?”
-      - Anchors reconciliation toward received AP positioning.
-      - Use for accounting controls, AP review, and period-close checks.
-  - Why compare both:
-    - Comparison identifies timing/process gaps between operations and accounting treatment.
-    - Small temporary differences can occur during normal posting windows.
-    - Persistent differences indicate action is needed.
-  - Recommended cadence:
-    - Daily during active operations; minimum weekly review.
-    - At period close, review and resolve deviations before final sign-off.
-  - Deviation triage (practical order):
-    - Confirm filters/scope first (supplier, month, status, strict date toggle).
-    - Check unposted/pending approvals and recent receives/payments.
-    - Verify expected-date/state transitions on open purchases.
-    - Reconcile credits/refunds and supplier-specific credit carryover.
-    - Re-run integrity/health checks if mismatch persists.
-  - Deviation threshold alerts:
-    - Configure absolute and percent thresholds on the page.
-    - Warning/critical badges appear when basis delta exceeds configured guardrails.
-  - Difference drilldown:
-    - Use `Why this difference?` to view quick contributors:
-      - ordered not received exposure
-      - pending purchase/payment approvals
-      - credits/refunds
-      - strict-date scope state
-  - "Pending payment approvals" reflects supplier payment requests awaiting approval.
-  - "Pending purchase approvals" reflects purchase orders awaiting approval (separate from payment approvals).
-  - Verify reconciliation line:
-    - `Total amount - Paid - Supplier credits + Refunds = Reconciliation net payable` (based on selected summary basis).
-  - Desktop includes sticky mini-summary while scrolling (`Open exposure`, `Received AP`, active filter).
-  - Supplier-specific aging mini-chart shows bucket concentration by selected supplier.
-- Pending approval behavior:
-  - "Pending approval" totals include only payments that are still unapproved.
-  - Once approved, they no longer count as pending and are posted as paid.
-- Posting logic:
-  - Purchase receive: Dr Inventory, Cr AP.
-  - Supplier payment: Dr AP, Cr Cash/Bank.
-  - Supplier return/refund paths reverse AP/inventory appropriately.
-- Exports and communication:
-  - "Export current view (CSV/PDF)" exports detail rows for current filters/scope.
-  - "Export summary (CSV/PDF)" exports totals and reconciliation snapshot.
-  - "Export email summary (TXT)" downloads plain text template for manual email.
-  - "Send summary email" opens a modal (To/CC/Subject/Message) and sends current summary directly from app (Admin permission required).
-  - "Export bundle (ZIP)" downloads current-view CSV, summary CSV, and email-summary TXT together for handoff/archival.
-  - "Last summary email sent" shows latest recipient/time on the page.
-  - "Quick recipients" in send modal lets admins reuse and manage recent recipient emails.
-  - "Scheduled summary email" section:
-    - lets admin set frequency (daily/weekly), recipients, and subject prefix.
-    - supports due-state tracking and one-click `Send now`.
-    - for full unattended automation, wire cron/job runner to call supplier summary email endpoint.
-  - AP Aging cross-link:
-    - `Open AP Aging` carries supplier and month context for faster cross-page reconciliation.
+- What it is: AP execution workspace that combines supplier exposure, received-payables ledger, approvals, payment entry, exports, and communication in one page.
+- Access:
+  - Admins can manage approvals, pay supplier balances, send summary emails, record refunds, and run the full export bundle.
+  - Read-only accounting review remains available to non-admin users with page access, but restricted actions stay hidden or disabled.
+- Data + control rules:
+  - Supplier, product, month, status, strict-date, aging, exposure-view, outstanding-only, and payment drilldown filters are applied on the server before pagination.
+  - Totals, next-actions counters, mini-chart, exports, and pagination always reflect the active filtered scope.
+  - `Pay supplier balance` uses the currently scoped purchase set, not hidden rows outside the filter.
+  - `Record refund` is allowed only when the page is in a safe supplier-level scope.
+  - Page actions and exports write audit entries with `sourcePage=admin/supplier-payments`, and `Open audit log` links directly to that filtered audit view.
+- Top to bottom walkthrough:
+  1. Header
+     - Use `Purchases` and `AP Aging` for cross-page investigation.
+     - `Open audit log` jumps straight to supplier-payment audit history for this page.
+     - If you arrived from AP Aging or a follow-up deep link, the header badges show that imported scope.
+  2. Export + tools menu
+     - `Current view CSV/PDF` exports the ledger rows for the exact current scope.
+     - `Summary snapshot CSV/PDF` exports the summary and reconciliation view.
+     - `Full bundle ZIP` is admin-only and packages the current-view CSV, summary CSV, and email text template.
+     - `Email summary template TXT` produces a handoff-ready plain text summary.
+     - `Supplier statement CSV` is available only in a single-supplier scope.
+  3. Scope warning
+     - When the current scope is too narrow for a safe supplier refund, the page shows a warning banner instead of allowing a misleading refund action.
+  4. Filters
+     - Filter by supplier, product search, month, purchase status, sort order, summary basis, strict date, outstanding-only mode, exposure view, and aging focus.
+     - Use saved filter presets for repeat review packs.
+     - Deep links such as `paymentId` open the page already focused on a payment investigation.
+  5. Summary workspace
+     - Review the mini-summary strip, `Next actions`, totals row, and summary cards first.
+     - Use the supplier aging mini-chart and the exposure-vs-ledger view controls to understand where the balance sits.
+     - `Why this difference?` explains reconciliation deltas between operational exposure and ledger AP basis.
+  6. Summary email schedule
+     - Admins can maintain the recurring summary cadence, recipients, and subject prefix from the schedule card.
+  7. Send summary email dialog
+     - `Send summary email` opens the direct-send flow with recipient fields, subject, and message body.
+     - The latest send state remains visible on the page for follow-up.
+  8. Pending Purchase Approvals
+     - Review purchase orders awaiting approval before receipt.
+     - Approval is confirmation-based so operators can verify the document before posting.
+  9. Pending payment approvals
+     - Review supplier payment requests awaiting approval.
+     - The approval queue is separate from purchase approval and should be treated as a cash-control step.
+  10. Pay supplier balance dialog
+      - Use this only when the active filter scope matches the purchases you intend to settle.
+      - The dialog submits the exact scoped purchase IDs now visible on the page.
+  11. Record supplier refund dialog
+      - Use only in a clear single-supplier scope so the refund can be documented against the correct supplier context.
+  12. Payables Ledger
+      - Review each row for due date, outstanding amount, state, and audit trail.
+      - Record direct payments from the ledger when settling individual items.
+      - Open linked drilldowns when reconciling payment history or approval state.
+  13. Confirmation flows
+      - Payment approvals, purchase approvals, supplier balance payments, and refund actions all require an explicit confirmation step.
+- Usage notes:
+  - Start with filters and summary basis before interpreting totals; the page is designed to make the current scope explicit.
+  - Use `Operational exposure` for procurement follow-up and `Ledger AP basis` for accounting review.
+  - Treat the page as the AP workbench: approvals first, then reconciliation, then payment or refund execution, then export or communication.
+- Test strip:
+  - Filter to a supplier plus aging bucket and confirm the totals, next actions, ledger rows, and pagination all stay aligned to that same scope.
+  - Open `Pay supplier balance` from a filtered view and confirm the request settles only the visible scoped purchases.
+  - Verify `Record refund` is blocked when the page scope is not safe for supplier-level refund entry.
+  - Export `Current view CSV` and `Summary snapshot CSV` and confirm audit entries are created under `sourcePage=admin/supplier-payments`.
+  - Open `Open audit log` and confirm the audit page is prefiltered to supplier-payments activity.
 
-## Operations — Returns & RMA
+## Operations - Returns & RMA
 - Page: /admin/returns
 - What it is: Central return ledger (cash refunds, store credit, and balance-applied returns).
 - Filters:
@@ -1701,104 +2461,142 @@ Hub test strips:
 ## Accounting — Bank Accounts
 - Pages: /admin/accounting/banks, /admin/accounting/banks/all-transactions
 - What it is:
-  - `/admin/accounting/banks`: bank-scoped working page for setup, controlled edits, matching rules, and import-run review.
-  - `/admin/accounting/banks/all-transactions`: read-only global search/audit view across all banks.
+  - `/admin/accounting/banks`: bank-scoped operations page for setup, controlled transaction maintenance, rule diagnostics, and import-run review.
+  - `/admin/accounting/banks/all-transactions`: read-only global search and audit view across all bank accounts.
 - Top-to-bottom walkthrough (`/admin/accounting/banks`):
-  1. Header actions:
-     - `Bulk import transactions`: opens Import/Export with bank transaction card focused.
-     - `All banks transactions`: opens global read-only cross-bank transaction view.
-     - `Open reconciliations`: opens reconciliation list; when a bank is selected, it passes `bankAccountId`.
-  2. Add bank account:
-     - Enter account name (required), optional bank name, optional masked account number, then click `Add bank`.
-  3. Bank selector and context:
-     - Selector requires explicit choice (`Select bank account...`).
-     - Until selected, transaction/rule sections remain unavailable.
-     - Context line shows selected bank and inactive badge when applicable.
-  4. Selected bank profile (safe edit flow):
-     - Click `Edit bank profile` to enable fields.
-     - Save is enabled only when values changed.
-     - `Cancel` resets unsaved edits.
-     - `Save bank profile` opens a confirmation dialog before update.
-  5. Manual transaction entry:
-     - Enter date, amount, type, description/reference, then click `Add transaction`.
-     - Duplicate protection checks `(date, amount, reference)`; conflict can be overridden only with reason (>=8 chars), and this is audit-logged.
-  6. Filter and saved view row:
-     - Search, `Unmatched only: On/Off`, page size, saved filters (`Save filter`, `Delete filter`).
-  7. Sticky bulk action bar:
-     - `Export selected CSV`, `Export filtered CSV`, `Export all CSV`.
-     - `Set type: DEBIT`, `Set type: CREDIT`.
-     - `Delete selected` requires confirmation and is ADMIN-only; matched rows are protected.
-  8. Transaction list:
-     - Select per-row or `Select all on current page`.
-     - `Edit` is blocked for matched rows.
-     - Edit lock policy for unmatched rows:
-       - closed fiscal period: hard lock,
-       - older than configured window: ADMIN override reason required.
-     - `Test rules` opens a diagnostics drawer (`MATCH/MISS` plus checks) and does not change data.
-  9. Matching rules:
-     - Create rules with text mode, optional account, min/max/tolerance, priority, active flag.
-     - Manage rule order (`Up/Down`), active state, delete (ADMIN-only).
-     - Import/export rules via CSV.
-  10. Rule quality tools:
-      - `Rule simulator`: coverage by rule, overlap warning, account impact preview.
-      - `Rule conflict inspector`: top overlap pairs in current sample.
-      - `Current Rule Set for [Bank Name]`: operational list of active/inactive rules.
-  11. Bank import runs:
-      - Recent runs with actor/time and created/updated/skipped/issues counts.
-      - `Download issues CSV`, `View diff preview`, `Replay import`.
+  1. Header
+     - The page header exposes the cross-page handoff actions first:
+       - `Bulk import transactions` opens Import/Export with the bank-transactions card focused, and includes `bankId` when a bank is already selected.
+       - `All banks transactions` opens the global read-only transactions page. When a bank is selected, the link carries `bankAccountId` so the global page opens in that same context.
+       - `Open reconciliations` is enabled only when a bank is selected and passes `bankAccountId` into the reconciliation list.
+       - `Open bank audit` is ADMIN-only and opens `/admin/audit` prefiltered to `sourcePage=admin/accounting/banks`.
+  2. Add bank account
+     - `+ Add bank account` expands the create form.
+     - `Account name` is required; `Bank name` and `Masked account number` are optional.
+     - `Add bank` creates the account context used by imports, manual entries, rules, and reconciliation handoff.
+  3. Bank operations card
+     - `Working bank account` sits at the top of the selector card and forces an explicit choice with `Select bank account...`.
+     - Until a bank is selected, the page shows a reminder that you must choose a bank before reviewing or entering transactions.
+     - Once selected, `Current context` shows bank name, masked number, currency, and an `Active bank` or `Inactive bank` badge.
+     - The `At a glance` side of the card shows live counts for `Transactions`, `Unmatched`, `Active rules`, and `Recent import runs`.
+     - The shortcut buttons in this card mirror the cross-page actions for import, global view, and reconciliation.
+  4. Selected bank profile
+     - `Edit bank profile` unlocks the selected bank fields.
+     - Operators can update account name, bank name, masked account number, and active/inactive status.
+     - `Save bank profile` stays disabled until something changed and confirms before saving.
+     - `Cancel` abandons unsaved edits and restores the current saved profile.
+  5. Manual transaction entry
+     - The manual entry panel is intentionally limited to controlled one-off work.
+     - Required workflow: set `Posting date`, `Amount`, `Type`, and optionally add `Description` and `Reference`.
+     - Duplicate protection checks the current bank for the same date, amount, and reference combination.
+     - When a likely duplicate is detected, the page shows the conflict banner with:
+       - `Open existing transaction`
+       - duplicate-override reason input
+       - `Force create with reason`
+       - `Dismiss`
+  6. Transaction filters and saved views
+     - Filters are server-driven for the selected bank.
+     - Controls include `Search`, `From date`, `To date`, `Sort by`, `Direction`, `Unmatched only`, and `Rows per page`.
+     - `Clear dates` appears only when a date range is active.
+     - Saved local views are managed with `Saved view`, `Save filter`, and `Delete filter`.
+     - The status line shows selected rows against the full count matching the current server-side filters.
+  7. Sticky bulk action bar
+     - `Export selected CSV` downloads only the rows selected on the page.
+     - `Export filtered CSV` uses the current search, date, sort, and unmatched filters.
+     - `Export all CSV` downloads the full selected-bank history, not just the current visible page.
+     - Bulk maintenance actions support `Set type: DEBIT` and `Set type: CREDIT`.
+     - `Delete selected` is ADMIN-only. Non-admin users see a read-only note that delete actions require ADMIN role.
+  8. Transactions table
+     - The table is paginated and server-sorted.
+     - Columns cover date, description, reference, type, amount, matched status, and row actions.
+     - `Select all transactions on this page` only affects visible rows.
+     - `Edit` is disabled for matched rows.
+     - `Test rules` opens a per-transaction rule drawer so staff can inspect `MATCH` and `MISS` results without changing data.
+     - Per-row `Delete` is ADMIN-only and remains blocked for matched rows.
+     - Pagination shows `Page X of Y` and the full count matching the current filter set.
+     - If the transactions query fails, the page renders an explicit error panel instead of a false empty state.
+  9. Matching rules
+     - Rules are configured per bank account.
+     - Inputs support rule name, match text, match mode, optional ledger account, min/max amount, tolerance, priority, and active status.
+     - `Export CSV` and `Import CSV` operate on the current bank's rule set.
+     - Existing rules support `Up`, `Down`, `Edit`, `Enable` or `Disable`, and ADMIN-only `Delete`.
+  10. Rule diagnostics
+      - `Rule simulator (current transaction sample)` reports match coverage using the current filtered page of transactions.
+      - `Rule conflict inspector` highlights overlap pairs between active rules in the current sample.
+      - `Current Rule Set for [Bank]` shows the operational rule list below the diagnostics blocks.
+  11. Bank import runs
+      - This section is bank-scoped.
+      - Each run shows time, actor, created count, updated count, skipped count, and issue count.
+      - `Download issues CSV` appears only when the run has issues.
+      - `View diff preview` expands row-level created, updated, and skipped previews.
+      - `Import transactions` jumps back to Import/Export for another bank-transactions import in the same bank context.
 - When to use `/admin/accounting/banks/all-transactions`:
-  - Use for global search, exception triage, and audit visibility across all banks.
-  - It is intentionally read-only to prevent accidental edits in the wrong bank context.
-  - Use `Open bank context` on a row to jump back to `/admin/accounting/banks` with that bank preselected for any edit/action.
-- Practical hands-on testing script (seeded data):
+  - Use it for cross-bank search, global exception review, and read-only audit visibility.
+  - It is intentionally read-only so edits still happen in the explicit working-bank context.
+  - `Open bank context` on a row returns to `/admin/accounting/banks` with that row's bank selected.
+- Test strip - /admin/accounting/banks
   1. In `nora-hospital-supply/`, run:
      - `pnpm -s db:seed-accounting`
      - `pnpm -s db:seed-reconciliations-page`
-     - Expected result: accounting pages load with sample bank and transaction data.
+     - Expected result: sample bank accounts, transactions, and reconciliation-linked data are available.
   2. Open `/admin/accounting/banks`.
-     - Expected result: bank selector starts at `Select bank account...`; working sections are gated.
-  3. Add bank account:
-     - Account name `QA Bank Main`, bank name `Ghana QA Bank`, masked account `***1234`.
-     - Expected result: success toast and bank appears in selector.
-  4. Select `QA Bank Main`.
-     - Expected result: context line appears (`Showing transactions for...`).
-  5. Bank profile safety:
-     - Click `Edit bank profile`, change one value.
-     - Expected result: unsaved-change indicator appears.
-     - Click `Cancel`.
-     - Expected result: values reset.
-     - Edit again and click `Save bank profile`.
-     - Expected result: confirmation modal then success toast on confirm.
-  6. Add transaction:
-     - Date today, amount `1500`, type `CREDIT`, description `Client transfer`, reference `QA-REF-001`.
-     - Expected result: row appears with correct date and amount sign.
-  7. Duplicate protection:
-     - Submit same date/amount/reference again.
-     - Expected result: duplicate conflict appears; no new row.
-     - Provide override reason (>=8 chars) and force create.
-     - Expected result: override row created and prior row can be opened/highlighted.
-  8. Filter and bulk:
-     - Search `QA-REF`; toggle `Unmatched only: On/Off`.
-     - Save filter as `QA refs`, reapply from dropdown.
-     - Select page rows, run `Set type: DEBIT`, then `Export selected CSV`.
-     - Expected result: types update; export file matches selected rows.
-  9. Edit-lock policy check:
-     - Try editing a matched row.
-     - Expected result: blocked.
-     - Try editing an old unmatched row outside policy window as non-admin.
-     - Expected result: locked with override requirement message.
-  10. Rules and diagnostics:
-      - Create two active rules with overlapping text scope.
-      - Expected result: simulator shows coverage; conflict inspector reports overlap pairs.
-  11. Import-run tracking:
-      - Use `Bulk import transactions` and run import/dry-run.
-      - Return to banks page.
-      - Expected result: latest import run appears with counts and diff preview.
-  12. Open `/admin/accounting/banks/all-transactions`.
-      - Filter by bank and `matched` state; search by reference text.
-      - Expected result: cross-bank read-only rows update by filters.
-      - Click `Open bank context` for one row.
-      - Expected result: returns to `/admin/accounting/banks` with that bank selected.
+     - Expected result: header actions render; `Open bank audit` appears only for ADMIN.
+  3. Verify the bank selector state before selection.
+     - Expected result: `Working bank account` shows `Select bank account...` and the reminder panel says to choose a bank before adding or reviewing transactions.
+  4. Add a bank account.
+     - Use account name `QA Bank Main`, bank name `Ghana QA Bank`, masked account `***1234`.
+     - Expected result: success feedback and the new bank appears in the selector.
+  5. Select `QA Bank Main`.
+     - Expected result: `Current context` and the `At a glance` summary cards update for that bank.
+  6. Edit the bank profile.
+     - Change one field, confirm `Unsaved changes.` appears, then click `Cancel`.
+     - Expected result: the original values are restored.
+     - Edit again, click `Save bank profile`, confirm the modal, and verify the update persists.
+  7. Add a manual transaction.
+     - Use today's date, amount `1500`, type `CREDIT`, description `Client transfer`, reference `QA-REF-001`.
+     - Expected result: the transaction appears in the table with the correct sign and status.
+  8. Verify duplicate protection.
+     - Submit the same date, amount, and reference again.
+     - Expected result: the duplicate conflict banner appears instead of creating a second row.
+     - Enter an override reason of at least 8 characters and click `Force create with reason`.
+     - Expected result: the transaction is created and the operator can open the original row from the conflict banner.
+  9. Exercise server-driven filters.
+     - Search `QA-REF`, set a date range, change `Sort by`, switch `Direction`, toggle `Unmatched only`, and change `Rows per page`.
+     - Expected result: the table, counts, and pagination update consistently with the active filters.
+  10. Save and reapply a local view.
+      - Save the current filtered state as `QA refs`, switch away, then reapply it from `Saved view`.
+      - Expected result: the saved search, dates, sort, and unmatched state are restored.
+  11. Exercise bulk actions.
+      - Select visible rows, run `Set type: DEBIT`, then run `Export selected CSV`.
+      - Expected result: type updates apply to the selected rows and the selected export matches only the checked rows.
+      - Run `Export filtered CSV`.
+      - Expected result: the export reflects the current filter set, not just the visible page.
+      - Run `Export all CSV`.
+      - Expected result: the export includes the full selected-bank history.
+  12. Verify role-gated destructive actions.
+      - As ADMIN, confirm `Delete selected` and per-row `Delete` are available for eligible unmatched rows.
+      - As ACCOUNTANT, confirm both delete controls are hidden and the page shows `Delete actions require ADMIN role.`
+  13. Verify row-level maintenance behavior.
+      - Confirm matched rows cannot be edited.
+      - Open `Test rules` on an unmatched transaction.
+      - Expected result: the rule drawer shows `MATCH` and `MISS` evaluations without mutating the transaction.
+  14. Exercise matching rules.
+      - Add a rule with text match, optional account, tolerance, and priority.
+      - Confirm `Rule simulator` and `Rule conflict inspector` update against the current transaction sample.
+      - Export the rule set, then import a CSV rule file and confirm the current rule set refreshes.
+  15. Review import runs.
+      - Use `Bulk import transactions`, complete an import or dry run, then return to the banks page.
+      - Expected result: the latest run appears with counts, `View diff preview`, and `Download issues CSV` when issues exist.
+  16. Verify the global handoff page.
+      - Open `/admin/accounting/banks/all-transactions` from the selected-bank context.
+      - Expected result: the page opens with that bank preselected.
+      - Use `Open bank context` on a row.
+      - Expected result: the app returns to `/admin/accounting/banks` with the correct bank selected.
+- Page-specific coverage exists in:
+  - `src/app/(admin)/admin/accounting/banks/page.vitest.spec.tsx`
+  - `src/app/(admin)/admin/accounting/banks/all-transactions/page.vitest.spec.tsx`
+  - `src/app/api/admin/accounting/banks/[id]/transactions/route.vitest.spec.ts`
+  - `e2e/admin-accounting-banks-page.spec.js`
 - Related:
   - Edit window days are configured in `/admin/accounting/settings` under `Bank transaction edit policy`.
   - Matching rules support reconciliation workflows and exception triage.
@@ -3909,89 +4707,456 @@ Related page
 - HR and admin settings govern staff operations and system behavior.
 - Audit logs and health checks help detect issues early.
 
-## Session Tutorial Pack â€” B2B Procurement + Tender + Conversion
-- Scope: This section captures the exact end-to-end flows completed in the latest implementation cycle.
-- Main pages:
-  - /admin/b2b/procurement
-  - /admin/b2b/tenders
-  - /admin/orders/new
-  - /admin/purchases
-
-## B2B Procurement Workflow â€” Tested Behavior
+## B2B Procurement Workflow
 - Page: /admin/b2b/procurement
-- What to verify:
-  1) Requests can be assigned and status-updated.
-  2) Status transitions are controlled (terminal states are handled intentionally).
-  3) Create Tender action opens Tender Builder with procurement context.
-  4) Draft Order action opens Order Create with request lines.
-- UX updates included:
-  - Closed/archive handling for long lists.
-  - Search with clinic suggestions.
-  - Bulk actions with safer status rules.
-  - Better alignment and overflow handling for row action buttons.
+- Access: ADMIN, STAFF, and ACCOUNTANT can view the queue. ADMIN and STAFF perform assignment, status, tender, draft-order, and bulk actions; admin-only audit links are visible to ADMIN.
+- Purpose: Work clinic procurement requests from submission through review, quote, approval, tender preparation, draft order conversion, rejection, close, and reopen.
 
-## B2B Procurement Analytics â€” How to Use
+Top-to-bottom walkthrough
+1) Header actions
+   - `Analytics dashboard` opens /admin/b2b/procurement/analytics.
+   - `Tender builder` opens /admin/b2b/tenders.
+   - `View audit log` opens the page-scoped audit view for B2B procurement request events.
+   - `Export CSV` downloads the current filtered queue and records an audit event with filters and row count.
+2) Queue summary
+   - `Visible requests` shows the number of rows currently returned for the page.
+   - `Open on page` counts non-terminal requests visible on the page.
+   - `Unassigned open` highlights rows needing manager assignment.
+   - `SLA risk` counts visible open rows whose age has crossed the page warning thresholds.
+3) Filters
+   - `Queue` supports Open, Closed, Archived, and All.
+   - `Type` filters Quote, PO Upload, and Recurring Reorder requests.
+   - `Manager` filters all managers, a specific manager, or Unassigned.
+   - `From` and `To` filter by request creation date. Invalid ranges are blocked client-side.
+   - `Search` filters clinic, contact, customer, email, phone, or request ID and accepts URL-driven `search` links from analytics.
+   - `Clear filters` resets search, type, manager, and date filters.
+   - `Auto-archive closed requests after` changes the age threshold for moving closed/rejected rows into the archived queue.
+4) Bulk actions
+   - Select one or more visible rows to open the bulk action strip.
+   - `Apply Assign` assigns the selected manager and auto-promotes submitted requests to In Review.
+   - `Apply Status` applies a selected status to all selected rows.
+   - Requests cannot bulk move to Quoted or Approved until each selected row already has a manager. Use `Apply Assign` first.
+   - Bulk actions write item-level audit records plus a summary audit record with success and failure counts.
+5) Request rows
+   - Each row shows clinic, status, request type, age/SLA chip, contact links, customer identity, submitted date, assigned manager, and row-scoped audit link for admins.
+   - Closed, rejected, and archived rows are collapsed by default. Expand to inspect details or reopen.
+   - `Assign` requires a manager and logs before/after manager metadata.
+   - `Update Status` requires an explicit new status; no-op updates are blocked.
+   - `Reopen` is available for terminal rows and requires a workflow note.
+   - `Create Tender` opens Tender Builder with the procurement request context.
+   - `Draft Order` prepares order lines from the request/template and opens /admin/orders/new. Successes and blocked attempts are audited.
+   - `Requested items` and `Open uploaded PO document` are read-only reference fields for quoting and order conversion.
+
+Test strip - /admin/b2b/procurement
+- Page opens for an authenticated admin and shows `B2B Procurement Workflow`, `Analytics dashboard`, `Tender builder`, and `Export CSV`.
+- URL `/admin/b2b/procurement?search=Kumasi&highlight=req-1` fills the search box, sends `q=Kumasi` to the API, and displays the matching request.
+- Failed queue loading shows a visible error alert and does not show the empty-state message.
+- A row cannot be status-updated until the operator chooses a new status.
+- `SUBMITTED` is not available as a status transition target.
+- Assigning a submitted request to a manager shows the auto-promotion message and logs sourcePage `admin/b2b/procurement`.
+- Bulk status to Quoted or Approved is blocked when any selected row is unassigned.
+- Row audit links include `entityType=B2B_PROCUREMENT_REQUEST`, the row `entityId`, and sourcePage `admin/b2b/procurement`.
+- CSV export logs `B2B_PROCUREMENT_REQUEST_EXPORTED` with actor, filters, rowCount, and sourcePage metadata.
+
+## B2B Procurement Analytics
 - Page: /admin/b2b/procurement/analytics
-- Purpose: Track request throughput, aging, response speed, and conversion quality.
-- Cards and meaning:
-  1) Request Volume
-     - Total: all tracked requests in scope.
-     - Open: requests not in terminal state.
-     - Unassigned Open: open requests without account manager.
-  2) Cycle Time (Hours)
-     - To Assignment: average time from created to assigned.
-     - To Quoted: average time from created to quoted.
-     - To Approved: average time from created to approved.
-  3) Draft Conversion
-     - Drafts Prepared: count of draft-order preparation actions.
-     - Conversion Rate: draft preparations relative to eligible requests.
-  4) Status Mix
-     - Current count by status (e.g., APPROVED, REJECTED, CLOSED).
-  5) Top Requested Items
-     - Most frequent request line items parsed from submitted item text.
-  6) Oldest Open Requests
-     - Open queue sorted by aging so staff can prioritize the oldest first.
+- Access: ADMIN, STAFF, and ACCOUNTANT can view analytics. ADMIN sees the page-scoped audit link.
+- Purpose: Track request throughput, open aging, assignment speed, quote/approval speed, item demand, workload balance, and draft-order conversion quality.
 
-- Quick validation checklist:
-  1) Close one open request in Workflow and click Refresh in Analytics -> Open count should decrease.
-  2) Submit a new procurement request from customer portal -> Total should increase.
-  3) Leave one request unassigned -> Unassigned Open should increase.
-  4) Prepare a draft order from an approved request -> Drafts Prepared should increase.
-  5) Compare oldest-open list with /admin/b2b/procurement queue ordering.
+Top-to-bottom walkthrough
+1) Header actions
+   - `Back to Workflow` returns to /admin/b2b/procurement.
+   - `Refresh` re-queries analytics and updates the timestamp.
+   - `View audit log` opens the analytics sourcePage audit view for admins.
+2) Warnings and filters
+   - A truncation warning appears if the API reaches the audit-log processing limit.
+   - API failures show an error alert instead of silently rendering stale or empty metrics.
+   - `From date` and `To date` scope analytics by request creation date. Invalid ranges are blocked client-side.
+   - `Clear dates` resets the range.
+3) KPI cards
+   - `Request Volume` shows total, open, and unassigned open requests in scope.
+   - `Cycle Time` shows average time to assignment, quoted, and approved. Missing values render as `n/a`.
+   - `Draft Conversion` shows eligible requests, drafts prepared, and conversion rate. Eligible means the request has reached Quoted or Approved.
+4) Charts and operational lists
+   - `Status Distribution` shows current status counts.
+   - `Request Type Mix` shows Quote, PO Upload, and Recurring Reorder composition.
+   - `Monthly Submission Trend` appears only when trend data exists.
+   - `Top Requested Items` ranks parsed request lines by frequency.
+   - `Manager Workload (Open)` groups open rows by assigned manager and keeps unassigned rows visible.
+   - `Oldest Open Requests` links each aged row back to the workflow page with a prefilled search.
 
-## Tender Builder â€” Core Workflow
+Test strip - /admin/b2b/procurement/analytics
+- Page opens for an authenticated admin and shows `B2B Procurement Analytics`.
+- KPI cards show total/open/unassigned counts, eligible draft count, draft conversion rate, and `n/a` for missing cycle-time metrics.
+- Date filters send valid `start` and `end` query parameters.
+- Invalid date ranges show `Start date must be before end date.` and do not query the invalid range.
+- `Refresh` triggers a new analytics API request.
+- API errors show the analytics error banner.
+- Truncation responses show the data completeness warning.
+- Oldest-open links point to `/admin/b2b/procurement?search=<clinic>`.
+- The admin audit link includes `entityType=B2B_PROCUREMENT_ANALYTICS` and sourcePage `admin/b2b/procurement/analytics`.
+- Analytics views log `B2B_PROCUREMENT_ANALYTICS_VIEWED` with actor, filters, result summary, and sourcePage metadata.
+
+## Tender Builder
 - Page: /admin/b2b/tenders
-- Standard flow:
-  1) Choose source (Paste/Upload or From Procurement Request).
-  2) Load buyer + items.
-  3) Analyze Items.
-  4) Review flagged lines (substitute / no-bid / lead-time / split-supply notes).
-  5) Save Tender Draft.
-  6) Open PDF and verify document layout.
-- Important behavior:
-  - Editing a draft revalidates with current stock/pricing (live preview refresh).
-  - NO BID lines are excluded from supply conversion.
-  - Out-of-stock lines require lead time + split supply note.
+- Access: ADMIN and STAFF.
+- Purpose:
+  - Build branded B2B tender PDFs from pasted lists, uploaded files, or procurement requests.
+  - Review product matching, stock risk, margin risk, and no-bid/substitute decisions before saving.
+  - Submit, approve, send, compare versions, track expiry, export tender packages, and convert WON tenders into orders.
+- Related pages:
+  - /admin/b2b/procurement
+  - /admin/orders/new
+  - /admin/audit
+- Core rule:
+  - Tender creation and editing happen in the Build Tender tab.
+  - Email sending happens only after a tender is submitted.
+  - Final statuses are locked.
 
-## Tender Builder â€” Template Packs
-- Purpose: Reuse standard commercial terms quickly.
-- How to use:
-  1) Fill validity, lead time, payment terms, notes.
-  2) Enter template name + type.
-  3) Save Template.
-  4) Later, apply template from dropdown to auto-fill those fields.
-- Expected result: Saved values restore exactly.
+Top-to-bottom walkthrough
 
-## Tender Builder â€” Approval Gate
-- Send flow uses explicit approval controls.
-- UI card: "Send Tender by Email"
-- Steps:
-  1) Select tender.
-  2) Approve for Send.
-  3) Send Latest Tender.
-- Enforcement:
-  - Approval can be required by env policy.
-  - Protected admin emails can operate one-user approve/send.
+1) Page header
+   - Title: `Tender Builder`.
+   - `New Tender` clears the build form and returns to a fresh draft workspace.
+   - Admin-only `View Audit Log` opens `/admin/audit?sourcePage=admin%2Fb2b%2Ftenders`.
+   - `Back to Procurement` returns to the procurement request workflow.
+
+2) Expiry banner
+   - Appears only when the reminder feed contains tenders expiring soon.
+   - Each tender number in the banner is clickable.
+   - Clicking a tender number opens the Tenders tab and applies a search for that tender number.
+
+3) Workflow summary strip
+   - `Drafting`: count of draft tenders currently visible in the active server-backed result set.
+   - `Ready to send`: count of visible tenders eligible for email sending.
+   - `Expiring soon`: count from the reminder feed.
+   - `Visible results`: current page count and total matching tender count.
+   - Use this strip as a quick operational health check before starting work.
+
+4) Tabs
+   - `Build Tender`: create or revise tender content.
+   - `Send & Versions`: approve, email, preview PDF, and compare versions.
+   - `Tenders`: search, filter, update status, export, remind, convert, and open audit trails.
+   - The tab controls are keyboard and screen-reader friendly: they use tablist/tab/tabpanel semantics.
+
+Build Tender tab
+
+5) Source and buyer details
+   - Source options:
+     - `Paste / Upload`
+     - `From Procurement Request`
+   - Buyer fields:
+     - Buyer / Facility
+     - Buyer contact
+     - Buyer email
+     - Tender reference
+   - If the tender reference matches a procurement request, a `View request` link appears.
+
+6) Procurement request source
+   - Appears when Source is `From Procurement Request`.
+   - Active source statuses are:
+     - SUBMITTED
+     - IN_REVIEW
+     - QUOTED
+   - Closed/rejected requests are not shown while active requests exist.
+   - `Load Request` fills buyer details, tender reference, and item text from the selected procurement request.
+
+7) Commercial setup
+   - Fields:
+     - Lot title
+     - Currency
+     - Validity days
+     - Upload TXT / CSV / PDF / DOCX / Image
+     - VAT %
+     - Discount Amount
+     - Freight Amount
+     - Handling Amount
+     - Margin Lock % (min)
+     - Global Lead Time (days)
+     - Payment Terms
+   - Currency defaults to GHS when no value is provided.
+   - Margin Lock prevents saving lines below the configured minimum margin, except NO_BID lines.
+
+8) Template packs
+   - Use templates to reuse commercial terms.
+   - Apply a saved template from the template dropdown.
+   - Save a template by entering:
+     - template name
+     - source type
+     - current validity, lead time, payment terms, and notes
+   - Delete template uses a confirmation dialog.
+
+9) Item list
+   - Paste one item per line.
+   - Supported examples:
+     - `Paracetamol 500mg tabs, box, 100`
+     - `Paracetamol 500mg tabs: 100`
+   - Uploading files fills the same item-list field.
+   - OCR/image extraction requires the server OCR configuration to be enabled.
+
+10) Analyze Items
+   - Click `Analyze Items` after buyer and item details are ready.
+   - The preview matches items against the product catalog and calculates matched count, unmatched count, subtotal, VAT, freight, handling, discount, and total.
+   - The preview table shows requested item, matched product, quantity, stock, cost, margin, unit price, total, and match confidence.
+
+11) Line review
+   - Lines are flagged for review when they are low confidence, unmatched, suspicious, substitute, or out of stock.
+   - For unmatched/low-confidence items:
+     - choose a catalog product from suggestions, or
+     - mark as `No Bid (Discontinued)`, or
+     - mark as `Substitute Offered`.
+   - For out-of-stock lines:
+     - enter lead time days;
+     - include a split supply note that mentions available-now quantity and balance quantity;
+     - use `Clear OOS` only after the required note is complete.
+   - Before saving, check `I reviewed flagged lines and confirm tender values are correct.`
+
+12) Save Tender Draft
+   - Saving creates or updates a DRAFT tender.
+   - A new tender version is created for each save.
+   - Audit action:
+     - `B2B_TENDER_SAVED` for new tender
+     - `B2B_TENDER_UPDATED` for draft update
+   - Audit metadata includes source page, operation, version number, tender number, buyer, status, currency, total, line count, and actor details.
+   - After save, the last-saved banner shows tender number, status, total, updated date, PDF action, edit action, and send guidance.
+
+13) Editing and revising
+   - Editing a DRAFT loads it for direct update.
+   - Loading a non-draft tender into Build acts as a template for a new draft, not a direct edit of the finalized tender.
+   - Loading a draft revalidates stock and pricing against the current catalog.
+
+Send & Versions tab
+
+14) Tender selection
+   - The dropdown lists only send-eligible tenders:
+     - SUBMITTED
+     - SENT
+   - DRAFT tenders must be submitted first.
+   - WON, LOST, EXPIRED, and CANCELLED tenders cannot be emailed from this workflow.
+   - If a selected tender has buyer email, the `To` field is prefilled when empty.
+
+15) Approval status
+   - The approval banner explains whether the selected tender can be sent.
+   - Env controls:
+     - B2B_TENDER_REQUIRE_APPROVAL=1 requires latest-version approval.
+     - B2B_TENDER_REQUIRE_APPROVAL=0 disables the approval gate.
+     - B2B_TENDER_APPROVAL_MAKER_CHECKER=1 prevents the latest editor from approving their own latest version.
+     - PROTECTED_ADMIN_EMAILS can bypass maker-checker approval where policy allows.
+
+16) Approve for Send
+   - Available only after selecting a send-eligible tender.
+   - Approval writes audit action `B2B_TENDER_APPROVED`.
+   - Audit metadata includes source page, approved version number, latest version timestamp, maker-checker state, protected-admin bypass state, note, and actor details.
+
+17) Send Tender
+   - Requires selected send-eligible tender, recipient email, and approval when approval gate is enabled.
+   - Optional fields: CC email, custom email message, and specific version number.
+   - Primary send success updates tender status to SENT.
+   - Resending an already SENT tender is allowed and logged separately.
+   - If CC fails but primary recipient succeeds:
+     - the API returns a CC warning;
+     - tender remains SENT;
+     - TO recipient is recorded as SENT;
+     - CC recipient is recorded as FAILED with lastError;
+     - audit outcome is PARTIAL.
+   - If primary recipient fails:
+     - tender status is not changed;
+     - audit action `B2B_TENDER_SEND_FAILED` is written with FAILED outcome and delivery error metadata.
+   - Successful send audit actions:
+     - `B2B_TENDER_SENT`
+     - `B2B_TENDER_RESENT`
+   - Send audit metadata includes source page, operation, before/after status, tender number, buyer, selected version, latest version, recipient statuses, delivery channel, timestamp, outcome, and actor details.
+
+18) Version comparison
+   - Select a tender in the Send tab.
+   - Choose optional From and To versions.
+   - Click `Compare`.
+   - The comparison shows from/to version numbers and statuses, total change, line-level changes, quantity changes, price changes, and total deltas.
+
+Tenders tab
+
+19) Server-backed history controls
+   - Search by tender number, buyer, or reference.
+   - Filter by status.
+   - Results are fetched from the API with page, pageSize, search, and status.
+   - Clear filters resets both search and status filter.
+   - Pagination uses server totals.
+
+20) Tender row
+   - Each row shows tender number, buyer, status badge, expiry badge when applicable, linked-order badge when applicable, currency and total, updated date, and procurement reference link when available.
+
+21) Status policy
+   - Allowed transitions:
+     - DRAFT -> SUBMITTED or CANCELLED
+     - SUBMITTED -> SENT, WON, LOST, EXPIRED, or CANCELLED
+     - SENT -> WON, LOST, EXPIRED, or CANCELLED
+     - WON, LOST, EXPIRED, CANCELLED -> locked
+   - Terminal statuses require confirmation:
+     - WON
+     - LOST
+     - EXPIRED
+     - CANCELLED
+   - Status updates write audit action `B2B_TENDER_STATUS_UPDATED`.
+   - Audit metadata includes source page, operation, before/after status, note, tender number, buyer, and actor details.
+
+22) Row actions
+   - `Set`: applies the selected valid status transition.
+   - `Edit`: direct edit for DRAFT tenders.
+   - `Revise`: loads non-draft tender content as a template for a new draft.
+   - `PDF`: opens the tender PDF.
+   - `Export`: downloads the tender package.
+   - `Send`: enabled only for SUBMITTED and SENT tenders.
+   - `Convert to Order`: appears only for WON tenders without an existing linked order.
+   - `Open Order`: appears for WON tenders already linked to an order.
+   - `Send Reminder`: appears when reminder data is available for the tender.
+   - `Audit`: admin-only link to filtered audit trail for that tender.
+
+23) Expiry reminders
+   - Reminder records are based on tender sent/updated date plus validity days.
+   - `Send Reminder` sends a follow-up and writes audit action `B2B_TENDER_REMINDER_SENT`.
+   - Reminder audit metadata should include source page, tender identity, recipient, expiry context, and actor.
+
+24) Export package
+   - Row action: `Export`.
+   - Expected package contents:
+     - tender PDF
+     - line CSV
+     - terms text
+     - versions CSV
+     - snapshot JSON
+   - Use this when submitting to external portals, sharing with reviewers, or preserving a full tender record for audit.
+
+25) WON tender to order conversion
+   - Flow:
+     1. Move tender to WON.
+     2. Click `Convert to Order`.
+     3. Order form opens with tender source context and prefilled lines.
+   - Customer linking priority:
+     - buyer email;
+     - procurement reference/history;
+     - buyer phone;
+     - fallback only when the system can safely infer one customer.
+   - NO_BID lines are excluded from order draft lines.
+   - Conversion preparation writes audit action `B2B_TENDER_DRAFT_ORDER_PREPARED`.
+   - Once an order is created from a WON tender, the tender row shows `Open Order` instead of `Convert to Order`.
+
+How to use the page well
+- Start from `/admin/b2b/procurement` when the tender comes from a customer request.
+- Use manual paste/upload for ad hoc tenders that do not belong to a procurement request.
+- Always analyze before saving; do not save from raw item text without previewing match quality.
+- Treat low-confidence, out-of-stock, substitute, and no-bid lines as commercial decisions, not just data cleanup.
+- Submit a draft before going to Send & Versions.
+- Use approval gate for maker-checker control on external tender submissions.
+- Use Version Comparison before approving or sending revised tenders.
+- Use Export before submitting through external procurement portals.
+- Use the audit links when investigating who changed pricing, status, approval, or delivery state.
+
+Test strip - Build Tender
+- Open `/admin/b2b/tenders`.
+- Confirm heading is `Tender Builder`.
+- Confirm workflow summary strip renders: Drafting, Ready to send, Expiring soon, and Visible results.
+- Confirm tabs are present: Build Tender, Send & Versions, and Tenders.
+- In Build Tender:
+  1. Source defaults to `Paste / Upload`.
+  2. Buyer / Facility accepts text.
+  3. Lot title defaults to `LOT 1`.
+  4. Currency defaults to `GHS`.
+  5. Item list hint shows both supported examples.
+  6. Pasting `Paracetamol 500mg: 100` and clicking `Analyze Items` renders Preview.
+  7. Preview table shows requested item, matched product, quantity, stock, cost, margin, unit price, total, and match confidence.
+  8. A NONE-confidence line appears in Review Required.
+  9. Marking a line `No Bid (Discontinued)` removes it from order-convertible supply and does not trigger margin lock failure.
+  10. An out-of-stock line cannot be saved until lead time and split supply note are complete.
+  11. Save Tender Draft succeeds only after required review confirmation.
+  12. Last Saved Tender banner appears after save.
+- Template checks:
+  1. Save a template with validity, lead time, payment terms, and notes.
+  2. Apply it from the dropdown and confirm fields restore.
+  3. Click Delete template and confirm the confirmation dialog appears.
+- Procurement source checks:
+  1. Switch Source to `From Procurement Request`.
+  2. Confirm active requests show when available.
+  3. Confirm CLOSED and REJECTED requests are hidden when active requests exist.
+  4. Select request and click Load Request.
+  5. Confirm buyer, contact, email, tender reference, and item list populate.
+
+Test strip - Send, approval, and versions
+- Create or locate one SUBMITTED tender.
+- Open Send & Versions.
+- Confirm the Tender dropdown lists SUBMITTED and SENT tenders only.
+- Confirm DRAFT, WON, LOST, EXPIRED, and CANCELLED tenders are not selectable for sending.
+- Select a SUBMITTED tender:
+  1. Buyer email prefills the To field when empty.
+  2. Approval banner renders.
+  3. Preview PDF opens the tender PDF.
+  4. Audit trail link includes `entityType=B2B_TENDER` and selected `entityId`.
+- Approval gate checks:
+  1. With approval required, Send Tender is disabled until latest version is approved.
+  2. Click Approve for Send.
+  3. Confirm approval status changes to allowed.
+  4. Confirm audit action `B2B_TENDER_APPROVED` exists with approved version metadata.
+- Send checks:
+  1. Clear To and click Send Tender.
+  2. Confirm recipient-required validation appears.
+  3. Enter To and click Send Tender.
+  4. Confirm tender becomes SENT.
+  5. Confirm audit action `B2B_TENDER_SENT`.
+  6. Send again and confirm audit action `B2B_TENDER_RESENT`.
+  7. Simulate CC failure and confirm primary send succeeds, UI shows CC warning, CC recipient is FAILED with lastError, and audit outcome is PARTIAL.
+  8. Simulate primary failure and confirm tender status is unchanged, audit action is `B2B_TENDER_SEND_FAILED`, and audit outcome is FAILED.
+- Version comparison checks:
+  1. Ensure tender has at least two versions.
+  2. Select From and To versions.
+  3. Click Compare.
+  4. Confirm total delta and line-level changes render.
+
+Test strip - Tenders history and status
+- Open Tenders tab.
+- Confirm search sends query to `/api/admin/b2b/tenders` with `search`.
+- Confirm status filter sends query to `/api/admin/b2b/tenders` with `status`.
+- Confirm results show server total and pagination.
+- Search by buyer name and confirm matching row remains.
+- Filter by WON and confirm only WON rows remain.
+- Clear filters and confirm search/status reset.
+- For a DRAFT row:
+  1. Status dropdown offers SUBMITTED and CANCELLED.
+  2. Set SUBMITTED.
+  3. Confirm no terminal confirmation dialog appears.
+  4. Confirm audit action `B2B_TENDER_STATUS_UPDATED`.
+- For a SENT row:
+  1. Set LOST.
+  2. Confirm terminal status dialog appears.
+  3. Cancel closes the dialog without update.
+  4. Confirming writes status update audit metadata.
+- For locked statuses:
+  1. WON, LOST, EXPIRED, and CANCELLED rows have disabled status controls.
+  2. Send action is disabled unless status is SENT.
+- Confirm row audit link includes `entityType=B2B_TENDER` and `entityId=<tender id>`.
+
+Test strip - Reminders, export, and conversion
+- Expiry banner:
+  1. Seed or mock an expiring tender.
+  2. Confirm banner shows tender number and days left.
+  3. Click tender number.
+  4. Confirm Tenders tab opens with search set to the tender number.
+- Reminder:
+  1. For a tender with reminder data, click Send Reminder.
+  2. Confirm success toast.
+  3. Confirm audit action `B2B_TENDER_REMINDER_SENT`.
+- Export:
+  1. Click Export on a tender row.
+  2. Confirm package downloads.
+  3. Confirm package contains PDF, line CSV, terms text, versions CSV, and snapshot JSON.
+- WON conversion:
+  1. Move a submitted or sent tender to WON.
+  2. Confirm terminal dialog appears before status change.
+  3. Click Convert to Order.
+  4. Confirm `/admin/orders/new?tenderId=<id>` opens.
+  5. Confirm tender source card and prefilled lines appear.
+  6. Confirm NO_BID lines are excluded.
+  7. Complete order creation.
+  8. Return to Tenders and confirm row shows Open Order instead of Convert to Order.
+  9. Confirm audit action `B2B_TENDER_DRAFT_ORDER_PREPARED`.
 
 ## Session Tutorial Pack â€” Delivery Dispatch + Dispatcher
 - Scope: End-to-end tutorial for `/admin/delivery/dispatch` and `/dispatch/my-deliveries`.
@@ -4293,126 +5458,337 @@ Related page
 - This page is reporting-only.
 - To fix missing POD, update delivery capture in dispatch/order workflows.
 
-## Tender Builder â€” Version Compare
-- Compare panel is driven by selected tender.
-- Steps:
-  1) Save at least two commercial edits.
-  2) Select tender in Send card.
-  3) Open Version Comparison and click Compare.
-- Current behavior:
-  - Dropdown shows comparable commercial versions only.
-  - Compare summary shows totals delta and changed line count.
-
-## Tender Builder â€” Expiry Reminders
-- Recent Tenders shows expiry countdown for eligible tenders.
-- Send Reminder is available for active expiring records from reminder feed.
-- Expected result:
-  - Success toast after send.
-  - Audit and recipient records are stored.
-
-## Tender Builder â€” Export Package
-- Action: Export Package on Recent Tenders row.
-- Expected zip contents:
-  - *.pdf
-  - *-lines.csv
-  - *-terms.txt
-  - *-versions.csv
-  - *-snapshot.json
-- Why this exists:
-  - Submission document + spreadsheet review + terms + audit history + system snapshot in one package.
-
-## Tender Status Policy (Locked Finals)
-- Finalized statuses are now locked.
-- Transition policy:
-  - DRAFT -> SUBMITTED or CANCELLED
-  - SUBMITTED -> SENT / WON / LOST / EXPIRED / CANCELLED
-  - SENT -> WON / LOST / EXPIRED / CANCELLED
-  - WON / LOST / EXPIRED / CANCELLED -> locked
-- UI and API both enforce these rules.
-
-## WON Tender -> Order Conversion
-- Flow:
-  1) Set status to WON.
-  2) Click Convert to Order.
-  3) Order form opens with tender source card and prefilled lines.
-- Customer linking behavior:
-  - Tries buyer email first.
-  - Falls back via procurement reference/history/phone.
-  - If unresolved and only one actual customer exists, auto-selects that customer.
-- Duplicate-protection behavior (new conversions):
-  - Once order is created from a WON tender, tender row tracks linkage and shows Open Order instead of Convert to Order.
-
-## Purchase Approval Threshold Behavior
+## Purchases
 - Page: /admin/purchases
-- Intent:
-  - Approval-required purchases should still be created (PENDING_APPROVAL), not blocked.
-  - Immediate receiving is blocked until approved.
-  - High-value receipts are credit-only (no paid-on-receipt at creation).
-- Threshold resolution:
-  - If both a global threshold and product-specific threshold exist, the stricter (lower) threshold is applied.
-- Implemented UX:
-  - New purchase form defaults to `Receive now = off` and `Pay now = off`.
-  - `Add Purchase` opens a confirmation dialog before final submission.
-  - If `Pay now` is enabled, payment mode must be selected explicitly (no auto-default to Cash).
-  - For regulated purchases, both Lot/Batch code and Expiry date are required with inline validation.
-  - Purchase form auto-saves an unsent draft for 3 minutes and shows `Restore Draft` / `Clear Draft` after refresh.
-  - If quantity crosses threshold, receive-now is forced off at submit.
-  - Purchase is created pending approval.
-  - UI includes direct link to /admin/purchases?status=PENDING_APPROVAL.
-  - If quantity x unit cost crosses supplier-payment approval threshold, Paid on receipt is forced off and payment is recorded later.
-  - Payment Mode includes an explicit Credit (Pay later) option.
-  - Deferred flows default to Credit automatically.
-  - Purchases page includes `Next actions` quick views:
-    - `Pending approval`
-    - `Awaiting receive`
-    - `Due today`
-    - `Overdue`
-  - Expected-arrival urgency tags now appear inline on purchase rows (for open, not-fully-received rows).
-  - `Export summary CSV` now exports the current quick-view scope with totals and action counts.
-  - `Export summary PDF` provides the same scoped snapshot in a print/share-friendly format.
-  - Expected date window chips are available:
-    - `No expected date`
-    - `Expected this week`
-    - `Expected next 7 days`
-  - Open supplier summary cards show per-supplier:
-    - open quantity
-    - open value
-    - oldest expected date
-    - overdue line count
-  - Stale open purchase warning appears when open purchases are missing expected dates or are overdue by 7+ days.
-  - Selected-row actions include `Approve selected` for pending approvals (admin only).
-  - Selected-row actions include bulk `Expected` date apply for open purchases.
-  - Selected-row actions include:
-    - `Receive selected` with confirmation and receive rule.
-    - `Return selected` with confirmation and required reason.
-    - bulk supplier assignment for selected rows missing supplier.
-  - Quick selection shortcuts are available in Purchases:
-    - `Select all pending approval`
-    - `Select all open`
-    - `Select all overdue`
-  - Bulk operations now display a result summary dialog with success/failure counts and failure details.
-  - Supplier bulk assignment supports one-click undo for the most recent assignment batch.
-  - Inline expected-date editing is available on open purchase rows (`Awaiting receive` flows) with immediate save.
-  - Sticky scope strip shows active quick-view/expected-window and provides one-click `Reset all`.
-  - Additional view controls:
-    - `Sort expected`: oldest first, newest first, or missing first.
-    - `Open only`: shows only purchases still awaiting receipt.
-  - Urgency legend explains row badges (`Overdue`, `Due soon`, `Expected`).
-- Approval action:
-  - Use Approve button on pending row.
-  - After approval, Receive action is available.
-  - Every receive event (partial or full) posts its own journal amount for only the quantity received in that action.
-  - Record supplier payment after approval/receipt from Supplier Payments.
+- What it is:
+  - Central purchasing workspace for creating purchase orders, tracking expected arrivals, approving controlled orders, receiving stock, returning stock to suppliers, exporting scoped views, and applying bulk maintenance actions.
+- Core outcomes:
+  - Create a new purchase as either a received restock, an open order, or an approval-required order.
+  - Track open purchases by urgency and expected date without leaving the page.
+  - Perform row-level and bulk actions for approval, receipt, returns, cancellation, expected dates, and supplier cleanup.
+  - Export the current operational scope instead of manually rebuilding the same filter set elsewhere.
 
-## Product Create with Initial Stock
-- Page: /admin/products (Add New Product)
-- Behavior:
-  - New product purchase controls now default to `Receive now = off` and `Pay now = off`.
-  - `Pay now` is always visible but only enabled when `Receive now` is enabled.
-  - If `Pay now` is enabled, payment mode must be selected explicitly.
-  - If initial quantity crosses purchase approval threshold, Receive now is forced off.
-  - System creates a pending-approval purchase and keeps stock unsellable until receive is done after approval.
-  - If initial receipt value crosses supplier-payment approval threshold, Paid on receipt is forced off (credit-first flow).
+Top-to-bottom walkthrough
+
+1) Header actions
+   - Title: `Purchases`.
+   - Subtitle explains that the page records restocks and updates weighted-average cost.
+   - Primary actions:
+     - `Open add purchase` / `Add purchase`
+     - `View audit log` (admin only)
+     - `Export`
+   - `View audit log` opens `/admin/audit?sourcePage=admin/purchases` so admins can review purchase-page activity directly from the header.
+   - `Export` groups all page exports in one menu:
+     - `Export CSV`
+     - `Export summary CSV`
+     - `Export summary PDF`
+   - Use the grouped export menu only after the current scope is correct, because exports now follow the active page filters and view chips.
+
+2) Active scope and source context
+   - A sticky `Active scope` strip appears only when a quick view, expected window, sort, open-only toggle, or base filter is active.
+   - Each scope chip is removable individually.
+   - `Reset all` clears the full scope in one click.
+   - If the page was opened from an exact purchase or supplier-payment deep link, an amber `Exact source filter active` banner appears with a direct `Clear` action.
+
+3) Add purchase panel
+   - The add form is collapsed by default. Open it only when creating a new purchase.
+   - The page keeps an unsent draft for 3 minutes and shows `Restore Draft` / `Clear Draft` after refresh if a draft exists.
+   - Main fields:
+     - product
+     - quantity
+     - unit cost
+     - supplier
+     - reason
+     - note
+     - expected arrival
+     - receive now
+     - pay now
+     - payment mode
+     - lot or batch code when required
+     - expiry date when required
+   - Validation is inline. Missing required values stay attached to the field instead of appearing only in a toast.
+   - `Pay now` requires an explicit payment mode; there is no hidden default.
+   - `Credit` is the explicit pay-later mode.
+   - Threshold rule:
+     - if quantity crosses the purchase approval threshold, the purchase is still created but moves to `PENDING_APPROVAL`;
+     - immediate receipt is blocked until approved;
+     - if both a global threshold and a product-specific threshold exist, the stricter threshold is applied.
+   - High-value supplier payments are credit-only at creation, so paid-on-receipt is forced off when the supplier-payment approval threshold is crossed.
+   - Submitting `Add Purchase` opens a confirmation dialog before the API call.
+   - The confirmation dialog shows:
+     - product
+     - supplier
+     - quantity
+     - unit cost
+     - total
+     - receive/pay choice
+     - projected weighted-average cost impact
+
+4) Base filters and list summary
+   - Standard filters sit below the add panel:
+     - start date
+     - end date
+     - supplier
+     - product
+     - status
+     - search note or reason
+   - `Clear filters` resets only the filter scope.
+   - Summary cards show:
+     - purchase count
+     - total quantity
+     - total value
+     - open quantity
+   - Use this area first when narrowing the page to a date range, supplier, or status.
+
+5) Next actions and expected-date controls
+   - `Next actions` quick views are the operational shortcuts for open work:
+     - `Pending approval`
+     - `Awaiting receive`
+     - `Due today`
+     - `Overdue`
+   - Expected-date controls refine that scope further:
+     - `All`
+     - `No expected date`
+     - `Expected this week`
+     - `Expected next 7 days`
+   - Additional view controls:
+     - `Sort expected`
+     - `Open only`
+   - Purchase rows show urgency badges inline for open orders:
+     - overdue
+     - due today
+     - due soon
+     - expected
+
+6) Open-order oversight panels
+   - Open supplier summary cards show per-supplier:
+     - open quantity
+     - open value
+     - oldest expected date
+     - overdue line count
+   - A stale-open warning appears when open purchases are missing expected dates or are overdue by 7 or more days.
+   - Use these panels for purchasing follow-up, not for final accounting review.
+
+7) Saved filters, columns, and bulk actions
+   - `Saved filters` now uses an in-app dialog instead of a browser prompt.
+   - Saved filters store the full current scope, including quick view, expected window, expected sort, open-only state, base filters, and page preferences.
+   - Column controls show or hide optional table columns without changing the underlying rows.
+   - Row selection is page-scoped under server pagination.
+   - Bulk actions include:
+     - `Approve selected` for pending approvals
+     - bulk expected-date apply for open purchases
+     - `Receive selected`
+     - `Return selected`
+     - supplier assignment for selected rows missing supplier
+   - Quick selection shortcuts are available for:
+     - all pending approvals
+     - all open purchases
+     - all overdue purchases
+   - Bulk supplier assignment supports one-click undo for the most recent batch.
+   - Bulk actions return a result summary with success and failure counts.
+
+8) Purchase list and row actions
+   - Desktop uses the main table; mobile uses stacked cards with the same core actions.
+   - Empty state is scoped correctly to the active quick view and expected-window filters and includes recovery actions such as `Reset all`.
+   - Each row can expose:
+     - `Approve`
+     - `Receive`
+     - `Return to supplier`
+     - `Cancel purchase`
+     - inline expected-date edit for open rows
+     - detail dialog
+   - `Cancel purchase` is available only for open, not-yet-received purchases.
+   - `Return to supplier` is available on both desktop and mobile when the row has received quantity.
+   - Long reason and note values are truncated visually but expose the full text on hover.
+
+9) Dialog workflows
+   - `Purchase details` is the read-only inspection view.
+   - `Approve purchase` changes `PENDING_APPROVAL` to `APPROVED`.
+   - `Receive` supports partial or full receipt and enforces lot and expiry rules when the SKU requires them.
+   - `Return to supplier` removes stock, creates supplier credit, and updates the purchase status based on what remains received.
+   - `Cancel purchase` closes an unreceived order without using the return flow.
+   - Each receive event posts journal value only for the quantity received in that specific action.
+   - Supplier payment follow-up after approval or receipt is handled from Supplier Payments, not from this page.
+
+How to use the page well
+- Use base filters first, then layer quick views and expected-date controls.
+- Use `Open only` when the page should behave like a live procurement follow-up board instead of a full history list.
+- Set expected dates as soon as an order is created; the overdue and stale-open panels are only useful if expected dates are maintained.
+- Prefer `Cancel purchase` for unreceived mistakes and `Return to supplier` only for stock that already hit inventory.
+- Use saved filters for repeat operational queues such as pending approvals, overdue open orders, or a supplier-specific receiving view.
+
+Test strip - `/admin/purchases`
+- Page opens successfully for an authenticated admin and shows `Purchases`, `Open add purchase`, and `Export`.
+- `Export` menu contains exactly:
+  - `Export CSV`
+  - `Export summary CSV`
+  - `Export summary PDF`
+- Add form behavior:
+  - add panel is collapsed by default;
+  - `Show form` opens it;
+  - form restores a saved draft after refresh when a draft exists;
+  - `Clear Draft` removes the saved draft state.
+- Add purchase validation:
+  - missing product, quantity, unit cost, or supplier shows inline field errors;
+  - `Pay now` without payment mode is blocked;
+  - regulated or lot-tracked SKUs require lot or batch code;
+  - expiry-tracked SKUs require expiry date.
+- Confirmation behavior:
+  - clicking `Add Purchase` opens a confirmation dialog before submit;
+  - dialog shows weighted-average cost impact.
+- Creation outcomes:
+  - `Receive now` off creates an open order without increasing stock immediately;
+  - `Receive now` on with valid inputs creates a received purchase and updates stock;
+  - quantity above threshold creates `PENDING_APPROVAL` instead of blocking the order;
+  - high-value paid-on-receipt attempts are forced into credit or later payment flow.
+- Scope controls:
+  - activating supplier, status, quick view, expected window, expected sort, or open-only shows chips in `Active scope`;
+  - removing one chip clears only that scope;
+  - `Reset all` clears the full scope.
+- Exact-link behavior:
+  - opening `/admin/purchases?purchaseId=<id>` or `/admin/purchases?paymentId=<id>` shows the exact-source banner;
+  - `Export CSV` respects that exact scope.
+- Quick views and expected-date controls:
+  - `Pending approval`, `Awaiting receive`, `Due today`, and `Overdue` all update the visible list;
+  - expected-window chips narrow the same list further;
+  - `Open only` excludes fully received and cancelled rows.
+- Saved filters:
+  - `Save current filter` opens a dialog, not a browser prompt;
+  - applying a saved filter restores the full scope, including quick view, expected window, expected sort, and open-only state.
+- Row actions:
+  - pending rows can be approved;
+  - approved or ordered rows can be received;
+  - received rows can be returned to supplier on both desktop and mobile;
+  - unreceived open rows can be cancelled.
+- Inline expected-date edit:
+  - updating an open row expected date saves immediately and refreshes urgency state.
+- Bulk actions:
+  - quick selection shortcuts select the correct page-scoped rows;
+  - `Approve selected`, expected-date apply, receive, return, and supplier assignment all return a result summary;
+  - bulk supplier assignment offers one-click undo and restores prior supplier values correctly.
+- Exports:
+  - full CSV matches the current scope and totals row is column-aligned;
+  - summary CSV and summary PDF reflect the active quick-view scope and totals.
+- Empty state:
+  - when quick view or expected-window filtering removes all visible rows, desktop and mobile both show the scoped empty state and recovery actions.
+- Mobile check:
+  - stacked cards expose `Approve`, `Receive`, `Return to supplier`, and `Cancel purchase` when applicable;
+  - no important row action is desktop-only.
+- Audit verification:
+  - create, approve, expected-date update, receive, return, cancel, and bulk supplier actions write audit entries with useful metadata such as product, supplier, quantities, and source context.
+
+## Products Catalog Management
+- Page: /admin/products
+- What it is:
+  - Central admin workspace for catalog maintenance, pricing guardrails, supplier assignment, archive control, CSV export, and handoff into inventory adjustment workflows.
+- Core outcomes:
+  - Search, filter, and review the full product catalog with URL-synced state and saved views.
+  - Add and edit products safely with supplier validation, minimum-margin guardrails, and audit-reason enforcement on sensitive changes.
+  - Route stock changes through the dedicated inventory adjustment flow instead of editing on-hand quantity directly from the product form.
+  - Bulk archive, unarchive, supplier assignment, export, and minimum-margin maintenance from one page.
+
+Top-to-bottom walkthrough with explanations
+1) Open page and confirm scope
+   - The page header identifies `Products` as the catalog-control screen.
+   - The overview cards summarize the full filtered result set, not just the current page.
+   - `Filtered products` shows the total result count across all matching pages.
+   - `Stock watch`, `Suppliers shown`, and `Margin risk` are calculated for the current filtered scope.
+2) Review the overview cards
+   - `Filtered products` confirms the current working scope.
+   - `Stock watch` surfaces out-of-stock and low-stock exposure across the filtered set.
+   - `Suppliers shown` helps verify whether the current scope is concentrated with only a few suppliers or spread across many.
+   - `Margin risk` is admin-only and highlights products priced below cost or below minimum-margin rules.
+3) Use the main filter bar
+   - Search supports product name and SKU prefix matching and syncs to the URL.
+   - Use category, supplier, stock-state, and sort controls to narrow the catalog.
+   - `Include archived` expands the view to archived products.
+   - `Show cost & margin` is visible only for admin users.
+   - Saved filters let admins store and reapply repeatable working views.
+4) Use saved views and reset behavior
+   - `Save current view` stores the current search/filter/sort/page-size state locally for the browser.
+   - Applying a saved filter restores that exact view and resets paging back to page 1.
+   - `Clear` resets the page to the default catalog view.
+5) Use header actions
+   - `Set min margin` opens a bulk category-level pricing guardrail dialog.
+   - `View audit log` is admin-only and opens `/admin/audit?sourcePage=admin/products`.
+   - `Add Product` opens the full product-create form.
+6) Use the Add Product dialog
+   - Sections are grouped into basic info, supplier, pricing, and inventory/purchase setup.
+   - Supplier is required and cannot be left as `Unknown`.
+   - Minimum-margin violations require an override reason.
+   - New product purchase controls default to `Receive now = off` and `Pay now = off`.
+   - `Pay now` is always visible but only enabled when `Receive now` is enabled.
+   - If initial quantity crosses the purchase approval threshold, `Receive now` is forced off.
+   - The system creates a pending-approval purchase and keeps stock unsellable until receive happens after approval.
+   - If initial receipt value crosses the supplier-payment approval threshold, paid-on-receipt is forced off and the flow moves to credit-first handling.
+7) Use the bulk action bar when rows are selected
+   - Select one or more products to reveal bulk actions.
+   - `Archive` and `Unarchive` require a reason.
+   - `Set Supplier` updates the selected products to one chosen supplier or free-text supplier value.
+   - `Export CSV` exports the selected rows only.
+8) Review the products list
+   - Desktop uses a resizable table with sort headers.
+   - Mobile switches to stacked cards with the same key actions.
+   - Each row shows category, supplier, price, stock, archive state, and regulated/inventory-planning badges where applicable.
+   - Stock badges flag `Out` and `Low` products for quick review.
+9) Use row-level actions
+   - `Edit` opens the edit dialog for that product.
+   - `Adjust inventory` jumps to `/admin/stock-adjustments` with the product preselected.
+   - `View on storefront` opens the public product page when the item is not archived.
+   - `Archive` is blocked when stock is greater than 0.
+   - `Delete` is only available when the product has no order history.
+10) Use the Edit Product dialog
+   - Product details, supplier settings, margin controls, and regulated-item flags can be maintained here.
+   - Stock is not directly edited in this dialog; use `Adjust inventory` instead.
+   - Alternate supplier links can be reviewed and maintained from the edit flow.
+   - Sensitive changes such as archive status and margin-related exceptions require audit-quality reasons.
+11) Use archive and save-filter utility dialogs
+   - Archive and unarchive actions open a reason dialog before the change is sent.
+   - Saving a filter opens a short naming dialog and stores the view locally.
+12) Use loading, retry, and pagination behavior
+   - Loading state shows skeleton placeholders rather than a blank page.
+   - Error state offers a retry action.
+   - Pagination preserves filter/sort state and lets admins move through the current result set cleanly.
+
+Products page test strips:
+- Filtered metrics:
+  - Apply a category or supplier filter -> overview cards should update to reflect the full filtered result set.
+  - Move from page 1 to page 2 of the same filtered set -> overview totals should remain stable unless the filter changes.
+- Search and saved views:
+  - Type a SKU prefix or product name -> list filters down and the URL updates.
+  - Save a view, reload the page, and reapply it -> the same filter/sort/page-size state returns.
+  - Clear filters -> URL and UI return to default state.
+- Audit shortcut:
+  - `View audit log` opens `/admin/audit?sourcePage=admin/products` for admin users only.
+- Add product:
+  - Open `Add Product`, create a product with valid category, supplier, price, and cost -> success toast appears and new product becomes searchable.
+  - Try to save with missing supplier or invalid margin-override state -> form blocks with field-level validation.
+- Initial stock controls:
+  - Create a product with `Receive now` off -> product is created without immediate stock receipt.
+  - Create a product with `Receive now` on and valid payment settings -> product is created and initial purchase/receipt behavior follows the configured thresholds.
+  - Cross the approval threshold on initial quantity -> `Receive now` is forced off and the initial purchase is queued for approval.
+- Edit flow:
+  - Open a product from the table or via `/admin/products?edit=<id>` -> edit dialog loads the correct product.
+  - Update supplier or pricing -> success toast appears and row data refreshes.
+  - Attempt a guarded margin violation without override reason -> save is blocked.
+- Inventory handoff:
+  - Click `Adjust inventory` from a row -> stock-adjustments page opens with the product preselected.
+  - Confirm stock changes are handled there rather than inside the edit dialog.
+- Archive rules:
+  - Try archiving a product with stock > 0 -> action is blocked.
+  - Archive a zero-stock product with a valid reason -> success toast appears and undo is offered.
+  - Undo the archive from the toast -> product returns to active state.
+- Bulk operations:
+  - Select several rows -> bulk action bar appears.
+  - Bulk assign a supplier with a valid reason -> rows refresh with the new supplier.
+  - Bulk archive selected zero-stock rows -> success summary appears and selection clears.
+  - Bulk export selected rows -> CSV downloads and includes only the selected items.
+- Delete behavior:
+  - Product with no order history -> `Delete` is available.
+  - Product with order history -> delete action is hidden/disabled and the UI explains why.
+- Responsive behavior:
+  - Desktop shows table layout with resizable columns and header sorting.
+  - Mobile shows stacked product cards with edit/archive/adjust-inventory actions.
 
 ## Troubleshooting Notes (From Testing)
 - "Invalid payload" while sending tender:
@@ -4476,24 +5852,221 @@ Related page
 
 ## Expenses Entry Controls
 - Page: /admin/expenses
-- Category source:
-  - Expense categories are account-driven and use 4-digit ledger codes in the dropdown.
-  - Manual expense categories are limited to active EXPENSE accounts (excluding system-driven codes 5000, 6100, 6990).
-- Payment controls:
-  - `Pay now` toggle is available when creating a new expense.
-  - If `Pay now` is enabled, payment mode is required (`Cash`, `Bank transfer`, `MoMo`).
-  - If `Pay now` is disabled, expense is treated as accrued/unpaid.
-  - For accrued/unpaid expenses, use `Record payment` in the Expenses list to settle later.
-  - Settlement notes are shown in concise format (for example: `Settlement: partially paid 10.00/38.00, 2026-02-27, 16:23, cash`), with a separate `Paid | Outstanding` line for clarity.
-  - Expenses list includes settlement state controls:
-    - Filter by settlement state (`Unpaid`, `Partially paid`, `Paid`).
-    - Settlement status badge per row.
-    - `Last paid` timestamp for accrued items with posted settlements.
-- Posting behavior:
-  - Debit posts to the selected coded expense account.
-  - Credit posts to Cash/Bank/MoMo clearing based on selected payment mode, or to Accrued Expenses when unpaid.
-  - Later settlement posts: Dr `2300 Accrued Expenses`, Cr selected payment account.
-  - Partial settlements are supported: each payment reduces outstanding balance and updates status (`UNPAID`, `PARTIALLY_PAID`, `PAID`).
+- What it is:
+  - Finance workspace for reviewing coded operating expenses, accrued expense settlements, reversals, related journal entries, CSV exports, and expense audit history.
+  - Manual categories are account-driven and limited to active EXPENSE ledger accounts.
+  - System-driven expense accounts are excluded from manual posting, including COGS, Payroll Expense, and Cash Over/Short.
+- Primary operator outcomes:
+  - Create a coded expense and choose whether it was paid immediately or accrued.
+  - Review expense totals, reversals, settlement status, and outstanding liability in one place.
+  - Correct posted expenses through controlled edits, soft-delete, settlement, or reversal depending on lock state.
+  - Export the currently filtered finance history.
+  - Verify important actions through `/admin/audit` and expense-level detail audit trails.
+
+Top-to-bottom walkthrough with explanations
+1) Open the page and confirm the header actions
+   - The page title is `Expenses`.
+   - The page description explains that it reviews coded expenses, settlements, reversals, and exportable finance history.
+   - `View audit log` opens `/admin/audit` filtered to `entityType=EXPENSE` and `sourcePage=admin/expenses`.
+   - `+ Add Expense` opens the expense entry dialog.
+   - `Export CSV (filtered)` downloads the current filtered result set and is disabled while the date range is invalid.
+2) Use the exact expense ID banner when present
+   - If the URL includes an exact expense ID filter, the page shows an amber banner: `Exact expense ID filter active`.
+   - Use `Clear` in that banner to remove both the exact ID filter and the matching search text.
+3) Apply the main filters
+   - `Start date` and `End date` filter by expense creation date.
+   - Invalid date ranges show inline validation and block filtered export.
+   - `Category` lists active manual EXPENSE accounts with ledger codes; system-driven expense accounts are not shown.
+   - `Vendor` filters by vendor text.
+   - `Settlement` filters tracked accrued expenses by `Unpaid`, `Partially paid`, or `Paid`.
+   - `Search` matches vendor, category, reason, note, and full expense IDs. Pasting a full expense ID promotes the page into exact ID mode.
+   - Filter state is stored in the URL so the same view can be shared or reopened.
+4) Use quick filter helpers
+   - Date presets are `Today`, `Last 7 days`, and `This month`.
+   - Top category chips come from the filtered summary and act as one-click category filters.
+   - `Clear filters` appears only when at least one filter is active.
+5) Manage saved review views
+   - `Saved view` applies a locally saved combination of filters, page size, and sort.
+   - `Page size` supports 25, 50, and 100 rows.
+   - `Sort` supports newest/oldest, amount high/low, category A-Z, vendor A-Z, and settlement status.
+   - `Save current view` stores the current review setup for repeat usage.
+   - `Delete saved view` removes the selected saved view.
+6) Read the summary cards before acting
+   - `Filtered expenses` shows the total number of matching expenses.
+   - `Gross amount` shows original positive expense volume.
+   - `Reversals` shows reversal volume separately.
+   - `Net amount` shows gross less reversals.
+   - `Outstanding liability` highlights unsettled accrued expense balance.
+   - `Unpaid or partial` shows how many tracked accrued expenses still need payment, plus the average expense amount.
+7) Confirm loading, empty, and result count states
+   - While data is loading, the page shows loading text and skeleton rows.
+   - Errors are shown in the status line.
+   - Empty result sets show `No matching expenses`.
+   - Normal result sets show the current visible range and total count.
+8) Customize row columns
+   - `Columns` toggles optional table columns for `Category`, `Vendor`, `Reason`, and `Note`.
+   - Column choices affect the desktop table. The mobile card layout keeps the important row context visible without horizontal overflow.
+9) Review mobile cards
+   - Narrow viewports use stacked cards instead of the desktop table.
+   - Each card shows amount, date, category, optional vendor/reason/note, reversal links, settlement paid/outstanding values, lock reason, and row actions.
+10) Review the desktop table
+    - Desktop columns are Date, Category, Amount, Vendor, Reason, Note, Status, and Actions.
+    - Date, Category, Amount, Vendor, and Status headers sort server-side.
+    - The status cell distinguishes direct expenses, reversal rows, and accrued settlement states.
+    - Accrued rows show paid amount, outstanding amount, and last payment time when available.
+    - Locked rows show a lock chip with a reason tooltip.
+11) Use pagination
+    - The page uses server-side sorting and pagination, not client-only slicing.
+    - Pagination controls appear when more than one page exists and include First, Previous, Next, and Last.
+12) Use row actions
+    - `Details` opens the expense detail dialog for every row.
+    - `View payroll run` appears for payroll-generated expenses and links back to the originating payroll run.
+    - `Edit` appears only when the expense is currently mutable.
+    - `Delete` appears only when the expense can be soft-deleted.
+    - `Reverse` appears when a posted expense should be corrected by reversal rather than direct edit.
+    - `Record payment` appears for unpaid or partially paid accrued expenses that can still be settled.
+    - Locked rows explain why direct mutation is not available.
+13) Review expense details
+    - `Expense details` shows settlement history, reversals, journals, and audit events.
+    - The metric cards show original amount, settled amount, outstanding amount, and remaining amount after reversals.
+    - `Expense snapshot` shows ID, category, vendor, reason, created time, and lock reason.
+    - `Reversal history` lists linked reversal entries and reasons.
+    - `Journal entries` shows related accounting journals and debit/credit lines.
+    - `Audit trail` shows expense-scoped audit entries and metadata payloads.
+14) Add a new expense
+    - `+ Add Expense` opens `Add New Expense`.
+    - Choose a coded expense category from active manual EXPENSE accounts.
+    - Enter amount, optional vendor, reason, and note.
+    - Leave `Pay now` off to create an accrued/unpaid expense.
+    - Turn `Pay now` on when the expense was paid immediately; payment mode is required and can be Cash, Bank transfer, or MoMo.
+15) Edit an unlocked expense
+    - `Edit` opens `Edit Expense`.
+    - Changes to category, amount, vendor, reason, or note are audit logged.
+    - Amount or category changes on posted expenses trigger journal reposting when allowed.
+    - Direct edit is intended only for recent, unblocked correction cases.
+16) Record an accrued expense payment
+    - `Record payment` opens `Record expense payment`.
+    - The dialog shows the selected category and outstanding amount.
+    - Select payment mode: Cash, Bank transfer, or MoMo.
+    - Enter an amount greater than zero and not greater than the current outstanding balance.
+    - Posting creates the settlement journal and audit entry, then refreshes the row status to Unpaid, Partially paid, or Paid.
+17) Delete an expense
+    - `Delete` opens a confirmation dialog before mutation.
+    - Deletion is a soft-delete, is audit logged, and can be restored immediately from the undo toast.
+    - Deleted expenses are locked from normal mutation.
+18) Reverse an expense
+    - `Reverse` opens the expense dialog in reversal mode.
+    - The reversal amount is capped by the remaining unreversed amount.
+    - A reversal requires a reason and creates a negative linked expense entry.
+    - Reversal rows are locked and are not settlement candidates.
+19) Export filtered CSV
+    - `Export CSV (filtered)` includes the current filters, exact ID filter, settlement filter, page sort context, and settlement/lock metadata.
+    - Export activity is audit logged with filter metadata so finance exports are traceable.
+
+Accounting and control rules
+- Manual category rules:
+  - Manual expenses must use active EXPENSE accounts.
+  - System-driven accounts such as COGS, Payroll Expense, and Cash Over/Short are blocked from manual expense posting.
+- Posting rules:
+  - Paid-now expense: debit selected expense account and credit the selected payment clearing account.
+  - Accrued expense: debit selected expense account and credit `2300 Accrued Expenses`.
+  - Settlement: debit `2300 Accrued Expenses` and credit the selected payment account.
+  - Partial settlements are supported and reduce outstanding balance until the expense is fully paid.
+  - Reversals post as negative linked expenses against the original expense.
+- Mutation lock rules:
+  - Direct edit/delete is blocked for deleted expenses, reversal rows, payroll-generated expenses, expenses with settlements, expenses with reversals, and expenses outside the 48-hour edit window.
+  - Locked expenses should be corrected through settlement, reversal, or accounting adjustment rather than silent mutation.
+  - The UI must show the lock reason instead of hiding the problem.
+- Required audit behavior:
+  - Create, update, delete, restore, settlement, reversal, and CSV export actions must be audit logged.
+  - Blocked update, delete, and settlement attempts must also be audit logged with failed outcome metadata.
+  - Useful metadata includes sourcePage, section/operation, expense ID, category, amount, vendor, payment mode, settlement sequence, total expense amount, paid/outstanding values, journal entry IDs, lock code, lock reason, settlement count, reversal count, and before/after values where applicable.
+
+Recommended test strips
+1) Page load smoke
+   - Action: open `/admin/expenses`.
+   - Expected: the page shows `Expenses`, description text, `View audit log`, `+ Add Expense`, `Export CSV (filtered)`, filters, saved view controls, summary cards, rows or an empty state.
+2) Role and access guard
+   - Action: test as an authorized admin/accounting user and as an unauthorized user.
+   - Expected: authorized users can load the workspace; unauthorized users are blocked by admin access controls.
+3) Date validation
+   - Action: set Start date after End date.
+   - Expected: inline date error appears and `Export CSV (filtered)` is disabled.
+4) Date presets
+   - Action: click `Today`, `Last 7 days`, and `This month`.
+   - Expected: Start and End dates update correctly, URL state updates, and results refresh.
+5) Category source
+   - Action: open the Category dropdown.
+   - Expected: active manual EXPENSE accounts appear with codes; COGS, Payroll Expense, and Cash Over/Short do not appear.
+6) Search and exact ID mode
+   - Action: search by vendor/category/reason/note, then paste a full expense ID.
+   - Expected: broad search filters normally; full ID search activates the exact ID banner and returns only that expense when it exists.
+7) Settlement filter
+   - Action: filter by Unpaid, Partially paid, and Paid.
+   - Expected: only tracked accrued rows matching the selected settlement state are returned.
+8) Clear filters
+   - Action: apply several filters, then click `Clear filters`.
+   - Expected: filters reset, URL query clears, and default results reload.
+9) Saved views
+   - Action: apply filters, page size, and sort; save the view; apply it; delete it.
+   - Expected: the saved view restores the same configuration and is removed after deletion.
+10) Server-side sort and pagination
+    - Action: change sort mode, click sortable headers, change page size, and page through results.
+    - Expected: API requests include sort/page parameters, result counts stay consistent, and row order changes correctly.
+11) Summary cards
+    - Action: compare visible filters against summary card values.
+    - Expected: filtered count, gross, reversals, net, outstanding liability, unpaid/partial count, and average reflect the current server summary.
+12) Column toggles
+    - Action: hide/show Category, Vendor, Reason, and Note.
+    - Expected: desktop table updates without losing filters or pagination.
+13) Responsive layout
+    - Action: review desktop and narrow mobile viewport.
+    - Expected: desktop uses the table; mobile uses cards; controls stack cleanly and no horizontal overflow appears.
+14) Details dialog
+    - Action: open `Details` for a direct expense, accrued expense, reversal, and payroll-generated expense if test data exists.
+    - Expected: metrics, snapshot, reversals, journals, and audit trail render without missing labels or broken formatting.
+15) Create paid-now expense
+    - Action: create an expense with `Pay now` enabled and payment mode selected.
+    - Expected: expense is created, journal posts to the selected payment account, row is direct/paid-now rather than accrued, and audit metadata includes sourcePage, amount, category, vendor, payment mode, and journal entry ID.
+16) Create accrued expense
+    - Action: create an expense with `Pay now` disabled.
+    - Expected: row is tracked as unpaid/accrued, outstanding equals the expense amount, accounting credits accrued expenses, and audit metadata records accrued status.
+17) Payment mode validation
+    - Action: try to create a paid-now expense without selecting payment mode.
+    - Expected: form validation blocks submission.
+18) Edit unlocked expense
+    - Action: edit a recent unlocked expense.
+    - Expected: changes save, row refreshes, journal reposting occurs when amount/category changed, and audit metadata includes before/after fields.
+19) Locked edit/delete protection
+    - Action: attempt mutation through UI/API for settled, reversed, payroll-generated, reversal, deleted, and older-than-48-hours expenses.
+    - Expected: mutation is blocked, the user sees the lock reason, and a failed audit entry records lock code and lock reason.
+20) Delete and undo
+    - Action: delete an unlocked expense and then use undo from the toast.
+    - Expected: the expense is soft-deleted, audit logs deletion, undo restores it, and restore is audit logged.
+21) Reverse expense
+    - Action: reverse a posted expense with a valid reason and an amount not exceeding the remaining unreversed amount.
+    - Expected: a negative linked reversal row is created, remaining amount updates, original expense locks as needed, and audit/journal records are linked.
+22) Reverse over remaining amount
+    - Action: try to reverse more than the remaining unreversed amount.
+    - Expected: validation blocks the action.
+23) Record partial payment
+    - Action: record a payment below the outstanding amount on an accrued expense.
+    - Expected: settlement status becomes Partially paid, paid/outstanding values update, settlement journal posts, and audit metadata includes amount, mode, sequence, and journal entry ID.
+24) Record final payment
+    - Action: record payment equal to the remaining outstanding amount.
+    - Expected: settlement status becomes Paid and outstanding liability decreases to zero for that expense.
+25) Settlement overpay validation
+    - Action: attempt to settle more than outstanding.
+    - Expected: validation blocks the payment and no journal is posted.
+26) CSV export
+    - Action: export with filters active.
+    - Expected: downloaded CSV contains only the filtered scope and includes settlement/lock context; export audit records filter metadata.
+27) Audit log link
+    - Action: click `View audit log`.
+    - Expected: `/admin/audit` opens filtered to expense events from `admin/expenses`.
+28) Accessibility and dialog semantics
+    - Action: navigate the page with keyboard and open Add/Edit/Details/Delete/Record payment dialogs.
+    - Expected: controls have visible labels, focus enters dialogs, dialog descriptions are present, and destructive/financial actions require explicit confirmation.
 
 ## HR — Payroll Run Detail
 - Page: /admin/hr/payroll/[id]

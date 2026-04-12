@@ -6,18 +6,20 @@ const {
   mockAssertSameOrigin,
   mockRateLimit,
   mockPrismaTransaction,
+  mockRecordAuditLog,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
   mockAssertSameOrigin: vi.fn(),
   mockRateLimit: vi.fn(),
   mockPrismaTransaction: vi.fn(),
+  mockRecordAuditLog: vi.fn(),
 }));
 
 // ── Module mocks ──────────────────────────────────────────────────────────
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/origin", () => ({ assertSameOrigin: mockAssertSameOrigin }));
 vi.mock("@/lib/rate-limit", () => ({ rateLimit: mockRateLimit }));
-vi.mock("@/lib/audit-log", () => ({ recordAuditLog: vi.fn() }));
+vi.mock("@/lib/audit-log", () => ({ recordAuditLog: mockRecordAuditLog }));
 vi.mock("@/lib/accounting-posting", () => ({ postSupplierReturnEntry: vi.fn() }));
 vi.mock("@/lib/inventory-lots", () => ({
   allocateLotsForSale: vi.fn().mockResolvedValue(undefined),
@@ -55,9 +57,16 @@ const mockSuccessResult = {
   productName: "Sterile Gloves",
   productSku: "SG-001",
   unitCost: 5.0,
+  previousReceivedQuantity: 10,
+  nextReceivedQuantity: 5,
+  orderedQuantity: 10,
+  stockBefore: 25,
+  stockAfter: 20,
   nextStatus: "PARTIALLY_RECEIVED",
   supplier: "MedSupply Ltd",
   supplierId: "sup-1",
+  lotCode: null,
+  note: null,
   creditId: "credit-1",
   creditAmount: 25.0,
 };
@@ -191,6 +200,19 @@ describe("POST /api/admin/purchases/[id]/return – success", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+    expect(mockRecordAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "PURCHASE_RETURN_TO_SUPPLIER",
+        entityId: "purchase-1",
+        meta: expect.objectContaining({
+          productId: "prod-1",
+          productName: "Sterile Gloves",
+          productSku: "SG-001",
+          supplierId: "sup-1",
+          source: "PURCHASE_RETURN_TO_SUPPLIER",
+        }),
+      }),
+    );
   });
 
   it("accepts optional lotCode and note fields", async () => {

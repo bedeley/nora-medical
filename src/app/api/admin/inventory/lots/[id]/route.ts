@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { recordAuditLog } from "@/lib/audit-log";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -9,11 +10,12 @@ function isAuthorized(user?: AuthenticatedUser | null) {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
-  if (!session || !isAuthorized(session.user as AuthenticatedUser)) {
+  const user = session?.user as AuthenticatedUser | undefined;
+  if (!session || !isAuthorized(user)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -55,22 +57,51 @@ export async function GET(
       return NextResponse.json({ error: "Lot not found" }, { status: 404 });
     }
 
-    const movements = await prisma.inventoryMovement.findMany({
-      where: { lotId: id },
-      select: {
-        id: true,
-        reason: true,
-        reasonCode: true,
-        delta: true,
-        note: true,
-        purchaseId: true,
-        createdAt: true,
+    const MOVEMENT_LIMIT = 200;
+
+    const [movementTotal, movements] = await Promise.all([
+      prisma.inventoryMovement.count({ where: { lotId: id } }),
+      prisma.inventoryMovement.findMany({
+        where: { lotId: id },
+        select: {
+          id: true,
+          reason: true,
+          reasonCode: true,
+          delta: true,
+          note: true,
+          purchaseId: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: "asc" },
+        take: MOVEMENT_LIMIT,
+      }),
+    ]);
+
+    await recordAuditLog({
+      actorId: user?.id || null,
+      request: req,
+      action: "INVENTORY_LOT_TRACE_VIEWED",
+      entityType: "INVENTORY_LOT",
+      entityId: lot.id,
+      outcome: "SUCCESS",
+      meta: {
+        sourcePage: "admin/inventory-lots",
+        section: "trace",
+        operation: "view",
+        resultSummary: `Viewed lot trace for ${lot.lotCode}.`,
+        lotCode: lot.lotCode,
+        productId: lot.productId,
+        productName: lot.product?.name || null,
+        productSku: lot.product?.sku || null,
+        movementTotal,
+        movementsReturned: movements.length,
+        movementsTruncated: movementTotal > MOVEMENT_LIMIT,
       },
-      orderBy: { createdAt: "asc" },
-      take: 200,
     });
 
     return NextResponse.json({
+      movementTotal,
+      movementsTruncated: movementTotal > MOVEMENT_LIMIT,
       lot: {
         id: lot.id,
         lotCode: lot.lotCode,
@@ -119,4 +150,3 @@ export async function GET(
     return NextResponse.json({ error: "Failed to load lot trace" }, { status: 500 });
   }
 }
-

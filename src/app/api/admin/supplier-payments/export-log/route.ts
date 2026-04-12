@@ -24,6 +24,7 @@ const schema = z.object({
   columnCount: z.number().int().min(0).max(200).optional(),
   byteSize: z.number().int().min(0).max(200_000_000).optional(),
   exportLabel: z.string().min(3).max(120).optional(),
+  sourcePage: z.string().min(3).max(160).optional(),
 });
 
 export async function POST(req: Request) {
@@ -52,10 +53,14 @@ export async function POST(req: Request) {
     action: payload.action,
     entityType: "SUPPLIER_PAYMENT",
     entityId: "SUMMARY",
+    request: req,
     meta: {
       exportLabel: payload.exportLabel || null,
       format: payload.format,
       fileName: payload.fileName,
+      sourcePage: payload.sourcePage || "admin/supplier-payments",
+      section: "exports",
+      operation: "export_supplier_payables_view",
       scopeSnapshot: payload.scopeSnapshot || null,
       rowCount: payload.rowCount ?? null,
       columnCount: payload.columnCount ?? null,

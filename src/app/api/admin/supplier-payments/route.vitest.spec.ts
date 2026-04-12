@@ -264,4 +264,25 @@ describe("POST /api/admin/supplier-payments – bulk payment", () => {
     expect(body.allocations).toHaveLength(1);
     expect(body.allocations[0].id).toBe("pay-1");
   });
+
+  it("scopes bulk payment lookup to the provided purchaseIds", async () => {
+    mockPurchaseFindMany.mockResolvedValue([
+      { ...eligiblePurchase, id: "purchase-2", createdAt: new Date() },
+    ]);
+    mockSupplierPaymentGroupBy.mockResolvedValue([]);
+    mockPrismaTransaction.mockResolvedValue([{ ...mockCreatedPayment, purchaseId: "purchase-2" }]);
+
+    const res = await POST(
+      makePOST({ amount: 500, supplierId: "sup-1", purchaseIds: ["purchase-2"] }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPurchaseFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: { in: ["purchase-2"] },
+        }),
+      }),
+    );
+  });
 });

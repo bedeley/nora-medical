@@ -209,7 +209,7 @@ describe("AdminDashboardPage", () => {
     renderPage();
 
     const outstandingLink = await screen.findByRole("link", { name: /review outstanding/i });
-    expect(outstandingLink).toHaveAttribute("href", "/admin/balances?start=2026-03-01&end=2026-03-31");
+    expect(outstandingLink).toHaveAttribute("href", "/admin/customers?balance=due&sort=balance_desc");
 
     await waitFor(() =>
       expect(mockReplace).toHaveBeenCalledWith(

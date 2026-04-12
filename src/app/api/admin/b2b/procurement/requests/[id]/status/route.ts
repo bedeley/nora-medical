@@ -5,10 +5,13 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { rateLimit } from "@/lib/rate-limit";
+import { recordAuditLog } from "@/lib/audit-log";
 import {
   notifyCustomerProcurementStatusUpdated,
   type ProcurementRequestSnapshot,
 } from "@/lib/b2b-procurement-notifications";
+
+const SOURCE_PAGE = "admin/b2b/procurement";
 
 const schema = z.object({
   status: z.enum(["IN_REVIEW", "QUOTED", "APPROVED", "REJECTED", "CLOSED"]),
@@ -99,6 +102,9 @@ export async function POST(
     );
   }
 
+  const previousStatus = current.status;
+  const isReopen = parsed.data.reopen === true;
+
   const next: ProcurementRequestSnapshot = {
     ...current,
     status: parsed.data.status,
@@ -112,7 +118,7 @@ export async function POST(
     : null;
   const notification = await notifyCustomerProcurementStatusUpdated(
     next,
-    current.status,
+    previousStatus,
     actor?.name || actor?.email || null,
   ).catch((error: unknown) => ({
     attempted: true,
@@ -121,22 +127,46 @@ export async function POST(
     detail: error instanceof Error ? error.message : "Notification error",
   }));
 
-  await prisma.auditLog.create({
-    data: {
-      actorId: user?.id || null,
-      action: "B2B_PROCUREMENT_REQUEST_STATUS_UPDATED",
-      entityType: "B2B_PROCUREMENT_REQUEST",
-      entityId: requestId,
-      meta: JSON.stringify({
-        snapshot: next,
-        statusUpdate: {
-          from: current.status,
-          to: parsed.data.status,
-          reopen: parsed.data.reopen === true,
-          note: parsed.data.note?.trim() || null,
-        },
-        notification,
-      }),
+  const operation = isReopen
+    ? "reopen_request"
+    : parsed.data.status === "REJECTED" || parsed.data.status === "CLOSED"
+      ? "close_request"
+      : "update_status";
+
+  await recordAuditLog({
+    actorId: user?.id || null,
+    action: "B2B_PROCUREMENT_REQUEST_STATUS_UPDATED",
+    entityType: "B2B_PROCUREMENT_REQUEST",
+    entityId: requestId,
+    request: req,
+    outcome: "SUCCESS",
+    meta: {
+      sourcePage: SOURCE_PAGE,
+      section: "status",
+      operation,
+      actor: { id: user?.id, role: user?.role, name: actor?.name || actor?.email || null },
+      before: {
+        status: previousStatus,
+        accountManagerId: current.accountManagerId || null,
+      },
+      after: {
+        status: next.status,
+        accountManagerId: next.accountManagerId || null,
+      },
+      isReopen,
+      note: parsed.data.note?.trim() || null,
+      clinicName: current.clinicName,
+      contactName: current.contactName,
+      notification: {
+        ok: notification.ok,
+        channel: notification.channel,
+        attempted: notification.attempted,
+        detail: notification.ok ? undefined : notification.detail,
+      },
+      status: "SUCCESS",
+      resultSummary: isReopen
+        ? `Request for ${current.clinicName} reopened from ${previousStatus} to IN_REVIEW.`
+        : `Status changed from ${previousStatus} to ${next.status} for ${current.clinicName}.`,
     },
   });
 

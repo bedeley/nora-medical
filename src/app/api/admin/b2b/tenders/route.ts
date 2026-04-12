@@ -13,7 +13,7 @@ import {
 } from "@/lib/tender-sanitization";
 import {
   buildTenderPreview,
-  listLatestTenderSnapshots,
+  listTenderSnapshotsPage,
   mapTenderStatusFromUi,
   nextTenderNumber,
   type TenderSnapshot,
@@ -54,7 +54,9 @@ const createSchema = z.object({
     .optional(),
 });
 
-export async function GET() {
+const tenderStatusValues = new Set(["DRAFT", "SUBMITTED", "SENT", "WON", "LOST", "EXPIRED", "CANCELLED"]);
+
+export async function GET(req?: Request) {
   const session = await getServerSession(authOptions);
   const user = session?.user as AuthenticatedUser | undefined;
   const role = user?.role;
@@ -63,8 +65,14 @@ export async function GET() {
   if (!session || (!isAdmin && !isStaff)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  const items = await listLatestTenderSnapshots(100);
-  return NextResponse.json({ items });
+  const url = new URL(req?.url || "http://localhost/api/admin/b2b/tenders");
+  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+  const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get("pageSize") || 20)));
+  const search = (url.searchParams.get("search") || "").trim();
+  const statusParam = (url.searchParams.get("status") || "").trim().toUpperCase();
+  const status = tenderStatusValues.has(statusParam) ? statusParam : "";
+  const result = await listTenderSnapshotsPage({ page, pageSize, search, status: status as TenderSnapshot["status"] | "" });
+  return NextResponse.json(result);
 }
 
 export async function POST(req: Request) {
@@ -170,6 +178,7 @@ export async function POST(req: Request) {
       ? defaultMinMargin
       : 0;
   const marginViolations = lines
+    .filter((line) => line.bidDisposition !== "NO_BID")
     .filter((line) => line.baseCost != null && line.baseCost > 0)
     .filter((line) => {
       const marginPct = ((line.unitPrice - Number(line.baseCost || 0)) / Number(line.baseCost || 1)) * 100;
@@ -416,9 +425,18 @@ export async function POST(req: Request) {
       action: tenderId ? "B2B_TENDER_UPDATED" : "B2B_TENDER_SAVED",
       entityType: "B2B_TENDER",
       entityId: id,
+      outcome: "SUCCESS",
       meta: JSON.stringify({
-        snapshot,
+        sourcePage: "admin/b2b/tenders",
+        operation: tenderId ? "update" : "create",
         versionNo: previousVersionNo + 1,
+        tenderNumber: snapshot.tenderNumber,
+        buyerName: snapshot.buyerName,
+        status: snapshot.status,
+        currency: snapshot.currency,
+        total: snapshot.total,
+        lineCount: lines.length,
+        actor: { id: user?.id || null, email: user?.email || null, name: user?.name || null },
       }),
     },
   });

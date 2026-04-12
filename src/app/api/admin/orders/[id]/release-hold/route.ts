@@ -48,10 +48,17 @@ export async function POST(
         select: {
           id: true,
           userId: true,
+          invoiceNumber: true,
           status: true,
           total: true,
           amountPaid: true,
           balance: true,
+          user: {
+            select: {
+              name: true,
+              email: true,
+            },
+          },
         },
       });
       if (!order) {
@@ -84,7 +91,21 @@ export async function POST(
         select: { id: true, status: true },
       });
 
-      return { ok: true, updated, forced: force, creditLimit, outstanding };
+      return {
+        ok: true,
+        updated,
+        forced: force,
+        creditLimit,
+        outstanding,
+        previousStatus: order.status,
+        invoiceNumber: order.invoiceNumber ?? null,
+        customerId: order.userId,
+        customerName: order.user?.name ?? null,
+        customerEmail: order.user?.email ?? null,
+        total,
+        amountPaid,
+        balance,
+      };
     });
 
     if (!result.ok) {
@@ -104,8 +125,22 @@ export async function POST(
         action: "ORDER_RELEASE_CREDIT_HOLD",
         entityType: "ORDER",
         entityId: orderId,
+        request: req,
         meta: {
-          status: result.updated?.status,
+          changedByName: user?.name || user?.email || null,
+          changedByEmail: user?.email || null,
+          changedByRole: user?.role || null,
+          sourcePage: "/admin/orders/[id]",
+          sourceRoute: `/api/admin/orders/${orderId}/release-hold`,
+          previousStatus: result.previousStatus,
+          newStatus: result.updated?.status,
+          invoiceNumber: result.invoiceNumber,
+          customerId: result.customerId,
+          customerName: result.customerName,
+          customerEmail: result.customerEmail,
+          total: result.total,
+          amountPaid: result.amountPaid,
+          balance: result.balance,
           forced: result.forced || false,
           note: note || null,
           creditLimit: result.creditLimit,

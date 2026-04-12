@@ -5,6 +5,7 @@ import { authOptions, type AuthenticatedUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { assertSameOrigin } from "@/lib/origin";
 import { findClosedPeriod } from "@/lib/accounting-periods";
+import { recordAccountingBankAudit } from "@/lib/accounting-bank-audit";
 
 function isAuthorized(user?: AuthenticatedUser | null) {
   const role = user?.role;
@@ -161,45 +162,38 @@ export async function PATCH(
       ...(parsed.data.reference !== undefined ? { reference: parsed.data.reference } : {}),
     },
   });
-  const actorIdCandidate = String(actor?.id || "").trim();
-  let safeActorId: string | null = null;
-  if (actorIdCandidate) {
-    const actorExists = await prisma.user.findUnique({
-      where: { id: actorIdCandidate },
-      select: { id: true },
-    });
-    safeActorId = actorExists?.id || null;
-  }
   try {
-    await prisma.auditLog.create({
-      data: {
-        actorId: safeActorId,
-        action: "BANK_TXN_UPDATED",
-        entityType: "BANK_TRANSACTION",
-        entityId: updated.id,
-        meta: JSON.stringify({
-          bankAccountId: bankId,
-          before: {
-            postedAt: existing.postedAt.toISOString(),
-            amount: Number(existing.amount),
-            type: existing.type,
-            description: existing.description ?? null,
-            reference: existing.reference ?? null,
-          },
-          after: {
-            postedAt: updated.postedAt.toISOString(),
-            amount: Number(updated.amount),
-            type: updated.type,
-            description: updated.description ?? null,
-            reference: updated.reference ?? null,
-          },
-          lockPolicy: {
-            editWindowDays,
-            ageDays,
-            overrideApplied: requiresAdminOverride,
-            overrideReason: requiresAdminOverride ? overrideReason : null,
-          },
-        }),
+    await recordAccountingBankAudit({
+      req,
+      actor,
+      action: "BANK_TXN_UPDATED",
+      entityType: "BANK_TRANSACTION",
+      entityId: updated.id,
+      section: "transactions",
+      operation: "update",
+      resultSummary: `Updated bank transaction ${updated.id}.`,
+      meta: {
+        bankAccountId: bankId,
+        before: {
+          postedAt: existing.postedAt.toISOString(),
+          amount: Number(existing.amount),
+          type: existing.type,
+          description: existing.description ?? null,
+          reference: existing.reference ?? null,
+        },
+        after: {
+          postedAt: updated.postedAt.toISOString(),
+          amount: Number(updated.amount),
+          type: updated.type,
+          description: updated.description ?? null,
+          reference: updated.reference ?? null,
+        },
+        lockPolicy: {
+          editWindowDays,
+          ageDays,
+          overrideApplied: requiresAdminOverride,
+          overrideReason: requiresAdminOverride ? overrideReason : null,
+        },
       },
     });
   } catch (auditError) {

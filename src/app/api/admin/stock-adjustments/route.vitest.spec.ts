@@ -10,6 +10,8 @@ const {
   mockPrismaLedgerAccountFindMany,
   mockPrismaLedgerAccountUpsert,
   mockPrismaTransaction,
+  mockPrismaMovementFindMany,
+  mockPrismaMovementCount,
   mockFindClosedPeriod,
 } = vi.hoisted(() => ({
   mockGetServerSession: vi.fn(),
@@ -20,6 +22,8 @@ const {
   mockPrismaLedgerAccountFindMany: vi.fn(),
   mockPrismaLedgerAccountUpsert: vi.fn(),
   mockPrismaTransaction: vi.fn(),
+  mockPrismaMovementFindMany: vi.fn(),
+  mockPrismaMovementCount: vi.fn(),
   mockFindClosedPeriod: vi.fn(),
 }));
 
@@ -40,12 +44,16 @@ vi.mock("@/lib/prisma", () => ({
       findMany: mockPrismaLedgerAccountFindMany,
       upsert: mockPrismaLedgerAccountUpsert,
     },
+    inventoryMovement: {
+      findMany: mockPrismaMovementFindMany,
+      count: mockPrismaMovementCount,
+    },
     $transaction: mockPrismaTransaction,
   },
 }));
 
 // ── Import after mocks ────────────────────────────────────────────────────
-import { POST } from "./route";
+import { POST, GET } from "./route";
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 const ADMIN_SESSION = { user: { id: "u1", role: "ADMIN", email: "admin@example.com" } };
@@ -62,9 +70,15 @@ function makeRequest(body?: unknown): Request {
         countedStock: 80,
         reasonType: "CYCLE_COUNT",
         reasonCode: "COUNT_VARIANCE",
+        note: "Physical count",
       },
     ),
   });
+}
+
+function makeGetRequest(params: Record<string, string> = {}): Request {
+  const sp = new URLSearchParams(params);
+  return new Request(`http://localhost:3000/api/admin/stock-adjustments?${sp.toString()}`);
 }
 
 const mockProduct = {
@@ -88,12 +102,25 @@ beforeEach(() => {
   mockAssertSameOrigin.mockReturnValue(true);
   mockRateLimit.mockResolvedValue({ ok: true });
   mockFindClosedPeriod.mockResolvedValue(null);
-  mockPrismaAppSettingFindUnique.mockResolvedValue(null); // use default codes
+  mockPrismaAppSettingFindUnique.mockResolvedValue(null);
   mockPrismaLedgerAccountFindMany.mockResolvedValue(mockLedgerAccounts);
-  mockPrismaTransaction.mockResolvedValue(undefined);
+  // Transaction runs the callback and returns delta/valueDelta
+  mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+    const fakeTx = {
+      product: {
+        findUnique: vi.fn().mockResolvedValue(mockProduct),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      journalEntry: { create: vi.fn().mockResolvedValue({}) },
+    };
+    return fn(fakeTx);
+  });
+  // GET mocks
+  mockPrismaMovementCount.mockResolvedValue(0);
+  mockPrismaMovementFindMany.mockResolvedValue([]);
 });
 
-// ── Auth guard ─────────────────────────────────────────────────────────────
+// ── Auth guard — POST ──────────────────────────────────────────────────────
 
 describe("POST /api/admin/stock-adjustments – auth guard", () => {
   it("returns 401 when no session", async () => {
@@ -116,11 +143,115 @@ describe("POST /api/admin/stock-adjustments – auth guard", () => {
     expect(res.status).toBe(200);
   });
 
-  it("allows ACCOUNTANT", async () => {
+  it("returns 401 when role is ACCOUNTANT", async () => {
     mockGetServerSession.mockResolvedValue(ACCOUNTANT_SESSION);
-    mockPrismaProductFindUnique.mockResolvedValue(mockProduct);
     const res = await POST(makeRequest());
+    expect(res.status).toBe(401);
+  });
+});
+
+// ── Auth guard — GET ───────────────────────────────────────────────────────
+
+describe("GET /api/admin/stock-adjustments – auth guard", () => {
+  it("returns 401 when no session", async () => {
+    mockGetServerSession.mockResolvedValue(null);
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when role is STAFF", async () => {
+    mockGetServerSession.mockResolvedValue(STAFF_SESSION);
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when role is ACCOUNTANT", async () => {
+    mockGetServerSession.mockResolvedValue(ACCOUNTANT_SESSION);
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 200 with empty items and total=0 when page param is NaN", async () => {
+    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+    mockPrismaMovementCount.mockResolvedValue(0);
+    mockPrismaMovementFindMany.mockResolvedValue([]);
+    const res = await GET(makeGetRequest({ page: "not-a-number" }));
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.page).toBe(1); // should fall back to 1
+  });
+
+  it("allows ADMIN and returns items + pagination metadata", async () => {
+    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+    mockPrismaMovementCount.mockResolvedValue(1);
+    mockPrismaMovementFindMany.mockResolvedValue([
+      {
+        id: "mov-1",
+        productId: "prod-1",
+        delta: -10,
+        reason: "CYCLE_COUNT",
+        reasonCode: "DAMAGE",
+        note: "Water damage",
+        unitCost: 5.0,
+        createdAt: new Date("2026-04-01"),
+        product: { name: "Sterile Gloves", sku: "SG-001", cost: 5.0 },
+        lot: null,
+      },
+    ]);
+    const res = await GET(makeGetRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items).toHaveLength(1);
+    expect(body.total).toBe(1);
+    expect(body.page).toBe(1);
+    expect(body.pageSize).toBe(25);
+  });
+
+  it("uses stored unitCost for valueDelta when available", async () => {
+    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+    mockPrismaMovementCount.mockResolvedValue(1);
+    mockPrismaMovementFindMany.mockResolvedValue([
+      {
+        id: "mov-1",
+        productId: "prod-1",
+        delta: -10,
+        reason: "CYCLE_COUNT",
+        reasonCode: null,
+        note: null,
+        unitCost: 8.0, // stored at adjustment time
+        createdAt: new Date("2026-04-01"),
+        product: { name: "Sterile Gloves", sku: "SG-001", cost: 5.0 }, // current cost differs
+        lot: null,
+      },
+    ]);
+    const res = await GET(makeGetRequest());
+    const body = await res.json();
+    // Should use stored unitCost (8.0), not current product cost (5.0)
+    expect(body.items[0].unitCost).toBe(8);
+    expect(body.items[0].valueDelta).toBeCloseTo(-80, 2); // -10 * 8
+  });
+
+  it("falls back to current product cost when unitCost is null (legacy record)", async () => {
+    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+    mockPrismaMovementCount.mockResolvedValue(1);
+    mockPrismaMovementFindMany.mockResolvedValue([
+      {
+        id: "mov-2",
+        productId: "prod-1",
+        delta: -10,
+        reason: "CYCLE_COUNT",
+        reasonCode: null,
+        note: null,
+        unitCost: null, // legacy: no stored cost
+        createdAt: new Date("2026-04-01"),
+        product: { name: "Sterile Gloves", sku: "SG-001", cost: 5.0 },
+        lot: null,
+      },
+    ]);
+    const res = await GET(makeGetRequest());
+    const body = await res.json();
+    expect(body.items[0].unitCost).toBe(5);
+    expect(body.items[0].valueDelta).toBeCloseTo(-50, 2); // -10 * 5
   });
 });
 
@@ -151,31 +282,43 @@ describe("POST /api/admin/stock-adjustments – input validation", () => {
   });
 
   it("returns 400 when productId is missing", async () => {
-    const res = await POST(makeRequest({ countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE" }));
+    const res = await POST(makeRequest({ countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE", note: "count" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Invalid input");
   });
 
   it("returns 400 when countedStock is negative", async () => {
-    const res = await POST(makeRequest({ productId: "prod-1", countedStock: -1, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE" }));
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: -1, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE", note: "count" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Invalid input");
   });
 
   it("returns 400 when countedStock is fractional", async () => {
-    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 10.5, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE" }));
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 10.5, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE", note: "count" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Invalid input");
   });
 
   it("returns 400 when reasonType is invalid", async () => {
-    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "INVALID", reasonCode: "COUNT_VARIANCE" }));
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "INVALID", reasonCode: "COUNT_VARIANCE", note: "count" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Invalid input");
   });
 
   it("returns 400 when reasonCode is invalid", async () => {
-    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "INVALID_CODE" }));
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "INVALID_CODE", note: "count" }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Invalid input");
+  });
+
+  it("returns 400 when note is missing", async () => {
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE" }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Invalid input");
+  });
+
+  it("returns 400 when note is empty string", async () => {
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE", note: "" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("Invalid input");
   });
@@ -186,6 +329,7 @@ describe("POST /api/admin/stock-adjustments – input validation", () => {
       countedStock: 80,
       reasonType: "CYCLE_COUNT",
       reasonCode: "COUNT_VARIANCE",
+      note: "count",
       expiryDate: "not-a-date",
     }));
     expect(res.status).toBe(400);
@@ -228,18 +372,47 @@ describe("POST /api/admin/stock-adjustments – business logic guards", () => {
     expect((await res.json()).error).toMatch(/expiry date/i);
   });
 
-  it("returns 200 with no-change message when countedStock equals current stock", async () => {
+  it("returns 200 with no-change message and delta=0 when countedStock equals current stock", async () => {
     mockPrismaProductFindUnique.mockResolvedValue({ ...mockProduct, stock: 80 });
-    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE" }));
+    // Transaction returns noop when delta is 0
+    mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const fakeTx = {
+        product: {
+          findUnique: vi.fn().mockResolvedValue({ stock: 80 }),
+          update: vi.fn(),
+        },
+        journalEntry: { create: vi.fn() },
+      };
+      return fn(fakeTx);
+    });
+    const res = await POST(makeRequest({ productId: "prod-1", countedStock: 80, reasonType: "CYCLE_COUNT", reasonCode: "COUNT_VARIANCE", note: "physical count" }));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
+    expect(body.delta).toBe(0);
+    expect(body.valueDelta).toBe(0);
     expect(body.message).toMatch(/no stock change/i);
+  });
+
+  it("returns 500 when product is deleted between pre-check and transaction", async () => {
+    mockPrismaProductFindUnique.mockResolvedValue(mockProduct);
+    // Simulate product disappearing inside transaction
+    mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const fakeTx = {
+        product: {
+          findUnique: vi.fn().mockResolvedValue(null), // gone
+          update: vi.fn(),
+        },
+        journalEntry: { create: vi.fn() },
+      };
+      return fn(fakeTx);
+    });
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(500);
   });
 
   it("returns 400 when ledger accounts are missing", async () => {
     mockPrismaProductFindUnique.mockResolvedValue(mockProduct);
-    // resolveAccounts returns empty after findMany + upsert + second findMany
     mockPrismaLedgerAccountFindMany.mockResolvedValue([]);
     mockPrismaLedgerAccountUpsert.mockResolvedValue({});
     const res = await POST(makeRequest());
@@ -262,6 +435,7 @@ describe("POST /api/admin/stock-adjustments – success", () => {
       countedStock: 80,
       reasonType: "CYCLE_COUNT",
       reasonCode: "COUNT_VARIANCE",
+      note: "Physical count",
     }));
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -271,11 +445,23 @@ describe("POST /api/admin/stock-adjustments – success", () => {
   });
 
   it("returns 200 with positive delta for stock increase", async () => {
+    // Override transaction to simulate an increase
+    mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const fakeTx = {
+        product: {
+          findUnique: vi.fn().mockResolvedValue({ stock: 100 }),
+          update: vi.fn().mockResolvedValue({}),
+        },
+        journalEntry: { create: vi.fn().mockResolvedValue({}) },
+      };
+      return fn(fakeTx);
+    });
     const res = await POST(makeRequest({
       productId: "prod-1",
       countedStock: 120,
       reasonType: "STOCK_ADJUSTMENT",
       reasonCode: "OTHER",
+      note: "Recount after audit",
     }));
     expect(res.status).toBe(200);
     const body = await res.json();

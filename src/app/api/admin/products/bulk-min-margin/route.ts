@@ -54,6 +54,7 @@ export async function POST(req: Request) {
         action: "PRODUCT_MIN_MARGIN_BULK_UPDATE",
         entityType: "PRODUCT",
         entityId: "bulk",
+        request: req,
         meta: {
           category,
           minMarginPct,

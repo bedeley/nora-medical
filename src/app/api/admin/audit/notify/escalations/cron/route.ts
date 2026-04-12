@@ -84,7 +84,7 @@ export async function GET(req: Request) {
       ? configuredTo
       : (
           await prisma.user.findMany({
-            where: { role: { in: ["ADMIN", "ACCOUNTANT"] }, deletedAt: null },
+            where: { role: "ADMIN", deletedAt: null },
             select: { email: true },
             take: 50,
           })
